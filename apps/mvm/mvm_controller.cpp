@@ -2638,7 +2638,9 @@ bool MvmController::previewVideoAtPlayhead() const {
     const auto active = project::activeClipsAt(project_, project::TrackKind::Video, playheadFrame_);
     for (std::size_t index = 0; index < active.size(); ++index)
         if (active[index] && active[index]->enabled &&
-            !project::isStillClipKind(active[index]->kind) && !project_.videoTracks[index].muted)
+            !project::isStillClipKind(active[index]->kind) &&
+            project::isTrackOutputEnabled(
+                project_, {project::TrackKind::Video, static_cast<int>(index)}))
             return true;
     return false;
 }
@@ -2996,7 +2998,7 @@ bool MvmController::clipVisibleAtPlayhead(int clipIndex) const {
         return false;
     const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
     if (!clip.enabled || clip.track.kind != project::TrackKind::Video ||
-        project_.videoTracks[static_cast<std::size_t>(clip.track.index)].muted)
+        !project::isTrackOutputEnabled(project_, clip.track))
         return false;
     const auto duration = project::timelineClipDuration(project_, clip);
     return duration.success && playheadFrame_ >= clip.timelineStartFrame &&
@@ -5792,9 +5794,45 @@ bool MvmController::removeTrack(const QString& trackKind, int trackIndex) {
 }
 
 bool MvmController::setTrackMuted(const QString& trackKind, int trackIndex, bool muted) {
+    return setTracksMuted(trackKind, {trackIndex}, muted);
+}
+
+bool MvmController::setTracksMuted(const QString& trackKind, const QVariantList& trackIndices,
+                                   bool muted) {
     if (busy_)
         return false;
-    if (!pauseTimeline())
+    project::TrackRef first;
+    std::vector<int> indices;
+    for (const auto& value : trackIndices) {
+        bool ok = false;
+        const int index = value.toInt(&ok);
+        project::TrackRef track;
+        if (!ok || !resolveTrackRef(trackKind, index, track)) {
+            setStatus(QStringLiteral("trackが不正です"));
+            return false;
+        }
+        first = track;
+        indices.push_back(index);
+    }
+    project::Project candidate = project_;
+    const auto changed = project::setTracksMuted(candidate, first.kind, indices, muted);
+    if (!changed.success) {
+        setStatus(QString::fromStdString(changed.error));
+        return false;
+    }
+    const bool video = first.kind == project::TrackKind::Video;
+    if (!pauseForTrackOutputEdit())
+        return false;
+    return commitTrackOutputEdit(
+        std::move(candidate),
+        video ? (muted ? QStringLiteral("trackを非表示にしました")
+                       : QStringLiteral("trackを表示しました"))
+              : (muted ? QStringLiteral("trackをミュートしました")
+                       : QStringLiteral("trackのミュートを解除しました")));
+}
+
+bool MvmController::setTrackSolo(const QString& trackKind, int trackIndex, bool solo) {
+    if (busy_)
         return false;
     project::TrackRef track;
     if (!resolveTrackRef(trackKind, trackIndex, track)) {
@@ -5802,21 +5840,42 @@ bool MvmController::setTrackMuted(const QString& trackKind, int trackIndex, bool
         return false;
     }
     project::Project candidate = project_;
-    const auto changed = project::setTrackMuted(candidate, track, muted);
+    const auto changed = project::setTrackSolo(candidate, track, solo);
     if (!changed.success) {
         setStatus(QString::fromStdString(changed.error));
         return false;
     }
+    if (!pauseForTrackOutputEdit())
+        return false;
+    return commitTrackOutputEdit(std::move(candidate),
+                                 solo ? QStringLiteral("trackをソロにしました")
+                                      : QStringLiteral("trackのソロを解除しました"));
+}
+
+bool MvmController::pauseForTrackOutputEdit() {
+    // 通常再生は止めない (Premiere と同じく再生しながら切り替える)。通常再生は毎 tick
+    // handOffPlaybackSources が Project から layer / audio を引き直すので、隠す・消音は次の
+    // tick で外れ、表示・解除で足りない source は既存の組み直し (その frame から再生を続ける)
+    // で用意される。シャトルは開始時に鳴らす clip を決めて持つので、従来どおり止める。
+    if (shuttleRate_ != 0)
+        return pauseTimeline();
+    return true;
+}
+
+bool MvmController::commitTrackOutputEdit(project::Project candidate, const QString& doneStatus) {
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
-    // mute は preview の layer 構成そのものを変える。現在位置で組み直す。
-    QString error;
-    if (!syncPreviewSourcesAt(playheadFrame_, error)) {
-        setStatus(QStringLiteral("muteは保存されましたが、Previewの更新に失敗しました: ") + error);
+    if (playing_) {
+        setStatus(doneStatus);
         return true;
     }
-    setStatus(muted ? QStringLiteral("trackをミュートしました")
-                    : QStringLiteral("trackのミュートを解除しました"));
+    QString error;
+    if (!syncPreviewSourcesAt(playheadFrame_, error)) {
+        setStatus(QStringLiteral("trackの表示・音声の設定は保存されましたが、Previewの更新に失敗しました: ") +
+                  error);
+        return true;
+    }
+    setStatus(doneStatus);
     return true;
 }
 

@@ -201,11 +201,11 @@ public:
                         return failAndFinish("format が重複または不正です", error);
                     hasFormat = true;
                 } else if (key == "video_tracks") {
-                    if (hasVideoTracks || !parseTracks(project.videoTracks))
+                    if (hasVideoTracks || !parseTracks(project.videoTracks, TrackKind::Video))
                         return failAndFinish("video_tracks が重複または不正です", error);
                     hasVideoTracks = true;
                 } else if (key == "audio_tracks") {
-                    if (hasAudioTracks || !parseTracks(project.audioTracks))
+                    if (hasAudioTracks || !parseTracks(project.audioTracks, TrackKind::Audio))
                         return failAndFinish("audio_tracks が重複または不正です", error);
                     hasAudioTracks = true;
                 } else if (key == "timeline_fps_num") {
@@ -646,9 +646,10 @@ private:
         return fail("JSON boolean が不正です");
     }
 
-    bool parseTrack(Track& track) {
+    bool parseTrack(Track& track, TrackKind kind) {
         bool hasName = false;
         bool hasMuted = false;
+        bool hasSolo = false;
         if (!consume('{'))
             return false;
         skipWhitespace();
@@ -665,6 +666,10 @@ private:
                     if (hasMuted || !parseBool(track.muted))
                         return fail("track の muted が重複または不正です");
                     hasMuted = true;
+                } else if (key == "solo") {
+                    if (hasSolo || !parseBool(track.solo))
+                        return fail("track の solo が重複または不正です");
+                    hasSolo = true;
                 } else if (!skipValue()) {
                     return false;
                 }
@@ -676,14 +681,16 @@ private:
         }
         if (!consume('}'))
             return false;
-        if (!hasName || !hasMuted)
+        if (!hasName || !hasMuted || !hasSolo)
             return fail("track の必須 field がありません");
+        if (kind == TrackKind::Video && track.solo)
+            return fail("video track は solo を持てません");
         if (track.name.empty())
             return fail("track の name が空です");
         return true;
     }
 
-    bool parseTracks(std::vector<Track>& tracks) {
+    bool parseTracks(std::vector<Track>& tracks, TrackKind kind) {
         if (!consume('['))
             return false;
         skipWhitespace();
@@ -691,7 +698,7 @@ private:
             return true;
         while (true) {
             Track track;
-            if (!parseTrack(track))
+            if (!parseTrack(track, kind))
                 return false;
             tracks.push_back(std::move(track));
             skipWhitespace();
@@ -1453,7 +1460,8 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
         for (std::size_t index = 0; index < tracks.size(); ++index) {
             json << (index == 0 ? "\n" : ",\n") << "    { \"name\": \""
                  << escapeJson(tracks[index].name)
-                 << "\", \"muted\": " << (tracks[index].muted ? "true" : "false") << " }";
+                 << "\", \"muted\": " << (tracks[index].muted ? "true" : "false")
+                 << ", \"solo\": " << (tracks[index].solo ? "true" : "false") << " }";
         }
         if (!tracks.empty())
             json << '\n';

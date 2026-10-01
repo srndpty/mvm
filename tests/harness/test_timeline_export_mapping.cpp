@@ -1,9 +1,11 @@
 #include "app/timeline_export.h"
+#include "app/timeline_preview_mapping.h"
 #include "project/timeline_edit.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 
 namespace {
 
@@ -29,6 +31,78 @@ mvm::project::TimelineClip clip(std::string id, int videoTrackIndex, std::int64_
     value.timelineStartFrame = start;
     value.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, videoTrackIndex};
     return value;
+}
+
+mvm::project::TimelineClip audioClip(std::string id, int audioTrackIndex) {
+    auto value = clip(std::move(id), 0, 0, 0, 100);
+    value.kind = mvm::project::TimelineClipKind::Audio;
+    value.mediaPath = value.id + ".wav";
+    value.track = mvm::project::TrackRef{mvm::project::TrackKind::Audio, audioTrackIndex};
+    return value;
+}
+
+// 書き出しの計画が選んだ clip の track と、preview が frame 10 に出す track の集合。
+// 全 clip が [0, 100) にあるので、両者は同じ集合でなければならない。
+using TrackSet = std::set<std::pair<int, int>>;
+
+TrackSet exportTracks(const mvm::project::Project& project,
+                      const mvm::app::TimelineExportPlan& plan) {
+    TrackSet tracks;
+    for (const auto& mapped : plan.clips) {
+        const auto& track =
+            project.timelineClips[static_cast<std::size_t>(mapped.projectClipIndex)].track;
+        tracks.insert({static_cast<int>(track.kind), track.index});
+    }
+    return tracks;
+}
+
+TrackSet previewTracks(const mvm::project::Project& project) {
+    TrackSet tracks;
+    const auto video = mvm::app::mapTimelinePreviewFrame(project, 10);
+    const auto audio = mvm::app::mapTimelinePreviewAudio(project, 10);
+    require(video.success && audio.success, "前提: preview の mapping を作れません");
+    for (const auto& layer : video.layers)
+        tracks.insert({static_cast<int>(mvm::project::TrackKind::Video), layer.videoTrackIndex});
+    for (const auto& layer : audio.layers)
+        tracks.insert({static_cast<int>(mvm::project::TrackKind::Audio), layer.audioTrackIndex});
+    return tracks;
+}
+
+// 目玉で隠した video track、ミュート・他 track のソロで鳴らない audio track は書き出さない。
+// 見聞きしたもの (preview) と書き出しが同じ track を選ぶことを比べる。
+void testTrackOutputMatchesPreview(const mvm::app::TimelineExportRequest& request) {
+    using mvm::project::TrackKind;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    project.audioTracks.push_back({"A2", false});
+    project.timelineClips = {clip("v1", 0, 0, 0, 100), clip("v2", 1, 0, 0, 100), audioClip("a1", 0),
+                             audioClip("a2", 1)};
+    const auto compare = [&](const char* message, std::size_t expectedClips) {
+        const auto plan = mvm::app::mapTimelineExportPlan(project, request);
+        require(plan.success && plan.clips.size() == expectedClips &&
+                    plan.totalDurationFrames == 100 &&
+                    exportTracks(project, plan) == previewTracks(project),
+                message);
+        return plan;
+    };
+    compare("対照: 全 track を書き出しません", 4);
+
+    project.videoTracks[1].muted = true;
+    const auto hidden = compare("隠した V2 を書き出しの対象にしています", 3);
+    require(hidden.backend == mvm::app::TimelineExportResult::Backend::Tractor,
+            "隠した track の穴を埋める tractor を選びません");
+    project.videoTracks[1].muted = false;
+
+    project.audioTracks[1].solo = true;
+    compare("ソロでない A1 を書き出しの対象にしています", 3);
+
+    project.audioTracks[1].muted = true;
+    compare("ミュートしたソロの A2 を書き出しの対象にしています", 2);
+
+    // 何も出力しない状態は、黙って空の書き出しにしない。
+    project.videoTracks[0].muted = project.videoTracks[1].muted = true;
+    const auto none = mvm::app::mapTimelineExportPlan(project, request);
+    require(!none.success && none.error.find("有効なclip") != std::string::npos,
+            "出力する track が無いのに書き出す計画を作りました");
 }
 
 } // namespace
@@ -305,5 +379,6 @@ int main() {
                 automationPlan.clips[1].gainKeys[5].gain == 1.0 &&
                 automationPlan.clips[1].gainKeys[10].gain == 2.0,
             "手動カーブとフェードを出力フレームへ反映できません");
+    testTrackOutputMatchesPreview(request);
     return 0;
 }

@@ -566,6 +566,10 @@ public:
     Q_INVOKABLE bool addTrack(const QString& trackKind);
     Q_INVOKABLE bool removeTrack(const QString& trackKind, int trackIndex);
     Q_INVOKABLE bool setTrackMuted(const QString& trackKind, int trackIndex, bool muted);
+    // 目玉のドラッグ塗りで通った track をまとめて確定する。1 回の undo になる。
+    Q_INVOKABLE bool setTracksMuted(const QString& trackKind, const QVariantList& trackIndices,
+                                    bool muted);
+    Q_INVOKABLE bool setTrackSolo(const QString& trackKind, int trackIndex, bool solo);
 
     // 空白部分の ripple delete。gap が無ければ false を返し status に理由を出す。
     Q_INVOKABLE bool hasGapAt(const QString& trackKind, int trackIndex, qint64 frame) const;
@@ -801,6 +805,10 @@ private:
     void refreshTimelineModel();
     // trackKind 文字列を TrackRef へ解決する。失敗時は status を設定して false。
     bool resolveTrackRef(const QString& trackKind, int trackIndex, project::TrackRef& track) const;
+    // mute / solo の確定。どちらも preview の layer 構成を変えるので、停止中は現在位置で
+    // 組み直す。再生中は次の tick が引き直す。
+    bool pauseForTrackOutputEdit();
+    bool commitTrackOutputEdit(project::Project candidate, const QString& doneStatus);
     bool generateAndInstallManimClip(const std::filesystem::path& scriptPath,
                                      const QString& sceneName, bool requirePreviewReady);
     void queueVideoClipInstall(const std::filesystem::path& videoPath, QString clipName,

@@ -342,6 +342,10 @@ $requiredInteractions = @(
     'root.mvmController.deleteTimelineClip(',
     'root.mvmController.unlinkTimelineClip(',
     'root.mvmController.setTrackMuted(',
+    # 目玉のドラッグ塗りは離したときにまとめて確定する (tst_track_eye_paint.qml)。
+    'import "TrackEyePaint.js" as EyePaint',
+    'root.mvmController.setTracksMuted("video", indices, muted)',
+    'root.mvmController.setTrackSolo(',
     'root.mvmController.addTrack(',
     'root.mvmController.videoTrackModel',
     'root.mvmController.audioTrackModel'

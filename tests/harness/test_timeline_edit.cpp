@@ -733,6 +733,55 @@ void testTrackEditing() {
         project, mvm::project::TrackRef{mvm::project::TrackKind::Video, 1}, true);
     check(muted.success && project.videoTracks[1].muted, "trackをミュートできません");
 
+    // 目玉のドラッグ塗りの確定。範囲外の index が 1 つでもあれば何も変えない。
+    const auto beforeBatch = project.videoTracks;
+    check(!mvm::project::setTracksMuted(project, mvm::project::TrackKind::Video, {0, 99}, true)
+                  .success &&
+              project.videoTracks == beforeBatch,
+          "範囲外のtrackを含む一括muteで一部だけを変えました");
+    check(!mvm::project::setTracksMuted(project, mvm::project::TrackKind::Video, {}, true).success,
+          "空の一括muteを成功扱いにしました");
+    check(mvm::project::setTracksMuted(project, mvm::project::TrackKind::Video, {0, 2}, true)
+                  .success &&
+              project.videoTracks[0].muted && project.videoTracks[1].muted &&
+              project.videoTracks[2].muted,
+          "複数trackをまとめてmuteできません");
+    check(mvm::project::setTracksMuted(project, mvm::project::TrackKind::Video, {0, 1, 2}, false)
+                  .success &&
+              !project.videoTracks[0].muted && !project.videoTracks[1].muted &&
+              !project.videoTracks[2].muted,
+          "複数trackをまとめて表示に戻せません");
+
+    const auto soloAudio = mvm::project::setTrackSolo(
+        project, mvm::project::TrackRef{mvm::project::TrackKind::Audio, 1}, true);
+    check(soloAudio.success && project.audioTracks[1].solo && !project.audioTracks[0].solo,
+          "audio trackをsoloにできません");
+    check(!mvm::project::isTrackOutputEnabled(
+              project, mvm::project::TrackRef{mvm::project::TrackKind::Audio, 0}) &&
+              mvm::project::isTrackOutputEnabled(
+                  project, mvm::project::TrackRef{mvm::project::TrackKind::Audio, 1}),
+          "soloでないaudio trackを出力対象にしています");
+    // video の出力は audio の solo に影響されない。
+    check(mvm::project::isTrackOutputEnabled(
+              project, mvm::project::TrackRef{mvm::project::TrackKind::Video, 0}),
+          "audioのsoloでvideo trackを出力から外しました");
+    const auto beforeVideoSolo = project.videoTracks;
+    check(!mvm::project::setTrackSolo(
+               project, mvm::project::TrackRef{mvm::project::TrackKind::Video, 0}, true)
+                  .success &&
+              project.videoTracks == beforeVideoSolo,
+          "video trackのsoloを受理しました");
+    check(mvm::project::setTrackSolo(
+              project, mvm::project::TrackRef{mvm::project::TrackKind::Audio, 1}, false)
+                  .success &&
+              mvm::project::isTrackOutputEnabled(
+                  project, mvm::project::TrackRef{mvm::project::TrackKind::Audio, 0}),
+          "soloを解除しても他のaudio trackが鳴りません");
+    check(mvm::project::setTrackMuted(
+              project, mvm::project::TrackRef{mvm::project::TrackKind::Video, 1}, true)
+              .success,
+          "前提: V2を再びmuteできません");
+
     // V3 に clip を置くと V3 は消せない。clip を勝手に消さないことの検査。
     auto onTop = clip("onTop", mvm::project::TimelineClipKind::Video,
                       mvm::project::TrackRef{mvm::project::TrackKind::Video, 2});
@@ -2904,13 +2953,13 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
             }
         }
         auto oldSchema = serialized.json;
-        const auto schema = oldSchema.find("\"schema_version\": 13");
-        check(schema != std::string::npos, "schema 13 が出力されません");
+        const auto schema = oldSchema.find("\"schema_version\": 14");
+        check(schema != std::string::npos, "schema 14 が出力されません");
         if (schema != std::string::npos) {
-            oldSchema.replace(schema, std::string("\"schema_version\": 13").size(),
-                              "\"schema_version\": 12");
+            oldSchema.replace(schema, std::string("\"schema_version\": 14").size(),
+                              "\"schema_version\": 13");
             check(!mvm::project::parseProjectJsonText(oldSchema, projectFile).success,
-                  "schema 12 を受理しました");
+                  "schema 13 を受理しました");
         }
     }
 

@@ -91,7 +91,7 @@ set_tests_properties(m4_timeline_export_focused PROPERTIES
 
 add_executable(mvm_test_timeline_export_mapping harness/test_timeline_export_mapping.cpp)
 target_link_libraries(mvm_test_timeline_export_mapping PRIVATE
-    mvm::timeline_export mvm::warnings)
+    mvm::timeline_export mvm::timeline_preview_mapping mvm::warnings)
 add_test(NAME m7b_3_timeline_export_mapping_focused COMMAND mvm_test_timeline_export_mapping)
 set_tests_properties(m7b_3_timeline_export_mapping_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
@@ -274,6 +274,16 @@ add_test(NAME m7b_4_transition_editor_qml
             -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_transition_editor.qml
             -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/m7b4-transition-editor-qml.txt)
 set_tests_properties(m7b_4_transition_editor_qml PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
+# video track の目玉のドラッグ塗り (apps/mvm/TrackEyePaint.js)。
+add_test(NAME m7b_4_track_eye_paint_qml
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_track_eye_paint.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/m7b4-track-eye-paint-qml.txt)
+set_tests_properties(m7b_4_track_eye_paint_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 

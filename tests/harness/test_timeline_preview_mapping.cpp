@@ -140,6 +140,39 @@ void testMutedTracks() {
             "mute した audio track を preview 対象から外していません");
 }
 
+// どれか 1 つでも solo の audio track があれば、solo の track だけを鳴らす。
+void testSoloTracks() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    project.audioTracks.push_back({"A2", false});
+    project.audioTracks.push_back({"A3", false});
+    auto second = audioClip("a2", 0, 0, 100, 60, 1);
+    second.track.index = 1;
+    auto third = audioClip("a3", 0, 0, 100, 60, 1);
+    third.track.index = 2;
+    project.timelineClips = {audioClip("a1", 0, 0, 100, 60, 1), second, third};
+    // 対照: solo が無ければ 3 track とも鳴る。
+    const auto all = mvm::app::mapTimelinePreviewAudio(project, 10);
+    require(all.success && all.layers.size() == 3, "3 track の audio を取得できません");
+
+    project.audioTracks[1].solo = true;
+    const auto solo = mvm::app::mapTimelinePreviewAudio(project, 10);
+    require(solo.success && solo.layers.size() == 1 && solo.layers[0].audioTrackIndex == 1,
+            "solo の track だけを鳴らしていません");
+
+    project.audioTracks[2].solo = true;
+    const auto twoSolo = mvm::app::mapTimelinePreviewAudio(project, 10);
+    require(twoSolo.success && twoSolo.layers.size() == 2 &&
+                twoSolo.layers[0].audioTrackIndex == 1 && twoSolo.layers[1].audioTrackIndex == 2,
+            "複数の solo track を合わせて鳴らしていません");
+
+    // solo でも mute が優先する (Premiere と同じ)。
+    project.audioTracks[2].muted = true;
+    const auto mutedSolo = mvm::app::mapTimelinePreviewAudio(project, 10);
+    require(mutedSolo.success && mutedSolo.layers.size() == 1 &&
+                mutedSolo.layers[0].audioTrackIndex == 1,
+            "mute した solo track を鳴らしています");
+}
+
 // 無効にした clip は layer / audio から外す。上の track の clip を無効にすると下の track が見える。
 void testDisabledClips() {
     mvm::project::Project project = mvm::project::createDefaultProject();
@@ -639,6 +672,7 @@ int main() {
     testAudioPreviewSampleOffset();
     testAudioSourceFrameCount();
     testMutedTracks();
+    testSoloTracks();
     testTransitionMapping();
     testDisabledClips();
     testLayerLimit();

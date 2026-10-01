@@ -59,7 +59,11 @@ enum class TrackKind { Video, Audio };
 // 片方へ track を足しても、もう片方の clip の index を振り直さずに済む。
 struct Track {
     std::string name; // UI 表示名。"V1" / "A1" など
+    // video では非表示 (layer から外す)、audio では消音。
     bool muted = false;
+    // audio だけが持つ。どれか 1 つでも solo なら、solo の track だけが鳴る。
+    // video track では常に false (JSON の読み込みと setTrackSolo が拒否する)。
+    bool solo = false;
     bool operator==(const Track&) const = default;
 };
 
@@ -135,7 +139,7 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 13;
+inline constexpr int kProjectSchemaVersion = 14;
 
 bool hasSyntheticSourceDomain(const TimelineClip& clip);
 
@@ -211,6 +215,10 @@ bool isCanonicalFrameRate(std::int64_t fpsNum, std::int64_t fpsDen);
 const std::vector<Track>& tracksOfKind(const Project& project, TrackKind kind);
 std::vector<Track>& tracksOfKind(Project& project, TrackKind kind);
 bool isValidTrackRef(const Project& project, TrackRef track);
+// track の clip を preview へ出すか。video は mute (非表示) でなければ出す。audio は mute で
+// なく、かつ solo の track が 1 つも無いか自分が solo なら鳴らす。描画・音声の経路はすべて
+// これで判定する (mute だけを見ると solo が効かない経路ができる)。
+bool isTrackOutputEnabled(const Project& project, TrackRef track);
 // clip の kind がその track に載ってよいか。audio clip を video track へ置かせない。
 bool clipKindFitsTrackKind(TimelineClipKind clipKind, TrackKind trackKind);
 std::string defaultTrackName(TrackKind kind, int index);

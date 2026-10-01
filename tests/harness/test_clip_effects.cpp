@@ -220,12 +220,12 @@ int main(int argc, char** argv) {
               "拡大率の負例の対照群を読み込めません");
         // 旧 schema (10) と、縦横共通の拡大率 (scale_percent) は読み替えずに拒否する。
         auto oldSchema = originalJson;
-        const auto versionAt = oldSchema.find("\"schema_version\": 13");
+        const auto versionAt = oldSchema.find("\"schema_version\": 14");
         check(versionAt != std::string::npos, "負例のschema_version位置が保存されていません");
         if (versionAt != std::string::npos) {
-            oldSchema.replace(versionAt, std::string("\"schema_version\": 13").size(),
-                              "\"schema_version\": 12");
-            check(!loadVariant("scale-schema12.mvm", oldSchema).success, "schema 12を拒否する");
+            oldSchema.replace(versionAt, std::string("\"schema_version\": 14").size(),
+                              "\"schema_version\": 13");
+            check(!loadVariant("scale-schema12.mvm", oldSchema).success, "schema 13を拒否する");
         }
         auto uniformScale = originalJson;
         const auto scaleXAt = uniformScale.find("\"scale_x_percent\"");
@@ -252,7 +252,7 @@ int main(int argc, char** argv) {
     const auto legacy = directory / "legacy.mvm";
     std::ofstream legacyFile(legacy);
     legacyFile
-        << R"({"schema_version":4,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0}]})";
+        << R"({"schema_version":4,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false,"solo":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0}]})";
     legacyFile.close();
     const auto legacyLoaded = loadProjectJson(legacy);
     check(!legacyLoaded.success, "schema 4を拒否する");
@@ -260,7 +260,7 @@ int main(int argc, char** argv) {
     const auto partial = directory / "partial.mvm";
     std::ofstream partialFile(partial);
     partialFile
-        << R"({"schema_version":13,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":10,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"speed_num":1,"speed_den":1,"preserve_pitch":false,"enabled":true,"frame_hold":null,"track_kind":"video","track_index":0,"effects":{"scale_x_percent":60}}]})";
+        << R"({"schema_version":14,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":10,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false,"solo":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"speed_num":1,"speed_den":1,"preserve_pitch":false,"enabled":true,"frame_hold":null,"track_kind":"video","track_index":0,"effects":{"scale_x_percent":60}}]})";
     partialFile.close();
     check(!loadProjectJson(partial).success, "部分effects objectをfail-closedで拒否する");
 
@@ -268,7 +268,7 @@ int main(int argc, char** argv) {
     // 1 か所だけ変えて作るので、壊した箇所で落ちていることが分かる。
     const auto speedProject = [&](const std::string& version, const std::string& speed) {
         return R"({"schema_version":)" + version +
-               R"(,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":10,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,)" +
+               R"(,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":10,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false,"solo":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,)" +
                speed +
                R"("preserve_pitch":false,"enabled":true,"frame_hold":null,"track_kind":"video","track_index":0}]})";
     };
@@ -280,7 +280,7 @@ int main(int argc, char** argv) {
         return loadProjectJson(projectPath);
     };
     const auto halfSpeed =
-        loadText("speed-half.mvm", speedProject("13", R"("speed_num":1,"speed_den":2,)"));
+        loadText("speed-half.mvm", speedProject("14", R"("speed_num":1,"speed_den":2,)"));
     check(halfSpeed.success && halfSpeed.project.timelineClips.size() == 1 &&
               halfSpeed.project.timelineClips[0].speedNum == 1 &&
               halfSpeed.project.timelineClips[0].speedDen == 2,
@@ -296,21 +296,21 @@ int main(int argc, char** argv) {
               legacyClip.error.find("対応していない schema_version です: 5") != std::string::npos,
           (std::string("schema 5の旧ファイルを版の違いとして報告しない: ") + legacyClip.error)
               .c_str());
-    check(!loadText("speed-missing.mvm", speedProject("13", "")).success,
+    check(!loadText("speed-missing.mvm", speedProject("14", "")).success,
           "速度の無いclipを既定値で受理しない");
     check(
-        !loadText("speed-slow.mvm", speedProject("13", R"("speed_num":1,"speed_den":11,)")).success,
+        !loadText("speed-slow.mvm", speedProject("14", R"("speed_num":1,"speed_den":11,)")).success,
         "10%未満の速度を拒否する");
     check(
-        !loadText("speed-fast.mvm", speedProject("13", R"("speed_num":11,"speed_den":1,)")).success,
+        !loadText("speed-fast.mvm", speedProject("14", R"("speed_num":11,"speed_den":1,)")).success,
         "1000%を超える速度を拒否する");
     check(
-        loadText("speed-edge.mvm", speedProject("13", R"("speed_num":10,"speed_den":1,)"))
+        loadText("speed-edge.mvm", speedProject("14", R"("speed_num":10,"speed_den":1,)"))
                 .success &&
-            loadText("speed-edge-slow.mvm", speedProject("13", R"("speed_num":1,"speed_den":10,)"))
+            loadText("speed-edge-slow.mvm", speedProject("14", R"("speed_num":1,"speed_den":10,)"))
                 .success,
         "10%と1000%ちょうどを受理する");
-    check(!loadText("speed-unreduced.mvm", speedProject("13", R"("speed_num":2,"speed_den":4,)"))
+    check(!loadText("speed-unreduced.mvm", speedProject("14", R"("speed_num":2,"speed_den":4,)"))
                .success,
           "約分されていない速度を拒否する");
 

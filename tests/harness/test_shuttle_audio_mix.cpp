@@ -193,6 +193,14 @@ void testMuteAndOverlap() {
               pcm[19 * 2 + 1] == 0.7F,
           "重なったclipの加算・clampまたはclip終端の扱いが崩れています");
 
+    // A2 だけを solo にすると A1 は鳴らさない。
+    project.audioTracks[1].solo = true;
+    mvm::app::ShuttleAudioPlan soloPlan;
+    check(mvm::app::planShuttleAudio(project, 1, 100, soloPlan, error) &&
+              soloPlan.clips.size() == 1 && soloPlan.clips[0].path == "a2.wav",
+          "soloでないtrackのclipを鳴らす対象に含めています");
+    project.audioTracks[1].solo = false;
+
     project.audioTracks[0].muted = true;
     project.audioTracks[1].muted = true;
     check(!mvm::app::hasShuttleAudibleClip(project), "全trackがmuteでも鳴らせる扱いにします");

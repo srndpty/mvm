@@ -6,6 +6,7 @@ import QtQuick.Layouts
 import QtQuick.Shapes
 import "TimelineGestures.js" as Gestures
 import "PreviewTransform.js" as Transform
+import "TrackEyePaint.js" as EyePaint
 
 ApplicationWindow {
     id: root
@@ -1783,73 +1784,219 @@ ApplicationWindow {
                 height: parent.height
                 clip: true
 
+                // 目玉のドラッグ塗り。押した track の表示を反転し、ドラッグで通った video track を
+                // 同じ値にする (Photoshop のレイヤーの目玉)。通った track は先に見た目だけ変え、
+                // 離したときにまとめて確定する (1 回の undo、preview の組み直しも 1 回)。
+                property bool eyePainting: false
+                property bool eyePaintMuted: false
+                property var eyePaintIndices: []
+                property int eyePaintLastIndex: -1
+
+                function beginEyePaint(index, muted) {
+                    eyePaintMuted = EyePaint.paintMutedFor(muted);
+                    eyePaintIndices = [index];
+                    eyePaintLastIndex = index;
+                    eyePainting = true;
+                }
+                function continueEyePaint(contentY) {
+                    if (!eyePainting)
+                        return;
+                    const index = EyePaint.videoIndexAtY(contentY, timelinePanel.tracksTop,
+                                                         timelinePanel.trackHeight,
+                                                         timelinePanel.videoCount);
+                    if (index < 0 || index === eyePaintLastIndex)
+                        return;
+                    eyePaintIndices = EyePaint.addPassed(eyePaintIndices, eyePaintLastIndex, index);
+                    eyePaintLastIndex = index;
+                }
+                function finishEyePaint() {
+                    if (!eyePainting)
+                        return;
+                    const indices = eyePaintIndices;
+                    const muted = eyePaintMuted;
+                    cancelEyePaint();
+                    root.mvmController.setTracksMuted("video", indices, muted);
+                }
+                function cancelEyePaint() {
+                    eyePainting = false;
+                    eyePaintIndices = [];
+                    eyePaintLastIndex = -1;
+                }
+
+                // トラックヘッダの右クリックメニュー。どの header から開いたかを覚えておく。
+                property string menuTrackKind: ""
+                property int menuTrackIndex: -1
+                function openTrackMenu(kind, index) {
+                    menuTrackKind = kind;
+                    menuTrackIndex = index;
+                    trackHeaderMenu.popup();
+                }
+                CompactMenu {
+                    id: trackHeaderMenu
+                    objectName: "trackHeaderMenu"
+                    CompactMenuItem {
+                        objectName: "trackHeaderMenuRemove"
+                        text: "このトラックを削除"
+                        // 再生中に track index が変わると preview の対応が崩れる。
+                        enabled: !root.mvmController.busy && !root.mvmController.playing
+                        onTriggered: root.mvmController.removeTrack(headerColumn.menuTrackKind,
+                                                                    headerColumn.menuTrackIndex)
+                    }
+                }
+
+                // M / S の小さなトグル。押した時点で確定する。
+                component TrackToggle: Rectangle {
+                    id: toggle
+                    required property string label
+                    required property bool active
+                    required property color activeColor
+                    property string tip: ""
+                    signal toggled()
+
+                    width: 20
+                    height: 20
+                    radius: 3
+                    color: active ? activeColor : (toggleArea.containsMouse ? "#3a414c" : "#2b3038")
+                    border.color: "#4a515c"
+                    opacity: enabled ? 1 : 0.5
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: toggle.label
+                        color: toggle.active ? "#15181c" : "#c9ccd2"
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                    MouseArea {
+                        id: toggleArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton
+                        onClicked: toggle.toggled()
+                    }
+                    ToolTip.visible: toggleArea.containsMouse && tip !== ""
+                    ToolTip.text: tip
+                }
+
                 component TrackHeader: Rectangle {
                     id: header
                     required property string headerKind
                     required property int headerIndex
                     required property string headerName
                     required property bool headerMuted
+                    required property bool headerSolo
+                    required property bool headerOutputEnabled
+                    readonly property bool video: headerKind === "video"
+                    readonly property bool shownMuted: EyePaint.displayedMuted(
+                        headerIndex, headerMuted, headerColumn.eyePainting,
+                        headerColumn.eyePaintIndices, headerColumn.eyePaintMuted)
 
                     width: timelinePanel.labelWidth
                     height: timelinePanel.trackHeight
                     y: timelinePanel.rowY(headerKind, headerIndex) - timelineFlick.contentY
-                    color: headerKind === "video" ? "#252a31" : "#232a2a"
+                    color: video ? "#252a31" : "#232a2a"
                     border.color: "#3c424c"
 
-                    // ミュートボタンはトラックの左側に置く。
-                    Button {
-                        id: muteButton
-                        x: 4
-                        anchors.verticalCenter: parent.verticalCenter
-                        implicitWidth: 24
-                        implicitHeight: 22
-                        text: "M"
-                        checkable: true
-                        checked: header.headerMuted
-                        enabled: !root.mvmController.busy
-                        ToolTip.visible: hovered
-                        ToolTip.text: header.headerMuted ? "ミュート解除" : "ミュート"
-                        onClicked: {
-                            if (!root.mvmController.setTrackMuted(header.headerKind, header.headerIndex, checked))
-                                checked = header.headerMuted;
-                        }
-                        background: Rectangle {
-                            radius: 3
-                            color: header.headerMuted ? "#c05a5a" : (muteButton.hovered ? "#3a414c" : "#2b3038")
-                            border.color: "#4a515c"
-                        }
-                        contentItem: Label {
-                            text: muteButton.text
-                            color: "white"
-                            font.pixelSize: 11
-                            font.bold: true
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
+                    // 削除は誤って押さないよう、常設のボタンではなく右クリックのメニューに置く。
+                    MouseArea {
+                        objectName: "trackHeaderContextArea_" + header.headerKind + "_" + header.headerIndex
+                        anchors.fill: parent
+                        acceptedButtons: Qt.RightButton
+                        onPressed: headerColumn.openTrackMenu(header.headerKind, header.headerIndex)
                     }
 
+                    // track 名を左に置き、目玉 (video) / M・S (audio) をその右へ詰めて並べる。
                     Label {
-                        anchors.left: muteButton.right
-                        anchors.leftMargin: 6
+                        id: trackNameLabel
+                        x: 6
+                        width: Math.min(implicitWidth,
+                                        header.width - x - 4 - (header.video ? eyeButton.width
+                                                                             : audioToggles.width) - 4)
                         anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideRight
                         text: header.headerName
-                        color: header.headerMuted ? "#8b8f96" : "#c9ccd2"
+                        // 非表示・ミュート・他 track のソロで出力されない track は暗くする。
+                        color: header.headerOutputEnabled && !header.shownMuted ? "#c9ccd2" : "#8b8f96"
                         font.bold: true
                     }
 
-                    Button {
-                        anchors.right: parent.right
-                        anchors.rightMargin: 3
+                    // video: 表示/非表示の目玉。押してから上下へドラッグすると、通った track も
+                    // 押した track と同じ表示状態にする。
+                    Item {
+                        id: eyeButton
+                        objectName: "trackEye_" + header.headerKind + "_" + header.headerIndex
+                        visible: header.video
+                        anchors.left: trackNameLabel.right
+                        anchors.leftMargin: 4
                         anchors.verticalCenter: parent.verticalCenter
-                        implicitWidth: 18
-                        implicitHeight: 18
-                        text: "×"
-                        flat: true
-                        // 再生中に track index が変わると preview の対応が崩れる。
-                        enabled: !root.mvmController.busy && !root.mvmController.playing
-                        ToolTip.visible: hovered
-                        ToolTip.text: "このトラックを削除"
-                        onClicked: root.mvmController.removeTrack(header.headerKind, header.headerIndex)
+                        width: 20
+                        height: 20
+                        opacity: eyeArea.enabled ? 1 : 0.5
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 3
+                            color: eyeArea.containsMouse && !headerColumn.eyePainting ? "#3a414c" : "transparent"
+                        }
+                        TrackEyeIcon {
+                            objectName: "trackEyeIcon_" + header.headerKind + "_" + header.headerIndex
+                            anchors.centerIn: parent
+                            width: 16
+                            height: 16
+                            hidden: header.shownMuted
+                            color: header.shownMuted ? "#4f9cf0" : "#c9ccd2"
+                        }
+                        MouseArea {
+                            id: eyeArea
+                            anchors.fill: parent
+                            enabled: header.video && !root.mvmController.busy
+                            hoverEnabled: true
+                            preventStealing: true
+                            acceptedButtons: Qt.LeftButton
+                            onPressed: headerColumn.beginEyePaint(header.headerIndex, header.headerMuted)
+                            onPositionChanged: mouse => {
+                                if (!pressed)
+                                    return;
+                                const point = mapToItem(headerColumn, mouse.x, mouse.y);
+                                headerColumn.continueEyePaint(point.y + timelineFlick.contentY);
+                            }
+                            onReleased: headerColumn.finishEyePaint()
+                            onCanceled: headerColumn.cancelEyePaint()
+                        }
+                        ToolTip.visible: eyeArea.containsMouse && !headerColumn.eyePainting
+                        ToolTip.text: header.headerMuted ? "トラックを表示 (ドラッグで連続切り替え)"
+                                                         : "トラックを非表示 (ドラッグで連続切り替え)"
+                    }
+
+                    // audio: ミュートとソロ。
+                    Row {
+                        id: audioToggles
+                        visible: !header.video
+                        anchors.left: trackNameLabel.right
+                        anchors.leftMargin: 4
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 2
+
+                        TrackToggle {
+                            objectName: "trackMute_" + header.headerKind + "_" + header.headerIndex
+                            label: "M"
+                            active: header.headerMuted
+                            activeColor: "#5fb878"
+                            enabled: !root.mvmController.busy
+                            tip: header.headerMuted ? "ミュート解除" : "ミュート"
+                            onToggled: root.mvmController.setTrackMuted(header.headerKind, header.headerIndex,
+                                                                        !header.headerMuted)
+                        }
+                        TrackToggle {
+                            objectName: "trackSolo_" + header.headerKind + "_" + header.headerIndex
+                            label: "S"
+                            active: header.headerSolo
+                            activeColor: "#e8c15a"
+                            enabled: !root.mvmController.busy
+                            tip: header.headerSolo ? "ソロ解除" : "ソロ (このトラックだけを鳴らす)"
+                            onToggled: root.mvmController.setTrackSolo(header.headerKind, header.headerIndex,
+                                                                       !header.headerSolo)
+                        }
                     }
                 }
 
@@ -1858,11 +2005,15 @@ ApplicationWindow {
                     delegate: TrackHeader {
                         required property string trackName
                         required property bool trackMuted
+                        required property bool trackSolo
+                        required property bool trackOutputEnabled
                         required property int trackIndex
                         headerKind: "video"
                         headerIndex: trackIndex
                         headerName: trackName
                         headerMuted: trackMuted
+                        headerSolo: trackSolo
+                        headerOutputEnabled: trackOutputEnabled
                     }
                 }
                 Repeater {
@@ -1870,11 +2021,15 @@ ApplicationWindow {
                     delegate: TrackHeader {
                         required property string trackName
                         required property bool trackMuted
+                        required property bool trackSolo
+                        required property bool trackOutputEnabled
                         required property int trackIndex
                         headerKind: "audio"
                         headerIndex: trackIndex
                         headerName: trackName
                         headerMuted: trackMuted
+                        headerSolo: trackSolo
+                        headerOutputEnabled: trackOutputEnabled
                     }
                 }
 
@@ -3467,6 +3622,7 @@ ApplicationWindow {
                 objectName: "speedDurationSpeedField"
                 Layout.fillWidth: true
                 clickToEdit: true
+                focusReturnItem: speedDurationDialog.contentItem
                 labelText: "速度"
                 minimumValue: 10
                 maximumValue: 1000
