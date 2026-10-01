@@ -371,6 +371,8 @@ MvmController::MvmController(std::filesystem::path projectPath,
       previewEngine_(std::make_shared<preview::PreviewEngine>()),
       dispatcher_(std::make_shared<QtEventDispatcher>(this)),
       timelineModel_(std::make_unique<TimelineClipModel>()),
+      timelineClipWindow_(std::make_unique<TimelineClipWindowModel>()),
+      textClipModel_(std::make_unique<TextClipFilterModel>()),
       videoTrackModel_(std::make_unique<TrackModel>(project::TrackKind::Video)),
       audioTrackModel_(std::make_unique<TrackModel>(project::TrackKind::Audio)),
       mediaBinModel_(std::make_unique<MediaBinModel>()),
@@ -380,6 +382,8 @@ MvmController::MvmController(std::filesystem::path projectPath,
               ? std::move(exportThreadFactory)
               : [](std::function<void()> task) { return std::thread(std::move(task)); }),
       fileRevealer_(fileRevealer ? std::move(fileRevealer) : revealFileInExplorer) {
+    timelineClipWindow_->setSourceModel(timelineModel_.get());
+    textClipModel_->setSourceModel(timelineModel_.get());
     imageRasters_ = std::make_unique<ImageRasterCache>();
     // 画像の raster ができた (または素材が変わった) ら preview を組み直す。再生中は
     // 毎 tick composition を組み直すので、そこで拾われる。

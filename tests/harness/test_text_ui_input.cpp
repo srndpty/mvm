@@ -324,6 +324,84 @@ void testTransitionInspector(QQuickWindow* window, mvm::app::MvmController& cont
 
 } // namespace
 
+int countClipDelegates(QQuickWindow* window) {
+    int count = 0;
+    for (QQuickItem* item : visualItems(window))
+        if (item->objectName().startsWith(QStringLiteral("timelineClip_")))
+            ++count;
+    return count;
+}
+
+// clip が多い timeline でも、clip の delegate は表示範囲 (± 余白) の分しか作らない。
+// 全 clip 分を作ると 10,000 clip で 10,000 個の delegate (操作・波形・メニュー付き) になる。
+// 編集しても delegate を作り直さず、スクロール先の clip は作る。
+int checkLargeTimelineDelegates(const mvm::project::Project& base,
+                                const std::filesystem::path& projectPath) {
+    constexpr int kClips = 10000;
+    auto project = base;
+    const auto source = project.timelineClips.front();
+    project.timelineClips.clear();
+    for (int index = 0; index < kClips; ++index) {
+        auto clip = source;
+        clip.id = "many-" + std::to_string(index);
+        clip.name = clip.id;
+        clip.sourceInFrame = 0;
+        clip.sourceOutFrame = 30;
+        clip.timelineStartFrame = static_cast<std::int64_t>(index) * 30;
+        project.timelineClips.push_back(clip);
+    }
+    mvm::app::MvmController controller(projectPath, {}, project);
+    mvm::app::WaveformCache waveformCache;
+    QQmlApplicationEngine engine;
+    engine.setInitialProperties(
+        {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
+    engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
+    auto* window = engine.rootObjects().isEmpty()
+                       ? nullptr
+                       : qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+    auto* flick =
+        window ? window->findChild<QQuickItem*>(QStringLiteral("timelineFlick")) : nullptr;
+    if (!window || !flick) {
+        std::fprintf(stderr, "FAIL: 大きな timeline の window がありません\n");
+        controller.shutdown();
+        return 3;
+    }
+    QTest::qWaitForWindowExposed(window);
+    pump(500);
+    check(controller.timelineModel()->rowCount() == kClips, "前提: 10,000 clip を読み込めません");
+    const int initial = countClipDelegates(window);
+    // 表示幅 (最大でも画面幅程度) の 3 倍に掛かる clip の数で収まる。clip は 30 frame で、
+    // 最小倍率でも 1 clip は数 px 以上ある。
+    check(initial > 0 && initial < 1000, "clip の delegate が表示範囲に比例する数に収まりません");
+    check(findVisualItem(window, QStringLiteral("timelineClip_many-0")) != nullptr,
+          "表示範囲の先頭の clip に delegate がありません");
+
+    // 編集 (表示範囲の clip の trim) で delegate を作り直さない。
+    QQuickItem* before = findVisualItem(window, QStringLiteral("timelineClip_many-1"));
+    check(before &&
+              controller.trimClip(QStringLiteral("many-1"), QStringLiteral("right"), -5, false),
+          "前提: 表示範囲の clip を trim できません");
+    pump(200);
+    check(findVisualItem(window, QStringLiteral("timelineClip_many-1")) == before,
+          "編集で clip の delegate を作り直しました");
+
+    // 末尾へスクロールすると末尾の clip の delegate ができ、先頭の clip の delegate は消える。
+    const qreal contentWidth = flick->property("contentWidth").toReal();
+    flick->setProperty("contentX", std::max<qreal>(0, contentWidth - flick->width()));
+    pump(500);
+    const QString last = QStringLiteral("timelineClip_many-%1").arg(kClips - 1);
+    check(findVisualItem(window, last) != nullptr, "スクロール先の clip に delegate がありません");
+    check(findVisualItem(window, QStringLiteral("timelineClip_many-0")) == nullptr,
+          "表示範囲から外れた clip の delegate が残っています");
+    check(countClipDelegates(window) < 1000,
+          "スクロールした後の delegate が表示範囲に収まりません");
+    std::printf("large timeline: clip %d、delegate 初期 %d / スクロール後 %d\n", kClips, initial,
+                countClipDelegates(window));
+    controller.shutdown();
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
     QGuiApplication application(argc, argv);
@@ -1432,6 +1510,11 @@ int main(int argc, char** argv) {
         }
         controller.shutdown();
     }
+    if (exitCode == 0)
+        exitCode = checkLargeTimelineDelegates(
+            project, directory.filePath(QStringLiteral("large.mvm")).toStdWString());
+    if (exitCode == 0 && failures != 0)
+        exitCode = 1;
     mvm_mlt_runtime_shutdown();
     if (exitCode == 0)
         std::puts("文字ツールの直接入力 (作成・Esc・ドラッグ・範囲で掴む・Undo・focus 解放) "

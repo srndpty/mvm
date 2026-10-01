@@ -2219,11 +2219,35 @@ clip ごとに素材列を走査せず、素材の表記上の key を素材ご�
 
 ### 21.3 Timeline の clip delegate を全件生成し、編集のたびに作り直す (#3)
 
-`[未検証]` 対応していない。`TimelineClipModel::setProject` は今も `beginResetModel` で全 delegate を
-作り直す。`TrackModel` と同じ `dataChanged` による差分通知へ変えるには、clip の delegate が drag 中に
-binding を代入で外す property (例: `dragTrackIndex`) を、model の作り直しで元へ戻ることに依存している
-点を先に直す必要がある。差分通知にすると、移動後に古い track の位置へ描かれうる。viewport の外の
-clip を生成しない仮想化 (custom `QQuickItem` か、表示範囲で絞った model) と合わせて別の作業で行う。
+`[事実]` 次の 3 つに分けて直した。
+
+- `TimelineClipModel::setProject` は model を作り直さない。clip ID の並びが一致する先頭と末尾の行は
+  残し、値の変わった role だけを `dataChanged` で知らせる。間 (追加・削除・並べ替えのあった範囲) だけを
+  行の削除・挿入にする。編集しても表示中の delegate は作り直されない
+- timeline の clip の Repeater は `TimelineClipWindowModel` (`QSortFilterProxyModel`) を model にする。
+  表示範囲に左右へ表示幅 1 つ分の余白を足した範囲に掛かる clip と、固定する clip (押している clip・
+  ドラッグ中の clip・リンク編集の起点) だけを通す。余白の内側を見ている間のスクロールでは絞り直さない。
+  選択中の clip は固定しない (全選択で全 clip の delegate を作らない)。群のドラッグ中は、ずらして描く
+  clip が範囲外から入ってくるので、ドラッグ量だけ範囲を広げる
+- preview の文字 layer の Repeater は文字 clip だけを通す (`TextClipFilterModel`)。以前は文字以外の
+  clip にも preview 全面の delegate を作っていた。controller へ渡す行番号は全 clip の番号 (`clipRow` role)
+
+delegate の数に依存しないよう、矩形選択は delegate を数えずに `clipSpans()` から delegate と同じ式で
+clip の矩形を求める。drag の移動先 (`dragTrackKind` / `dragTrackIndex`) は model の値へ bind せず、
+press で必ず代入する (delegate が作り直されなくなったので、代入で外した bind を残さない)。
+
+`m7b_4_timeline_clip_model_focused` が、値だけの編集・変化なし・削除・追加でそれぞれ作り直さず
+必要な行と role だけを知らせること、10,000 clip で表示範囲と余白の 30 clip だけを通すこと、余白の内側の
+スクロールで絞り直さないこと、拡大後に広い範囲を残さないこと、固定した clip は通し全選択では増えない
+こと、編集で範囲に出入りした clip を絞り直すことを見る。
+
+`[事実]` `text_ui_direct_input` (workstation) が 10,000 clip の Project を実 window に読み込み、clip の
+delegate が 58 個 (末尾へスクロールした後は 52 個) であること、表示範囲の clip を trim しても delegate が
+同じ item のままであること、スクロール先の clip に delegate ができ外れた clip の delegate が消えることを
+見る。Repeater の model を全 clip の model に戻す mutant では delegate が 10,000 個になり落ちる。
+
+`[事実]` Qt 6.11 の `QSortFilterProxyModel` は、filterRole を含まない `dataChanged` でも変わった行を
+絞り直す。絞り込み専用の role を足して通知に含める形を試したが、外しても上の試験は通ったので入れていない。
 
 ### 21.4 再生中の source の準備を control thread で同期に待つ (#4)
 
@@ -2300,6 +2324,11 @@ size の標本で検出していた。中央だけを書き換えると古い ra
 
 `m5_timeline_edit_focused` が切り詰めの規則 (件数・byte・上限ちょうど・最新の 1 件) と、概算 byte 数が
 clip とキーフレームの量で増えることを見る。
+
+`[事実]` 静的契約 `m7b_4_timeline_ui_architecture` (ビルド非依存の群) は Undo の手順をソースの字面で
+照合しており、`project_ = entry.project;` を複製しない形にした時点で落ちていた (最初の対応では
+`dev.ps1 test` だけを回し、この群を回していなかった)。照合する字面を `project_ = std::move(entry.project);`
+へ合わせた。
 
 `[未検証]` 差分 (command / delta) で持つ Undo や、構造を共有する Project model には変えていない。
 大規模な fixture での実際の memory 使用量は測っていない。

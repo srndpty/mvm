@@ -73,6 +73,11 @@ class MvmController : public QObject {
     Q_PROPERTY(QString manimStateText READ manimStateText NOTIFY stateChanged)
     Q_PROPERTY(QStringList clipNames READ clipNames NOTIFY stateChanged)
     Q_PROPERTY(mvm::app::TimelineClipModel* timelineModel READ timelineModel CONSTANT)
+    // timeline の clip delegate 用。表示範囲と固定する clip だけを通す (timelineModel を絞る)。
+    Q_PROPERTY(mvm::app::TimelineClipWindowModel* timelineClipWindow READ timelineClipWindow
+                   CONSTANT)
+    // preview の文字 layer 用。文字 clip だけを通す。
+    Q_PROPERTY(mvm::app::TextClipFilterModel* textClipModel READ textClipModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* videoTrackModel READ videoTrackModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* audioTrackModel READ audioTrackModel CONSTANT)
     Q_PROPERTY(mvm::app::MediaBinModel* mediaBinModel READ mediaBinModel CONSTANT)
@@ -230,6 +235,8 @@ public:
 
     QStringList clipNames() const;
     TimelineClipModel* timelineModel() const;
+    TimelineClipWindowModel* timelineClipWindow() const { return timelineClipWindow_.get(); }
+    TextClipFilterModel* textClipModel() const { return textClipModel_.get(); }
     QAbstractItemModel* videoTrackModel() const;
     QAbstractItemModel* audioTrackModel() const;
     MediaBinModel* mediaBinModel() const;
@@ -838,6 +845,9 @@ private:
     std::shared_ptr<preview::PreviewEngine> previewEngine_;
     std::shared_ptr<preview::PreviewEventDispatcher> dispatcher_;
     std::unique_ptr<TimelineClipModel> timelineModel_;
+    // timelineModel_ より後に置き、先に破棄する。
+    std::unique_ptr<TimelineClipWindowModel> timelineClipWindow_;
+    std::unique_ptr<TextClipFilterModel> textClipModel_;
     std::unique_ptr<TrackModel> videoTrackModel_;
     std::unique_ptr<TrackModel> audioTrackModel_;
     std::unique_ptr<MediaBinModel> mediaBinModel_;
