@@ -868,6 +868,14 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // に掛かった時間 (WASAPI は COM を初期化した thread で扱うので準備用の thread へ移せない)。
     std::uint64_t playingAudioEndpointOpenCount = 0;
     double maxPlayingAudioEndpointOpenMs = 0.0;
+    // 試験用: 次に要求する準備を、取り消しの効かない段でこの時間止める。
+    std::chrono::milliseconds nextPreparationBlockForTest{0};
+    // 再生中の endpoint の open を試みた回数・失敗した回数・掛かった時間の最大 (成功・失敗とも)。
+    std::uint64_t playingAudioEndpointOpenAttemptCount = 0;
+    std::uint64_t playingAudioEndpointOpenFailureCount = 0;
+    double maxPlayingAudioEndpointOpenAttemptMs = 0.0;
+    // 試験用: 次の再生中の endpoint の open を、この時間待ってから失敗させる。
+    std::optional<std::chrono::milliseconds> failNextPlayingEndpointOpenForTest;
     std::shared_ptr<PreparationHold> preparationHold = std::make_shared<PreparationHold>();
 
     Result<AudioPlacement> audioPlacementLocked(const PreviewSourceDescriptor& descriptor) const;
@@ -2243,11 +2251,43 @@ PreviewEngine::Impl::publishSourceWorkLocked(SourceWork& work, std::unique_lock<
             // 先読みでも control thread のここで open する。
             std::string audioError;
             const auto endpointBegan = std::chrono::steady_clock::now();
+
+            // 再生中の open は、成功・失敗にかかわらず control thread を止めた時間を記録する
+            // (失敗した open が遅い機器を見落とさない)。抜けるときは必ず engine lock を持つ。
+            struct EndpointAttempt {
+                Impl& impl;
+                bool playing;
+                std::chrono::steady_clock::time_point began;
+                bool succeeded = false;
+
+                ~EndpointAttempt() {
+                    if (!playing)
+                        return;
+                    ++impl.playingAudioEndpointOpenAttemptCount;
+                    if (!succeeded)
+                        ++impl.playingAudioEndpointOpenFailureCount;
+                    impl.maxPlayingAudioEndpointOpenAttemptMs =
+                        std::max(impl.maxPlayingAudioEndpointOpenAttemptMs,
+                                 std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - began)
+                                     .count());
+                }
+            } attempt{*this, addingWhilePlaying, endpointBegan};
+
             newAudioClock = std::make_shared<audio::AudioMasterClock>();
             newAudioSink =
                 std::make_shared<audio::WasapiAudioSink>(work.audioWorker->queue(), *newAudioClock);
+            const auto injectedFailure =
+                addingWhilePlaying ? std::exchange(failNextPlayingEndpointOpenForTest, std::nullopt)
+                                   : std::nullopt;
             lock.unlock();
-            const bool endpointOpened = newAudioSink->open(audioError, audioSessionVolume);
+            bool endpointOpened = false;
+            if (injectedFailure) {
+                std::this_thread::sleep_for(*injectedFailure);
+                audioError = "試験で open を失敗させました";
+            } else {
+                endpointOpened = newAudioSink->open(audioError, audioSessionVolume);
+            }
             lock.lock();
             if (!endpointOpened) {
                 rollback();
@@ -2278,6 +2318,7 @@ PreviewEngine::Impl::publishSourceWorkLocked(SourceWork& work, std::unique_lock<
                         makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
                                   "再生中のaudio transportを開始できません: " + audioError));
                 }
+                attempt.succeeded = true;
                 ++playingAudioEndpointOpenCount;
                 maxPlayingAudioEndpointOpenMs =
                     std::max(maxPlayingAudioEndpointOpenMs,
@@ -2434,7 +2475,8 @@ PreviewEngine::requestSourcePreparation(const PreviewSourceDescriptor& descripto
     preparation->id = impl_->nextPreparationId++;
     preparation->generation = impl_->transportGeneration;
     const auto hold = impl_->preparationHold;
-    preparation->thread = std::thread([preparation, hold] {
+    const auto blockedFor = std::exchange(impl_->nextPreparationBlockForTest, {});
+    preparation->thread = std::thread([preparation, hold, blockedFor] {
         {
             std::unique_lock<std::mutex> holdLock(hold->mutex);
             hold->changed.wait(holdLock, [&] {
@@ -2442,6 +2484,9 @@ PreviewEngine::requestSourcePreparation(const PreviewSourceDescriptor& descripto
                        preparation->awaited.load(std::memory_order_acquire);
             });
         }
+        // 試験用: decoder の seek の途中のように、取り消しも待ちも効かない段で止まる。
+        if (blockedFor.count() > 0)
+            std::this_thread::sleep_for(blockedFor);
         preparation->result = Impl::runSourceWork(preparation->work, &preparation->cancelled);
         preparation->done.store(true, std::memory_order_release);
     });
@@ -4535,6 +4580,12 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.staleSourcePreparationRejectCount = engine.impl_->staleSourcePreparationRejectCount;
     result.playingAudioEndpointOpenCount = engine.impl_->playingAudioEndpointOpenCount;
     result.maxPlayingAudioEndpointOpenMs = engine.impl_->maxPlayingAudioEndpointOpenMs;
+    result.playingAudioEndpointOpenAttemptCount =
+        engine.impl_->playingAudioEndpointOpenAttemptCount;
+    result.playingAudioEndpointOpenFailureCount =
+        engine.impl_->playingAudioEndpointOpenFailureCount;
+    result.maxPlayingAudioEndpointOpenAttemptMs =
+        engine.impl_->maxPlayingAudioEndpointOpenAttemptMs;
     result.publishedSourceCount = engine.impl_->eligibleSources.size();
     const std::size_t first =
         (engine.impl_->presentedOutputFrameNext + engine.impl_->presentedOutputFrames.size() -
@@ -4842,6 +4893,17 @@ Result<void> PreviewRenderPort::setRegisteredVideoSourceLimitForTest(PreviewEngi
                             "登録上限はReadyPausedで既存source数以上に設定してください");
     engine.impl_->registeredVideoSourceLimit = limit;
     return Result<void>::success();
+}
+
+void PreviewRenderPort::failNextPlayingAudioEndpointOpenForTest(PreviewEngine& engine,
+                                                                int delayMilliseconds) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    engine.impl_->failNextPlayingEndpointOpenForTest = std::chrono::milliseconds(delayMilliseconds);
+}
+
+void PreviewRenderPort::blockNextSourcePreparationForTest(PreviewEngine& engine, int milliseconds) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    engine.impl_->nextPreparationBlockForTest = std::chrono::milliseconds(milliseconds);
 }
 
 void PreviewRenderPort::holdSourcePreparationsForTest(PreviewEngine& engine, bool held) {

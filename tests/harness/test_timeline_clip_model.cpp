@@ -1,5 +1,6 @@
 #include "timeline_clip_model.h"
 
+#include <chrono>
 #include <cstdio>
 #include <string>
 
@@ -207,6 +208,59 @@ void testClipWindow() {
     check(hasMovedIn && !hasMovedOut, "編集で表示範囲に出入りした clip を絞り直しません");
 }
 
+// automation の key は clip の値として持ち、QML が読むときだけ QVariant にする。値は従来と
+// 同じ形 ({frame, value} の列) で、key の変わらない clip の編集では role を知らせない。
+void testAutomationKeys() {
+    using mvm::app::TimelineClipModel;
+    constexpr int kClips = 10000;
+    constexpr int kKeys = 100;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    for (int index = 0; index < kClips; ++index) {
+        auto value = clip(("keys-" + std::to_string(index)).c_str(), 0, index * 10LL, 10);
+        for (int key = 0; key < kKeys; ++key)
+            value.effects.opacityKeys.push_back({key, static_cast<double>(key)});
+        project.timelineClips.push_back(std::move(value));
+    }
+    TimelineClipModel model;
+    model.setProject(project);
+    const auto keys = model.data(model.index(1, 0), TimelineClipModel::AutomationKeysRole).toList();
+    check(keys.size() == kKeys &&
+              keys[3].toMap().value(QStringLiteral("frame")).toLongLong() == 3 &&
+              keys[3].toMap().value(QStringLiteral("value")).toDouble() == 3.0,
+          "automation の key を {frame, value} の列で返しません");
+
+    Signals counted;
+    QObject context;
+    watch(model, counted, context);
+    auto trimmed = project;
+    trimmed.timelineClips[5000].sourceOutFrame = 9;
+    trimmed.timelineClips[5000].sourceFrameCount = 9;
+    const auto began = std::chrono::steady_clock::now();
+    model.setProject(trimmed);
+    const double trimMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+    check(counted.changed == 1 && counted.resets == 0 &&
+              !counted.lastRoles.contains(TimelineClipModel::AutomationKeysRole),
+          "key の変わらない clip の編集で automation の key を知らせました");
+
+    auto rekeyed = trimmed;
+    rekeyed.timelineClips[7].effects.opacityKeys[0].valuePercent = 50.0;
+    Signals rekeyCounted;
+    QObject rekeyContext;
+    watch(model, rekeyCounted, rekeyContext);
+    model.setProject(rekeyed);
+    check(rekeyCounted.changed == 1 &&
+              rekeyCounted.lastRoles.contains(TimelineClipModel::AutomationKeysRole) &&
+              model.data(model.index(7, 0), TimelineClipModel::AutomationKeysRole)
+                      .toList()[0]
+                      .toMap()
+                      .value(QStringLiteral("value"))
+                      .toDouble() == 50.0,
+          "key を変えた clip の automation の key を知らせません");
+    std::printf("automation keys: clip %d x key %d、1 clip の trim の setProject %.1fms\n", kClips,
+                kKeys, trimMs);
+}
+
 void testTextClipFilter() {
     using mvm::app::TimelineClipModel;
     mvm::project::Project project = mvm::project::createDefaultProject();
@@ -322,6 +376,7 @@ int main(int argc, char** argv) {
     testIncrementalUpdate();
     testClipWindow();
     testTextClipFilter();
+    testAutomationKeys();
 
     if (failures != 0)
         return 1;

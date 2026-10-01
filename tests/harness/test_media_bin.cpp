@@ -538,6 +538,61 @@ void testMediaReferences() {
               "素材と違うファイルを指す clip を読み込み時に素材の path へ書き換えました");
     }
     std::filesystem::remove(legacyCase);
+
+    // 揃えてよいかは実体で決める。case-sensitive directory は権限と機能の有無で作れない環境が
+    // あるので、file ID の違いは組み立てた FileIdentityKey で見る。
+    using mvm::project::FileIdentityKey;
+    using mvm::project::FileIdentityStatus;
+    using mvm::project::mayAdoptLegacyCaseSpelling;
+    const FileIdentityKey fileX{FileIdentityStatus::FileId, L"C:/case/a.mp4", L"1:x"};
+    const FileIdentityKey fileXUpper{FileIdentityStatus::FileId, L"C:/case/A.mp4", L"1:x"};
+    const FileIdentityKey fileY{FileIdentityStatus::FileId, L"C:/case/A.mp4", L"1:y"};
+    const FileIdentityKey missingUpper{FileIdentityStatus::Missing, L"C:/case/A.mp4", {}};
+    const FileIdentityKey missingLower{FileIdentityStatus::Missing, L"C:/case/a.mp4", {}};
+    const FileIdentityKey unavailable{FileIdentityStatus::Unavailable, L"C:/case/A.mp4", {}};
+    check(mayAdoptLegacyCaseSpelling(fileXUpper, fileX),
+          "同じ file ID の大文字小文字違いを素材の表記へ揃えません");
+    check(!mayAdoptLegacyCaseSpelling(fileY, fileX),
+          "file ID の違う (case-sensitive directory の別ファイル) clip を素材の表記へ揃えました");
+    check(mayAdoptLegacyCaseSpelling(missingUpper, missingLower),
+          "どちらも無いファイルの大文字小文字違いを素材の表記へ揃えません");
+    check(!mayAdoptLegacyCaseSpelling(missingUpper, fileX) &&
+              !mayAdoptLegacyCaseSpelling(fileXUpper, missingLower),
+          "片方だけ実在する clip を素材の表記へ揃えました");
+    check(!mayAdoptLegacyCaseSpelling(unavailable, fileX) &&
+              !mayAdoptLegacyCaseSpelling(fileX, unavailable),
+          "実体を確かめられない clip を素材の表記へ揃えました");
+}
+
+// 実在するファイルで、大文字小文字だけが違う clip を読み込み時に素材の表記へ揃える
+// (case-insensitive な通常の directory では同じ file ID になる)。
+void testLegacyCaseSpellingOnDisk(const std::filesystem::path& root) {
+    const auto media = root / "legacy-case";
+    std::filesystem::create_directories(media);
+    const auto wav = media / "Voice.wav";
+    writeText(wav, "RIFF");
+    Project project = usedProject();
+    for (auto& item : project.mediaItems)
+        if (item.id == "a")
+            item.mediaPath = wav;
+    project.timelineClips[2].mediaPath = wav;
+    const auto path = root / "legacy-case.mvm";
+    check(mvm::project::saveProjectJson(project, path).success,
+          "前提: 実ファイルの大文字小文字の試験の Project を保存できません");
+    std::ifstream saved(path, std::ios::binary);
+    std::string json((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+    saved.close();
+    const std::string spelled = "legacy-case/Voice.wav";
+    const auto at = json.find(spelled);
+    check(at != std::string::npos, "前提: 保存JSONに素材の path がありません");
+    if (at == std::string::npos)
+        return;
+    json.replace(at, spelled.size(), "legacy-case/VOICE.WAV");
+    writeText(path, json);
+    const auto loaded = mvm::project::loadProjectJson(path);
+    const auto* item = loaded.success ? mvm::project::findMediaItem(loaded.project, "a") : nullptr;
+    check(loaded.success && item && loaded.project.timelineClips[2].mediaPath == item->mediaPath,
+          "同じ実ファイルを指す大文字小文字違いの clip を素材の表記へ揃えて開けません");
 }
 
 void testJson(const std::filesystem::path& root) {
@@ -632,6 +687,7 @@ int main(int argc, char** argv) {
     testUnavailableIdentity(root);
     testCaseSensitiveIdentity();
     testJson(root);
+    testLegacyCaseSpellingOnDisk(root);
 
     if (failures == 0)
         std::printf("media bin: all checks passed\n");

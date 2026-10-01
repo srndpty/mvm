@@ -92,7 +92,9 @@ private:
         QString linkGroupId;
         bool selected = false;
         QString mediaPath;
-        QVariantList automationKeys;
+        // QML へ渡すときだけ QVariantList にする (data())。setProject で全 clip の key を
+        // QVariant にすると、見えていない clip の分まで編集のたびに作り直す。
+        std::vector<project::ClipKeyframe> automationKeys;
         double automationBase = 100.0;
         double speed = 1.0;
         bool frameHold = false;

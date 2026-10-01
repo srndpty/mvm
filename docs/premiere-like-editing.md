@@ -2404,9 +2404,11 @@ clip とキーフレームの量で増えることを見る。
 新しい世代の要求を出さず、境界で待った完了を古いとして捨て、組み直しになった。
 
 - Project が変わったら (`refreshTimelineModel`)、準備中のものを engine で取り消し、controller の準備中の
-  一覧から外す。次の tick が変わった後の Project で要求し直す
+  一覧から外す。次の tick が変わった後の Project で要求し直す。`[当時]` 準備済みの source と失敗した境界は
+  残していた。まとめて無効にする形は §23.1
 - 取り消した準備は、engine が受け取るまで登録の枠を持つ。新しい要求が登録の上限に当たったら、取り消した
-  準備の完了を待って (open の前か途中で止まるので短い) 枠を空け、1 回だけ要求し直す
+  準備の完了を待って (open の前か途中で止まるので短い) 枠を空け、1 回だけ要求し直す。`[当時]` decoder の
+  seek の途中では取り消しが効かないので、この待ちは control thread を止めうる。待たない形は §23.2
 - 取り消した準備の完了は、成功していても (取り消しが間に合わなかった) 使わずに外して数える
   (`playbackStalePreparationCount`。controller の pause による取り消しもここに入る)
 
@@ -2452,7 +2454,7 @@ audio は公開できない (§21.4。sample の連続を要求する)。映像�
 読み込むときだけ clip の path を素材の表記へ揃える (`adoptMediaItemPathSpelling`)。
 
 - 揃えるのは、clip が `mediaItemId` で指す素材と「以前の規則 (大文字小文字を畳む) では同じ、今の規則では
-  違う」clip だけ。表記は素材 (`mediaItemId` が指す authority) のものを使い、clip 側の path を authority に
+  違う」clip だけ。`[当時]` 実体を見ていなかった。実体で決める形は §23.3。表記は素材 (`mediaItemId` が指す authority) のものを使い、clip 側の path を authority に
   しない
 - それ以外の食い違い (別のファイル) は従来どおり読み込みを拒否する。読み込んだ後の照合は §21.6 の規則の
   まま
@@ -2475,7 +2477,8 @@ open から再生開始までに掛かった時間の最大 (`playingAudioEndpoi
 5.5ms。どちらも組み直し 0、提示の最大の間隔 3 frame (他の cut と同じ)。endpoint を常に open しておく形や、
 COM を初期化した専用の audio control thread は入れていない。
 
-`[未検証]` Bluetooth など open の遅い出力機器での時間は測っていない。
+`[未検証]` Bluetooth など open の遅い出力機器での時間は測っていない。`[当時]` 成功した open だけを
+記録していた。失敗した open も記録する形は §23.6。
 
 ### 22.6 1 回の編集で Project の複製と検証が重なる (#6, P3)
 
@@ -2483,3 +2486,116 @@ COM を初期化した専用の audio control thread は入れていない。
 `finalizeTimelineCandidate`・`serializeProjectJson`・`refreshTimelineModel` がそれぞれ検証する構造は
 残っている。検証は線形対数なので定数倍の重複であり、今回も「検証済みの候補」の型や in-place で編集する
 API への整理は行っていない。
+
+## 23. 3 回目のレビュー指摘への対応 (P1 1 件 / P2 3 件 / P3 2 件)
+
+§22 の対応への 3 回目のレビューで受けた指摘への対応を記録する。番号はレビューの番号。
+
+### 23.1 Project が変わっても、準備済みの source と失敗した境界が残る (#1, P1)
+
+`[事実]` §22.2 は Project の変更で準備中の source だけを取り消し、準備し終えて引き継ぎを待っている source
+(`preparedVideoSources_` / `preparedAudioSources_`) と、準備に失敗した境界 (`failedPreparationStart_` ほか)
+を残していた。再生中の track の表示・M/S の切り替えは再生を止めないので、使わなくなった準備済みの source が
+終端や pause まで登録枠を持ち続け、変わる前の Project で失敗した境界は、原因の track を隠しても同じ frame の
+境界の準備を拒み続けた。
+
+`refreshTimelineModel` で、pause と同じ `retirePreparedPlaybackSources` を呼ぶ。準備中は取り消し、準備済みの
+source は外して登録枠を返し、失敗した境界と登録上限の印を忘れて世代を進める。再生中の source はそのまま使う。
+
+`transition_preview` の 2 つの条件で見る。
+
+- `prepared-track-hide`: 2 track の次の境界の source を準備し終えた後に V2 を隠す。組み直し・engine の
+  作り直しなしで境界を越え、終端より前の再生中に、準備済みが 0 で、公開している source が再生中の source と
+  同じ数になる
+- `failed-boundary-track-hide`: V1 の境界の素材が無いので準備に失敗した後に V1 を隠す。V2 の同じ frame の
+  境界を準備し直し、組み直しなしで越える
+
+準備中だけを取り消す mutant では両方が落ちる (準備済み 1・公開 2・再生中 1、組み直し 1 で理由は
+「fail-other のvideo sourceを準備できませんでした; 先読み: fail-missing のファイルがありません」)。最初の形の
+試験は終端 (240) まで待っていたので、終端の pause が準備済みの source を外して mutant でも通っていた。
+終端より前に見る形にした。
+
+### 23.2 取り消した準備の登録枠を、control thread で待って空ける (#2)
+
+`[事実]` §22.2 は、新しい要求が取り消した準備の登録枠のために上限に当たると、取り消した準備の完了を
+`waitSourcePreparation` で待っていた。取り消しは段の間でしか効かない (decoder の初期 seek
+`seekBlocking` や audio の preroll 待ちの途中では効かない) ので、遅い・壊れた素材ではこの待ちが control
+thread を止める。
+
+待つ処理を外した。取り消した準備が残っている間の登録上限は、引き継いだ直後の旧 source と同じ一時的な不足と
+して扱い、失敗した境界として覚えない。完了は毎 tick (`handOffPlaybackSources` の最初) と状態の poll が
+受け取り、枠が空いた後の tick で要求し直す。取り消した準備が境界まで終わらなければ、その境界は組み直しに
+なる (control thread は止めない)。
+
+試験用に、次に要求する準備を「取り消しも待ちも効かない段」で指定時間止める seam
+(`blockNextSourcePreparationForTest`。decoder の seek の途中に相当) を足した。`transition_preview` の
+`blocked-stale-capacity` が、登録上限を 2 (再生中の A と境界の B) にし、B の準備を 800ms 止めたまま再生中に
+空の V2 を隠す。編集が 0.2ms で戻り、先読みの準備で control thread を止めた最大時間が 0.0ms のままで、
+組み直し・作り直しなしで境界 (2 秒先) を越えることを見る。待つ処理を戻した mutant では、準備の最大が
+795.0ms になって落ちる。
+
+### 23.3 大文字小文字の移行が、別のファイルを素材へ差し替えうる (#3)
+
+`[事実]` §22.4 の移行は表記だけで判断していたので、case-sensitive directory で `A.mp4` と `a.mp4` が別の
+ファイルとして実在すると、clip が以前の版で再生していたファイルを、黙って素材のファイルへ差し替えた。
+
+揃えてよいかを実体で決める (`mayAdoptLegacyCaseSpelling`)。
+
+- 両方の file ID が取れて同じ: 揃える (case-insensitive な通常の directory)
+- 両方とも何も指していない: 揃える (再生する実体は変わらない。素材がオフラインの Project も開ける)
+- file ID が違う・片方だけ実在する・実体を確かめられない (`Unavailable`): 揃えず、読み込みは照合で拒否する
+
+`media_bin_project_focused` が、組み立てた `FileIdentityKey` で上の 5 通り (同じ file ID、違う file ID、
+両方無い、片方だけ、確かめられない) を見る。実ファイル (`Voice.wav` を `VOICE.WAV` と書いた clip) で、
+読み込み時に素材の表記へ揃うことも見る。常に揃える mutant では、違う file ID・片方だけ・確かめられない
+の 3 件が落ちる。
+
+`[推測]` ネットワーク上など file ID を取れない場所の Project で、大文字小文字だけが違う clip を持つものは
+開けない。黙って差し替えるより安全な側に倒した。
+
+### 23.4 自動復旧の保存が UI スレッドで serialize と書き込みを行う (#4)
+
+`[事実]` `writeRecoveryAutosave` は timer から呼ばれ、その場で Project 全体の JSON を作って recovery file を
+atomic に書いていた (README の「UI スレッドでファイル I/O を行わない」に反する)。
+
+- control thread では Project の複製だけを作り、serialize と書き込みは worker thread で行う。書き込みは
+  同時に 1 つだけで、書いている間に自動保存の時刻が来たら、完了した後にもう一度書く (古い revision の
+  書き込みが後から新しい recovery を上書きしない)
+- 完了は control thread で受け取り、書き始めた時点の revision だけを recovery 済み (`recoveryRevision_`)
+  にする。書いている間に Project file の path が変わっていたら反映しない
+- recovery file を消す・別名で保存する・保存する・Project を切り替える・復元する・検出し直す前と、
+  shutdown では、書き込み中のものを待って結果を反映してから進める (`settleRecoveryWrite`)。後から書き込みが
+  届いて、消した recovery を作り直さない。この待ちは利用者が明示した操作の中だけで起こる
+- 書き込み処理は試験で差し替えられる (`setRecoveryWriterForTest`)
+
+`m7b_4_controller_export_lifecycle` が、書き込みを止める writer で次を見る。自動保存の開始がすぐ戻り
+書き込み中になること、書き込み中の編集の後に 1 番目が完了すると、書き始めた revision だけを recovery 済み
+にして書き直しを始めること、2 番目の完了で recovery が最新の Project (4 track) になること、3 番目の
+書き込み中に保存済みの状態まで Undo すると、書き込みを待ってから recovery を消し、後から作り直さないこと。
+同期で書く mutant では最初の 3 件が、消す前に待たない mutant では最後の 1 件が落ちる。
+
+`[未検証]` 消す前に待つことは `removeRecoveryBeside` 経由の経路だけを mutant で確かめた。別名で保存・
+切り替え・復元・検出し直しの前の待ちは mutant で確かめていない。
+
+### 23.5 Project が変わるたびに全 clip の automation key を QVariant にする (#5, P3)
+
+`[事実]` `TimelineClipModel::setProject` は、変わっていない clip も含めて全 clip の不透明度・音量の key を
+`QVariantMap` の列にしてから、前の値と比べていた。key は `ClipKeyframe` の配列のまま持ち、QML が
+`automationKeys` を読むときだけ列にする (`data()`)。比較も配列のまま行う。
+
+`m7b_4_timeline_clip_model_focused` が、10,000 clip × 100 key で、role の値が従来と同じ形
+({frame, value} の列) であること、key の変わらない clip の編集では `automationKeys` を知らせず、key を
+変えた clip では知らせることを見る。同じ試験で 1 clip を trim した `setProject` の時間は、変更前 280.0〜
+281.2ms、変更後 11.5〜13.6ms (この開発機の release、3 回ずつ)。時間は閾値にしていないので、変更前の
+実装でもこの試験は通る (性能の負例は無い)。
+
+### 23.6 失敗した endpoint の open の時間を記録しない (#6, P3)
+
+`[事実]` §22.5 の計測は、open から再生開始まで成功したときだけ記録していた。失敗した遅い open が
+control thread を止めても 0 のままになる。成功・失敗にかかわらず、再生中の open の試みの回数・失敗の回数・
+掛かった時間の最大 (`playingAudioEndpointOpenAttemptCount` / `playingAudioEndpointOpenFailureCount` /
+`maxPlayingAudioEndpointOpenAttemptMs`) を記録する。
+
+試験用に、次の再生中の open を指定時間待ってから失敗させる seam を足した。`transition_preview` の
+`endpoint-open-failure` が、150ms 待って失敗させたときに、試み 1・失敗 1・試みの最大 150ms 以上 (実測
+160.7ms、成功の最大は 0.0ms) になることを見る。成功だけを記録する mutant では試み 0 になって落ちる。

@@ -58,8 +58,14 @@ QVariant TimelineClipModel::data(const QModelIndex& index, int role) const {
         return item.selected;
     case MediaPathRole:
         return item.mediaPath;
-    case AutomationKeysRole:
-        return item.automationKeys;
+    case AutomationKeysRole: {
+        QVariantList keys;
+        keys.reserve(static_cast<qsizetype>(item.automationKeys.size()));
+        for (const auto& key : item.automationKeys)
+            keys.append(QVariantMap{{QStringLiteral("frame"), key.frame},
+                                    {QStringLiteral("value"), key.valuePercent}});
+        return keys;
+    }
     case AutomationBaseRole:
         return item.automationBase;
     case SpeedRole:
@@ -142,11 +148,7 @@ void TimelineClipModel::setProject(const project::Project& project) {
     for (const auto& clip : project.timelineClips) {
         const auto duration = project::timelineClipDuration(project, clip);
         const bool audio = clip.kind == project::TimelineClipKind::Audio;
-        const auto& keys = audio ? clip.effects.volumeKeys : clip.effects.opacityKeys;
-        QVariantList automationKeys;
-        for (const auto& key : keys)
-            automationKeys.append(QVariantMap{{QStringLiteral("frame"), key.frame},
-                                              {QStringLiteral("value"), key.valuePercent}});
+        const auto& automationKeys = audio ? clip.effects.volumeKeys : clip.effects.opacityKeys;
         next.append({QString::fromStdString(clip.id), QString::fromStdString(clip.name),
                        QString::fromLatin1(project::timelineClipKindName(clip.kind)),
                        clip.timelineStartFrame, duration.success ? duration.frame : 0,

@@ -61,4 +61,10 @@ PathSameness comparePathIdentity(const std::filesystem::path& left,
     return comparePathIdentity(fileIdentityKey(left), fileIdentityKey(right));
 }
 
+bool mayAdoptLegacyCaseSpelling(const FileIdentityKey& clip, const FileIdentityKey& item) {
+    if (clip.status == FileIdentityStatus::FileId && item.status == FileIdentityStatus::FileId)
+        return clip.fileKey == item.fileKey;
+    return clip.status == FileIdentityStatus::Missing && item.status == FileIdentityStatus::Missing;
+}
+
 } // namespace mvm::project

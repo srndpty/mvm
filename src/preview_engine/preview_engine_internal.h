@@ -125,6 +125,11 @@ struct P5CRuntimeDiagnostics {
     // 再生開始までに掛かった時間の最大 (ms)。
     std::uint64_t playingAudioEndpointOpenCount = 0;
     double maxPlayingAudioEndpointOpenMs = 0.0;
+    // 上と同じ open の試み (成功・失敗とも) の回数・失敗の回数・control thread を止めた時間の
+    // 最大 (ms)。失敗した open が遅い機器 (Bluetooth など) を見落とさない。
+    std::uint64_t playingAudioEndpointOpenAttemptCount = 0;
+    std::uint64_t playingAudioEndpointOpenFailureCount = 0;
+    double maxPlayingAudioEndpointOpenAttemptMs = 0.0;
     std::vector<std::int64_t> recentPresentedOutputFrames;
     // recentPresentedOutputFrames と同じ順に、提示した composition の layer 数と最前面 layer の
     // 不透明度。
@@ -338,6 +343,12 @@ public:
     // を起こし、古くなった完了が公開されないことを決定論的に確かめる。境界で完了を待たれた
     // 準備 (waitSourcePreparation) は止めない。
     static void holdSourcePreparationsForTest(PreviewEngine& engine, bool held);
+    // 次に要求する準備を、取り消しも待ちも効かない段 (decoder の seek の途中に相当) で
+    // milliseconds だけ止める。取り消した準備の完了を control thread で待たないことを見る。
+    static void blockNextSourcePreparationForTest(PreviewEngine& engine, int milliseconds);
+    // 次の再生中の WASAPI endpoint の open を、delayMilliseconds 待ってから失敗させる。
+    static void failNextPlayingAudioEndpointOpenForTest(PreviewEngine& engine,
+                                                        int delayMilliseconds);
     // seek completionで得たaudio generationをengineが実際にenforceしているか
     // 検査するseam。要求generationが決して揃わない状況を作る。
     static Result<void> injectSeekAudioGenerationMismatchForTest(PreviewEngine& engine);

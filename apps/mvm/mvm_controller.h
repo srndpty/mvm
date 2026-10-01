@@ -7,6 +7,7 @@
 #include "preview_engine/preview_engine.h"
 #include "project/media_bin.h"
 #include "project/project.h"
+#include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "timeline_clip_model.h"
 
@@ -196,7 +197,30 @@ public:
     std::size_t pendingSourcePreparationCount() const {
         return pendingVideoPreparations_.size() + pendingAudioPreparations_.size();
     }
+    // 準備が済み、まだ引き継いでいない source の数。
+    std::size_t preparedPlaybackSourceCountForTest() const {
+        return preparedVideoSources_.size() + preparedAudioSources_.size();
+    }
+    // 再生中の composition が使っている source の数。
+    std::size_t activePlaybackSourceCountForTest() const {
+        return trackSources_.size() + audioSources_.size();
+    }
     void holdSourcePreparationsForTest(bool held);
+    // recovery の書き込み (serialize + atomic write) を差し替える (試験用)。
+    using RecoveryWriter = std::function<project::ProjectIoResult(
+        const project::Project&, const std::filesystem::path&, const std::filesystem::path&,
+        const std::string&, const std::string&, const std::string&)>;
+    void setRecoveryWriterForTest(RecoveryWriter writer) { recoveryWriter_ = std::move(writer); }
+    // debounce を待たずに自動保存を始める (試験用)。書き込みの完了は待たない。
+    void writeRecoveryAutosaveForTest() { writeRecoveryAutosave(); }
+    bool recoveryWriteInFlightForTest() const { return recoveryWrite_ != nullptr; }
+    std::uint64_t recoveryRevisionForTest() const { return recoveryRevision_; }
+    std::uint64_t currentRevisionForTest() const { return currentRevision_; }
+    std::uint64_t recoveryWriteCompletionCountForTest() const {
+        return recoveryWriteCompletionCount_;
+    }
+    // 次に要求する準備を、取り消しの効かない段 (decoder の seek の途中に相当) で止める。
+    void blockNextSourcePreparationForTest(int milliseconds);
     // controller を通さずに engine の transport を変える負例 (engine 側の古さの判定) に使う。
     std::shared_ptr<preview::PreviewEngine> previewEngineForTest() const { return previewEngine_; }
     bool resetPreviewEngineForTest() { return resetPreviewEngine(); }
@@ -768,7 +792,18 @@ private:
     static void releaseLockHandle(void* handle);
     QString canonicalFileSha256(bool& readable) const;
     void scheduleRecoveryAutosave();
+    // timer から呼ぶ。serialize と書き込みは worker thread で行い、control thread では
+    // Project の複製だけを作る (UI スレッドでファイル I/O を行わない)。
     void writeRecoveryAutosave();
+    // waitForCompletion なら書き終えるまで待つ (shutdown の最後の書き込み)。
+    void startRecoveryWrite(bool waitForCompletion);
+    // 書き込み中の recovery を待ち、結果を反映する。recovery file を消す・path を変える・
+    // recoveryRevision_ を読み替える前に呼ぶ (後から書き込みが届いて、消した recovery や
+    // 古い path の recovery を作り直さない)。
+    void settleRecoveryWrite();
+    struct RecoveryWriteJob;
+    void completeRecoveryWrite(const std::shared_ptr<RecoveryWriteJob>& job);
+    void applyRecoveryWriteResult(const RecoveryWriteJob& job);
     void detectRecovery();
     void setCurrentClipSelection(int index);
     // expandLinks なら選んだ clip のリンク相手も選択に含める。
@@ -898,7 +933,9 @@ private:
     // 準備の完了は使わずに外す (古い Project・古い再生で決めた source を残さない)。
     std::uint64_t playbackPreparationGeneration_ = 0;
     // 世代が進んで取り消した準備。engine が取り消しを終えて登録の枠を返すまで残る。
-    // 新しい世代の要求が登録の上限に当たったら、これを待って枠を空けてから要求し直す。
+    // 新しい世代の要求がこの枠のために登録の上限に当たっても、control thread で取り消しの完了を
+    // 待たない (decoder の open / seek の途中では取り消しが効かず、待つと止まる)。完了は毎 tick と
+    // poll が受け取り、枠が空いた後の tick で要求し直す。
     std::vector<preview::PreviewPreparationId> stalePreparations_;
     std::uint64_t playbackStalePreparationCount_ = 0;
     std::uint64_t playbackPreparationWaitCount_ = 0;
@@ -911,10 +948,6 @@ private:
     // 準備中のものを取り消して stalePreparations_ へ移し、世代を進める。次の tick は今の
     // Project と再生で準備し直す (古い準備が境界まで残って、新しい要求を塞がない)。
     void cancelSourcePreparations();
-    // 取り消した準備の完了を待って受け取り、登録の枠を返す。
-    void reapStaleSourcePreparations();
-    preview::Result<preview::PreviewPreparationId>
-    requestPlaybackSourcePreparation(const preview::PreviewSourceDescriptor& descriptor);
     QString playbackPreparationFailure_;
     // 準備に失敗した境界。その境界を越えるまで準備し直さない (壊れた素材の seek 待ちを
     // 毎 tick 繰り返さない)。
@@ -1043,6 +1076,12 @@ private:
     std::uint64_t savedRevision_ = 0;
     std::uint64_t nextRevision_ = 1;
     std::uint64_t recoveryRevision_ = 0;
+    // 書き込み中の recovery (同時に 1 つだけ)。完了はこの job と同じときだけ反映する。
+    std::shared_ptr<RecoveryWriteJob> recoveryWrite_;
+    RecoveryWriter recoveryWriter_;
+    // 書き込み中に次の自動保存の時刻が来た。完了した後にもう一度書く。
+    bool recoveryWriteAgain_ = false;
+    std::uint64_t recoveryWriteCompletionCount_ = 0;
     std::int64_t playheadFrame_ = 0;
     std::int64_t totalTimelineFrames_ = 0;
     double audioMeterDbLeft_ = kMeterSilenceDb;

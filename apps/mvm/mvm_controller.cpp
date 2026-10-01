@@ -26,6 +26,7 @@
 #include "track_model.h"
 #include "util/mvm_reveal_in_explorer.h"
 
+#include <thread>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -822,12 +823,11 @@ const TimelinePreviewPlan& MvmController::previewPlan() const {
 
 void MvmController::refreshTimelineModel() {
     previewPlan_.reset();
-    // 準備中の source は変わる前の Project で決めた。取り消し、完了しても使わずに外す。
-    // 次の tick が変わった後の Project で準備し直す。
-    if (previewEngine_)
-        cancelSourcePreparations();
-    else
-        ++playbackPreparationGeneration_;
+    // 先読みの状態 (準備中・準備済みの source、失敗した境界) は変わる前の Project で決めた。
+    // 再生中の track の表示・M/S の切り替えは再生を止めないので、ここでまとめて無効にする。
+    // 準備中のものは取り消し、準備済みの source は登録枠を返し、失敗した境界も忘れる。次の
+    // tick が変わった後の Project で準備し直す (再生中の source はそのまま使う)。
+    retirePreparedPlaybackSources();
     if (!selectedTransitionId_.empty() &&
         std::none_of(
             project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
@@ -954,6 +954,7 @@ std::filesystem::path MvmController::recoveryPath() const {
 }
 
 bool MvmController::removeRecoveryBeside(const std::filesystem::path& projectPath, QString& error) {
+    settleRecoveryWrite();
     std::filesystem::path path = projectPath;
     path += L".recovery";
     std::error_code removeError;
@@ -1091,12 +1092,34 @@ void MvmController::scheduleRecoveryAutosave() {
         recoveryMaximumTimer_.start();
 }
 
+struct MvmController::RecoveryWriteJob {
+    std::thread thread;
+    // 書き始めた時点の revision と Project file の path。
+    std::uint64_t revision = 0;
+    std::filesystem::path projectPath;
+    // thread が書き、join の後に control thread が読む。
+    project::ProjectIoResult result;
+};
+
 void MvmController::writeRecoveryAutosave() {
+    startRecoveryWrite(false);
+}
+
+void MvmController::startRecoveryWrite(bool waitForCompletion) {
     recoveryDebounceTimer_.stop();
     recoveryMaximumTimer_.stop();
     if (!dirty()) {
         QString ignored;
         removeRecoveryFile(ignored);
+        return;
+    }
+    if (recoveryWrite_) {
+        // 書き込みは 1 つずつ行う (古い revision の書き込みが後から新しいものを上書きしない)。
+        recoveryWriteAgain_ = true;
+        if (waitForCompletion) {
+            settleRecoveryWrite();
+            startRecoveryWrite(true);
+        }
         return;
     }
     if (!projectLockHeld_ || recoveryRevision_ == currentRevision_)
@@ -1108,19 +1131,65 @@ void MvmController::writeRecoveryAutosave() {
         recoveryMaximumTimer_.start();
         return;
     }
-    const auto saved = project::saveProjectRecovery(
-        project_, recoveryPath(), projectPath_, savedCanonicalSha256_,
-        QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString(), sessionId_);
-    if (!saved.success) {
+    auto job = std::make_shared<RecoveryWriteJob>();
+    job->revision = currentRevision_;
+    job->projectPath = projectPath_;
+    auto writer = recoveryWriter_ ? recoveryWriter_ : RecoveryWriter(project::saveProjectRecovery);
+    // control thread で行うのは Project の複製まで。serialize と書き込みは worker で行う。
+    job->thread = std::thread(
+        [this, job, writer = std::move(writer), snapshot = project_, recovery = recoveryPath(),
+         canonical = projectPath_, sha = savedCanonicalSha256_,
+         savedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString(),
+         session = sessionId_] {
+            job->result = writer(snapshot, recovery, canonical, sha, savedAt, session);
+            QMetaObject::invokeMethod(
+                this, [this, job] { completeRecoveryWrite(job); }, Qt::QueuedConnection);
+        });
+    recoveryWrite_ = job;
+    if (waitForCompletion)
+        settleRecoveryWrite();
+}
+
+void MvmController::completeRecoveryWrite(const std::shared_ptr<RecoveryWriteJob>& job) {
+    // 先に settleRecoveryWrite が受け取った job の通知は捨てる。
+    if (job != recoveryWrite_)
+        return;
+    job->thread.join();
+    recoveryWrite_.reset();
+    applyRecoveryWriteResult(*job);
+    if (recoveryWriteAgain_) {
+        recoveryWriteAgain_ = false;
+        startRecoveryWrite(false);
+    }
+}
+
+void MvmController::settleRecoveryWrite() {
+    if (!recoveryWrite_)
+        return;
+    const auto job = std::move(recoveryWrite_);
+    recoveryWrite_.reset();
+    job->thread.join();
+    applyRecoveryWriteResult(*job);
+}
+
+void MvmController::applyRecoveryWriteResult(const RecoveryWriteJob& job) {
+    ++recoveryWriteCompletionCount_;
+    // 書いている間に Project file の path が変わった (別名で保存・切り替え)。書いた recovery は
+    // 前の path のもので、今の Project の recovery ではない。
+    if (job.projectPath != projectPath_)
+        return;
+    if (!job.result.success) {
         setStatus(QStringLiteral("自動復旧データを保存できません: ") +
-                  QString::fromStdString(saved.error));
+                  QString::fromStdString(job.result.error));
         recoveryMaximumTimer_.start();
         return;
     }
-    recoveryRevision_ = currentRevision_;
+    // recovery にあるのは書き始めた時点の revision。その後の編集は次の自動保存で書く。
+    recoveryRevision_ = job.revision;
 }
 
 void MvmController::detectRecovery() {
+    settleRecoveryWrite();
     recoveryProject_.reset();
     recoveryCanonicalChanged_ = false;
     recoveryCorrupt_ = false;
@@ -1191,6 +1260,7 @@ void MvmController::detectRecovery() {
 }
 
 bool MvmController::restoreRecovery() {
+    settleRecoveryWrite();
     if (busy_ || !projectLockHeld_ || !recoveryProject_ || !pauseTimeline())
         return false;
     project_ = *recoveryProject_;
@@ -3676,26 +3746,6 @@ void MvmController::cancelSourcePreparations() {
     ++playbackPreparationGeneration_;
 }
 
-void MvmController::reapStaleSourcePreparations() {
-    const auto stale = stalePreparations_;
-    for (const auto id : stale)
-        adoptPreparationOutcome(id, previewEngine_->waitSourcePreparation(id));
-}
-
-preview::Result<preview::PreviewPreparationId>
-MvmController::requestPlaybackSourcePreparation(const preview::PreviewSourceDescriptor& descriptor) {
-    auto requested = previewEngine_->requestSourcePreparation(descriptor);
-    // 取り消した準備は、engine が受け取るまで登録の枠を持っている。枠が足りなければ、
-    // 取り消しの完了を待って (open の前か途中で止まるので短い) 枠を空け、要求し直す。
-    if (!requested &&
-        requested.error().code == preview::PreviewErrorCode::RegistrationCapacityExceeded &&
-        !stalePreparations_.empty()) {
-        reapStaleSourcePreparations();
-        requested = previewEngine_->requestSourcePreparation(descriptor);
-    }
-    return requested;
-}
-
 void MvmController::adoptPreparationOutcome(preview::PreviewPreparationId id,
                                             preview::Result<preview::PreviewSourceId> outcome) {
     // 取り消した準備。成功していても (取り消しが間に合わなかった) 使わずに外す。
@@ -3782,6 +3832,12 @@ void MvmController::waitDueSourcePreparations(std::int64_t frame) {
         playbackMaxPreparationMs_,
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
             .count());
+}
+
+void MvmController::blockNextSourcePreparationForTest(int milliseconds) {
+    if (previewEngine_)
+        preview::internal::PreviewRenderPort::blockNextSourcePreparationForTest(*previewEngine_,
+                                                                                 milliseconds);
 }
 
 void MvmController::holdSourcePreparationsForTest(bool held) {
@@ -3913,7 +3969,7 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHand
         // 要求に使った時間だけ (完了を待たない)。
         const auto began = std::chrono::steady_clock::now();
         const auto requested =
-            requestPlaybackSourcePreparation(previewVideoDescriptorOf(project_, clip));
+            previewEngine_->requestSourcePreparation(previewVideoDescriptorOf(project_, clip));
         playbackMaxPreparationMs_ = std::max(
             playbackMaxPreparationMs_,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
@@ -3950,7 +4006,7 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHand
         if (!audioDescriptorFor(audio.layers[index], descriptor, reason))
             return false;
         const auto began = std::chrono::steady_clock::now();
-        const auto requested = requestPlaybackSourcePreparation(descriptor);
+        const auto requested = previewEngine_->requestSourcePreparation(descriptor);
         playbackMaxPreparationMs_ = std::max(
             playbackMaxPreparationMs_,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
@@ -4006,10 +4062,11 @@ bool MvmController::prepareUpcomingPlaybackSources(std::int64_t frame, QString& 
         bool needsHandOff = false;
         if (!preparePlaybackSourcesAt(start, needsHandOff, reason)) {
             // 引き継いだ直後は、旧 source が新しい composition の提示まで登録枠を使い続ける
-            // (8 layer の cut なら旧 8 + 新 8)。この間の登録上限は一時的な不足なので失敗として
-            // 覚えず、旧 source を削除した後の tick で準備し直す。登録上限の検査は open の前に
-            // 行われるので、準備し直しても待たない。
-            if (playbackCapacityFailure_ && !retiredSources_.empty())
+            // (8 layer の cut なら旧 8 + 新 8)。取り消した準備も、engine が受け取るまで枠を
+            // 使い続ける。この間の登録上限は一時的な不足なので失敗として覚えず、枠が返った後の
+            // tick で準備し直す。登録上限の検査は open の前に行われるので、準備し直しても待たない。
+            if (playbackCapacityFailure_ &&
+                (!retiredSources_.empty() || !stalePreparations_.empty()))
                 return false;
             failedPreparationStart_ = start;
             ++playbackPreparationFailureCount_;
@@ -6158,6 +6215,7 @@ bool MvmController::rippleDeleteGap(const QString& trackKind, int trackIndex, qi
 
 bool MvmController::adoptProject(project::Project loaded, std::filesystem::path path,
                                  QString successStatus) {
+    settleRecoveryWrite();
     if (!pauseTimeline())
         return false;
     project_ = std::move(loaded);
@@ -6265,6 +6323,7 @@ bool MvmController::openProject(const QUrl& fileUrl) {
 }
 
 bool MvmController::saveProjectAs(const QUrl& fileUrl) {
+    settleRecoveryWrite();
     if (busy_)
         return false;
     if (!projectLockHeld_) {
@@ -6344,6 +6403,7 @@ bool MvmController::saveProjectOverwritingExternalChange() {
 }
 
 bool MvmController::saveCurrentProject(bool overwriteExternalChange) {
+    settleRecoveryWrite();
     if (busy_)
         return false;
     if (!projectLockHeld_) {
@@ -6975,7 +7035,8 @@ void MvmController::shutdown() {
         return;
     shutdownStarted_ = true;
     if (projectLockHeld_ && dirty())
-        writeRecoveryAutosave();
+        startRecoveryWrite(true);
+    settleRecoveryWrite();
     exportCancelRequested_.store(true, std::memory_order_release);
     if (exportThread_.joinable())
         exportThread_.join();

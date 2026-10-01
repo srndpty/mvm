@@ -45,6 +45,15 @@ PathSameness comparePathIdentity(const FileIdentityKey& left, const FileIdentity
 PathSameness comparePathIdentity(const std::filesystem::path& left,
                                  const std::filesystem::path& right);
 
+// 以前の版 (同じ schema 14) は clip と素材の path を大文字小文字を畳んで照合していた。
+// 大文字小文字だけが違う clip の path を、読み込むときに素材の表記へ揃えてよいか。
+// 揃えると clip が再生するファイルが素材のものになるので、同じ実体と言えるときだけ揃える。
+//   両方 FileId で同じ file ID -> 揃える (case-insensitive な directory の普通の場合)
+//   両方 Missing              -> 揃える (どちらも何も指していないので、再生する実体は変わらない)
+//   file ID が違う / 片方だけある / Unavailable -> 揃えない (読み込みは照合で拒否する)
+// 呼び出し側は、大文字小文字を畳んだ表記が同じことを先に確かめる。
+bool mayAdoptLegacyCaseSpelling(const FileIdentityKey& clip, const FileIdentityKey& item);
+
 } // namespace mvm::project
 
 #endif // MVM_PROJECT_PATH_IDENTITY_H
