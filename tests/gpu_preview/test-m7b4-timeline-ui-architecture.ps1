@@ -566,7 +566,7 @@ foreach ($needle in @('project::timelineClipIndexAt(project_, current.track, cla
 }
 foreach ($needle in @('FILE_FLAG_DELETE_ON_CLOSE',
                       'ERROR_SHARING_VIOLATION',
-                      'project::saveProjectRecovery(',
+                      'RecoveryWriter(project::saveProjectRecovery)',
                       'project::classifyRecovery(',
                       'savedCanonicalSha256_',
                       'canonicalBaseMatchesDisk(')) {

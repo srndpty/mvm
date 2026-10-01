@@ -2567,6 +2567,9 @@ atomic に書いていた (README の「UI スレッドでファイル I/O を�
   shutdown では、書き込み中のものを待って結果を反映してから進める (`settleRecoveryWrite`)。後から書き込みが
   届いて、消した recovery を作り直さない。この待ちは利用者が明示した操作の中だけで起こる
 - 書き込み処理は試験で差し替えられる (`setRecoveryWriterForTest`)
+- 静的契約 `m7b_4_timeline_ui_architecture` は recovery を `project::saveProjectRecovery(` の呼び出しで
+  書くことを字面で照合していた。既定の書き込み処理として渡す形になったので、照合する字面を
+  `RecoveryWriter(project::saveProjectRecovery)` へ合わせた (最初のゲートの実行でこの群だけが落ちた)
 
 `m7b_4_controller_export_lifecycle` が、書き込みを止める writer で次を見る。自動保存の開始がすぐ戻り
 書き込み中になること、書き込み中の編集の後に 1 番目が完了すると、書き始めた revision だけを recovery 済み
