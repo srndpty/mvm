@@ -517,9 +517,10 @@ int main(int argc, char** argv) {
                 surface->setHeight(360);
                 window.show();
                 controller.attachPreview(surface);
+                // 準備ができた直後に controller が初期 frame の seek を始めるので、ready はすぐ
+                // false に戻りうる。ready で打ち切らず、seek を受理されるまで繰り返す。
                 const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
                 const bool seekAccepted =
-                    ready &&
                     retryUntilAccepted([&] { return controller.seekTimelineFrame(from); }, 30000);
                 const bool sought =
                     seekAccepted &&
