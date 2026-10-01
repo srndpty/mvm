@@ -441,6 +441,8 @@ int main(int argc, char** argv) {
                               controller.lastPlaybackRebuildReason().contains(
                                   QStringLiteral("登録上限")),
                           "登録上限で理由付きの組み直しに戻りませんでした");
+                    check(controller.playbackCapacityResetCount() > 0,
+                          "登録上限を登録枠の不足として扱わず、engine を作り直しませんでした");
                 } else {
                     check(controller.playbackRebuildCount() == 0,
                           "cut の境界でPreviewを組み直しました");
@@ -500,6 +502,63 @@ int main(int argc, char** argv) {
         runCut("cut-silent-to-head-audio", false, true, 0, false);
         runCut("cut-audio-to-silent", true, false, 120, false);
         runCut("cut-capacity-fallback", false, false, 120, true);
+
+        // 登録枠の不足ではない UnsupportedCapability (audio を扱えない構成) は、作り直しても
+        // 直らない。clip 境界で audio source を準備できなくても、登録枠の不足として engine を
+        // 作り直さない。上の cut-capacity-fallback が、登録枠の不足なら作り直す対照になる。
+        {
+            auto audioProject = mvm::project::createDefaultProject();
+            audioProject.timelineClips = {
+                half(video, "noaudio-v-out", TrackKind::Video, 0, 0),
+                half(copiedVideo, "noaudio-v-in", TrackKind::Video, 120, 120),
+                half(copiedWav, "noaudio-a-in", TrackKind::Audio, 120, 120)};
+            check(mvm::project::validateTimeline(audioProject).success,
+                  "audio 無効化試験の timeline が不正です");
+            const auto audioPath = std::filesystem::path(
+                directory.filePath(QStringLiteral("cut-audio-unsupported.mvm")).toStdWString());
+            mvm::app::MvmController controller(audioPath, {}, audioProject);
+            QQuickWindow window;
+            window.setWidth(640);
+            window.setHeight(360);
+            auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+            surface->setWidth(640);
+            surface->setHeight(360);
+            window.show();
+            controller.attachPreview(surface);
+            const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+            const bool sought =
+                ready &&
+                retryUntilAccepted([&] { return controller.seekTimelineFrame(90); }, 30000) &&
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+            const bool disabled = sought && controller.disablePreviewAudioSourcesForTest();
+            const bool started =
+                disabled && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            check(started, "audio を無効にした engine で cut の前から再生を開始できません");
+            if (started) {
+                pumpUntil(
+                    [&] {
+                        return controller.playbackRebuildCount() > 0 ||
+                               controller.playheadFrame() >= 150 || !controller.playing();
+                    },
+                    15000);
+                // 境界を越えた後の組み直しの結果まで待つ。
+                pumpUntil([&] { return !controller.playing(); }, 5000);
+                const QString reason =
+                    controller.lastPlaybackRebuildReason() + controller.statusText();
+                check(reason.contains(QStringLiteral("扱えません")),
+                      "audio を扱えない構成の失敗が境界で観測されませんでした");
+                check(controller.playbackCapacityResetCount() == 0,
+                      "audio を扱えない構成を登録枠の不足として engine を作り直しました");
+                std::printf(
+                    "cut-audio-unsupported: 組み直し %llu、作り直し %llu、理由: %s\n",
+                    static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                    static_cast<unsigned long long>(controller.playbackCapacityResetCount()),
+                    reason.toUtf8().constData());
+                if (controller.playing())
+                    controller.pauseTimeline();
+            }
+            controller.shutdown();
+        }
 
         const auto playFrom =
             [&](const char* label, const mvm::project::Project& playProject, qint64 from,

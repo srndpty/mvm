@@ -17,16 +17,11 @@ struct ClipTransition {
     std::int64_t cut = 0;
 };
 
-bool transitionIsRendered(const Project& project, const TimelineTransition& transition,
-                          TrackKind kind, int& outgoing, int& incoming) {
-    outgoing = -1;
-    incoming = -1;
-    for (std::size_t index = 0; index < project.timelineClips.size(); ++index) {
-        if (project.timelineClips[index].id == transition.outgoingClipId)
-            outgoing = static_cast<int>(index);
-        if (project.timelineClips[index].id == transition.incomingClipId)
-            incoming = static_cast<int>(index);
-    }
+bool transitionIsRendered(const Project& project, const ClipIdIndex& clipIndex,
+                          const TimelineTransition& transition, TrackKind kind, int& outgoing,
+                          int& incoming) {
+    outgoing = clipIndex.find(transition.outgoingClipId);
+    incoming = clipIndex.find(transition.incomingClipId);
     if (outgoing < 0 || incoming < 0)
         return false;
     const auto& a = project.timelineClips[static_cast<std::size_t>(outgoing)];
@@ -88,10 +83,13 @@ std::optional<OriginalFrame> originalFrameAt(const TimelineClip& original,
 } // namespace
 
 bool hasRenderedTransitions(const Project& project, TrackKind kind) {
+    if (project.timelineTransitions.empty())
+        return false;
+    const ClipIdIndex clipIndex(project);
     for (const auto& transition : project.timelineTransitions) {
         int outgoing = -1;
         int incoming = -1;
-        if (transitionIsRendered(project, transition, kind, outgoing, incoming))
+        if (transitionIsRendered(project, clipIndex, transition, kind, outgoing, incoming))
             return true;
     }
     return false;
@@ -102,10 +100,11 @@ bool timelineRenderSegments(const Project& project, TrackKind kind,
     segments.clear();
     std::unordered_map<int, ClipTransition> heads; // incoming clip -> トランジション
     std::unordered_map<int, ClipTransition> tails; // outgoing clip -> トランジション
+    const ClipIdIndex clipIndex(project);
     for (const auto& transition : project.timelineTransitions) {
         int outgoing = -1;
         int incoming = -1;
-        if (!transitionIsRendered(project, transition, kind, outgoing, incoming))
+        if (!transitionIsRendered(project, clipIndex, transition, kind, outgoing, incoming))
             continue;
         std::int64_t start = 0;
         std::int64_t cut = 0;

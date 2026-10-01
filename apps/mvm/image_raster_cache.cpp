@@ -97,7 +97,9 @@ ImageRasterCache::Entry ImageRasterCache::request(const std::filesystem::path& p
 
     pool_.start([this, key, ticket = record.ticket, cancel = record.cancel, path, width, height] {
         // decode より前に取る。decode 中に差し替えられても、次の再検証で必ず不一致になる。
-        const auto fingerprint = mediaContentFingerprint(pathText(path));
+        // raster は preview の画素になるので、標本ではなく内容全体の hash で照合する
+        // (画像は動画ほど大きくないので、前面へ戻るたびに全体を読んでも重くない)。
+        const auto fingerprint = mediaContentHash(pathText(path));
         Entry entry = raster_(path, width, height);
         if (cancel->load(std::memory_order_relaxed))
             return;
@@ -187,7 +189,7 @@ void ImageRasterCache::revalidateAll() {
         for (const auto& target : targets) {
             if (shuttingDown->load(std::memory_order_relaxed))
                 return;
-            const auto current = mediaContentFingerprint(target.path);
+            const auto current = mediaContentHash(target.path);
             if (!current || *current != target.fingerprint)
                 stale.append({target.key, target.ticket});
         }

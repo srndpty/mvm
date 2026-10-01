@@ -54,6 +54,13 @@ PreviewError makeError(PreviewErrorCategory category, PreviewOperation operation
     return error;
 }
 
+PreviewError capacityError(PreviewOperation operation, std::string detail) {
+    auto error =
+        makeError(PreviewErrorCategory::UnsupportedCapability, operation, std::move(detail));
+    error.code = PreviewErrorCode::RegistrationCapacityExceeded;
+    return error;
+}
+
 Result<void> invalidState(PreviewOperation operation, std::string detail) {
     return Result<void>::failure(
         makeError(PreviewErrorCategory::InvalidState, operation, std::move(detail)));
@@ -1856,9 +1863,8 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
     // 上限は引き続きcapabilityの値であり、登録slotだけを旧set + 新set + slip preview 1本まで許す。
     if (descriptor.videoEnabled &&
         impl_->videoSources.size() >= impl_->registeredVideoSourceLimit) {
-        return Result<PreviewSourceId>::failure(
-            makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                      "source-set切替用のvideo source登録上限を超えています"));
+        return Result<PreviewSourceId>::failure(capacityError(
+            PreviewOperation::AddSource, "source-set切替用のvideo source登録上限を超えています"));
     }
     if (descriptor.audioEnabled) {
         if (impl_->capability.configuredMaxActiveAudioSources == 0) {
@@ -1869,9 +1875,8 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         const std::size_t registeredAudioCount =
             (impl_->publicAudioSource ? 1U : 0U) + impl_->extraAudioSources.size();
         if (registeredAudioCount >= impl_->capability.configuredMaxActiveAudioSources) {
-            return Result<PreviewSourceId>::failure(
-                makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                          "active audio sourceの登録上限を超えています"));
+            return Result<PreviewSourceId>::failure(capacityError(
+                PreviewOperation::AddSource, "active audio sourceの登録上限を超えています"));
         }
     }
     if (impl_->nextPublicSourceId == 0) {
@@ -4490,6 +4495,17 @@ Result<void> PreviewRenderPort::setRegisteredVideoSourceLimitForTest(PreviewEngi
         return invalidState(PreviewOperation::AddSource,
                             "登録上限はReadyPausedで既存source数以上に設定してください");
     engine.impl_->registeredVideoSourceLimit = limit;
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::disableAudioSourcesForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (engine.impl_->machine.state() != PreviewEngineState::ReadyPaused ||
+        engine.impl_->publicAudioSource || !engine.impl_->extraAudioSources.empty())
+        return invalidState(
+            PreviewOperation::AddSource,
+            "audio sourceの無効化はReadyPausedかつaudio source未登録時に行ってください");
+    engine.impl_->capability.configuredMaxActiveAudioSources = 0;
     return Result<void>::success();
 }
 

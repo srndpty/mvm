@@ -9,9 +9,12 @@ namespace mvm::project {
 // path の同一性の規則を 1 箇所に置く。
 //
 // canonicalPathKey: I/O をしない表記上の key。absolute + lexically_normal +
-//   区切り文字と大文字小文字を揃えたもの。ファイルが無くても決まり、
+//   区切り文字を揃えたもの。ファイルが無くても決まり、
 //   同じ入力には常に同じ値を返す。absolute にできなければ空文字列。
 //   JSON の検証のように、結果を disk の状態に依存させたくない場所で使う。
+//   大文字小文字は畳まない。NTFS は directory ごとに case sensitivity を有効にでき、
+//   そこでは A.mp4 と a.mp4 が別のファイルになる。畳むと別物を同じと誤判定する
+//   (media_source_identity.h の cache 用 identity と同じ規則)。
 std::wstring canonicalPathKey(const std::filesystem::path& path);
 
 // 実体の identity。取れなかった理由を区別する。
@@ -32,8 +35,8 @@ FileIdentityKey fileIdentityKey(const std::filesystem::path& path);
 
 // 同じ実体か。Unknown は「同じとも違うとも言えない」であり、呼び出し側が
 // 安全な側 (削除を拒否する、外部変更の検査を行う等) へ倒す。
+//   両方 FileId               -> file ID で決める (表記より優先する)
 //   表記が同じ                 -> Same
-//   両方 FileId               -> file ID で決める
 //   Missing 同士 / FileId と Missing -> Different (同じ実体ではありえない)
 //   どちらかが Unavailable     -> Unknown
 enum class PathSameness { Same, Different, Unknown };

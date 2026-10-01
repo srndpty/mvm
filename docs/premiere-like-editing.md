@@ -2184,3 +2184,127 @@ focus が popup の外へ出るので、Esc がダイアログに届かず閉じ
 `focusReturnItem` を外す mutant は落ちる。
 
 `[未検証]` 目玉・M・S の見た目は手で操作して確かめていない (起動して配置だけを画面で確認した)。
+
+## 21. 全体レビュー指摘への対応 (P1 1 件 / P2 8 件 / P3 1 件)
+
+番号はレビューの番号。再現はいずれも `pwsh scripts/build.ps1 -Target <test の exe>` の後に
+`ctest --test-dir build/ucrt64-release -R '<test 名>' --output-on-failure --timeout 900`。
+
+### 21.1 出力しない clip の素材を書き出しの前処理で読んでいた (#1, P1)
+
+`[事実]` `exportTimeline` は `project.timelineClips` の全件について、文字を raster 化し画像を decode
+していた。MLT へ渡すのは `mapTimelineExportPlan` が残した `plan.clips` だけなので、非表示 track・ミュート・
+ソロ除外・無効の clip の素材が壊れていると、preview にも書き出しにも使わないのに書き出しが失敗した。
+`plan.clips` に現れる `projectClipIndex` だけを一度ずつ stage するようにした。
+
+`image_clip_contract` が、V1 に正常な画像・V2 に読めない画像 (アニメーションへ差し替え) を置き、
+V2 を表示したままなら失敗する (対照)、V2 を非表示にする・V2 の clip を無効にすると 30 frame を書き出せる
+ことを見る。修正を外すと後の 2 件が落ちることを確かめた。
+
+### 21.2 大きな timeline の検証が clip 数の 2 乗だった (#2)
+
+`[事実]` `validateTimeline` の同じ track の重なりの検査を、track ごとに開始位置で並べて終端の最大と
+比べる形にした (O(N log N))。clip ID → 位置の索引 (`ClipIdIndex`) を足し、トランジションの検証・
+描画区間の計算でトランジションごとに全 clip を走査しないようにした。`validateMediaReferences` も
+clip ごとに素材列を走査せず、素材の表記上の key を素材ごとに 1 回だけ作る。
+
+`m5_timeline_edit_focused` が 2 track × 10,000 clip (track をまたいで交互に並べ、開始位置は逆順) で、
+区間の比較が 19,998 回 (track ごとに clip 数 - 1) であることを `overlapComparisons` で見る。全組を比べる
+実装なら約 1 億回になる。時間は閾値にしない (この開発機の release で 8.5ms)。離れた位置の重なりと、
+長い clip の内側の短い clip を挟んだ重なりを検出することを対照にした。
+
+`[未検証]` 編集 1 回で Project を controller と編集関数の両方で複製し、`finalizeTimelineCandidate`・
+`serializeProjectJson`・`refreshTimelineModel` がそれぞれ検証する構造は残っている。検証は線形対数に
+なったので定数倍の重複であり、「検証済みの候補」を commit へ渡す形への変更は行っていない。
+
+### 21.3 Timeline の clip delegate を全件生成し、編集のたびに作り直す (#3)
+
+`[未検証]` 対応していない。`TimelineClipModel::setProject` は今も `beginResetModel` で全 delegate を
+作り直す。`TrackModel` と同じ `dataChanged` による差分通知へ変えるには、clip の delegate が drag 中に
+binding を代入で外す property (例: `dragTrackIndex`) を、model の作り直しで元へ戻ることに依存している
+点を先に直す必要がある。差分通知にすると、移動後に古い track の位置へ描かれうる。viewport の外の
+clip を生成しない仮想化 (custom `QQuickItem` か、表示範囲で絞った model) と合わせて別の作業で行う。
+
+### 21.4 再生中の source の準備を control thread で同期に待つ (#4)
+
+`[未検証]` 対応していない (20.3 の `[未検証]` と同じ)。`addSource` の open / seek を worker で進め、
+世代番号付きの完了だけを control thread へ公開し、seek・編集・pause・reset の後に届いた古い完了を
+捨てる形が必要である。preview engine の thread 境界を変える変更なので、古い完了を確実に捨てる
+negative test と合わせて別の作業で行う。
+
+### 21.5 登録枠の不足ではない UnsupportedCapability で engine を作り直していた (#5)
+
+`[事実]` controller は `addSource` の失敗の category が `UnsupportedCapability` なら登録枠の不足と
+みなして Preview engine を作り直していた。同じ category には「audio を扱えない構成」や
+「48000 Hz / stereo / float32 ではない」という作り直しても直らない失敗も含まれる。`PreviewError` に
+機械向けの細分類 `PreviewErrorCode` を足し、登録枠の不足 (video の登録上限・audio の登録上限) だけに
+`RegistrationCapacityExceeded` を付けた。controller はこの code だけで作り直しを決める。
+
+- `preview_engine_p5b_unit` が audio domain の非対応に code が付かないことを見る
+- `transition_preview` (workstation) の `cut-audio-unsupported` が、audio を扱えない構成にした engine で
+  audio clip の境界を越えると、組み直しは起きるが engine の作り直し (`playbackCapacityResetCount`) は
+  0 回で、理由に「扱えません」が残ることを見る。`cut-capacity-fallback` が、登録上限なら作り直す対照になる
+  (実測: 前者は組み直し 1・作り直し 0、後者は登録上限で組み直し)
+
+### 21.6 case-sensitive directory の別ファイルを同じ path と判定しうる (#6)
+
+`[事実]` `canonicalPathKey` は大文字小文字を畳み、`comparePathIdentity` は file ID を見る前に表記の一致で
+`Same` を返していた。NTFS は directory ごとに case sensitivity を有効にでき、そこでは `A.mp4` と
+`a.mp4` が別のファイルになる。cache 用の identity (`media_source_identity.h`) は畳まないので、規則が
+二系統で食い違っていた。
+
+- `canonicalPathKey` は大文字小文字を畳まない (区切り文字と `..` は揃える)
+- `comparePathIdentity` は両方の file ID が取れていれば表記より file ID で決める
+- 大文字小文字だけが違う素材は I/O なしでは同じと言えないので、素材の重複として Project を開けなく
+  しない。clip と素材の path の照合 (`validateMediaReferences`) も大文字小文字を区別する
+
+`media_bin_project_focused` が、表記を揃えた key が同じでも file ID が違えば `Different`、file ID が同じなら
+表記が違っても `Same`、key が大文字小文字を畳まないことを、組み立てた `FileIdentityKey` で見る
+(case-sensitive directory は権限と機能の有無で作れない環境があるため)。case-insensitive な通常の
+directory で `VOICE.WAV` と `Voice.wav` が同じ素材になることは従来どおり実ファイルで見る。
+
+`[事実]` 互換分岐は持たない。大文字小文字だけが clip と素材で違う既存の `.mvm` は読めなくなる
+(clip の path は素材の path を写したものなので、通常は一致する)。
+
+### 21.7 内容の fingerprint が中央部の変更を見逃す (#7)
+
+`[事実]` 画像の raster cache は、size と更新時刻が同じまま中身だけ変わった素材を、先頭・末尾 64KiB と
+size の標本で検出していた。中央だけを書き換えると古い raster が残る。raster は preview の画素になるので、
+内容全体の hash (`mvm_file_content_hash`) で照合するようにした (画像は動画ほど大きくない)。
+
+`image_raster_cache_focused` が、768KiB の BMP の中央 64KiB だけを書き換えて更新時刻を戻すと、
+`revalidateAll` で作り直すことを見る。標本の fingerprint に戻すとこの検査が落ちることを確かめた。
+
+`[事実]` 波形の cache は標本の fingerprint のままにし、契約の記述を「検出を試みる (中央部だけの変更は
+取りこぼしうる)」へ弱めた。波形は表示専用で preview・書き出しの画素や音に使わないこと、前面へ戻るたびに
+全素材 (大きな動画を含む) の全体を読むのは重いことによる。
+
+### 21.8 受理されない編集・書き出しで再生が止まる (#8)
+
+`[事実]` `applyTimelineEdit` は再生を止めてから候補を作っていたので、存在しない clip・限界を超えた trim・
+変更なしなど、受理されない操作だけで再生が止まった。候補の作成と検証を先に行い、成功したときだけ
+止めて commit する。書き出しも、clip が無い・ローカルでない書き出し先の検査を止める前に行う。
+
+`text_ui_direct_input` (workstation) の手順 18 が、再生中に存在しない clip の trim とローカルでない
+書き出し先を投げても再生が続き、Undo 履歴の深さと未保存状態が変わらないことを見る。
+
+`[未検証]` 他の入口 (track 操作・Undo/Redo・素材操作など) は今も入口ごとに止めてから処理する。
+「候補の作成 → transport の方針 → commit」を 1 つの transaction にまとめる整理は行っていない。
+
+### 21.9 Undo 履歴が Project の複製を件数だけで制限していた (#9)
+
+`[事実]` 履歴の上限を件数 (100) に加えて、Project の複製の概算 byte 数 (`approximateProjectBytes`) の
+合計 256MiB で決める。最新の 1 件は予算を超えても残す (`undoEntriesToDrop`)。commit と Undo / Redo は、
+確定した後の現在の Project を複製せずに履歴へ移すようにした (編集 1 回あたりの複製が 1 つ減る)。
+`editHistoryBytes` で履歴の概算の合計を読める。
+
+`m5_timeline_edit_focused` が切り詰めの規則 (件数・byte・上限ちょうど・最新の 1 件) と、概算 byte 数が
+clip とキーフレームの量で増えることを見る。
+
+`[未検証]` 差分 (command / delta) で持つ Undo や、構造を共有する Project model には変えていない。
+大規模な fixture での実際の memory 使用量は測っていない。
+
+### 21.10 README の現在の状態が古い (#10, P3)
+
+`[事実]` README の冒頭を現在の製品実装の状態にし、Phase 0〜4 の判定は末尾の
+「Historical: Phase 0-4」へ移した。

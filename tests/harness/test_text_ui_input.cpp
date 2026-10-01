@@ -1394,6 +1394,30 @@ int main(int argc, char** argv) {
                 controller.pauseTimeline();
                 pump(300);
             }
+            // 18. 受理されない編集・書き出しは再生を止めない。候補の検証が先、transport の停止は
+            //     commit が確定してから。Undo 履歴と未保存状態も変えない。
+            {
+                check(controller.playTimeline(),
+                      "前提: 受理されない操作の試験で再生を始められません");
+                pumpUntil([&] { return controller.playing(); }, 5000);
+                check(controller.playing(), "前提: 受理されない操作の試験で再生中になりません");
+                const auto undoDepth = controller.undoDepthForTest();
+                const bool dirtyBefore = controller.dirty();
+                check(!controller.trimClip(QStringLiteral("no-such-clip"), QStringLiteral("right"),
+                                           -1, false),
+                      "前提: 存在しない clip の trim を受理しました");
+                check(controller.playing(), "存在しない clip の trim で再生が止まりました");
+                check(!controller.exportTimeline(
+                          QUrl(QStringLiteral("https://example.invalid/a.mp4"))),
+                      "前提: ローカルでない書き出し先を受理しました");
+                check(controller.playing(),
+                      "ローカルでない書き出し先の書き出しで再生が止まりました");
+                check(controller.undoDepthForTest() == undoDepth &&
+                          controller.dirty() == dirtyBefore,
+                      "受理されない操作が Undo 履歴または未保存状態を変えました");
+                controller.pauseTimeline();
+                pump(300);
+            }
             return failures == 0 ? 0 : 1;
         };
         exitCode = run();

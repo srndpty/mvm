@@ -12,6 +12,7 @@
 #include "image_raster_cache.h"
 
 #include <windows.h>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -70,6 +71,32 @@ bool fileTime(const fs::path& path, FILETIME& time) {
     const bool ok = GetFileTime(file, nullptr, nullptr, &time) != 0;
     CloseHandle(file);
     return ok;
+}
+
+// 黒一色の 24bit BMP (行は 4 byte 境界。512 px 幅なら余りは無い)。
+bool writeBlackBmp(const fs::path& path, std::uint32_t width, std::uint32_t height) {
+    const std::uint32_t row = (width * 3 + 3) / 4 * 4;
+    const std::uint32_t pixels = row * height;
+    std::vector<unsigned char> bytes(54 + pixels, 0);
+    const auto put32 = [&](std::size_t offset, std::uint32_t value) {
+        for (int i = 0; i < 4; ++i)
+            bytes[offset + static_cast<std::size_t>(i)] =
+                static_cast<unsigned char>(value >> (8 * i));
+    };
+    bytes[0] = 'B';
+    bytes[1] = 'M';
+    put32(2, static_cast<std::uint32_t>(bytes.size()));
+    put32(10, 54);
+    put32(14, 40);
+    put32(18, width);
+    put32(22, height);
+    bytes[26] = 1;  // planes
+    bytes[28] = 24; // bit/pixel
+    put32(34, pixels);
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file.write(reinterpret_cast<const char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+    return static_cast<bool>(file);
 }
 
 bool setFileTime(const fs::path& path, const FILETIME& time) {
@@ -193,6 +220,39 @@ int main(int argc, char** argv) {
         const auto after = waitReady(cache, target, 320, 180);
         check(after.state == ImageRasterCache::State::Ready && after.image != before.image,
               "中身の変わった素材の raster を作り直しません");
+    }
+
+    {
+        // 中央だけを書き換えて size と更新時刻を戻した素材も見つける。先頭・末尾の標本だけで
+        // 照合すると取りこぼす (先頭 64KiB と末尾 64KiB の外側だけを変える)。
+        ImageRasterCache cache;
+        const fs::path target = work / "middle-only.bmp";
+        check(writeBlackBmp(target, 512, 512), "前提: 大きな BMP を作れません");
+        const auto size = fs::file_size(target);
+        check(size > 4 * 64 * 1024, "前提: BMP が先頭・末尾の標本より十分大きくありません");
+        const auto before = waitReady(cache, target, 320, 180);
+        check(before.state == ImageRasterCache::State::Ready, "前提: 画像を読めません");
+        FILETIME writeTime{};
+        check(fileTime(target, writeTime), "前提: 更新時刻を読めません");
+        {
+            std::fstream file(target, std::ios::binary | std::ios::in | std::ios::out);
+            file.seekp(static_cast<std::streamoff>(size / 2 - 32 * 1024));
+            const std::vector<char> white(64 * 1024, static_cast<char>(0xFF));
+            file.write(white.data(), static_cast<std::streamsize>(white.size()));
+        }
+        check(fs::file_size(target) == size, "前提: size が変わりました");
+        check(setFileTime(target, writeTime), "前提: 更新時刻を戻せません");
+        QString changed = QStringLiteral("未通知");
+        QObject::connect(&cache, &ImageRasterCache::entryChanged, [&](const QString& key) {
+            if (!key.isEmpty())
+                changed = key;
+        });
+        cache.revalidateAll();
+        check(waitUntil([&] { return changed == ImageRasterCache::keyFor(target, 320, 180); }),
+              "revalidateAll が中央だけ中身の変わった素材を見つけません");
+        const auto after = waitReady(cache, target, 320, 180);
+        check(after.state == ImageRasterCache::State::Ready && after.image != before.image,
+              "中央だけ中身の変わった素材の raster を作り直しません");
     }
 
     {

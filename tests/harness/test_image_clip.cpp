@@ -311,6 +311,37 @@ void testExport() {
               std::string("静止画ではなくなった素材を画像 clip として書き出しました: ") +
                   swap.file + " (" + rendered.error + ")");
     }
+
+    // 出力しない clip (非表示 track・無効) の素材は読まない。V1 に正常な画像、V2 に読めない
+    // 画像 (アニメーションへ差し替え済み) を置く。V2 を出す対照では書き出しが失敗するので、
+    // 下の成功が「壊れた素材を読まずに済んだ」ことによると分かる。
+    {
+        auto broken = projectWith(imageClip("v1", "jpg_quadrant.jpg", 0, 0, 30));
+        broken.timelineClips.push_back(imageClip("v2", "gif_animated.gif", 1, 0, 30));
+        mvm::test::attachFixtureMedia(broken);
+        check(valid(broken), "前提: 2 track の画像 Project が不正です");
+        request.outputPath =
+            fs::path(exported.filePath(QStringLiteral("hidden-shown.mp4")).toStdWString());
+        const auto shown = mvm::app::exportTimeline(broken, request);
+        check(!shown.success && shown.error.find("アニメーション") != std::string::npos,
+              "対照: 表示中の V2 の壊れた画像で書き出しが失敗しません (" + shown.error + ")");
+
+        auto hidden = broken;
+        hidden.videoTracks[1].muted = true;
+        request.outputPath =
+            fs::path(exported.filePath(QStringLiteral("hidden-track.mp4")).toStdWString());
+        const auto renderedHidden = mvm::app::exportTimeline(hidden, request);
+        check(renderedHidden.success && renderedHidden.frameCount == 30,
+              "非表示 track の壊れた画像が書き出しを失敗させました: " + renderedHidden.error);
+
+        auto disabled = broken;
+        disabled.timelineClips[1].enabled = false;
+        request.outputPath =
+            fs::path(exported.filePath(QStringLiteral("disabled-clip.mp4")).toStdWString());
+        const auto renderedDisabled = mvm::app::exportTimeline(disabled, request);
+        check(renderedDisabled.success && renderedDisabled.frameCount == 30,
+              "無効 clip の壊れた画像が書き出しを失敗させました: " + renderedDisabled.error);
+    }
 }
 
 } // namespace

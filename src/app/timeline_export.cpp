@@ -314,8 +314,10 @@ TimelineExportResult exportTimeline(const project::Project& project,
     std::unique_ptr<QTemporaryDir> stillStaging;
     // 同じ画像素材を使う clip は同じ PNG を共有する (decode は素材ごとに 1 回)。
     std::map<std::filesystem::path, std::string> stagedImages;
-    std::vector<std::string> clipPaths;
-    clipPaths.reserve(project.timelineClips.size());
+    // projectClipIndex → MLT へ渡す path。出力する clip (plan.clips) だけを stage する。
+    // 非表示・ミュート・ソロ除外・無効の clip は出力しないので、その素材が壊れていても
+    // 書き出しを失敗させない。
+    std::map<std::size_t, std::string> clipPaths;
     const auto stagePng = [&](const QImage& image, const QString& name, std::string& staged) {
         if (!stillStaging)
             stillStaging = std::make_unique<QTemporaryDir>();
@@ -333,7 +335,14 @@ TimelineExportResult exportTimeline(const project::Project& project,
         staged = pathToUtf8(std::filesystem::path(pngPath.toStdWString()));
         return true;
     };
-    for (std::size_t index = 0; index < project.timelineClips.size(); ++index) {
+    for (const auto& planned : plan.clips) {
+        const auto index = static_cast<std::size_t>(planned.projectClipIndex);
+        if (index >= project.timelineClips.size()) {
+            result.error = "書き出し計画の clip 番号が範囲外です";
+            return result;
+        }
+        if (clipPaths.contains(index))
+            continue;
         const auto& clip = project.timelineClips[index];
         if (clip.kind == project::TimelineClipKind::Text) {
             QString rasterError;
@@ -346,12 +355,12 @@ TimelineExportResult exportTimeline(const project::Project& project,
             std::string staged;
             if (!stagePng(image, QString::number(index) + ".png", staged))
                 return result;
-            clipPaths.push_back(std::move(staged));
+            clipPaths.emplace(index, std::move(staged));
             continue;
         }
         if (clip.kind == project::TimelineClipKind::Image) {
             if (const auto found = stagedImages.find(clip.mediaPath); found != stagedImages.end()) {
-                clipPaths.push_back(found->second);
+                clipPaths.emplace(index, found->second);
                 continue;
             }
             // preview と同じ authority・decoder・配置 (media/still_image) を通し、同じ画素を
@@ -374,18 +383,18 @@ TimelineExportResult exportTimeline(const project::Project& project,
             if (!stagePng(image, QString::number(index) + "-image.png", staged))
                 return result;
             stagedImages.emplace(clip.mediaPath, staged);
-            clipPaths.push_back(std::move(staged));
+            clipPaths.emplace(index, std::move(staged));
             continue;
         }
         if (clip.mediaPath.empty()) {
             result.error = "clip '" + clip.name + "' の media path が空です";
             return result;
         }
-        clipPaths.push_back(pathToUtf8(clip.mediaPath));
+        clipPaths.emplace(index, pathToUtf8(clip.mediaPath));
     }
 
     std::vector<MvmExportClip> clips;
-    clips.reserve(clipPaths.size());
+    clips.reserve(plan.clips.size());
     std::vector<std::vector<MvmExportOpacityKeyframe>> opacityStorage;
     std::vector<std::vector<MvmExportGainKeyframe>> gainStorage;
     opacityStorage.reserve(plan.clips.size());
@@ -394,7 +403,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
         const auto index = static_cast<std::size_t>(planned.projectClipIndex);
         const auto& clip = planned.renderClip;
         MvmExportClip mapped{};
-        mapped.path = clipPaths[index].c_str();
+        mapped.path = clipPaths.at(index).c_str();
         mapped.source_fps_num = clip.sourceFpsNum;
         mapped.source_fps_den = clip.sourceFpsDen;
         mapped.source_frame_count = clip.sourceFrameCount;

@@ -321,6 +321,9 @@ public:
     static Result<void> setVideoSourceLimitForTest(PreviewEngine& engine, std::uint32_t limit);
     static Result<void> setRegisteredVideoSourceLimitForTest(PreviewEngine& engine,
                                                              std::size_t limit);
+    // audio source を扱えない構成 (UnsupportedCapability だが登録枠の不足ではない) を作る seam。
+    // 恒久的な非対応を登録枠の不足と取り違えないことを controller で検査する。
+    static Result<void> disableAudioSourcesForTest(PreviewEngine& engine);
     // seek completionで得たaudio generationをengineが実際にenforceしているか
     // 検査するseam。要求generationが決して揃わない状況を作る。
     static Result<void> injectSeekAudioGenerationMismatchForTest(PreviewEngine& engine);

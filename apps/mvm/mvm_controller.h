@@ -183,7 +183,11 @@ public:
     // 境界の前に準備して、まだ引き継いでいない source の数の最大。先読みが次の境界だけに
     // 留まっていることの検査に使う。
     std::size_t playbackMaxPreparedSourceCount() const { return playbackMaxPreparedSourceCount_; }
+    // clip 境界で登録枠の不足と判定して Preview engine を作り直した回数。登録枠の不足ではない
+    // 失敗 (恒久的に扱えない構成など) で作り直していないことの検査に使う。
+    std::uint64_t playbackCapacityResetCount() const { return playbackCapacityResetCount_; }
     bool setPreviewRegistrationLimitForTest(std::size_t limit);
+    bool disablePreviewAudioSourcesForTest();
     std::vector<std::int64_t> presentedFrameHistoryForTest() const;
     std::vector<std::int64_t> unpairedFrameHistoryForTest() const;
     // 直近に提示した output frame と、そのとき提示した composition の最前面 layer の不透明度。
@@ -265,6 +269,10 @@ public:
     bool canPlay() const;
 
     bool canUndo() const { return !undoHistory_.empty() && !busy_; }
+    // 受理されなかった操作が Undo 履歴を積んでいないことの検査に使う。
+    std::size_t undoDepthForTest() const { return undoHistory_.size(); }
+    // Undo / Redo 履歴が持つ Project の複製の概算 byte 数の合計。
+    std::size_t editHistoryBytes() const;
 
     bool canRedo() const { return !redoHistory_.empty() && !busy_; }
 
@@ -850,6 +858,7 @@ private:
     std::optional<std::int64_t> pendingCapacityRebuildFrame_;
     QString lastPlaybackRebuildReason_;
     std::uint64_t playbackRebuildCount_ = 0;
+    std::uint64_t playbackCapacityResetCount_ = 0;
     double playbackMaxPreparationMs_ = 0.0;
     // 最後に engine が受理した composition。同じ内容を出し直さないために持つ。
     std::shared_ptr<const preview::CompositionSnapshot> submittedComposition_;
@@ -932,8 +941,15 @@ private:
         std::string currentClipId;
         std::int64_t playheadFrame = 0;
         std::uint64_t revision = 0;
+        // project の approximateProjectBytes。履歴へ積むときに埋める。
+        std::size_t bytes = 0;
     };
 
+    // Undo 履歴は件数と Project の複製の概算 byte 数の両方で上限を決める。clip・素材・
+    // キーフレームの多い Project では、件数だけだと 1 世代ごとの大きさに比例して memory が
+    // 増える。最新の 1 件は予算を超えても残す (project::undoEntriesToDrop)。
+    static constexpr std::size_t kMaximumUndoEntries = 100;
+    static constexpr std::size_t kMaximumUndoBytes = 256 * 1024 * 1024;
     std::vector<UndoEntry> undoHistory_;
     // undo で戻した編集。新しい編集を commit すると捨てる。
     std::vector<UndoEntry> redoHistory_;

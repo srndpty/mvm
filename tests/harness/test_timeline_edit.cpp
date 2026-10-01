@@ -103,6 +103,92 @@ clip(const char* name, mvm::project::TimelineClipKind kind = mvm::project::Timel
     return value;
 }
 
+// 大きな timeline の検証が clip 数の 2 乗にならないこと。時間の閾値は環境で揺れるので、
+// 区間を比べた回数を見る。全組を比べる実装なら N(N-1)/2 回になる。
+void testLargeTimelineValidationScales() {
+    constexpr int kClipsPerTrack = 10000;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    project.timelineClips.reserve(2 * kClipsPerTrack);
+    // V1 と V2 にそれぞれ隙間なく並べる。clip の並びは track をまたいで交互にする
+    // (track ごとに並べ直していなければ、隣どうしを見るだけでは重なりを見落とす)。
+    for (int index = 0; index < kClipsPerTrack; ++index) {
+        for (int track = 0; track < 2; ++track) {
+            const std::string name = "big-" + std::to_string(track) + "-" + std::to_string(index);
+            auto value = clip(name.c_str(), mvm::project::TimelineClipKind::Video,
+                              {mvm::project::TrackKind::Video, track});
+            value.sourceOutFrame = 10;
+            value.timelineStartFrame = static_cast<std::int64_t>(kClipsPerTrack - 1 - index) * 10;
+            project.timelineClips.push_back(std::move(value));
+        }
+    }
+    const auto started = std::chrono::steady_clock::now();
+    const auto valid = mvm::project::validateTimeline(project);
+    const auto elapsedMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+            .count();
+    check(valid.success && valid.totalFrames == kClipsPerTrack * 10,
+          "隙間なく並べた大きな timeline を受理しません");
+    // track ごとに先頭以外の clip を 1 回ずつ比べる。
+    check(valid.overlapComparisons == 2 * (kClipsPerTrack - 1),
+          "同じ track の重なりの検査が clip 数に対して線形ではありません");
+    std::printf("large timeline: clip %d、区間の比較 %llu 回、検証 %.1fms\n", 2 * kClipsPerTrack,
+                static_cast<unsigned long long>(valid.overlapComparisons), elapsedMs);
+
+    // 対照: 離れた位置の clip と重ねると検出する (並べ替えた後の隣だけを見ても漏れない)。
+    // 終端の最大を持つ長い clip が、間に短い clip を挟んだ後ろの clip と重なる形も見る。
+    auto overlapping = project;
+    overlapping.timelineClips.back().timelineStartFrame = 5;
+    const auto rejected = mvm::project::validateTimeline(overlapping);
+    check(!rejected.success && rejected.error.find("重複") != std::string::npos,
+          "離れた位置の clip を重ねても重複を検出しません");
+    mvm::project::Project nested = mvm::project::createDefaultProject();
+    auto longClip = clip("long");
+    auto shortClip = clip("short");
+    auto lateClip = clip("late");
+    shortClip.sourceOutFrame = 10;
+    shortClip.timelineStartFrame = 10;
+    lateClip.sourceOutFrame = 10;
+    lateClip.timelineStartFrame = 100;
+    nested.timelineClips = {lateClip, shortClip, longClip};
+    const auto nestedResult = mvm::project::validateTimeline(nested);
+    check(!nestedResult.success && nestedResult.error.find("long") != std::string::npos &&
+              nestedResult.error.find("short") != std::string::npos,
+          "長い clip の内側の clip との重なりを検出しません");
+}
+
+// Undo 履歴は件数だけでなく Project の大きさでも上限を決める。期待値は直書きする。
+void testUndoHistoryBudget() {
+    using mvm::project::undoEntriesToDrop;
+    // 件数の上限: 101 件を 100 件に。
+    check(undoEntriesToDrop(std::vector<std::size_t>(101, 1), 100, 1000) == 1,
+          "件数の上限を超えた Undo 履歴を切り詰めません");
+    // byte の上限: 40 + 40 + 40 = 120 > 100 なので古い 1 件を捨てて 80。
+    check(undoEntriesToDrop({40, 40, 40}, 100, 100) == 1,
+          "byte の上限を超えた Undo 履歴を切り詰めません");
+    // 対照: 上限ちょうどは捨てない。
+    check(undoEntriesToDrop({40, 60}, 100, 100) == 0, "上限ちょうどの Undo 履歴を切り詰めました");
+    // 最新の 1 件は予算を超えても残す。
+    check(undoEntriesToDrop({10, 500}, 100, 100) == 1 && undoEntriesToDrop({500}, 100, 100) == 0,
+          "予算を超える最新の編集を元に戻せなくしました");
+
+    // 概算 byte 数は clip・キーフレーム・素材の量に比例して増える。
+    auto small = mvm::project::createDefaultProject();
+    small.timelineClips = {clip("A")};
+    auto large = small;
+    for (int index = 0; index < 1000; ++index) {
+        auto value = clip(("many-" + std::to_string(index)).c_str());
+        value.effects.opacityKeys.resize(10);
+        large.timelineClips.push_back(std::move(value));
+    }
+    const auto smallBytes = mvm::project::approximateProjectBytes(small);
+    const auto largeBytes = mvm::project::approximateProjectBytes(large);
+    check(smallBytes >= sizeof(mvm::project::Project) + sizeof(mvm::project::TimelineClip),
+          "Project の概算 byte 数が struct の大きさより小さいです");
+    check(largeBytes >= smallBytes + 1000 * (sizeof(mvm::project::TimelineClip) +
+                                             10 * sizeof(mvm::project::ClipKeyframe)),
+          "clip とキーフレームの量が Project の概算 byte 数に入っていません");
+}
+
 mvm::project::Project threeClips() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     project.timelineClips = {clip("A"), clip("Manim", mvm::project::TimelineClipKind::Manim),
@@ -3273,6 +3359,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     testFrameConversions();
+    testLargeTimelineValidationScales();
+    testUndoHistoryBudget();
     testSpeedDurationAndFrameHold();
     testTimelineMarks(fromUtf8(argv[1]));
     testClipKeyEditing();

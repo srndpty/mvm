@@ -5,6 +5,9 @@
 
 #include <algorithm>
 #include <set>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace mvm::project {
@@ -80,12 +83,17 @@ MediaBinEditResult validateMediaBin(const Project& project) {
     // 保存済みの Project が disk 側の変化だけで開けなくなる。実体での判定は
     // 読み込み時の findMediaItemByPath が担う。
     std::set<std::wstring> pathKeys;
+    // 素材ごとに folder 列を走査しない (素材数 x folder 数にしない)。
+    std::unordered_set<std::string_view> folderIds;
+    folderIds.reserve(project.mediaFolders.size());
+    for (const auto& folder : project.mediaFolders)
+        folderIds.insert(folder.id);
     for (const auto& item : project.mediaItems) {
         if (item.id.empty() || !ids.insert(item.id).second)
             return failure("素材の id が空または重複しています: " + item.id);
         if (item.name.empty() || item.mediaPath.empty())
             return failure("素材の名前または media_path が空です");
-        if (!item.folderId.empty() && !findMediaFolder(project, item.folderId))
+        if (!item.folderId.empty() && !folderIds.contains(item.folderId))
             return failure("素材 \"" + item.name + "\" のフォルダがありません");
         const auto key = canonicalPathKey(item.mediaPath);
         if (key.empty())
@@ -100,15 +108,28 @@ MediaBinEditResult validateMediaBin(const Project& project) {
 }
 
 MediaBinEditResult validateMediaReferences(const Project& project) {
+    // clip ごとに素材列を走査しない (clip 数 x 素材数にしない)。素材の表記上の key も
+    // 素材ごとに 1 回だけ作る。id が重複していれば先頭を使う (findMediaItem と同じ)。
+    struct IndexedItem {
+        const MediaItem* item = nullptr;
+        std::wstring pathKey;
+        bool keyed = false;
+    };
+
+    std::unordered_map<std::string_view, IndexedItem> items;
+    items.reserve(project.mediaItems.size());
+    for (const auto& item : project.mediaItems)
+        items.try_emplace(item.id, IndexedItem{&item, {}, false});
     for (const auto& clip : project.timelineClips) {
         if (!clipUsesMediaItem(clip.kind)) {
             if (!clip.mediaItemId.empty())
                 return failure("文字・Manim の clip は素材を参照できません: " + clip.name);
             continue;
         }
-        const auto* item = findMediaItem(project, clip.mediaItemId);
-        if (!item)
+        const auto indexed = items.find(clip.mediaItemId);
+        if (indexed == items.end())
             return failure("clip \"" + clip.name + "\" の素材がプロジェクトパネルにありません");
+        const auto* item = indexed->second.item;
         // 映像のある素材からは音声 clip も作れる (リンクした音声)。
         const bool kindMatches =
             (clip.kind == TimelineClipKind::Video && item->kind == MediaKind::Video) ||
@@ -118,7 +139,11 @@ MediaBinEditResult validateMediaReferences(const Project& project) {
         if (!kindMatches)
             return failure("clip \"" + clip.name + "\" の種別が素材の種別と一致しません");
         // clip は素材と同じファイルを指す。表記で比べ、ファイルの有無には依存させない。
-        if (canonicalPathKey(clip.mediaPath) != canonicalPathKey(item->mediaPath))
+        if (!indexed->second.keyed) {
+            indexed->second.pathKey = canonicalPathKey(item->mediaPath);
+            indexed->second.keyed = true;
+        }
+        if (canonicalPathKey(clip.mediaPath) != indexed->second.pathKey)
             return failure("clip \"" + clip.name + "\" のファイルが素材と一致しません");
     }
     return {true, {}, {}};

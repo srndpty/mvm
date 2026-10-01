@@ -2,54 +2,37 @@
 
 Windows 向けノンリニア動画編集ソフト。YouTube 向けの技術・数学解説動画を主対象とする。
 
-**Phase 0（技術スパイク）は S0〜S7.1 および早期 S16（採否判定）まで完了。
-Phase 0 は「MLT を採用しない」という不採用判定で終了した。
-製品コードは未着手である。**
+## 現在の状態
 
-Phase 0 の目的は、MLT 7 を mvm の編集・プレビュー・書き出しエンジンとして
-採用できるかを判定することのみ。
+**製品実装フェーズ。** Phase 0～4 の技術検証を経て、製品アプリ `apps/mvm` を実装している。
+この README の冒頭が現在の状態の正本であり、Phase 0～4 の判定は末尾の
+[Historical: Phase 0-4](#historical-phase-0-4) に記録として残している。
 
-> **判定:「MLT 7.36.1 / MSYS2 UCRT64 の現行 CPU・RGBA 経路を、
-> mvm の統合編集・リアルタイム preview engine として採用しない。」**
->
-> 1080p60 / 5 トラックの連続 preview が最良 19.85 fps（基準 50）で、
-> 全 video を proxy 化しても 19.67 fps だったため。
-> 判定の射程と、**測っていない項目**（書き出し、オフラインレンダ、
-> エフェクト、clean VM 起動など）は
-> [docs/phase0-decision.md](docs/phase0-decision.md) に明記している。
+現在の repo にあるもの:
 
-**Phase 1～3 の GPU preview / compositor / A/V sync spike は closure 済みで、
-現在は Phase 4 の実装前契約をfreeze済みである。**
-製品用 NLE・タイムライン UI・Project Model は引き続き未着手。
+| 領域 | 実装 | 主な場所 |
+| --- | --- | --- |
+| Project Model | `.mvm` (JSON) の schema 14。track・clip・素材 (プロジェクトパネル)・トランジション・Undo/Redo・自動復旧 | `src/project/`, `apps/mvm/mvm_controller.*` |
+| タイムライン UI | 複数 video / audio track、trim・ripple・rate stretch・分割・フレーム保持、track の表示・mute・solo、トランジション編集 | `apps/mvm/Main.qml` ほか |
+| Preview | 内製の GPU preview engine (FFmpeg D3D11VA + D3D11 compositor + WASAPI)。MLT は使わない | `src/preview_engine/`, `src/media/gpu_preview/`, `src/app/preview/` |
+| 書き出し | Project から書き出し計画を作り、MLT C API で mp4 へ書き出す | `src/app/timeline_export.*`, `src/media/mlt/` |
+| 素材 | 動画・音声・静止画・文字・Manim clip、波形と画像 raster の cache | `src/media/`, `apps/mvm/` |
+
+現在の仕様と経緯の主な文書:
 
 | ドキュメント | 内容 |
 | --- | --- |
-| **[docs/phase1-plan.md](docs/phase1-plan.md)** | **Phase 1 の計画と exit criteria** |
-| **[docs/phase1-findings.md](docs/phase1-findings.md)** | **Phase 1 の実測所見** |
-| **[docs/phase2-plan.md](docs/phase2-plan.md)** | **Phase 2 の計画と exit criteria** |
-| **[docs/phase2-findings.md](docs/phase2-findings.md)** | **Phase 2 の実測所見** |
-| **[docs/phase3-a-plan.md](docs/phase3-a-plan.md)** | **Phase 3 / A の実装前契約** |
-| **[docs/phase3-c-contract.md](docs/phase3-c-contract.md)** | **Phase 3 / C-1 formal contract** |
-| **[docs/phase3-c2-contract.md](docs/phase3-c2-contract.md)** | **Phase 3 / C-2 display-target formal contract** |
-| **[docs/phase3-findings.md](docs/phase3-findings.md)** | **Phase 3 closure と historical result** |
-| **[docs/phase4-plan.md](docs/phase4-plan.md)** | **Phase 4 のfreeze済み実装前契約** |
-| **[docs/adr/0002-preview-backend-spike.md](docs/adr/0002-preview-backend-spike.md)** | **ADR: 内製 GPU preview backend の検証（Proposed）** |
-| **[docs/phase0-decision.md](docs/phase0-decision.md)** | **採否判定書（S16）** |
-| **[docs/adr/0001-mlt-adoption.md](docs/adr/0001-mlt-adoption.md)** | **ADR: MLT 採否の決定** |
-| [docs/phase0-plan.md](docs/phase0-plan.md) | 計画全体と exit criteria |
-| [docs/phase0-findings.md](docs/phase0-findings.md) | 実測結果。事実 / 推測 / 未検証を区別して記録 |
-| [docs/research/mlt-notes.md](docs/research/mlt-notes.md) | MLT の実装メモ（実際に動かして確かめた範囲） |
-| [docs/research/preview-performance-notes.md](docs/research/preview-performance-notes.md) | preview（consumer 経路）の実測と `real_time` の意味 |
-| [docs/research/proxy-notes.md](docs/research/proxy-notes.md) | proxy の生成・path resolver・frame mapping |
-| [docs/research/seek-scrub-notes.md](docs/research/seek-scrub-notes.md) | seek / scrub の実測と表示契約 |
-| [docs/research/composition-notes.md](docs/research/composition-notes.md) | 5 トラック合成の実測 |
-| [docs/research/memory-notes.md](docs/research/memory-notes.md) | メモリ増加の切り分け（診断であり合否ではない） |
-| [docs/research/mlt-ownership.md](docs/research/mlt-ownership.md) | MLT の参照所有権 |
-| [docs/research/test-media-format.md](docs/research/test-media-format.md) | 検証素材とフレーム固有マーカーの仕様 |
+| **[docs/premiere-like-editing.md](docs/premiere-like-editing.md)** | **製品の編集機能の仕様・実装経緯・未検証項目** |
+| **[docs/preview-engine-contract.md](docs/preview-engine-contract.md)** | **PreviewEngine の製品契約** |
+| **[docs/preview-backend-adoption.md](docs/preview-backend-adoption.md)** | **Preview backend の採用決定** |
+| [docs/phase5-plan.md](docs/phase5-plan.md) | PreviewEngine 製品化の計画 |
+| [docs/phase5-e-plan.md](docs/phase5-e-plan.md) | Phase 5 / E の計画 |
+
+開発の規約は [AGENTS.md](AGENTS.md) に一本化している。
 
 ## ツールチェーン
 
-Phase 0 は **MSYS2 UCRT64 に統一**する。Qt / MLT / FFmpeg / アプリ本体で
+**MSYS2 UCRT64 に統一**する。Qt / MLT / FFmpeg / アプリ本体で
 CRT および C++ ABI を混在させない。
 
 | | |
@@ -179,7 +162,7 @@ pwsh scripts/verify-frozen-restore.ps1
 既存の `C:\msys64` と `C:\Users\lambe\sdk\Qt\6.8.3` は変更しない。
 スクリプトはこれらを検証先に指定できないよう拒否する。
 
-## 設計上の制約（Phase 0 全体で守る）
+## 設計上の制約
 
 - mvm 独自の Project Model を MLT の型や property 名に依存させない
 - MLT XML をプロジェクトの正本にしない
@@ -188,7 +171,6 @@ pwsh scripts/verify-frozen-restore.ps1
 - UI スレッドで decode / encode / ファイル I/O を行わない
 - Python へ生の動画フレームを渡さない
 - 一時出力を完成ファイルとして扱わない
-- Phase 0 で本番機能を先回り実装しない
 
 ## ディレクトリ
 
@@ -196,10 +178,62 @@ pwsh scripts/verify-frozen-restore.ps1
 | --- | --- |
 | `cmake/` | ツールチェーン検証、MLT 探索 |
 | `scripts/` | bootstrap / freeze / build / 素材生成 / 復元検証 |
-| `src/util/` | UTF-8・wide 変換ヘルパ（Phase 0 スパイク用。製品 platform 層ではない） |
+| `src/util/` | OS 依存の小さなヘルパ（UTF-8・wide 変換、file identity など） |
 | `src/media/mlt/` | MLT adapter（MLT ヘッダを include できる唯一の場所） |
-| `src/app/` | Qt スパイクシェル |
-| `tests/harness/` | `mvm_bench`（Qt 非依存の検証 CLI） |
+| `src/core/`, `src/project/` | 純粋なデータと計算（Project Model・timeline 編集） |
+| `src/preview_engine/` | 製品 preview engine |
+| `src/media/` | FFmpeg / D3D11 / WASAPI / MLT / 静止画 decoder などの media 層 |
+| `src/app/` | Qt に依存する共有部品（書き出し・preview mapping・文字 raster） |
+| `apps/mvm/` | 製品アプリ（controller・QML UI） |
+| `tests/` | CTest の試験（`tests/harness/` に `mvm_bench` と製品の契約試験） |
 | `tests/assets/` | 生成された検証素材（git 管理外） |
 | `docs/` | 計画・所見・依存 lock |
 | `third_party/pkgs/` | 凍結 MSYS2 パッケージと署名（git 管理外） |
+
+## Historical: Phase 0-4
+
+以下は当時の判定の記録であり、現在の状態ではない。
+
+**Phase 0（技術スパイク）は S0〜S7.1 および早期 S16（採否判定）まで完了し、
+「MLT を preview engine として採用しない」という不採用判定で終了した。**
+(書き出しには現在も MLT C API を使っている。不採用の射程は統合編集・リアルタイム preview である。)
+
+Phase 0 の目的は、MLT 7 を mvm の編集・プレビュー・書き出しエンジンとして
+採用できるかを判定することのみだった。
+
+> **判定:「MLT 7.36.1 / MSYS2 UCRT64 の現行 CPU・RGBA 経路を、
+> mvm の統合編集・リアルタイム preview engine として採用しない。」**
+>
+> 1080p60 / 5 トラックの連続 preview が最良 19.85 fps（基準 50）で、
+> 全 video を proxy 化しても 19.67 fps だったため。
+> 判定の射程と、**測っていない項目**（書き出し、オフラインレンダ、
+> エフェクト、clean VM 起動など）は
+> [docs/phase0-decision.md](docs/phase0-decision.md) に明記している。
+
+Phase 1～3 の GPU preview / compositor / A/V sync spike は closure 済みで、
+Phase 4 の実装前契約を freeze した後、Phase 5 で PreviewEngine を製品化した。
+
+| ドキュメント | 内容 |
+| --- | --- |
+| **[docs/phase1-plan.md](docs/phase1-plan.md)** | **Phase 1 の計画と exit criteria** |
+| **[docs/phase1-findings.md](docs/phase1-findings.md)** | **Phase 1 の実測所見** |
+| **[docs/phase2-plan.md](docs/phase2-plan.md)** | **Phase 2 の計画と exit criteria** |
+| **[docs/phase2-findings.md](docs/phase2-findings.md)** | **Phase 2 の実測所見** |
+| **[docs/phase3-a-plan.md](docs/phase3-a-plan.md)** | **Phase 3 / A の実装前契約** |
+| **[docs/phase3-c-contract.md](docs/phase3-c-contract.md)** | **Phase 3 / C-1 formal contract** |
+| **[docs/phase3-c2-contract.md](docs/phase3-c2-contract.md)** | **Phase 3 / C-2 display-target formal contract** |
+| **[docs/phase3-findings.md](docs/phase3-findings.md)** | **Phase 3 closure と historical result** |
+| **[docs/phase4-plan.md](docs/phase4-plan.md)** | **Phase 4 のfreeze済み実装前契約** |
+| **[docs/adr/0002-preview-backend-spike.md](docs/adr/0002-preview-backend-spike.md)** | **ADR: 内製 GPU preview backend の検証（Proposed）** |
+| **[docs/phase0-decision.md](docs/phase0-decision.md)** | **採否判定書（S16）** |
+| **[docs/adr/0001-mlt-adoption.md](docs/adr/0001-mlt-adoption.md)** | **ADR: MLT 採否の決定** |
+| [docs/phase0-plan.md](docs/phase0-plan.md) | 計画全体と exit criteria |
+| [docs/phase0-findings.md](docs/phase0-findings.md) | 実測結果。事実 / 推測 / 未検証を区別して記録 |
+| [docs/research/mlt-notes.md](docs/research/mlt-notes.md) | MLT の実装メモ（実際に動かして確かめた範囲） |
+| [docs/research/preview-performance-notes.md](docs/research/preview-performance-notes.md) | preview（consumer 経路）の実測と `real_time` の意味 |
+| [docs/research/proxy-notes.md](docs/research/proxy-notes.md) | proxy の生成・path resolver・frame mapping |
+| [docs/research/seek-scrub-notes.md](docs/research/seek-scrub-notes.md) | seek / scrub の実測と表示契約 |
+| [docs/research/composition-notes.md](docs/research/composition-notes.md) | 5 トラック合成の実測 |
+| [docs/research/memory-notes.md](docs/research/memory-notes.md) | メモリ増加の切り分け（診断であり合否ではない） |
+| [docs/research/mlt-ownership.md](docs/research/mlt-ownership.md) | MLT の参照所有権 |
+| [docs/research/test-media-format.md](docs/research/test-media-format.md) | 検証素材とフレーム固有マーカーの仕様 |

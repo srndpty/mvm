@@ -4,6 +4,7 @@
 #include "core/checked_output_timebase.h"
 #include "project/clip_effects.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -242,6 +243,17 @@ const char* manimGenerationStateName(ManimGenerationState state);
 
 const char* timelineClipKindName(TimelineClipKind kind);
 const char* trackKindName(TrackKind kind);
+
+// Project を 1 つ複製したときに確保されるおおよその byte 数 (struct の大きさと、文字列・
+// 配列の中身)。Undo 履歴のように Project の複製を多数持つ場所が、件数ではなく memory で
+// 上限を決めるために使う。allocator の管理領域や短い文字列の最適化は見ないので概算である。
+std::size_t approximateProjectBytes(const Project& project);
+
+// Undo 履歴の古い側から捨てる件数。bytesOldestFirst は各世代の approximateProjectBytes。
+// 件数が maxEntries を超えるか、合計が maxBytes を超える間、古いものから捨てる。
+// ただし最新の 1 件は予算を超えても残す (直前の編集を必ず元に戻せるようにする)。
+std::size_t undoEntriesToDrop(const std::vector<std::size_t>& bytesOldestFirst,
+                              std::size_t maxEntries, std::size_t maxBytes);
 
 } // namespace mvm::project
 

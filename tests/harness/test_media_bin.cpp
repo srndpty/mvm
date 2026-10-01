@@ -355,12 +355,43 @@ void testFileIdentity(const std::filesystem::path& root) {
     check(!mvm::project::sameCanonicalPath(original, other),
           "別ファイルのProject pathを同じと判定しました");
 
-    // 存在しないファイルは表記で比べる。大文字小文字は区別しない。
+    // 存在しないファイルは表記で比べる。区切り文字と .. は揃える。
     Project missing = mvm::project::createDefaultProject();
     missing.mediaItems = {audioItem("m1", "C:/mvm-missing/Tone.wav"),
-                          audioItem("m2", R"(c:\MVM-MISSING\tone.WAV)")};
+                          audioItem("m2", R"(C:\mvm-missing\x\..\Tone.wav)")};
     check(!mvm::project::validateMediaBin(missing).success,
-          "大文字小文字と区切り文字だけが違う素材の重複を受理しました");
+          "区切り文字と..だけが違う素材の重複を受理しました");
+    // 大文字小文字は畳まない。case-sensitive directory では別のファイルでありうるので、
+    // 重複として Project を開けなくしない。
+    Project caseOnly = mvm::project::createDefaultProject();
+    caseOnly.mediaItems = {audioItem("m1", "C:/mvm-missing/Tone.wav"),
+                           audioItem("m2", "C:/mvm-missing/tone.wav")};
+    check(mvm::project::validateMediaBin(caseOnly).success,
+          "大文字小文字だけが違う素材を重複として拒否しました");
+}
+
+// 実体 (file ID) が取れているときは表記より実体で決める。case-sensitive directory の
+// A.mp4 と a.mp4 は、大文字小文字を畳んだ表記が同じでも file ID が違う。実 directory の
+// case sensitivity は権限と機能の有無で作れない環境があるので、key を直接組み立てる。
+void testCaseSensitiveIdentity() {
+    using mvm::project::FileIdentityKey;
+    using mvm::project::FileIdentityStatus;
+    using mvm::project::PathSameness;
+    const FileIdentityKey upper{FileIdentityStatus::FileId, L"C:/case-sensitive/A.mp4", L"1:aa"};
+    const FileIdentityKey lower{FileIdentityStatus::FileId, L"C:/case-sensitive/a.mp4", L"1:bb"};
+    check(mvm::project::comparePathIdentity(upper, lower) == PathSameness::Different,
+          "file IDの違う大文字小文字違いのpathを同じと判定しました");
+    // 表記が同じでも file ID が違えば別物 (表記で先に Same を返さない)。
+    const FileIdentityKey replaced{FileIdentityStatus::FileId, upper.pathKey, L"1:cc"};
+    check(mvm::project::comparePathIdentity(upper, replaced) == PathSameness::Different,
+          "表記が同じでfile IDの違うpathを同じと判定しました");
+    // 対照: file ID が同じなら表記が違っても同じ実体。
+    const FileIdentityKey alias{FileIdentityStatus::FileId, L"C:/case-sensitive/x.mp4", L"1:aa"};
+    check(mvm::project::comparePathIdentity(upper, alias) == PathSameness::Same,
+          "file IDの同じpathを別物と判定しました");
+    check(mvm::project::canonicalPathKey("C:/case-sensitive/A.mp4") !=
+              mvm::project::canonicalPathKey("C:/case-sensitive/a.mp4"),
+          "表記上のkeyが大文字小文字を畳んでいます");
 }
 
 // identity を取れなかったこと (Unavailable) を「存在しない」と同じに扱わない。
@@ -386,8 +417,13 @@ void testUnavailableIdentity(const std::filesystem::path& root) {
           "存在するファイルと存在しないpathを別物と判定しません");
     check(mvm::project::comparePathIdentity(file, directory) == PathSameness::Unknown,
           "identityを取れないpathとの比較をUnknownにしません");
-    check(mvm::project::comparePathIdentity(directory, root / "UNAVAILABLE") == PathSameness::Same,
+    check(mvm::project::comparePathIdentity(directory, root / "x" / ".." / "unavailable") ==
+              PathSameness::Same,
           "表記が同じならidentityを取れなくても同じと判定しません");
+    // 大文字小文字だけが違う表記は、identity を取れなければ同じとも違うとも言えない。
+    check(mvm::project::comparePathIdentity(directory, root / "UNAVAILABLE") ==
+              PathSameness::Unknown,
+          "identityを取れない大文字小文字違いのpathをUnknownにしません");
 
     // 素材の重複登録の判定でも、identity を取れない相手を同じ素材とみなさない。
     Project project = mvm::project::createDefaultProject();
@@ -423,11 +459,16 @@ void testMediaReferences() {
     wrongFile.timelineClips[2].mediaPath = "C:/media/other.wav";
     check(!mvm::project::validateMediaReferences(wrongFile).success,
           "素材と違うファイルを指すclipを受理しました");
-    // 表記ゆれ (大文字小文字・..) は同じファイル。
+    // 表記ゆれ (区切り文字・..) は同じファイル。
     Project spelling = control;
-    spelling.timelineClips[2].mediaPath = "c:/MEDIA/x/../A.WAV";
+    spelling.timelineClips[2].mediaPath = R"(C:\media\x\..\a.wav)";
     check(mvm::project::validateMediaReferences(spelling).success,
           "表記だけが違う同じファイルを拒否しました");
+    // 大文字小文字の違いは I/O なしでは同じと言えない (case-sensitive directory では別ファイル)。
+    Project caseOnly = control;
+    caseOnly.timelineClips[2].mediaPath = "C:/MEDIA/A.WAV";
+    check(!mvm::project::validateMediaReferences(caseOnly).success,
+          "大文字小文字だけが違うpathを素材と同じファイルとして受理しました");
     Project textWithItem = control;
     textWithItem.timelineClips[3].mediaItemId = "a";
     check(!mvm::project::validateMediaReferences(textWithItem).success,
@@ -554,6 +595,7 @@ int main(int argc, char** argv) {
     testMediaReferences();
     testRefreshTiming();
     testUnavailableIdentity(root);
+    testCaseSensitiveIdentity();
     testJson(root);
 
     if (failures == 0)

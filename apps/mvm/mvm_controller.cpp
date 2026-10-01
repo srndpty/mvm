@@ -859,12 +859,26 @@ void MvmController::refreshTimelineModel() {
 }
 
 void MvmController::pushUndoEntry(UndoEntry entry) {
+    entry.bytes = project::approximateProjectBytes(entry.project);
     undoHistory_.push_back(std::move(entry));
-    constexpr std::size_t kMaximumUndoEntries = 100;
-    if (undoHistory_.size() > kMaximumUndoEntries)
-        undoHistory_.erase(undoHistory_.begin());
     // 新しい編集をした時点で、やり直し先の未来は無くなる。
     redoHistory_.clear();
+    std::vector<std::size_t> bytes;
+    bytes.reserve(undoHistory_.size());
+    for (const auto& kept : undoHistory_)
+        bytes.push_back(kept.bytes);
+    const auto drop =
+        project::undoEntriesToDrop(bytes, kMaximumUndoEntries, kMaximumUndoBytes);
+    undoHistory_.erase(undoHistory_.begin(),
+                       undoHistory_.begin() + static_cast<std::ptrdiff_t>(drop));
+}
+
+std::size_t MvmController::editHistoryBytes() const {
+    std::size_t total = 0;
+    for (const auto* history : {&undoHistory_, &redoHistory_})
+        for (const auto& entry : *history)
+            total += entry.bytes;
+    return total;
 }
 
 void MvmController::clearEditHistory() {
@@ -877,12 +891,17 @@ bool MvmController::commitProjectEdit(project::Project candidate, const QString&
         setStatus(failurePrefix + QStringLiteral("Projectを排他できません"));
         return false;
     }
-    UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_, currentRevision_};
     const auto serialized = project::serializeProjectJson(candidate, projectPath_);
     if (!serialized.success) {
         setStatus(failurePrefix + QString::fromStdString(serialized.error));
         return false;
     }
+    // 確定した後は現在の Project を複製せずに履歴へ移す (編集 1 回で Project を余分に
+    // 1 つ複製しない)。
+    // currentClipId() は project_ を読むので、移す前に取る。
+    std::string currentId = currentClipId();
+    UndoEntry undo{std::move(project_), selectedClipIds_, std::move(currentId), playheadFrame_,
+                   currentRevision_};
     project_ = std::move(candidate);
     pushUndoEntry(std::move(undo));
     currentRevision_ = nextRevision_++;
@@ -3609,6 +3628,13 @@ bool MvmController::setPreviewRegistrationLimitForTest(std::size_t limit) {
             *previewEngine_, limit));
 }
 
+bool MvmController::disablePreviewAudioSourcesForTest() {
+    if (!previewEngine_)
+        return false;
+    return static_cast<bool>(
+        preview::internal::PreviewRenderPort::disableAudioSourcesForTest(*previewEngine_));
+}
+
 std::vector<std::int64_t> MvmController::presentedFrameHistoryForTest() const {
     if (!previewEngine_)
         return {};
@@ -3705,7 +3731,7 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHand
                 .count());
         if (!added) {
             playbackCapacityFailure_ =
-                added.error().category == preview::PreviewErrorCategory::UnsupportedCapability;
+                added.error().code == preview::PreviewErrorCode::RegistrationCapacityExceeded;
             reason = previewErrorText(added.error());
             return false;
         }
@@ -3736,7 +3762,7 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHand
                 .count());
         if (!added) {
             playbackCapacityFailure_ =
-                added.error().category == preview::PreviewErrorCategory::UnsupportedCapability;
+                added.error().code == preview::PreviewErrorCode::RegistrationCapacityExceeded;
             reason = previewErrorText(added.error());
             return false;
         }
@@ -3965,6 +3991,7 @@ void MvmController::advanceTimelinePlayback() {
     }
     playheadFrame_ = frame;
     if (capacityFailure) {
+        ++playbackCapacityResetCount_;
         if (!resetPreviewEngine()) {
             stopPlaybackWithError(QStringLiteral("登録上限でPreviewを再初期化できません: ") +
                                   statusText_);
@@ -4781,14 +4808,16 @@ bool MvmController::applyTimelineEdit(
     const std::string& selectedClipId, const QString& successStatus) {
     if (busy_)
         return false;
-    if (!pauseTimeline())
-        return false;
+    // 候補の作成と検証は再生を止める前に行う。存在しない clip・限界を超えた trim・変更なし
+    // など、受理されない操作だけで再生を止めない。止めるのは commit が確定してから。
     project::Project candidate = project_;
     const auto edited = edit(candidate);
     if (!edited.success) {
         setStatus(QString::fromStdString(edited.error));
         return false;
     }
+    if (!pauseTimeline())
+        return false;
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     return refreshPreviewAfterSavedEdit(selectedClipId, successStatus);
@@ -5689,19 +5718,22 @@ bool MvmController::stepEditHistory(std::vector<UndoEntry>& from, std::vector<Un
         return false;
     }
 
-    const UndoEntry& entry = from.back();
+    UndoEntry& entry = from.back();
     const auto serialized = project::serializeProjectJson(entry.project, projectPath_);
     if (!serialized.success) {
         setStatus(failurePrefix + QString::fromStdString(serialized.error));
         return false;
     }
 
-    // 戻した先から逆向きに辿れるよう、いまの状態を反対側の履歴へ積む。
-    UndoEntry current{project_, selectedClipIds_, currentClipId(), playheadFrame_,
+    // 戻した先から逆向きに辿れるよう、いまの状態を反対側の履歴へ積む。どちらも複製せずに移す。
+    // currentClipId() は project_ を読むので、移す前に取る。
+    std::string currentId = currentClipId();
+    UndoEntry current{std::move(project_), selectedClipIds_, std::move(currentId), playheadFrame_,
                       currentRevision_};
+    current.bytes = project::approximateProjectBytes(current.project);
     const std::vector<std::string> previousSelection = entry.selectedClipIds;
     const std::string previousCurrentClipId = entry.currentClipId;
-    project_ = entry.project;
+    project_ = std::move(entry.project);
     playheadFrame_ = entry.playheadFrame;
     currentRevision_ = entry.revision;
     from.pop_back();
@@ -6430,16 +6462,17 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
         reportExportFailure(QStringLiteral("別の処理中のため書き出しを開始できません"));
         return false;
     }
-    if (!pauseTimeline()) {
-        reportExportFailure(statusText_);
-        return false;
-    }
+    // 受理できない要求 (clip が無い・ローカルでない書き出し先) では再生を止めない。
     if (project_.timelineClips.empty()) {
         reportExportFailure(QStringLiteral("書き出すclipがありません"));
         return false;
     }
     if (!outputUrl.isLocalFile()) {
         reportExportFailure(QStringLiteral("ローカルの書き出し先を指定してください"));
+        return false;
+    }
+    if (!pauseTimeline()) {
+        reportExportFailure(statusText_);
         return false;
     }
 

@@ -8,6 +8,8 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace mvm::project {
@@ -28,6 +30,9 @@ struct TimelineValidationResult {
     bool success = false;
     std::int64_t totalFrames = 0;
     std::string error;
+    // 同じ track の重なりを調べるために区間どうしを比べた回数。clip 数に対して線形に
+    // 留まる (全組を比べない) ことの回帰検査に使う。
+    std::uint64_t overlapComparisons = 0;
 };
 
 enum class ClipKeyKind { Opacity, Volume };
@@ -110,6 +115,20 @@ TimelineFrameResult clipFadeSourceFrameAt(const TimelineClip& clip, std::int64_t
                                           std::int64_t timelineFpsDen, std::int64_t clipLocalFrame);
 bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip);
 TimelineValidationResult validateTimeline(const Project& project);
+
+// clip ID -> timelineClips の位置。トランジションごとに全 clip を走査しない (clip 数 x
+// トランジション数にしない) ために一度だけ作る。ID の文字列を参照で持つので、作った後に
+// 元の Project の clip 列を変えてはいけない。ID が重複していれば先頭の位置を返す。
+class ClipIdIndex {
+public:
+    explicit ClipIdIndex(const Project& project);
+    // 無ければ -1。
+    int find(std::string_view id) const;
+
+private:
+    std::unordered_map<std::string_view, int> indices_;
+};
+
 // 編集後の candidate のトランジションを clip に合わせる。clip が無い・同じ track で接して
 // いない・フレーム保持を含むトランジションは消し、余白や尺が足りなければ縮める (0 frame に
 // なれば消す)。track ごとに cut の昇順で処理するので結果は決まる。JSON の読み込みでは

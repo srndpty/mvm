@@ -172,6 +172,15 @@ enum class PreviewErrorCategory {
     ShutdownFailure,
 };
 
+// category より細かい、呼び出し側が機械的に分岐してよい分類。category は利用者向けの大分類で、
+// 同じ UnsupportedCapability に「一時的な登録枠の不足」と「恒久的に扱えない構成」が混ざる。
+// 回復の仕方を決めるのはこちらで行い、detail の文言や category で推測しない。
+enum class PreviewErrorCode {
+    Unspecified,
+    // source の登録枠が埋まっている。登録済みの source を外せば同じ要求が通りうる。
+    RegistrationCapacityExceeded,
+};
+
 enum class PreviewErrorSeverity {
     Recoverable,
     FatalToSession,
@@ -198,6 +207,7 @@ struct PreviewError {
     std::optional<PreviewSourceId> source;
     std::string detail;
     std::optional<std::int64_t> nativeDiagnosticCode;
+    PreviewErrorCode code = PreviewErrorCode::Unspecified;
     bool operator==(const PreviewError&) const = default;
 };
 
