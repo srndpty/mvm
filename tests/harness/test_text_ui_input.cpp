@@ -29,6 +29,7 @@
 
 #include <QClipboard>
 #include <QGuiApplication>
+#include <QPointer>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickStyle>
@@ -1241,16 +1242,19 @@ int main(int argc, char** argv) {
                               "単位付きの速度入力を確定できません");
                     }
                 }
+                // 直接入力を確定した後も focus はダイアログの中に残り、Esc で閉じる (以前は
+                // window へ focus を返していたので Esc が届かず、ダイアログが開いたまま残った)。
                 QTest::keyClick(window, Qt::Key_Escape);
-                pump(300);
+                pumpUntil([&] { return !field || !field->isVisible(); }, 3000);
+                check(!field || !field->isVisible(),
+                      "速度の直接入力を確定した後に Esc でダイアログが閉じません");
             }
             // 15. トラックヘッダ: video の目玉を押して上の track までドラッグすると、通った
             //     track がすべて非表示になる (Photoshop のレイヤーの目玉)。途中では確定せず見た目
             //     だけ変え、離したときに 1 undo で確定する。audio の S は押すと solo になる。
             {
-                // 手順 14 の速度ダイアログは、入力欄を確定した後は focus が外れて Esc が届かず
-                // 開いたまま残る。modal の背景が残っていると最初の press がダイアログを閉じるのに
-                // 使われるので、閉じてから始める。
+                // modal の背景が残っていると最初の press がダイアログを閉じるのに使われ、
+                // 目玉の検査が空振りする。前の手順のダイアログが閉じていることを前提として見る。
                 const auto modalOpen = [&] {
                     for (QQuickItem* item : visualItems(window))
                         if (item->parentItem() && item->parentItem()->inherits("QQuickOverlay") &&
@@ -1259,10 +1263,6 @@ int main(int argc, char** argv) {
                             return true;
                     return false;
                 };
-                for (QObject* object : window->findChildren<QObject*>())
-                    if (object->inherits("QQuickPopup") && object->property("visible").toBool())
-                        QMetaObject::invokeMethod(object, "close");
-                pumpUntil([&] { return !modalOpen(); }, 3000);
                 check(!modalOpen(), "前提: modal のダイアログが閉じません");
                 auto* videoTracks = controller.videoTrackModel();
                 const int top = controller.videoTrackCount() - 1;
@@ -1276,6 +1276,9 @@ int main(int argc, char** argv) {
                 for (int index = 0; index <= top; ++index)
                     allShown = allShown && !trackRole(videoTracks, index, "trackMuted");
                 check(allShown, "前提: video track が非表示になっています");
+                // 目玉は track 名のすぐ右に詰めて置く (track 名と目玉の間を空けない)。
+                check(bottomEye && bottomEye->x() < 40, "目玉が track 名のすぐ右にありません");
+                const QPointer<QQuickItem> eyeBeforeEdits = bottomEye;
                 if (top >= 1 && bottomEye && topEye && topIcon) {
                     const QPoint from = itemCenter(bottomEye);
                     const QPoint to = itemCenter(topEye);
@@ -1309,9 +1312,87 @@ int main(int argc, char** argv) {
                     QTest::mouseClick(window, Qt::LeftButton, {}, itemCenter(solo));
                     pump(300);
                     check(trackRole(audioTracks, 0, "trackSolo"), "S を押しても solo になりません");
+                    // 押すたびにヘッダを作り直すと、目玉が一瞬消えてちらつく。行数が変わらない
+                    // 編集では同じ item のまま値だけが変わる。
+                    check(findVisualItem(window, QStringLiteral("trackSolo_audio_0")) == solo &&
+                              eyeBeforeEdits &&
+                              findVisualItem(window, QStringLiteral("trackEye_video_0")) ==
+                                  eyeBeforeEdits.data(),
+                          "目玉・M・S の切り替えでトラックヘッダを作り直しています");
                     controller.undoLastEdit();
                     pump(300);
                 }
+            }
+            // 16. トラックの削除は常設のボタンではなく、ヘッダの右クリックメニューから行う。
+            {
+                check(findVisualItem(window, QStringLiteral("trackHeaderMenuRemove")) == nullptr ||
+                          !findVisualItem(window, QStringLiteral("trackHeaderMenuRemove"))
+                               ->isVisible(),
+                      "前提: トラックヘッダのメニューが開いています");
+                const int before = controller.videoTrackCount();
+                check(controller.addTrack(QStringLiteral("video")) &&
+                          controller.videoTrackCount() == before + 1,
+                      "前提: 削除する video track を足せません");
+                pump(300);
+                auto* area = findVisualItem(
+                    window, QStringLiteral("trackHeaderContextArea_video_%1").arg(before));
+                check(area && area->isVisible(), "トラックヘッダの右クリックの受け口がありません");
+                if (area) {
+                    const QPoint point =
+                        area->mapToScene(QPointF(10, area->height() / 2)).toPoint();
+                    QTest::mouseClick(window, Qt::RightButton, {}, point);
+                    QQuickItem* remove = nullptr;
+                    pumpUntil(
+                        [&] {
+                            remove =
+                                findVisualItem(window, QStringLiteral("trackHeaderMenuRemove"));
+                            return remove && remove->isVisible() && remove->height() > 0;
+                        },
+                        3000);
+                    check(remove && remove->isVisible(),
+                          "トラックヘッダを右クリックしても削除のメニューが出ません");
+                    if (remove && remove->isVisible()) {
+                        pump(200);
+                        QTest::mouseClick(window, Qt::LeftButton, {}, itemCenter(remove));
+                        pumpUntil([&] { return controller.videoTrackCount() == before; }, 3000);
+                        check(controller.videoTrackCount() == before,
+                              "メニューの「このトラックを削除」で track が消えません");
+                    }
+                }
+                if (controller.videoTrackCount() != before)
+                    controller.undoLastEdit();
+                pump(300);
+            }
+            // 17. 再生中に目玉を切り替えても再生は止まらない。隠すと次の tick で layer から外れ、
+            //     戻すと足りない source を組み直して、その位置から再生を続けて映す。
+            {
+                QVariantList allVideo;
+                for (int index = 0; index < controller.videoTrackCount(); ++index)
+                    allVideo.push_back(index);
+                check(seekAccepted(), "前提: 再生中の目玉の試験の seek が受理されません");
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                check(controller.previewVideoAtPlayhead(), "前提: playhead に映像がありません");
+                const auto presentedLayers = [&] {
+                    return controller.lastPresentedFrameForTest().layerCount;
+                };
+                check(controller.playTimeline(), "前提: 再生を始められません");
+                pumpUntil([&] { return controller.playing() && presentedLayers() >= 1; }, 5000);
+                check(controller.playing() && presentedLayers() >= 1,
+                      "前提: 再生中に映像が出ません");
+                check(controller.setTracksMuted(QStringLiteral("video"), allVideo, true) &&
+                          controller.playing(),
+                      "再生中に目玉で隠すと再生が止まります");
+                pumpUntil([&] { return presentedLayers() == 0; }, 2000);
+                check(controller.playing() && presentedLayers() == 0,
+                      "再生中に隠した track が再生を続けたまま layer から外れません");
+                check(controller.setTracksMuted(QStringLiteral("video"), allVideo, false) &&
+                          controller.playing(),
+                      "再生中に目玉で表示すると再生が止まります");
+                pumpUntil([&] { return presentedLayers() >= 1; }, 3000);
+                check(controller.playing() && presentedLayers() >= 1,
+                      "再生中に表示へ戻した track が再生を続けたまま映りません");
+                controller.pauseTimeline();
+                pump(300);
             }
             return failures == 0 ? 0 : 1;
         };

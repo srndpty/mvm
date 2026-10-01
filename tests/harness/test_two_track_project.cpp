@@ -271,6 +271,15 @@ void testRoundTrip(const std::filesystem::path& root) {
           "soloの無いtrackを既定値で受理しました");
     check(!variant("video-solo.mvm", "\"solo\": false", "\"solo\": true").success,
           "video trackのsoloを受理しました");
+
+    // メモリ上で video track の solo を立てても、検証と保存で止める。止めないと読めない
+    // ファイルを書いてしまう。対照の project は上で保存できている。
+    auto videoSolo = project;
+    videoSolo.videoTracks[0].solo = true;
+    check(!mvm::project::validateTimeline(videoSolo).success,
+          "validateTimelineがvideo trackのsoloを受理しました");
+    check(!mvm::project::serializeProjectJson(videoSolo, path).success,
+          "video trackのsoloを持つProjectを保存用JSONにしました");
 }
 
 } // namespace

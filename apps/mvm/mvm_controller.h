@@ -805,7 +805,9 @@ private:
     void refreshTimelineModel();
     // trackKind 文字列を TrackRef へ解決する。失敗時は status を設定して false。
     bool resolveTrackRef(const QString& trackKind, int trackIndex, project::TrackRef& track) const;
-    // mute / solo の確定。どちらも preview の layer 構成を変えるので現在位置で組み直す。
+    // mute / solo の確定。どちらも preview の layer 構成を変えるので、停止中は現在位置で
+    // 組み直す。再生中は次の tick が引き直す。
+    bool pauseForTrackOutputEdit();
     bool commitTrackOutputEdit(project::Project candidate, const QString& doneStatus);
     bool generateAndInstallManimClip(const std::filesystem::path& scriptPath,
                                      const QString& sceneName, bool requirePreviewReady);

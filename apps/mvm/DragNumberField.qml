@@ -22,6 +22,10 @@ Item {
     // true ならドラッグせずに離したクリック 1 回で直接入力へ切り替える (ダイアログ用)。
     // 既定の false は、パネル上で値を誤って入力モードにしないためダブルクリックを要求する。
     property bool clickToEdit: false
+    // 直接入力を閉じたときに focus を返す先。null なら window。ダイアログ内では
+    // ダイアログの中を指定する。window へ返すと focus が popup の外へ出て、Esc で
+    // ダイアログを閉じられなくなる。
+    property Item focusReturnItem: null
 
     // 直接入力の文字列全体を数値として読む。末尾の単位 (suffix) だけは付いていてよい。
     // parseFloat は "50foo" を 50 と読んでしまうので使わない。読めなければ NaN。
@@ -125,7 +129,11 @@ Item {
             function finish() {
                 const hadFocus = editor.activeFocus;
                 editor.visible = false;
-                if (hadFocus && root.Window.window)
+                if (!hadFocus)
+                    return;
+                if (root.focusReturnItem)
+                    root.focusReturnItem.forceActiveFocus();
+                else if (root.Window.window)
                     root.Window.window.contentItem.forceActiveFocus();
             }
             // ダイアログ (clickToEdit) では、入力中に「適用」を押すと先に focus が外れる。

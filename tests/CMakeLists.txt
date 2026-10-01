@@ -91,7 +91,7 @@ set_tests_properties(m4_timeline_export_focused PROPERTIES
 
 add_executable(mvm_test_timeline_export_mapping harness/test_timeline_export_mapping.cpp)
 target_link_libraries(mvm_test_timeline_export_mapping PRIVATE
-    mvm::timeline_export mvm::warnings)
+    mvm::timeline_export mvm::timeline_preview_mapping mvm::warnings)
 add_test(NAME m7b_3_timeline_export_mapping_focused COMMAND mvm_test_timeline_export_mapping)
 set_tests_properties(m7b_3_timeline_export_mapping_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"

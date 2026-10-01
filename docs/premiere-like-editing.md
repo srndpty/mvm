@@ -2118,19 +2118,20 @@ reconcile がトランジションを消す。このとき、通常の trim が�
 
 `[事実]` `kProjectSchemaVersion` を 14 にし、track に `solo` (必須) を足した。互換分岐は持たず、schema 13 の
 ファイルは読まない (`m5_timeline_edit_focused` と `m7a_1_clip_effects_focused` が出力の版を 13 に書き換えて
-拒否を確かめる)。solo は audio track だけが持つ。video track の `"solo": true` は JSON の読み込みと
-`setTrackSolo` の両方が拒否する。
+拒否を確かめる)。solo は audio track だけが持つ。video track の `"solo": true` は `validateTimeline` が
+拒否する。保存 (`serializeProjectJson`) も `validateTimeline` を通るので、メモリ上で立ててしまっても
+読めないファイルは書かない。JSON の読み込みと `setTrackSolo` は入口での早期の拒否。
 
 - video track の目玉は既存の `muted` (layer から外し、下の track が見える) をそのまま使う
 - 出力の判定は `isTrackOutputEnabled` (`src/project/project.cpp`) に一本化した。audio は「mute でなく、
   solo の track が 1 つも無いか自分が solo」なら鳴らす。solo でも mute が優先する (Premiere と同じ)。
-  preview の layer / audio、シャトル、`previewVideoAtPlayhead`、`clipVisibleAtPlayhead` がこれを呼ぶ。
-  mute だけを見る経路を残すと、そこでだけ solo が効かなくなる
+  preview の layer / audio、シャトル、書き出し (`mapTimelineExportPlan`)、`previewVideoAtPlayhead`、
+  `clipVisibleAtPlayhead` がこれを呼ぶ。mute だけを見る経路を残すと、そこでだけ solo が効かなくなる
+- 書き出しは出力しない track の区間を外し、穴を埋める tractor を選ぶ (尺は timeline 全体のまま)。
+  `m7b_3_timeline_export_mapping_focused` が「V2 を隠す」「A2 だけソロ」「ソロの A2 をミュート」で、
+  書き出しの計画と preview が同じ track を選ぶことを比べる。何も出力しない状態は書き出しを断る
 - 空き track を探す配置 (`placeOnFirstFreeTrack`、コピーの空き track 探し) は従来どおり mute だけを見る。
   solo は聴き分けの操作なので、置き場所を変えない
-
-`[回避策]` 書き出しは mute も solo も見ない (従来から mute を見ていない)。preview と書き出しで聞こえ方が
-違いうる。
 
 `[事実]` 手元の `build/ucrt64-debug/m6a-gui/project.mvm` は schema 13 と同じ手順でテキスト変換した
 (track 11 件に `"solo": false` を追加。元ファイルは `*.schema13.bak`)。
@@ -2152,5 +2153,34 @@ reconcile がトランジションを消す。このとき、通常の trim が�
 確定せず通った目玉だけが非表示に見え、離すと全 video track が非表示になり 1 回の undo で戻ること、
 audio の S を押すと solo になることを見る。塗りの追加をやめる mutant は落ちる。
 
-`[未検証]` 目玉・M・S の見た目は手で確かめていない。`setTrackMuted` / `setTrackSolo` は従来どおり再生を
-止めてから確定する (Premiere は再生中も切り替えられる)。
+### 20.3 再生中の切り替えとトラックヘッダの配置
+
+`[事実]` 目玉・M・S は再生を止めずに切り替える (Premiere と同じ)。通常再生は毎 tick
+`handOffPlaybackSources` が Project から layer / audio を引き直すので、隠す・消音は次の tick で外れる。
+表示・解除で足りない source は、既存の組み直し (その frame で source を用意して再生を続ける) で用意する
+ので、表示に戻した直後は一瞬止まることがある。シャトルは開始時に鳴らす clip を決めて持つので、
+シャトル中だけは従来どおり止めてから確定する。引数・track の検査は止める前に行い、失敗する操作で再生を
+止めない。`text_ui_direct_input` が実 window で、再生中に全 video track を隠すと再生したまま提示の layer が
+0 になり、戻すと再生したまま映ることを見る。止める mutant は落ちる。
+
+`[事実]` トラックヘッダは track 名を左に置き、目玉 (video) / M・S (audio) をそのすぐ右へ詰めて並べる。
+track の削除は常設のボタンをやめ、ヘッダの右クリックメニュー (「このトラックを削除」) に置いた
+(目玉・M・S の隣に削除があると誤って押すため)。再生中は従来どおり選べない。
+
+`[事実]` `TrackModel::setProject` は行数が変わらなければ作り直さず、変わった行だけを `dataChanged` で
+通知する。以前は編集のたびに `beginResetModel` で全 delegate (目玉の Canvas を含む) を作り直しており、
+目玉・M・S を押すたびにヘッダが一瞬消えていた。track の追加・削除は従来どおり作り直す。
+
+`text_ui_direct_input` が、目玉が track 名のすぐ右にあること、S を押しても目玉・S の item が同じまま
+であること、右クリックメニューから足した track を削除できることを見る。配置・作り直し・メニューを
+開く処理をそれぞれ壊す mutant は落ちる。
+
+### 20.4 速度・デュレーションのダイアログが Esc で閉じない
+
+`[事実]` 速度欄 (`DragNumberField`) の直接入力を確定すると、focus を window の `contentItem` へ返していた。
+focus が popup の外へ出るので、Esc がダイアログに届かず閉じなかった。`focusReturnItem` を足し、ダイアログでは
+ダイアログの中へ返す。`text_ui_direct_input` の手順 14 が、確定後の Esc でダイアログが閉じることを見る
+(以前は閉じないまま次の手順へ進み、手順 15 の最初のクリックがダイアログを閉じるのに使われていた)。
+`focusReturnItem` を外す mutant は落ちる。
+
+`[未検証]` 目玉・M・S の見た目は手で操作して確かめていない (起動して配置だけを画面で確認した)。

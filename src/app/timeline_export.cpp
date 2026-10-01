@@ -139,6 +139,16 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         !project::timelineRenderSegments(project, project::TrackKind::Audio, audioSegments,
                                          plan.error))
         return plan;
+    // 非表示・ミュート・他 track のソロで出力しない track の区間は外す。preview と同じ判定
+    // (isTrackOutputEnabled) を使い、見聞きしたものと書き出しを食い違わせない。
+    const auto dropSilenced = [&project](std::vector<project::TimelineRenderSegment>& segments) {
+        const auto removed = std::erase_if(segments, [&project](const auto& segment) {
+            return !project::isTrackOutputEnabled(project, segment.original.track);
+        });
+        return removed > 0;
+    };
+    const bool videoSilenced = dropSilenced(videoSegments);
+    const bool audioSilenced = dropSilenced(audioSegments);
     // 映像 layer: track ごとに lane 0 を置き、トランジションのある track は lane 1 を重ねる。
     std::vector<int> layerBase(project.videoTracks.size(), 0);
     {
@@ -155,12 +165,14 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
     const auto layerOf = [&](const project::TimelineRenderSegment& segment) {
         return layerBase[static_cast<std::size_t>(segment.original.track.index)] + segment.lane;
     };
-    // 無効にした clip は区間に含まれない。尺は timeline 全体のまま保つので、穴を黒・無音で
-    // 埋められる tractor にする (sequential は V1 の clip を詰めて並べるだけ)。
+    // 無効にした clip と出力しない track の clip は区間に含まれない。尺は timeline 全体のまま
+    // 保つので、穴を黒・無音で埋められる tractor にする (sequential は V1 の clip を詰めて並べる
+    // だけ)。
     const bool anyDisabled =
         std::any_of(project.timelineClips.begin(), project.timelineClips.end(),
                     [](const project::TimelineClip& clip) { return !clip.enabled; });
-    if (anyDisabled || project::hasRenderedTransitions(project, project::TrackKind::Video) ||
+    if (anyDisabled || videoSilenced || audioSilenced ||
+        project::hasRenderedTransitions(project, project::TrackKind::Video) ||
         project::hasRenderedTransitions(project, project::TrackKind::Audio))
         plan.backend = TimelineExportResult::Backend::Tractor;
 

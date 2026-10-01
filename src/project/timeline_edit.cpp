@@ -692,6 +692,14 @@ TimelineValidationResult validateTimeline(const Project& project) {
             }
         }
     }
+    // solo は audio だけが持つ。保存 (serialize も validateTimeline を通る) と読み込みの両方で
+    // 止め、自分で書いたファイルを自分で読めない状態を作らない。
+    for (const auto& track : project.videoTracks) {
+        if (track.solo) {
+            result.error = "video track は solo を持てません";
+            return result;
+        }
+    }
     std::unordered_set<std::string> ids;
 
     struct LinkGroupSummary {

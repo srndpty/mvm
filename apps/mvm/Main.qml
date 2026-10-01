@@ -1786,8 +1786,7 @@ ApplicationWindow {
 
                 // 目玉のドラッグ塗り。押した track の表示を反転し、ドラッグで通った video track を
                 // 同じ値にする (Photoshop のレイヤーの目玉)。通った track は先に見た目だけ変え、
-                // 離したときにまとめて確定する (1 回の undo。途中で model を作り直すと押した
-                // delegate が消えてドラッグが切れるため、途中では確定しない)。
+                // 離したときにまとめて確定する (1 回の undo、preview の組み直しも 1 回)。
                 property bool eyePainting: false
                 property bool eyePaintMuted: false
                 property var eyePaintIndices: []
@@ -1822,6 +1821,27 @@ ApplicationWindow {
                     eyePainting = false;
                     eyePaintIndices = [];
                     eyePaintLastIndex = -1;
+                }
+
+                // トラックヘッダの右クリックメニュー。どの header から開いたかを覚えておく。
+                property string menuTrackKind: ""
+                property int menuTrackIndex: -1
+                function openTrackMenu(kind, index) {
+                    menuTrackKind = kind;
+                    menuTrackIndex = index;
+                    trackHeaderMenu.popup();
+                }
+                CompactMenu {
+                    id: trackHeaderMenu
+                    objectName: "trackHeaderMenu"
+                    CompactMenuItem {
+                        objectName: "trackHeaderMenuRemove"
+                        text: "このトラックを削除"
+                        // 再生中に track index が変わると preview の対応が崩れる。
+                        enabled: !root.mvmController.busy && !root.mvmController.playing
+                        onTriggered: root.mvmController.removeTrack(headerColumn.menuTrackKind,
+                                                                    headerColumn.menuTrackIndex)
+                    }
                 }
 
                 // M / S の小さなトグル。押した時点で確定する。
@@ -1877,13 +1897,37 @@ ApplicationWindow {
                     color: video ? "#252a31" : "#232a2a"
                     border.color: "#3c424c"
 
+                    // 削除は誤って押さないよう、常設のボタンではなく右クリックのメニューに置く。
+                    MouseArea {
+                        objectName: "trackHeaderContextArea_" + header.headerKind + "_" + header.headerIndex
+                        anchors.fill: parent
+                        acceptedButtons: Qt.RightButton
+                        onPressed: headerColumn.openTrackMenu(header.headerKind, header.headerIndex)
+                    }
+
+                    // track 名を左に置き、目玉 (video) / M・S (audio) をその右へ詰めて並べる。
+                    Label {
+                        id: trackNameLabel
+                        x: 6
+                        width: Math.min(implicitWidth,
+                                        header.width - x - 4 - (header.video ? eyeButton.width
+                                                                             : audioToggles.width) - 4)
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideRight
+                        text: header.headerName
+                        // 非表示・ミュート・他 track のソロで出力されない track は暗くする。
+                        color: header.headerOutputEnabled && !header.shownMuted ? "#c9ccd2" : "#8b8f96"
+                        font.bold: true
+                    }
+
                     // video: 表示/非表示の目玉。押してから上下へドラッグすると、通った track も
                     // 押した track と同じ表示状態にする。
                     Item {
                         id: eyeButton
                         objectName: "trackEye_" + header.headerKind + "_" + header.headerIndex
                         visible: header.video
-                        x: 4
+                        anchors.left: trackNameLabel.right
+                        anchors.leftMargin: 4
                         anchors.verticalCenter: parent.verticalCenter
                         width: 20
                         height: 20
@@ -1928,7 +1972,8 @@ ApplicationWindow {
                     Row {
                         id: audioToggles
                         visible: !header.video
-                        x: 4
+                        anchors.left: trackNameLabel.right
+                        anchors.leftMargin: 4
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 2
 
@@ -1952,31 +1997,6 @@ ApplicationWindow {
                             onToggled: root.mvmController.setTrackSolo(header.headerKind, header.headerIndex,
                                                                        !header.headerSolo)
                         }
-                    }
-
-                    Label {
-                        anchors.left: header.video ? eyeButton.right : audioToggles.right
-                        anchors.leftMargin: 5
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: header.headerName
-                        // 非表示・ミュート・他 track のソロで出力されない track は暗くする。
-                        color: header.headerOutputEnabled && !header.shownMuted ? "#c9ccd2" : "#8b8f96"
-                        font.bold: true
-                    }
-
-                    Button {
-                        anchors.right: parent.right
-                        anchors.rightMargin: 3
-                        anchors.verticalCenter: parent.verticalCenter
-                        implicitWidth: 18
-                        implicitHeight: 18
-                        text: "×"
-                        flat: true
-                        // 再生中に track index が変わると preview の対応が崩れる。
-                        enabled: !root.mvmController.busy && !root.mvmController.playing
-                        ToolTip.visible: hovered
-                        ToolTip.text: "このトラックを削除"
-                        onClicked: root.mvmController.removeTrack(header.headerKind, header.headerIndex)
                     }
                 }
 
@@ -3602,6 +3622,7 @@ ApplicationWindow {
                 objectName: "speedDurationSpeedField"
                 Layout.fillWidth: true
                 clickToEdit: true
+                focusReturnItem: speedDurationDialog.contentItem
                 labelText: "速度"
                 minimumValue: 10
                 maximumValue: 1000

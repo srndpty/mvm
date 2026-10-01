@@ -36,6 +36,7 @@ private:
         bool muted = false;
         bool solo = false;
         bool outputEnabled = true;
+        bool operator==(const Item&) const = default;
     };
 
     project::TrackKind kind_;

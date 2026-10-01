@@ -41,15 +41,27 @@ QHash<int, QByteArray> TrackModel::roleNames() const {
 }
 
 void TrackModel::setProject(const project::Project& project) {
-    beginResetModel();
-    items_.clear();
+    QList<Item> next;
     const auto& tracks = project::tracksOfKind(project, kind_);
     for (int index = 0; index < static_cast<int>(tracks.size()); ++index) {
         const auto& track = tracks[static_cast<std::size_t>(index)];
-        items_.append({QString::fromStdString(track.name), track.muted, track.solo,
-                       project::isTrackOutputEnabled(project, {kind_, index})});
+        next.append({QString::fromStdString(track.name), track.muted, track.solo,
+                     project::isTrackOutputEnabled(project, {kind_, index})});
     }
-    endResetModel();
+    // 行数が変わらなければ作り直さず、変わった行だけを通知する。reset すると QML の delegate
+    // (目玉の Canvas を含む) が全部作り直され、mute / solo を押すたびにヘッダが一瞬消える。
+    if (next.size() != items_.size()) {
+        beginResetModel();
+        items_ = std::move(next);
+        endResetModel();
+        return;
+    }
+    for (int row = 0; row < items_.size(); ++row) {
+        if (items_[row] == next[row])
+            continue;
+        items_[row] = next[row];
+        Q_EMIT dataChanged(index(row, 0), index(row, 0));
+    }
 }
 
 } // namespace mvm::app
