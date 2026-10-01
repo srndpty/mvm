@@ -510,8 +510,11 @@ public:
     Q_INVOKABLE bool selectTransition(const QString& transitionId);
     // 選択中のトランジションの cut 前後の長さを変える (リンク相手の既存トランジションも)。
     // 1 回が 1 undo。素材 frame に乗らない値は最も近い置ける長さへ吸着させる
-    // (nearestTransitionSpan)。置ける長さが無ければ理由を status に出して false を返す。
-    Q_INVOKABLE bool setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfterCut);
+    // (nearestTransitionSpan)。keepTotal は長さ・配置・本体のドラッグで総尺を保つ吸着、false は
+    // 片側の端のドラッグ (前後を別々に)。置ける長さが無い、または吸着すると今の値と同じなら、
+    // 理由を status に出して false を返す (Project も再生も変えない)。
+    Q_INVOKABLE bool setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfterCut,
+                                       bool keepTotal);
     // Delete。トランジションを選んでいればそれを消し、そうでなければ clip を消す。
     Q_INVOKABLE bool deleteSelection();
     Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);

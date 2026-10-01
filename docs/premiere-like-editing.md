@@ -2056,9 +2056,25 @@ Linked ならリンク相手の編集点の**既存の**トランジションも
 `[事実]` 数値欄・ドラッグの値は素材 frame に乗るとは限らない。30fps 素材を 60fps timeline に置くと cut の前後は
 2 frame 単位でしか延ばせず、最初の実装では長さをドラッグすると「この長さは素材のフレームに合わないため
 設定できません」で断られ、60 f に戻っていた (利用者の報告)。controller の `setTransitionSpan` は
-`nearestTransitionSpan` で最も近い置ける長さ (前後は独立、同じ距離なら今の値から離れる側 = 変えようとした向き)
+`nearestTransitionSpan` で最も近い置ける長さ (同じ距離なら今の値から離れる側 = 変えようとした向き)
 へ吸着させてから確定し、吸着したことを status に出す。project 層の `setTimelineTransitionSpan` は丸めない
 ままにして、吸着を呼び出し側の明示的な操作にしている。
+
+`[事実]` 吸着は操作ごとに保つものが違う (レビュー指摘 P2 3 件への対応)。
+- `SpanFitMode::KeepTotal` (長さ・配置・本体のドラッグ): 総尺を第一に保ち、その総尺の組のうち cut の前が
+  指定に最も近いものを選ぶ。その総尺で置けなければ最も近い総尺へ落とす。前後を別々に吸着していた最初の
+  実装では、最後の 30 frame だけ不透明な outgoing で長さ 100 の中央 (50 / 50) が 30 / 50 = 80 に縮んで
+  いた (30 / 70 で置けるのに)
+- `SpanFitMode::EachSide` (左端・右端のドラッグ): 前後を別々に。動かさない側は今の値なので変わらない
+- 吸着した結果が今の値と同じ (上限で止まっただけ) なら、controller は `applyTimelineEdit` に入らず
+  「これ以上変えられません」を出して false を返す。以前は project 層の「変わっていません」で失敗し、
+  `applyTimelineEdit` が先に再生を止めるので、何も変わらない操作で再生だけが止まり得た
+- 前後の可否は `SpanFitter` にまとめた。不透明度の条件は長さに対して単調なので、cut から連続して不透明な
+  長さを 1 回だけ数え、素材 frame の条件は長さごとに memo する。長さごとに区間を検査し直していた
+  以前の探索は、2 時間 60fps の素材で cut の 100 frame 手前に 1 frame だけ不透明度の下がる配置
+  (候補ごとに不透明な区間を長く辿ってから違反に当たる) で 90 秒以上終わらなかった。今は同じ配置で
+  両モードの吸着が 50 ms 前後 (release)。`applyDefaultEditTransition` と `setTimelineTransitionSpan` も
+  同じ判定を使う
 
 `[事実]` timeline のトランジションは clip の縦中央の低い帯 (高さの 55%) に描き、上下で cut の端を掴める
 (Premiere と同じ)。cut の端は incoming の先頭 (outgoing の上に重なる端の帯) で、縮めて接しなくなると
@@ -2071,7 +2087,9 @@ reconcile がトランジションを消す。このとき、通常の trim が�
 (`notifyTimelineTransitions` で `timelineTransitions` と一緒に比べる)。
 
 `[事実]` 確認したこと:
-- `m5_timeline_edit_focused`: 吸着 (30fps 素材で 31 → 32、29 → 28、不透明度と余白の内側へ)、trim で離れると
+- `m5_timeline_edit_focused`: 吸着 (30fps 素材で 31 → 32、29 → 28、不透明度と余白の内側へ)、総尺を保つ
+  吸着 (不透明な前 30 で 50 / 50 → 30 / 70、本体のずらし 33 / 27 → 34 / 26、置けない総尺 61 → 62)、
+  長尺素材の吸着の結果と時間 (`testTransitionSpanFitOnLongMedia`)、trim で離れると
   トランジションが消えること、接している隣への trim を止めること (縮め・ローリングは止めない)、
   上限 (300 / 300、反対端のトランジションがあると後ろ 200)、cut で開始への変更と
   ID の維持、上限ちょうど、同じ値・0 frame・負・上限超え・未知 ID の拒否 (Project 不変)、不透明度と
@@ -2079,7 +2097,8 @@ reconcile がトランジションを消す。このとき、通常の trim が�
   不透明度・素材 frame・上限・リンクの各検査を外す mutant 4 件はいずれも落ちる
   (不透明度は最後の `validateTimeline` も別の文言で断るので、固有の文言まで照合している)
 - `m7b_4_controller_export_lifecycle`: `selectedTransition` の値、映像と音声が 1 undo で変わること、
-  上限超えを上限へ吸着させること、同じ長さでは undo を積まないこと、未選択では変えないこと
+  上限超えを上限へ吸着させること、吸着すると今の値と同じ要求と同じ長さの要求では undo を積まないこと
+  (この検査を外す mutant は落ちる)、未選択では変えないこと
 - `tst_transition_editor`: 配置の判定、長さ・配置・ドラッグから求める前後の frame 数 (手で数えた値)、
   A / B / cut 線のドラッグの編集の種類、秒と frame の換算、ルーラーの目盛りの間隔
 - `text_ui_direct_input` (workstation): 実 window でトランジションを押すとタブが切り替わり、長さ欄の

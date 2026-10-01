@@ -5,6 +5,7 @@
 #include "util/mvm_win_utf8.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -1822,6 +1823,7 @@ void testApplyDefaultEditTransition() {
 // 既存のトランジションの長さと配置を変える (エフェクトコントロール)。期待値は手で数えた値。
 void testSetTransitionSpan() {
     using mvm::project::LinkMode;
+    using mvm::project::SpanFitMode;
     const auto base = transitionProject();
 
     // A [0,300) と B [300,600) は cut の前後に 300 frame ずつ余白があり、反対端は空いている。
@@ -1920,23 +1922,52 @@ void testSetTransitionSpan() {
     // halfRate は上で 32 / 30 にしたので、30 / 30 へ戻した複写で見る。
     auto halfRateAt30 = halfRate;
     halfRateAt30.timelineTransitions[0].framesBeforeCut = 30;
-    const auto fitUp =
-        mvm::project::nearestTransitionSpan(halfRateAt30, "t1", 31, 30, LinkMode::Linked);
+    const auto fitUp = mvm::project::nearestTransitionSpan(halfRateAt30, "t1", 31, 30,
+                                                           SpanFitMode::EachSide, LinkMode::Linked);
     check(fitUp.success && fitUp.framesBeforeCut == 32 && fitUp.framesAfterCut == 30,
           "増やした長さを素材frameの次の値へ吸着させません");
-    const auto fitDown =
-        mvm::project::nearestTransitionSpan(halfRateAt30, "t1", 29, 33, LinkMode::Linked);
+    const auto fitDown = mvm::project::nearestTransitionSpan(
+        halfRateAt30, "t1", 29, 33, SpanFitMode::EachSide, LinkMode::Linked);
     check(fitDown.success && fitDown.framesBeforeCut == 28 && fitDown.framesAfterCut == 34,
           "減らした長さ・増やした長さをそれぞれの向きへ吸着させません");
     // 不透明な区間 (前 30 まで) と余白 (後 300 まで) の内側へ止める。
-    const auto fitOpaque =
-        mvm::project::nearestTransitionSpan(opaqueTail, "t1", 40, 400, LinkMode::Linked);
+    const auto fitOpaque = mvm::project::nearestTransitionSpan(
+        opaqueTail, "t1", 40, 400, SpanFitMode::EachSide, LinkMode::Linked);
     check(fitOpaque.success && fitOpaque.framesBeforeCut == 30 && fitOpaque.framesAfterCut == 300,
           "不透明度と余白の範囲へ吸着させません");
-    check(!mvm::project::nearestTransitionSpan(base, "t1", 0, 0, LinkMode::Linked).success,
+    check(!mvm::project::nearestTransitionSpan(base, "t1", 0, 0, SpanFitMode::EachSide,
+                                               LinkMode::Linked)
+               .success,
           "0 frameの長さを吸着で受理しました");
-    check(!mvm::project::nearestTransitionSpan(base, "missing", 10, 10, LinkMode::Linked).success,
+    check(!mvm::project::nearestTransitionSpan(base, "missing", 10, 10, SpanFitMode::KeepTotal,
+                                               LinkMode::Linked)
+               .success,
           "存在しないトランジションの長さを吸着しました");
+
+    // 長さ・配置・本体のドラッグは総尺を保つ。outgoing は最後の 30 frame だけが不透明 (余白は
+    // 300) なので、長さ 100 の中央 (50 / 50) は 30 / 70 で置ける。前後を別々に吸着すると
+    // 30 / 50 (80) に縮んでしまう (レビュー指摘の回帰)。
+    auto opaqueAt30 = base;
+    opaqueAt30.timelineClips[0].effects.opacityKeys = {{269, 99.0}, {270, 100.0}};
+    const auto keepTotal = mvm::project::nearestTransitionSpan(
+        opaqueAt30, "t1", 50, 50, SpanFitMode::KeepTotal, LinkMode::Linked);
+    check(keepTotal.success && keepTotal.framesBeforeCut == 30 && keepTotal.framesAfterCut == 70,
+          "置ける組があるのに長さ 100 を保ちません");
+    const auto eachSide = mvm::project::nearestTransitionSpan(
+        opaqueAt30, "t1", 50, 50, SpanFitMode::EachSide, LinkMode::Linked);
+    check(eachSide.success && eachSide.framesBeforeCut == 30 && eachSide.framesAfterCut == 50,
+          "片側の吸着で動かさない側を変えました");
+    // 30fps 素材 (前後とも 2 frame 単位) で本体を右へ 3 ずらす (33 / 27) と、長さ 60 のまま 34 /
+    // 26。
+    const auto shifted = mvm::project::nearestTransitionSpan(
+        halfRateAt30, "t1", 33, 27, SpanFitMode::KeepTotal, LinkMode::Linked);
+    check(shifted.success && shifted.framesBeforeCut == 34 && shifted.framesAfterCut == 26,
+          "本体のドラッグで長さを保ちません");
+    // 長さ 61 は前後とも偶数なので置けない。最も近い総尺のうち増やした向きの 62 (32 / 30)。
+    const auto oddTotal = mvm::project::nearestTransitionSpan(
+        halfRateAt30, "t1", 31, 30, SpanFitMode::KeepTotal, LinkMode::Linked);
+    check(oddTotal.success && oddTotal.framesBeforeCut == 32 && oddTotal.framesAfterCut == 30,
+          "置けない総尺を最も近い総尺へ落としません");
 
     // clip の端を trim して cut で接しなくなれば、トランジションは消える (Premiere と同じ)。
     auto trimmedTail = base;
@@ -2021,6 +2052,46 @@ void testSetTransitionSpan() {
                   .success &&
               videoOnly.timelineTransitions.size() == 1,
           "長さの変更でリンク相手にトランジションを作りました");
+}
+
+// 長尺素材 (2 時間、60fps) の吸着。A [0, 216000) と B [216000, 432000) は同じ 432000 frame の素材の
+// 前半と後半で、cut の前後に 216000 frame の余白がある。A は cut の 100 frame 手前 (local 215900)
+// の 1 frame だけ 99% なので、cut の前に置けるのは最後の 99 frame
+// まで。余白の上限まで延ばす要求を、 この境界へ吸着させる
+// (不透明度は区間の先頭から検査するので、候補ごとに不透明な区間を長く
+// 辿ってから違反に当たる、最も重い配置)。
+// 期待値は手で数えた値。時間は計測して出す (debug でも走るので、閾値は通常の数十倍に取る)。
+void testTransitionSpanFitOnLongMedia() {
+    using mvm::project::LinkMode;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto a = clip("A");
+    a.sourceFrameCount = 432000;
+    a.sourceOutFrame = 216000;
+    a.effects.opacityKeys = {{215899, 100.0}, {215900, 99.0}, {215901, 100.0}};
+    auto b = clip("B");
+    b.sourceFrameCount = 432000;
+    b.sourceInFrame = 216000;
+    b.sourceOutFrame = 432000;
+    b.timelineStartFrame = 216000;
+    project.timelineClips = {a, b};
+    project.timelineTransitions = {{"t1", a.id, b.id, 30, 30}};
+    check(mvm::project::validateTimeline(project).success, "前提: 長尺素材のtimelineが不正です");
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto fitted = mvm::project::nearestTransitionSpan(
+        project, "t1", 216000, 30, mvm::project::SpanFitMode::EachSide, LinkMode::Linked);
+    // 総尺を保つ吸着は incoming の不透明な範囲 (216000) も数える。216030 は 99 / 215931。
+    const auto kept = mvm::project::nearestTransitionSpan(
+        project, "t1", 216000, 30, mvm::project::SpanFitMode::KeepTotal, LinkMode::Linked);
+    const auto elapsed =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+            .count();
+    std::fprintf(stderr, "  長尺素材の吸着: %.1f ms\n", elapsed);
+    check(fitted.success && fitted.framesBeforeCut == 99 && fitted.framesAfterCut == 30,
+          "長尺素材で不透明な範囲の端へ吸着させません");
+    check(kept.success && kept.framesBeforeCut == 99 && kept.framesAfterCut == 215931,
+          "長尺素材で総尺を保って吸着させません");
+    check(elapsed < 2000.0, "長尺素材の吸着に時間が掛かりすぎます");
 }
 
 // 上書き移動。V1 の long [0, 300) の上へ V2 の mover (60 frame) を動かす。期待値は手で数えた値。
@@ -3176,6 +3247,7 @@ int main(int argc, char** argv) {
     testClipWithEdgeAt();
     testApplyDefaultEditTransition();
     testSetTransitionSpan();
+    testTransitionSpanFitOnLongMedia();
     testMoveOverwrite();
     testTimelineTransitions(std::filesystem::path(argv[1]));
     testRippleTrim();

@@ -349,13 +349,20 @@ struct TransitionSpanFit {
     std::string error;
 };
 
+// 吸着で何を保つか。
+//   EachSide : 前と後を独立に、それぞれ指定に最も近い値へ (片側の端のドラッグ。動かさない側は
+//              今の値なので変わらない)
+//   KeepTotal: 総尺 (前 + 後) を第一に保ち、その総尺の組のうち前が指定に最も近いもの (長さ・
+//              配置の変更と本体のドラッグ)。その総尺で置けなければ最も近い総尺へ落とす
+enum class SpanFitMode { EachSide, KeepTotal };
+
 // 指定した cut 前後の長さに最も近い、置ける長さ (上限・素材 frame・不透明度を満たす)。
-// 前と後は独立に選び、同じ距離なら今の値から離れる側 (変えようとした向き) を選ぶ。
-// 数値欄やドラッグの値を、素材 frame に乗る長さへ吸着させるのに使う。setTimelineTransitionSpan
-// 自体は丸めないので、吸着は呼び出し側がこれで明示的に行う。
+// 同じ距離なら今の値から離れる側 (変えようとした向き) を選ぶ。数値欄やドラッグの値を、素材
+// frame に乗る長さへ吸着させるのに使う。setTimelineTransitionSpan 自体は丸めないので、吸着は
+// 呼び出し側がこれで明示的に行う。
 TransitionSpanFit nearestTransitionSpan(const Project& project, const std::string& transitionId,
                                         std::int64_t framesBeforeCut, std::int64_t framesAfterCut,
-                                        LinkMode linkMode);
+                                        SpanFitMode mode, LinkMode linkMode);
 // 既存のトランジションの cut 前後の長さを変える (エフェクトコントロールの長さ・配置)。
 // ID は変えない。Linked ならリンク相手の編集点の既存トランジションも同じ値にする (無ければ
 // 作らない)。合計 1 frame 未満・上限超え・素材 frame に乗らない・不透明度が下がる・値が

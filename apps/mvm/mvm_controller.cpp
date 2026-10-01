@@ -5474,7 +5474,8 @@ QVariantMap MvmController::computeSelectedTransition() const {
          static_cast<qint64>(incomingClip.timelineStartFrame + incomingDuration.frame)}};
 }
 
-bool MvmController::setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfterCut) {
+bool MvmController::setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfterCut,
+                                      bool keepTotal) {
     if (selectedTransitionId_.empty()) {
         setStatus(QStringLiteral("長さを変えるトランジションが選択されていません"));
         return false;
@@ -5482,10 +5483,28 @@ bool MvmController::setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfter
     const std::string id = selectedTransitionId_;
     // 数値欄・ドラッグの値は素材 frame に乗るとは限らない (30fps 素材を 60fps timeline に置くと
     // 2 frame 単位)。最も近い置ける長さへ吸着させ、吸着したことは status に出す。
-    const auto fitted = project::nearestTransitionSpan(project_, id, framesBeforeCut,
-                                                       framesAfterCut, project::LinkMode::Linked);
+    const auto fitted = project::nearestTransitionSpan(
+        project_, id, framesBeforeCut, framesAfterCut,
+        keepTotal ? project::SpanFitMode::KeepTotal : project::SpanFitMode::EachSide,
+        project::LinkMode::Linked);
     if (!fitted.success) {
         setStatus(QString::fromStdString(fitted.error));
+        return false;
+    }
+    // 吸着した結果が今の値と同じなら編集ではない (上限で止まっただけ)。applyTimelineEdit は
+    // 再生を止めるので、何も変わらない操作では入らない。
+    const auto current = std::find_if(
+        project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
+        [&](const auto& transition) { return transition.id == id; });
+    if (current != project_.timelineTransitions.end() &&
+        current->framesBeforeCut == fitted.framesBeforeCut &&
+        current->framesAfterCut == fitted.framesAfterCut) {
+        const bool requestedSame = framesBeforeCut == fitted.framesBeforeCut &&
+                                   framesAfterCut == fitted.framesAfterCut;
+        setStatus(requestedSame
+                      ? QStringLiteral("トランジションの長さは変わっていません")
+                      : QStringLiteral("トランジションはこれ以上変えられません "
+                                       "(素材の余白・フレーム・不透明度の範囲の端です)"));
         return false;
     }
     QString status = QStringLiteral("トランジションを") +

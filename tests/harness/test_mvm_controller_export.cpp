@@ -1532,7 +1532,7 @@ void testTransitionSpanEdit(const std::filesystem::path& path) {
           "選択中のトランジションの値が正しくありません");
 
     // cut で開始 (前 0 / 後 40)。映像と音声の両方が 1 undo で変わる。
-    check(controller.setTransitionSpan(0, 40), "トランジションの長さを変えられません");
+    check(controller.setTransitionSpan(0, 40, true), "トランジションの長さを変えられません");
     selected = controller.selectedTransition();
     const auto shown = controller.timelineTransitions();
     check(frameOf("framesBeforeCut") == 0 && frameOf("framesAfterCut") == 40 && shown.size() == 2 &&
@@ -1547,17 +1547,27 @@ void testTransitionSpanEdit(const std::filesystem::path& path) {
           "Undoで選択中のトランジションの値が戻りません");
 
     // 上限を超える長さは上限 (前 60) へ吸着させる。
-    check(controller.setTransitionSpan(61, 0), "上限を超える長さを上限へ吸着させません");
+    check(controller.setTransitionSpan(61, 0, false), "上限を超える長さを上限へ吸着させません");
     selected = controller.selectedTransition();
     check(frameOf("framesBeforeCut") == 60 && frameOf("framesAfterCut") == 0,
           "上限を超える長さが前 60 / 後 0 になりません");
+    // 上限の 60 / 0 からさらに延ばす要求は、吸着すると今の値と同じなので編集にしない
+    // (undo を積まない。1 回の Undo で 30 / 30 へ戻ることで確かめる)。
+    check(!controller.setTransitionSpan(70, 0, false) &&
+              controller.statusText().contains(QStringLiteral("これ以上変えられません")),
+          "吸着すると今の値と同じ変更を編集として扱いました");
     check(controller.undoLastEdit(), "吸着した長さの変更をUndoできません");
+    selected = controller.selectedTransition();
+    check(frameOf("framesBeforeCut") == 30 && frameOf("framesAfterCut") == 30,
+          "変わらない変更で undo を積みました");
     // 同じ長さは変更にならず、undo を積まない。
-    check(!controller.setTransitionSpan(30, 30), "同じ長さの変更を受理しました");
+    check(!controller.setTransitionSpan(30, 30, true) &&
+              controller.statusText().contains(QStringLiteral("変わっていません")),
+          "同じ長さの変更を受理しました");
 
     // トランジションを選んでいなければ変えない。
     controller.selectTimelineClip(QStringLiteral("video"), true);
-    check(controller.selectedTransition().isEmpty() && !controller.setTransitionSpan(10, 10),
+    check(controller.selectedTransition().isEmpty() && !controller.setTransitionSpan(10, 10, true),
           "トランジションを選んでいないのに長さを変えました");
 }
 

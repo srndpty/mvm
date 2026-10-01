@@ -68,11 +68,13 @@ ColumnLayout {
         root.dragging = true;
     }
 
-    function commitSpan(span) {
+    // keepTotal: 長さ・配置・本体のドラッグは総尺を保って吸着させる。片側の端のドラッグは false
+    // (動かした側だけを吸着させる)。
+    function commitSpan(span, keepTotal) {
         root.dragging = false;
         if (span.before === root.committedBefore && span.after === root.committedAfter)
             return;
-        root.mvmController.setTransitionSpan(span.before, span.after);
+        root.mvmController.setTransitionSpan(span.before, span.after, keepTotal);
     }
 
     function edgeClipId(edit) {
@@ -144,7 +146,7 @@ ColumnLayout {
                     frames, SpanMath.alignmentOf(root.committedBefore, root.committedAfter),
                     root.committedBefore, root.committedAfter, root.maxBefore, root.maxAfter);
                 if (commit)
-                    root.commitSpan(span);
+                    root.commitSpan(span, true);
                 else
                     root.showGhost(span);
             }
@@ -203,7 +205,7 @@ ColumnLayout {
                     return;
                 root.commitSpan(SpanMath.spanForAlignment(chosen, root.committedBefore,
                                                           root.committedAfter, root.maxBefore,
-                                                          root.maxAfter));
+                                                          root.maxAfter), true);
             }
         }
     }
@@ -548,7 +550,8 @@ ColumnLayout {
         }
         onReleased: {
             const ui = handleArea.inspector;
-            ui.commitSpan({ "before": ui.ghostBefore, "after": ui.ghostAfter });
+            ui.commitSpan({ "before": ui.ghostBefore, "after": ui.ghostAfter },
+                          handleArea.handle === "body");
         }
         onCanceled: handleArea.inspector.dragging = false
     }

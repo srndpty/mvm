@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -2172,40 +2173,111 @@ bool resolvePointClips(const Project& prepared, const std::vector<EditPoint>& po
 //   after : outgoing を cut + after まで延ばせること、映像なら incoming を cut + after で
 //           分けられる (lane 1 の区間の終わり) ことと、incoming の最初の after frame
 //           が不透明であること
-bool spanBeforeFits(const Project& prepared, const std::vector<PointClips>& resolved,
-                    std::int64_t before, bool checkOpacity) {
-    std::string ignored;
-    for (const auto& entry : resolved) {
-        const auto cut = entry.clips.cut;
-        if (before > 0 &&
-            !clipWithEdgeAt(prepared, entry.incoming, TrimEdge::Left, cut - before, ignored))
-            return false;
-        if (checkOpacity && entry.outgoing.track.kind == TrackKind::Video &&
-            !dissolveClipOpaqueOver(prepared, entry.outgoing, entry.clips.outgoingDuration - before,
-                                    entry.clips.outgoingDuration, ignored))
-            return false;
-    }
-    return true;
-}
+// 長さごとに区間の不透明度を検査し直すと、長尺素材で候補ごとに数十万 frame を辿る (cut の近くに
+// 不透明度の下がる frame がある 2 時間の素材で、吸着の探索が 90 秒以上終わらなかった)。不透明度の
+// 条件は長さに対して単調 (長いほど厳しい) なので、cut から連続して不透明な長さを最初に 1 回だけ
+// 数える。素材 frame の条件は長さごとに判定して覚える。
+class SpanFitter {
+public:
+    SpanFitter(const Project& prepared, const std::vector<PointClips>& resolved,
+               std::int64_t maxBefore, std::int64_t maxAfter)
+        : prepared_(prepared), resolved_(resolved), maxBefore_(maxBefore), maxAfter_(maxAfter) {}
 
-bool spanAfterFits(const Project& prepared, const std::vector<PointClips>& resolved,
-                   std::int64_t after, bool checkOpacity) {
-    std::string ignored;
-    for (const auto& entry : resolved) {
-        const auto cut = entry.clips.cut;
-        if (after > 0 &&
-            !clipWithEdgeAt(prepared, entry.outgoing, TrimEdge::Right, cut + after, ignored))
+    std::int64_t maxBefore() const { return maxBefore_; }
+
+    std::int64_t maxAfter() const { return maxAfter_; }
+
+    // [0, maxBefore] の外は置けない。
+    bool beforeFits(std::int64_t before, bool checkOpacity) {
+        if (before < 0 || before > maxBefore_ || (checkOpacity && before > opaqueBefore()))
             return false;
-        if (entry.outgoing.track.kind != TrackKind::Video)
-            continue;
-        if (after > 0 && after < entry.clips.incomingDuration &&
-            !clipWithEdgeAt(prepared, entry.incoming, TrimEdge::Right, cut + after, ignored))
-            return false;
-        if (checkOpacity && !dissolveClipOpaqueOver(prepared, entry.incoming, 0, after, ignored))
-            return false;
+        const auto known = beforeEdge_.find(before);
+        if (known != beforeEdge_.end())
+            return known->second;
+        return beforeEdge_[before] = beforeEdgeFits(before);
     }
-    return true;
-}
+
+    bool afterFits(std::int64_t after, bool checkOpacity) {
+        if (after < 0 || after > maxAfter_ || (checkOpacity && after > opaqueAfter()))
+            return false;
+        const auto known = afterEdge_.find(after);
+        if (known != afterEdge_.end())
+            return known->second;
+        return afterEdge_[after] = afterEdgeFits(after);
+    }
+
+    // cut の前 / 後に置ける、不透明な長さの上限 (余白の上限で頭打ち)。
+    std::int64_t opaqueBefore() {
+        if (!opaqueBefore_)
+            opaqueBefore_ = countOpaque(true);
+        return *opaqueBefore_;
+    }
+
+    std::int64_t opaqueAfter() {
+        if (!opaqueAfter_)
+            opaqueAfter_ = countOpaque(false);
+        return *opaqueAfter_;
+    }
+
+private:
+    bool beforeEdgeFits(std::int64_t before) const {
+        if (before == 0)
+            return true;
+        std::string ignored;
+        for (const auto& entry : resolved_) {
+            if (!clipWithEdgeAt(prepared_, entry.incoming, TrimEdge::Left, entry.clips.cut - before,
+                                ignored))
+                return false;
+        }
+        return true;
+    }
+
+    bool afterEdgeFits(std::int64_t after) const {
+        if (after == 0)
+            return true;
+        std::string ignored;
+        for (const auto& entry : resolved_) {
+            const auto cut = entry.clips.cut;
+            if (!clipWithEdgeAt(prepared_, entry.outgoing, TrimEdge::Right, cut + after, ignored))
+                return false;
+            if (entry.outgoing.track.kind == TrackKind::Video &&
+                after < entry.clips.incomingDuration &&
+                !clipWithEdgeAt(prepared_, entry.incoming, TrimEdge::Right, cut + after, ignored))
+                return false;
+        }
+        return true;
+    }
+
+    // 映像の編集点ごとに cut から連続して不透明な frame を数え、その最小値を返す。
+    // cut の前は outgoing の終端から手前へ、後は incoming の先頭から奥へ数える。
+    std::int64_t countOpaque(bool beforeCut) const {
+        std::int64_t limit = beforeCut ? maxBefore_ : maxAfter_;
+        std::string ignored;
+        for (const auto& entry : resolved_) {
+            if (entry.outgoing.track.kind != TrackKind::Video)
+                continue;
+            const auto& clip = beforeCut ? entry.outgoing : entry.incoming;
+            std::int64_t count = 0;
+            while (count < limit) {
+                const auto local = beforeCut ? entry.clips.outgoingDuration - 1 - count : count;
+                if (!dissolveClipOpaqueOver(prepared_, clip, local, local + 1, ignored))
+                    break;
+                ++count;
+            }
+            limit = count;
+        }
+        return limit;
+    }
+
+    const Project& prepared_;
+    const std::vector<PointClips>& resolved_;
+    std::int64_t maxBefore_ = 0;
+    std::int64_t maxAfter_ = 0;
+    std::optional<std::int64_t> opaqueBefore_;
+    std::optional<std::int64_t> opaqueAfter_;
+    std::unordered_map<std::int64_t, bool> beforeEdge_;
+    std::unordered_map<std::int64_t, bool> afterEdge_;
+};
 
 // 選んだ長さは描画区間を作れるはずである。作れなければ理由をそのまま返す (黙って縮めない)。
 TimelineEditResult commitTransitionTrial(Project& project, Project trial,
@@ -2271,15 +2343,14 @@ TransitionEditResult applyDefaultEditTransition(Project& project, const std::str
         return result;
     // before と after のそれぞれで置ける長さを求めてから、合計が最大で cut に最も近い中央の
     // 組を選ぶ。
+    SpanFitter fitter(prepared, resolved, maxBefore, maxAfter);
     const auto choose = [&](bool checkOpacity, std::int64_t& before, std::int64_t& after) {
         std::vector<bool> beforeOk(static_cast<std::size_t>(maxBefore) + 1);
         std::vector<bool> afterOk(static_cast<std::size_t>(maxAfter) + 1);
         for (std::int64_t value = 0; value <= maxBefore; ++value)
-            beforeOk[static_cast<std::size_t>(value)] =
-                spanBeforeFits(prepared, resolved, value, checkOpacity);
+            beforeOk[static_cast<std::size_t>(value)] = fitter.beforeFits(value, checkOpacity);
         for (std::int64_t value = 0; value <= maxAfter; ++value)
-            afterOk[static_cast<std::size_t>(value)] =
-                spanAfterFits(prepared, resolved, value, checkOpacity);
+            afterOk[static_cast<std::size_t>(value)] = fitter.afterFits(value, checkOpacity);
         for (std::int64_t total = std::min(timelineFrames, maxBefore + maxAfter); total >= 1;
              --total) {
             // 合計 total の組のうち、cut を中央に置く組から順に試す。
@@ -2354,28 +2425,36 @@ TransitionSpanLimits transitionSpanLimits(const Project& project, const std::str
 
 namespace {
 
-// [0, maximum] のうち fits を満たし requested に最も近い値。同じ距離なら current から離れる側
-// (変えようとした向き) を選ぶ。無ければ -1。
-std::int64_t nearestFittingFrames(std::int64_t requested, std::int64_t current,
-                                  std::int64_t maximum,
-                                  const std::function<bool(std::int64_t)>& fits) {
-    requested = std::clamp<std::int64_t>(requested, 0, maximum);
-    const std::int64_t towards = requested >= current ? 1 : -1;
-    for (std::int64_t distance = 0; distance <= maximum; ++distance) {
-        for (const std::int64_t value :
-             {requested + towards * distance, requested - towards * distance}) {
-            if (value >= 0 && value <= maximum && fits(value))
-                return value;
-        }
+// [lower, upper] のうち fits を満たし target に最も近い値。同じ距離なら towards (+1 / -1) の向きを
+// 選ぶ。無ければ -1。
+std::int64_t nearestInRange(std::int64_t target, std::int64_t lower, std::int64_t upper,
+                            std::int64_t towards, const std::function<bool(std::int64_t)>& fits) {
+    if (lower > upper)
+        return -1;
+    target = std::clamp(target, lower, upper);
+    for (std::int64_t distance = 0;; ++distance) {
+        const std::int64_t first = target + towards * distance;
+        const std::int64_t second = target - towards * distance;
+        const bool firstInside = first >= lower && first <= upper;
+        const bool secondInside = second >= lower && second <= upper;
+        if (!firstInside && !secondInside)
+            return -1;
+        if (firstInside && fits(first))
+            return first;
+        if (secondInside && fits(second))
+            return second;
     }
-    return -1;
+}
+
+std::int64_t towardsChange(std::int64_t requested, std::int64_t current) {
+    return requested >= current ? 1 : -1;
 }
 
 } // namespace
 
 TransitionSpanFit nearestTransitionSpan(const Project& project, const std::string& transitionId,
                                         std::int64_t framesBeforeCut, std::int64_t framesAfterCut,
-                                        LinkMode linkMode) {
+                                        SpanFitMode mode, LinkMode linkMode) {
     TransitionSpanFit result;
     const auto* transition = findTransition(project, transitionId);
     if (!transition) {
@@ -2391,13 +2470,44 @@ TransitionSpanFit nearestTransitionSpan(const Project& project, const std::strin
                                maxBefore, maxAfter, result.error) ||
         !resolvePointClips(prepared, points, resolved, result.error))
         return result;
-    // cut の前と後の可否は独立に決まるので、それぞれで最も近い値を選ぶ。
-    const auto before = nearestFittingFrames(
-        framesBeforeCut, transition->framesBeforeCut, maxBefore,
-        [&](std::int64_t value) { return spanBeforeFits(prepared, resolved, value, true); });
-    const auto after = nearestFittingFrames(
-        framesAfterCut, transition->framesAfterCut, maxAfter,
-        [&](std::int64_t value) { return spanAfterFits(prepared, resolved, value, true); });
+    SpanFitter fitter(prepared, resolved, maxBefore, maxAfter);
+    const auto beforeFits = [&](std::int64_t value) { return fitter.beforeFits(value, true); };
+    const auto afterFits = [&](std::int64_t value) { return fitter.afterFits(value, true); };
+    // 不透明度の上限より外は置けないので、探索をその内側に限る。
+    const std::int64_t beforeLimit = std::min(maxBefore, fitter.opaqueBefore());
+    const std::int64_t afterLimit = std::min(maxAfter, fitter.opaqueAfter());
+    const std::int64_t currentBefore = transition->framesBeforeCut;
+    const std::int64_t currentAfter = transition->framesAfterCut;
+    std::int64_t before = -1;
+    std::int64_t after = -1;
+    if (mode == SpanFitMode::EachSide) {
+        // 片側の端のドラッグ。動かさなかった側は今の値のまま (置けるので変わらない)。
+        before = nearestInRange(framesBeforeCut, 0, beforeLimit,
+                                towardsChange(framesBeforeCut, currentBefore), beforeFits);
+        after = nearestInRange(framesAfterCut, 0, afterLimit,
+                               towardsChange(framesAfterCut, currentAfter), afterFits);
+    } else {
+        // 長さ・配置・本体のドラッグ。総尺を第一に保ち、その総尺の組のうち cut の前が指定に
+        // 最も近いものを選ぶ。指定の総尺で置けなければ、最も近い総尺へ落とす。
+        const auto topBefore = nearestInRange(beforeLimit, 0, beforeLimit, -1, beforeFits);
+        const auto topAfter = nearestInRange(afterLimit, 0, afterLimit, -1, afterFits);
+        const std::int64_t requestedTotal = framesBeforeCut + framesAfterCut;
+        nearestInRange(
+            requestedTotal, 1, topBefore + topAfter,
+            towardsChange(requestedTotal, currentBefore + currentAfter), [&](std::int64_t total) {
+                const auto chosen = nearestInRange(
+                    framesBeforeCut, std::max<std::int64_t>(0, total - topAfter),
+                    std::min(topBefore, total), towardsChange(framesBeforeCut, currentBefore),
+                    [&](std::int64_t value) {
+                        return beforeFits(value) && afterFits(total - value);
+                    });
+                if (chosen < 0)
+                    return false;
+                before = chosen;
+                after = total - chosen;
+                return true;
+            });
+    }
     if (before < 0 || after < 0 || before + after < 1) {
         result.error = "素材の余白と不透明度の範囲に置ける長さがありません";
         return result;
@@ -2445,13 +2555,12 @@ TransitionEditResult setTimelineTransitionSpan(Project& project, const std::stri
         return result;
     // 余白の内側でも、素材 frame に乗らない長さ (速度変更) と不透明度の下がる区間は断る。
     // 置ける長さへ黙って丸めない。
-    if (!spanBeforeFits(prepared, resolved, framesBeforeCut, false) ||
-        !spanAfterFits(prepared, resolved, framesAfterCut, false)) {
+    SpanFitter fitter(prepared, resolved, maxBefore, maxAfter);
+    if (!fitter.beforeFits(framesBeforeCut, false) || !fitter.afterFits(framesAfterCut, false)) {
         result.error = "この長さは素材のフレームに合わないため設定できません";
         return result;
     }
-    if (!spanBeforeFits(prepared, resolved, framesBeforeCut, true) ||
-        !spanAfterFits(prepared, resolved, framesAfterCut, true)) {
+    if (!fitter.beforeFits(framesBeforeCut, true) || !fitter.afterFits(framesAfterCut, true)) {
         result.error =
             std::string(kDissolveRequirement) + "トランジションの区間で不透明度が下がっています";
         return result;
