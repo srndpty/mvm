@@ -785,6 +785,34 @@ void testSpeedDurationAndFrameHoldUndo(const std::filesystem::path& path) {
     }
 }
 
+// Undo / Redo は現在の Project を反対側の履歴へ積む。積んだ後も、Undo と Redo の合計が
+// byte の予算を超えない。track を足すたびに Project は少しずつ大きくなるので、Undo で
+// 積む現在の Project は、取り出す 1 つ前の世代より大きい。
+void testEditHistoryBudgetAfterUndo(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "履歴予算試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    for (int index = 0; index < 6; ++index)
+        check(controller.addTrack("video"), "履歴予算試験の編集ができません");
+    // いまの履歴の大きさをちょうど予算にする。Undo で積む現在の Project の方が取り出す世代より
+    // 大きいので、積む側だけを見る切り詰めでは予算を超える。
+    const auto budget = controller.editHistoryBytes();
+    controller.setEditHistoryByteBudgetForTest(budget);
+    check(controller.undoLastEdit() && controller.redoDepthForTest() == 1,
+          "履歴予算試験の Undo ができません");
+    check(controller.editHistoryBytes() <= budget,
+          "Undo した後の Undo と Redo の履歴が byte の予算を超えました");
+    check(controller.undoLastEdit() && controller.redoLastEdit() &&
+              controller.editHistoryBytes() <= budget,
+          "Undo / Redo を続けた後の履歴が byte の予算を超えました");
+    // 予算がどれだけ小さくても、現在の状態に隣り合う Undo と Redo は 1 件ずつ残す。
+    controller.setEditHistoryByteBudgetForTest(1);
+    check(controller.undoLastEdit() && controller.undoDepthForTest() == 1 &&
+              controller.redoDepthForTest() == 1 && controller.canUndo() && controller.canRedo(),
+          "予算を超えても現在の状態に隣り合う Undo と Redo を残しません");
+}
+
 void testRedoRestoresDirtyState(const std::filesystem::path& path) {
     const auto initial = videoProject();
     check(mvm::project::saveProjectJson(initial, path).success,
@@ -2235,6 +2263,7 @@ int main(int argc, char** argv) {
     testLinkedClipboard(directory / L"clipboard-linked.mvm");
     testMultipleClipClipboard(directory / L"clipboard-multiple.mvm");
     testRedoRestoresDirtyState(directory / L"redo-dirty.mvm");
+    testEditHistoryBudgetAfterUndo(directory / L"history-budget.mvm");
     testSlipPreviewDoesNotEdit(directory / L"slip-preview.mvm");
     testPenKeyUndoRedo(directory / L"pen-undo-redo.mvm");
     testSpeedDurationAndFrameHoldUndo(directory / L"speed-hold-undo.mvm");

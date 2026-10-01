@@ -402,6 +402,73 @@ int checkLargeTimelineDelegates(const mvm::project::Project& base,
     return 0;
 }
 
+int countTextLayers(QQuickWindow* window) {
+    int count = 0;
+    for (QQuickItem* item : visualItems(window))
+        if (item->objectName().startsWith(QStringLiteral("textLayer_")))
+            ++count;
+    return count;
+}
+
+// 字幕のように短い文字 clip が多くても、preview の文字 layer (preview 全面の delegate) は
+// 再生位置に掛かる文字 clip の分しか作らない。全文字 clip 分を作ると 10,000 個になる。
+int checkLargeTextOverlayDelegates(const std::filesystem::path& projectPath) {
+    constexpr int kTexts = 10000;
+    auto project = mvm::project::createDefaultProject();
+    for (int index = 0; index < kTexts; ++index) {
+        mvm::project::TimelineClip line;
+        line.kind = mvm::project::TimelineClipKind::Text;
+        line.id = "line-" + std::to_string(index);
+        line.name = line.id;
+        line.sourceFpsNum = project.timelineFpsNum;
+        line.sourceFpsDen = project.timelineFpsDen;
+        line.sourceFrameCount = 30;
+        line.sourceOutFrame = 30;
+        line.timelineStartFrame = static_cast<std::int64_t>(index) * 30;
+        line.track = {mvm::project::TrackKind::Video, 0};
+        line.text.content = line.id;
+        project.timelineClips.push_back(std::move(line));
+    }
+    mvm::app::MvmController controller(projectPath, {}, project);
+    mvm::app::WaveformCache waveformCache;
+    QQmlApplicationEngine engine;
+    engine.setInitialProperties(
+        {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
+    engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
+    auto* window = engine.rootObjects().isEmpty()
+                       ? nullptr
+                       : qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+    if (!window) {
+        std::fprintf(stderr, "FAIL: 文字 clip の多い timeline の window がありません\n");
+        controller.shutdown();
+        return 3;
+    }
+    QTest::qWaitForWindowExposed(window);
+    pump(500);
+    check(controller.timelineModel()->rowCount() == kTexts,
+          "前提: 10,000 個の文字 clip を読み込めません");
+    const int initial = countTextLayers(window);
+    check(initial >= 1 && initial <= 2 &&
+              findVisualItem(window, QStringLiteral("textLayer_line-0")) != nullptr,
+          "文字 layer の delegate が再生位置に掛かる文字 clip の数に収まりません");
+    // 再生位置を動かすと、その位置の文字 clip の layer に入れ替わる。
+    const qint64 target = 500 * 30 + 5;
+    // 文字だけの Project では preview の seek が受理されなくても、再生位置 (表示) は動く。
+    controller.seekTimelineFrame(target);
+    const bool sought = pumpUntil([&] { return controller.playheadFrame() == target; }, 5000);
+    pump(200);
+    check(sought, "前提: 文字 clip の多い timeline で再生位置を動かせません");
+    check(countTextLayers(window) <= 2 &&
+              findVisualItem(window, QStringLiteral("textLayer_line-500")) != nullptr &&
+              findVisualItem(window, QStringLiteral("textLayer_line-0")) == nullptr,
+          "再生位置を動かした後の文字 layer が再生位置に掛かる文字 clip に入れ替わりません");
+    std::printf("large text overlay: 文字 clip %d、文字 layer 初期 %d / 移動後 %d\n", kTexts,
+                initial, countTextLayers(window));
+    controller.shutdown();
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
     QGuiApplication application(argc, argv);
@@ -1513,6 +1580,9 @@ int main(int argc, char** argv) {
     if (exitCode == 0)
         exitCode = checkLargeTimelineDelegates(
             project, directory.filePath(QStringLiteral("large.mvm")).toStdWString());
+    if (exitCode == 0)
+        exitCode = checkLargeTextOverlayDelegates(
+            directory.filePath(QStringLiteral("large-text.mvm")).toStdWString());
     if (exitCode == 0 && failures != 0)
         exitCode = 1;
     mvm_mlt_runtime_shutdown();

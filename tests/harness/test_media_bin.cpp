@@ -503,6 +503,41 @@ void testMediaReferences() {
               "media_item_idの無いclipを読み込めてしまいます");
     }
     std::filesystem::remove(roundTrip);
+
+    // 以前の版 (同じ schema 14) は clip と素材の path を大文字小文字を畳んで照合していた。
+    // 大文字小文字だけが違う Project は、読み込むときに clip の path を素材の表記へ揃えて開く。
+    // 大文字小文字以外も違う path (別のファイル) は従来どおり拒否する。
+    const auto legacyCase = std::filesystem::temp_directory_path() / "mvm-media-reference-case.mvm";
+    check(mvm::project::saveProjectJson(control, legacyCase).success,
+          "前提: 大文字小文字の移行試験の Project を保存できません");
+    std::ifstream legacySaved(legacyCase, std::ios::binary);
+    const std::string legacyJson((std::istreambuf_iterator<char>(legacySaved)),
+                                 std::istreambuf_iterator<char>());
+    legacySaved.close();
+    // project の外の素材も同じ drive なら relative で書かれるので、末尾で探す。
+    const std::string spelled = "media/a.wav";
+    const auto spelledAt = legacyJson.find(spelled);
+    check(spelledAt != std::string::npos &&
+              legacyJson.find(spelled, spelledAt + 1) != std::string::npos,
+          "前提: 保存JSONに素材と clip の path がありません");
+    if (spelledAt != std::string::npos) {
+        // 先に現れる方 (素材か clip のどちらか) だけを大文字にする。
+        std::string upper = legacyJson;
+        upper.replace(spelledAt, spelled.size(), "MEDIA/A.WAV");
+        writeText(legacyCase, upper);
+        const auto migrated = mvm::project::loadProjectJson(legacyCase);
+        const auto* item =
+            migrated.success ? mvm::project::findMediaItem(migrated.project, "a") : nullptr;
+        check(migrated.success && item &&
+                  migrated.project.timelineClips[2].mediaPath == item->mediaPath,
+              "大文字小文字だけが素材と違う schema 14 の clip を素材の表記へ揃えて開けません");
+        std::string other = legacyJson;
+        other.replace(spelledAt, spelled.size(), "MEDIA/B.WAV");
+        writeText(legacyCase, other);
+        check(!mvm::project::loadProjectJson(legacyCase).success,
+              "素材と違うファイルを指す clip を読み込み時に素材の path へ書き換えました");
+    }
+    std::filesystem::remove(legacyCase);
 }
 
 void testJson(const std::filesystem::path& root) {

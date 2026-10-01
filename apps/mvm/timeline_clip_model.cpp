@@ -290,9 +290,50 @@ bool TimelineClipWindowModel::filterAcceptsRow(int sourceRow,
 
 TextClipFilterModel::TextClipFilterModel(QObject* parent) : QSortFilterProxyModel(parent) {}
 
+void TextClipFilterModel::setPlayheadFrame(qint64 frame) {
+    if (frame == playhead_)
+        return;
+    if (frame >= stableFrom_ && frame < stableUntil_) {
+        playhead_ = frame;
+        return;
+    }
+    beginFilterChange();
+    playhead_ = frame;
+    stableFrom_ = std::numeric_limits<qint64>::min();
+    stableUntil_ = std::numeric_limits<qint64>::max();
+    ++playheadRefilterCount_;
+    endFilterChange(Direction::Rows);
+}
+
+void TextClipFilterModel::setPinnedClipIds(const QStringList& clipIds) {
+    if (clipIds == pinnedClipIds_)
+        return;
+    beginFilterChange();
+    pinnedClipIds_ = clipIds;
+    pinned_ = QSet<QString>(clipIds.begin(), clipIds.end());
+    pinned_.remove(QString());
+    endFilterChange(Direction::Rows);
+    Q_EMIT pinnedClipIdsChanged();
+}
+
 bool TextClipFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const {
-    return sourceModel()->index(sourceRow, 0, sourceParent).data(TimelineClipModel::KindRole) ==
-           QStringLiteral("text");
+    const auto row = sourceModel()->index(sourceRow, 0, sourceParent);
+    if (row.data(TimelineClipModel::KindRole) != QStringLiteral("text"))
+        return false;
+    const qint64 start = row.data(TimelineClipModel::TimelineStartFrameRole).toLongLong();
+    const qint64 end =
+        start +
+        std::max<qint64>(1, row.data(TimelineClipModel::TimelineDurationFramesRole).toLongLong());
+    // 再生位置の前にある端は範囲の下限を、後ろにある端は上限を狭める。
+    for (const qint64 edge : {start, end}) {
+        if (edge <= playhead_)
+            stableFrom_ = std::max(stableFrom_, edge);
+        else
+            stableUntil_ = std::min(stableUntil_, edge);
+    }
+    if (pinned_.contains(row.data(TimelineClipModel::ClipIdRole).toString()))
+        return true;
+    return start <= playhead_ && playhead_ < end;
 }
 
 } // namespace mvm::app

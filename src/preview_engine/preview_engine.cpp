@@ -851,6 +851,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         SourceWork work;
         std::thread thread;
         std::atomic<bool> cancelled{false};
+        // 完了を待たれている。試験用の hold でも止めない (待つ側と hold を外す側が同じ
+        // control thread なので、止めると待ち続ける)。
+        std::atomic<bool> awaited{false};
         std::atomic<bool> done{false};
         // thread が書き、done を立てた後に control thread が読む。
         std::optional<Result<void>> result;
@@ -861,6 +864,10 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // pause / seek / shutdown で進める。要求の後に transport が変わった準備を見分ける。
     std::uint64_t transportGeneration = 0;
     std::uint64_t staleSourcePreparationRejectCount = 0;
+    // 再生中に最初の audio を公開したときに、control thread で endpoint の open から再生開始まで
+    // に掛かった時間 (WASAPI は COM を初期化した thread で扱うので準備用の thread へ移せない)。
+    std::uint64_t playingAudioEndpointOpenCount = 0;
+    double maxPlayingAudioEndpointOpenMs = 0.0;
     std::shared_ptr<PreparationHold> preparationHold = std::make_shared<PreparationHold>();
 
     Result<AudioPlacement> audioPlacementLocked(const PreviewSourceDescriptor& descriptor) const;
@@ -2235,6 +2242,7 @@ PreviewEngine::Impl::publishSourceWorkLocked(SourceWork& work, std::unique_lock<
             // WASAPI endpoint は COM を初期化した thread で open / 解放する必要があるので、
             // 先読みでも control thread のここで open する。
             std::string audioError;
+            const auto endpointBegan = std::chrono::steady_clock::now();
             newAudioClock = std::make_shared<audio::AudioMasterClock>();
             newAudioSink =
                 std::make_shared<audio::WasapiAudioSink>(work.audioWorker->queue(), *newAudioClock);
@@ -2270,6 +2278,12 @@ PreviewEngine::Impl::publishSourceWorkLocked(SourceWork& work, std::unique_lock<
                         makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
                                   "再生中のaudio transportを開始できません: " + audioError));
                 }
+                ++playingAudioEndpointOpenCount;
+                maxPlayingAudioEndpointOpenMs =
+                    std::max(maxPlayingAudioEndpointOpenMs,
+                             std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - endpointBegan)
+                                 .count());
             }
         }
     }
@@ -2424,7 +2438,8 @@ PreviewEngine::requestSourcePreparation(const PreviewSourceDescriptor& descripto
         {
             std::unique_lock<std::mutex> holdLock(hold->mutex);
             hold->changed.wait(holdLock, [&] {
-                return !hold->held || preparation->cancelled.load(std::memory_order_acquire);
+                return !hold->held || preparation->cancelled.load(std::memory_order_acquire) ||
+                       preparation->awaited.load(std::memory_order_acquire);
             });
         }
         preparation->result = Impl::runSourceWork(preparation->work, &preparation->cancelled);
@@ -2475,6 +2490,8 @@ Result<PreviewSourceId> PreviewEngine::waitSourcePreparation(PreviewPreparationI
     preparation = found->second;
     impl_->preparations.erase(found);
     lock.unlock();
+    preparation->awaited.store(true, std::memory_order_release);
+    impl_->preparationHold->wakeAll();
     preparation->thread.join();
     lock.lock();
     return impl_->finishPreparationLocked(*preparation, lock);
@@ -4516,6 +4533,8 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.registeredVideoSourceCount = engine.impl_->sourceRegistry.registeredSourceCount();
     result.pendingSourcePreparationCount = engine.impl_->preparations.size();
     result.staleSourcePreparationRejectCount = engine.impl_->staleSourcePreparationRejectCount;
+    result.playingAudioEndpointOpenCount = engine.impl_->playingAudioEndpointOpenCount;
+    result.maxPlayingAudioEndpointOpenMs = engine.impl_->maxPlayingAudioEndpointOpenMs;
     result.publishedSourceCount = engine.impl_->eligibleSources.size();
     const std::size_t first =
         (engine.impl_->presentedOutputFrameNext + engine.impl_->presentedOutputFrames.size() -

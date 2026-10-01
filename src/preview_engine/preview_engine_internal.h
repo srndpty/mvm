@@ -121,6 +121,10 @@ struct P5CRuntimeDiagnostics {
     std::uint64_t staleSourcePreparationRejectCount = 0;
     // 公開している source (video / audio) の数。捨てた準備が登録を残していないことを見る。
     std::uint64_t publishedSourceCount = 0;
+    // 再生中に最初の audio を公開した回数と、そのとき control thread が endpoint の open から
+    // 再生開始までに掛かった時間の最大 (ms)。
+    std::uint64_t playingAudioEndpointOpenCount = 0;
+    double maxPlayingAudioEndpointOpenMs = 0.0;
     std::vector<std::int64_t> recentPresentedOutputFrames;
     // recentPresentedOutputFrames と同じ順に、提示した composition の layer 数と最前面 layer の
     // 不透明度。
@@ -331,7 +335,8 @@ public:
     // 恒久的な非対応を登録枠の不足と取り違えないことを controller で検査する。
     static Result<void> disableAudioSourcesForTest(PreviewEngine& engine);
     // 先読みの準備用の thread を open の前で止める / 再開する。止めている間に pause / seek など
-    // を起こし、古くなった完了が公開されないことを決定論的に確かめる。
+    // を起こし、古くなった完了が公開されないことを決定論的に確かめる。境界で完了を待たれた
+    // 準備 (waitSourcePreparation) は止めない。
     static void holdSourcePreparationsForTest(PreviewEngine& engine, bool held);
     // seek completionで得たaudio generationをengineが実際にenforceしているか
     // 検査するseam。要求generationが決して揃わない状況を作る。

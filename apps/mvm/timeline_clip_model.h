@@ -6,6 +6,9 @@
 #include <QAbstractListModel>
 #include <QSet>
 #include <QSortFilterProxyModel>
+
+#include <cstdint>
+#include <limits>
 #include <QStringList>
 #include <QVariantList>
 #include <QtQml/qqmlregistration.h>
@@ -143,17 +146,45 @@ private:
     QSet<QString> pinned_;
 };
 
-// 文字 clip だけを通す。preview の文字 layer は文字 clip にしか要らないので、全 clip 分の
-// (preview 全面の) delegate を作らない。
+// 再生位置に掛かる文字 clip と、固定する文字 clip (preview 上でドラッグしている) だけを通す。
+// preview の文字 layer は再生位置で見えている文字にしか要らないので、字幕のように文字 clip が
+// 数千あっても、delegate (preview 全面) は再生位置に掛かる数 + 固定する数に収まる。
+// 再生位置は毎 frame 変わるので、通す組が変わらない範囲 [stableFrom, stableUntil) を絞り込みの
+// ついでに求めておき、その内側の移動では絞り直さない (文字 clip の境界を跨いだときだけ全行を
+// 判定し直す)。
 class TextClipFilterModel : public QSortFilterProxyModel {
     Q_OBJECT
     QML_ANONYMOUS
+    Q_PROPERTY(QStringList pinnedClipIds READ pinnedClipIds WRITE setPinnedClipIds NOTIFY
+                   pinnedClipIdsChanged)
 
 public:
     explicit TextClipFilterModel(QObject* parent = nullptr);
 
+    void setPlayheadFrame(qint64 frame);
+    qint64 playheadFrame() const { return playhead_; }
+    // 再生位置の移動で全行を判定し直した回数 (試験用)。
+    std::uint64_t playheadRefilterCountForTest() const { return playheadRefilterCount_; }
+
+    QStringList pinnedClipIds() const { return pinnedClipIds_; }
+    void setPinnedClipIds(const QStringList& clipIds);
+
+signals:
+    void pinnedClipIdsChanged();
+
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override;
+
+private:
+    qint64 playhead_ = 0;
+    // playhead_ がこの範囲にある間は、通す文字 clip の組が変わらない。行の追加・変更で
+    // filterAcceptsRow が呼ばれるたびに狭めるだけなので (行が消えても広げない)、実際より
+    // 狭いことはあっても広いことはない。
+    mutable qint64 stableFrom_ = std::numeric_limits<qint64>::min();
+    mutable qint64 stableUntil_ = std::numeric_limits<qint64>::max();
+    std::uint64_t playheadRefilterCount_ = 0;
+    QStringList pinnedClipIds_;
+    QSet<QString> pinned_;
 };
 
 } // namespace mvm::app

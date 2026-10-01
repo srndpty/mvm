@@ -233,17 +233,32 @@ std::size_t approximateProjectBytes(const Project& project) {
     return bytes;
 }
 
-std::size_t undoEntriesToDrop(const std::vector<std::size_t>& bytesOldestFirst,
-                              std::size_t maxEntries, std::size_t maxBytes) {
+EditHistoryDrop editHistoryEntriesToDrop(const std::vector<std::size_t>& undoFarthestFirst,
+                                         const std::vector<std::size_t>& redoFarthestFirst,
+                                         std::size_t maxEntries, std::size_t maxBytes) {
     std::size_t total = 0;
-    for (const auto bytes : bytesOldestFirst)
-        total += bytes;
-    std::size_t drop = 0;
-    std::size_t remaining = bytesOldestFirst.size();
-    while (remaining > 1 && (remaining > maxEntries || total > maxBytes)) {
-        total -= bytesOldestFirst[drop];
-        ++drop;
-        --remaining;
+    for (const auto* history : {&undoFarthestFirst, &redoFarthestFirst})
+        for (const auto bytes : *history)
+            total += bytes;
+    EditHistoryDrop drop;
+    std::size_t undoRemaining = undoFarthestFirst.size();
+    std::size_t redoRemaining = redoFarthestFirst.size();
+    while (undoRemaining + redoRemaining > maxEntries || total > maxBytes) {
+        // 残っている中で最も遠い世代は、Undo 側なら undoRemaining 番目、Redo 側なら
+        // redoRemaining 番目の距離にある。隣り合う 1 件 (残り 1 件) は捨てない。
+        const bool undoDroppable = undoRemaining > 1;
+        const bool redoDroppable = redoRemaining > 1;
+        if (!undoDroppable && !redoDroppable)
+            break;
+        if (undoDroppable && (!redoDroppable || undoRemaining >= redoRemaining)) {
+            total -= undoFarthestFirst[drop.undo];
+            ++drop.undo;
+            --undoRemaining;
+        } else {
+            total -= redoFarthestFirst[drop.redo];
+            ++drop.redo;
+            --redoRemaining;
+        }
     }
     return drop;
 }

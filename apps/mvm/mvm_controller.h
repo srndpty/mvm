@@ -188,8 +188,8 @@ public:
     // 境界の前に準備して、まだ引き継いでいない source の数の最大。先読みが次の境界だけに
     // 留まっていることの検査に使う。
     std::size_t playbackMaxPreparedSourceCount() const { return playbackMaxPreparedSourceCount_; }
-    // 先読みの準備が完了したが、要求の後に再生や Project が変わっていたので使わずに外した回数
-    // (engine が pause / seek で捨てたものは含まない)。
+    // 先読みの準備のうち、要求の後に再生や Project が変わったので取り消した、または完了しても
+    // 使わずに外した回数 (controller を通さない engine の pause / seek で捨てたものは含まない)。
     std::uint64_t playbackStalePreparationCount() const { return playbackStalePreparationCount_; }
     // clip 境界までに先読みの準備が終わらず、境界で完了を待った回数。
     std::uint64_t playbackPreparationWaitCount() const { return playbackPreparationWaitCount_; }
@@ -295,6 +295,9 @@ public:
     std::size_t undoDepthForTest() const { return undoHistory_.size(); }
     // Undo / Redo 履歴が持つ Project の複製の概算 byte 数の合計。
     std::size_t editHistoryBytes() const;
+    std::size_t redoDepthForTest() const { return redoHistory_.size(); }
+    // 履歴の byte 予算を差し替える (試験用)。次の編集・Undo・Redo から効く。
+    void setEditHistoryByteBudgetForTest(std::size_t bytes) { editHistoryByteBudget_ = bytes; }
 
     bool canRedo() const { return !redoHistory_.empty() && !busy_; }
 
@@ -894,6 +897,9 @@ private:
     // 停止・組み直し・engine の作り直し・Project の変更で進める。要求した後にこれが進んだ
     // 準備の完了は使わずに外す (古い Project・古い再生で決めた source を残さない)。
     std::uint64_t playbackPreparationGeneration_ = 0;
+    // 世代が進んで取り消した準備。engine が取り消しを終えて登録の枠を返すまで残る。
+    // 新しい世代の要求が登録の上限に当たったら、これを待って枠を空けてから要求し直す。
+    std::vector<preview::PreviewPreparationId> stalePreparations_;
     std::uint64_t playbackStalePreparationCount_ = 0;
     std::uint64_t playbackPreparationWaitCount_ = 0;
     void collectSourcePreparations();
@@ -902,7 +908,13 @@ private:
     // 準備の完了を受け取る。使えるなら prepared*Sources_ へ移し、古ければ source を外す。
     void adoptPreparationOutcome(preview::PreviewPreparationId id,
                                  preview::Result<preview::PreviewSourceId> outcome);
+    // 準備中のものを取り消して stalePreparations_ へ移し、世代を進める。次の tick は今の
+    // Project と再生で準備し直す (古い準備が境界まで残って、新しい要求を塞がない)。
     void cancelSourcePreparations();
+    // 取り消した準備の完了を待って受け取り、登録の枠を返す。
+    void reapStaleSourcePreparations();
+    preview::Result<preview::PreviewPreparationId>
+    requestPlaybackSourcePreparation(const preview::PreviewSourceDescriptor& descriptor);
     QString playbackPreparationFailure_;
     // 準備に失敗した境界。その境界を越えるまで準備し直さない (壊れた素材の seek 待ちを
     // 毎 tick 繰り返さない)。
@@ -1000,15 +1012,18 @@ private:
         std::size_t bytes = 0;
     };
 
-    // Undo 履歴は件数と Project の複製の概算 byte 数の両方で上限を決める。clip・素材・
-    // キーフレームの多い Project では、件数だけだと 1 世代ごとの大きさに比例して memory が
-    // 増える。最新の 1 件は予算を超えても残す (project::undoEntriesToDrop)。
+    // Undo / Redo 履歴は、両方の合計の件数と Project の複製の概算 byte 数で上限を決める。
+    // clip・素材・キーフレームの多い Project では、件数だけだと 1 世代ごとの大きさに比例して
+    // memory が増える。新しい編集・Undo・Redo のたびに切り詰め、現在の状態に隣り合う Undo と
+    // Redo の 1 件ずつは予算を超えても残す (project::editHistoryEntriesToDrop)。
     static constexpr std::size_t kMaximumUndoEntries = 100;
     static constexpr std::size_t kMaximumUndoBytes = 256 * 1024 * 1024;
+    std::size_t editHistoryByteBudget_ = kMaximumUndoBytes;
     std::vector<UndoEntry> undoHistory_;
     // undo で戻した編集。新しい編集を commit すると捨てる。
     std::vector<UndoEntry> redoHistory_;
     void pushUndoEntry(UndoEntry entry);
+    void trimEditHistory();
     void clearEditHistory();
     // from の末尾へ戻し、いまの状態を to へ積む。undo / redo の共通手順。
     bool stepEditHistory(std::vector<UndoEntry>& from, std::vector<UndoEntry>& to, bool redo);

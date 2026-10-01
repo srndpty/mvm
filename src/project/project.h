@@ -249,11 +249,19 @@ const char* trackKindName(TrackKind kind);
 // 上限を決めるために使う。allocator の管理領域や短い文字列の最適化は見ないので概算である。
 std::size_t approximateProjectBytes(const Project& project);
 
-// Undo 履歴の古い側から捨てる件数。bytesOldestFirst は各世代の approximateProjectBytes。
-// 件数が maxEntries を超えるか、合計が maxBytes を超える間、古いものから捨てる。
-// ただし最新の 1 件は予算を超えても残す (直前の編集を必ず元に戻せるようにする)。
-std::size_t undoEntriesToDrop(const std::vector<std::size_t>& bytesOldestFirst,
-                              std::size_t maxEntries, std::size_t maxBytes);
+// Undo / Redo 履歴から捨てる件数。どちらの配列も「現在の状態から遠い順」に並べた各世代の
+// approximateProjectBytes (Undo は古い順、Redo は最後にやり直す編集から順)。
+// 両方の合計の件数が maxEntries を超えるか、合計の byte 数が maxBytes を超える間、現在の
+// 状態から最も遠い世代から捨てる (距離が同じなら Undo 側)。ただし現在の状態に隣り合う
+// Undo と Redo の 1 件ずつは予算を超えても残す (直前の編集を必ず元に戻し、やり直せる)。
+struct EditHistoryDrop {
+    std::size_t undo = 0;
+    std::size_t redo = 0;
+};
+
+EditHistoryDrop editHistoryEntriesToDrop(const std::vector<std::size_t>& undoFarthestFirst,
+                                         const std::vector<std::size_t>& redoFarthestFirst,
+                                         std::size_t maxEntries, std::size_t maxBytes);
 
 } // namespace mvm::project
 

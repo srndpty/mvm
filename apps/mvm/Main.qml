@@ -1180,12 +1180,19 @@ ApplicationWindow {
                             // 隠すと render されず、seek が完了しない。
                         }
 
-                        // 文字 clip だけの model。controller へ渡す行番号は全 clip の番号 (clipRow) で、
-                        // この Repeater の index ではない。
+                        // 再生位置に掛かる文字 clip だけの model (ドラッグ中の文字は固定する)。
+                        // controller へ渡す行番号は全 clip の番号 (clipRow) で、この Repeater の
+                        // index ではない。
+                        Binding {
+                            target: root.mvmController.textClipModel
+                            property: "pinnedClipIds"
+                            value: root.draggingTextClipId !== "" ? [root.draggingTextClipId] : []
+                        }
                         Repeater {
                             model: root.mvmController.textClipModel
                             delegate: Item {
                                 id: textLayer
+                                objectName: "textLayer_" + clipId
                                 required property int clipRow
                                 required property string clipId
                                 required property string clipKind

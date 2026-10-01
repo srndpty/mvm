@@ -158,18 +158,35 @@ void testLargeTimelineValidationScales() {
 
 // Undo 履歴は件数だけでなく Project の大きさでも上限を決める。期待値は直書きする。
 void testUndoHistoryBudget() {
-    using mvm::project::undoEntriesToDrop;
+    using mvm::project::editHistoryEntriesToDrop;
+    const auto drops = [](const std::vector<std::size_t>& undo,
+                          const std::vector<std::size_t>& redo, std::size_t maxEntries,
+                          std::size_t maxBytes, std::size_t undoDrop, std::size_t redoDrop) {
+        const auto drop = editHistoryEntriesToDrop(undo, redo, maxEntries, maxBytes);
+        return drop.undo == undoDrop && drop.redo == redoDrop;
+    };
     // 件数の上限: 101 件を 100 件に。
-    check(undoEntriesToDrop(std::vector<std::size_t>(101, 1), 100, 1000) == 1,
+    check(drops(std::vector<std::size_t>(101, 1), {}, 100, 1000, 1, 0),
           "件数の上限を超えた Undo 履歴を切り詰めません");
     // byte の上限: 40 + 40 + 40 = 120 > 100 なので古い 1 件を捨てて 80。
-    check(undoEntriesToDrop({40, 40, 40}, 100, 100) == 1,
-          "byte の上限を超えた Undo 履歴を切り詰めません");
+    check(drops({40, 40, 40}, {}, 100, 100, 1, 0), "byte の上限を超えた Undo 履歴を切り詰めません");
     // 対照: 上限ちょうどは捨てない。
-    check(undoEntriesToDrop({40, 60}, 100, 100) == 0, "上限ちょうどの Undo 履歴を切り詰めました");
+    check(drops({40, 60}, {}, 100, 100, 0, 0), "上限ちょうどの Undo 履歴を切り詰めました");
     // 最新の 1 件は予算を超えても残す。
-    check(undoEntriesToDrop({10, 500}, 100, 100) == 1 && undoEntriesToDrop({500}, 100, 100) == 0,
+    check(drops({10, 500}, {}, 100, 100, 1, 0) && drops({500}, {}, 100, 100, 0, 0),
           "予算を超える最新の編集を元に戻せなくしました");
+    // Redo も同じ予算に入る。Undo 30 + 30 と Redo 30 + 30 は 120 > 100。現在の状態から最も遠い
+    // 世代 (距離 2 は両側にあり、同じなら Undo 側) から 1 件捨てて 90。
+    check(drops({30, 30}, {30, 30}, 100, 100, 1, 0),
+          "Undo と Redo の合計で byte の上限を守りません");
+    // Redo 側の方が遠ければ Redo 側から捨てる (Redo の先頭が最後にやり直す編集)。
+    check(drops({30}, {30, 30, 30}, 100, 100, 0, 1),
+          "現在の状態から遠い Redo の世代を先に捨てません");
+    // 件数の上限も合計で数える。
+    check(drops({1, 1}, {1, 1}, 3, 1000, 1, 0), "Undo と Redo の合計で件数の上限を守りません");
+    // 現在の状態に隣り合う Undo と Redo の 1 件ずつは、予算を超えても残す。
+    check(drops({10, 500}, {10, 500}, 100, 100, 1, 1) && drops({500}, {500}, 100, 100, 0, 0),
+          "現在の状態に隣り合う Undo か Redo を予算のために捨てました");
 
     // 概算 byte 数は clip・キーフレーム・素材の量に比例して増える。
     auto small = mvm::project::createDefaultProject();

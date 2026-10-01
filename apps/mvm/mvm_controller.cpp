@@ -384,6 +384,11 @@ MvmController::MvmController(std::filesystem::path projectPath,
       fileRevealer_(fileRevealer ? std::move(fileRevealer) : revealFileInExplorer) {
     timelineClipWindow_->setSourceModel(timelineModel_.get());
     textClipModel_->setSourceModel(timelineModel_.get());
+    // preview の文字 layer は再生位置に掛かる文字 clip だけを作る。playheadFrame は
+    // stateChanged で通知する。
+    textClipModel_->setPlayheadFrame(playheadFrame_);
+    connect(this, &MvmController::stateChanged, this,
+            [this] { textClipModel_->setPlayheadFrame(playheadFrame_); });
     imageRasters_ = std::make_unique<ImageRasterCache>();
     // 画像の raster ができた (または素材が変わった) ら preview を組み直す。再生中は
     // 毎 tick composition を組み直すので、そこで拾われる。
@@ -680,6 +685,7 @@ bool MvmController::resetPreviewEngine() {
     // 準備は古い engine の requestShutdown が取り消して捨てた。新しい engine には無い。
     pendingVideoPreparations_.clear();
     pendingAudioPreparations_.clear();
+    stalePreparations_.clear();
     ++playbackPreparationGeneration_;
     playbackPreparationFailure_.clear();
     submittedComposition_.reset();
@@ -816,8 +822,12 @@ const TimelinePreviewPlan& MvmController::previewPlan() const {
 
 void MvmController::refreshTimelineModel() {
     previewPlan_.reset();
-    // 準備中の source は変わる前の Project で決めた。完了しても使わずに外す。
-    ++playbackPreparationGeneration_;
+    // 準備中の source は変わる前の Project で決めた。取り消し、完了しても使わずに外す。
+    // 次の tick が変わった後の Project で準備し直す。
+    if (previewEngine_)
+        cancelSourcePreparations();
+    else
+        ++playbackPreparationGeneration_;
     if (!selectedTransitionId_.empty() &&
         std::none_of(
             project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
@@ -873,14 +883,26 @@ void MvmController::pushUndoEntry(UndoEntry entry) {
     undoHistory_.push_back(std::move(entry));
     // 新しい編集をした時点で、やり直し先の未来は無くなる。
     redoHistory_.clear();
-    std::vector<std::size_t> bytes;
-    bytes.reserve(undoHistory_.size());
-    for (const auto& kept : undoHistory_)
-        bytes.push_back(kept.bytes);
+    trimEditHistory();
+}
+
+void MvmController::trimEditHistory() {
+    // Undo と Redo の合計で予算を守る。Undo / Redo は現在の Project を反対側へ積むので、
+    // 積む側だけを見ると、現在の Project が大きいときに合計が予算を超える。
+    const auto farthestFirst = [](const std::vector<UndoEntry>& history) {
+        std::vector<std::size_t> bytes;
+        bytes.reserve(history.size());
+        for (const auto& kept : history)
+            bytes.push_back(kept.bytes);
+        return bytes;
+    };
     const auto drop =
-        project::undoEntriesToDrop(bytes, kMaximumUndoEntries, kMaximumUndoBytes);
+        project::editHistoryEntriesToDrop(farthestFirst(undoHistory_), farthestFirst(redoHistory_),
+                                          kMaximumUndoEntries, editHistoryByteBudget_);
     undoHistory_.erase(undoHistory_.begin(),
-                       undoHistory_.begin() + static_cast<std::ptrdiff_t>(drop));
+                       undoHistory_.begin() + static_cast<std::ptrdiff_t>(drop.undo));
+    redoHistory_.erase(redoHistory_.begin(),
+                       redoHistory_.begin() + static_cast<std::ptrdiff_t>(drop.redo));
 }
 
 std::size_t MvmController::editHistoryBytes() const {
@@ -3641,17 +3663,50 @@ bool MvmController::setPreviewRegistrationLimitForTest(std::size_t limit) {
 }
 
 void MvmController::cancelSourcePreparations() {
+    const auto cancel = [&](preview::PreviewPreparationId id) {
+        if (previewEngine_->cancelSourcePreparation(id))
+            stalePreparations_.push_back(id);
+    };
     for (const auto& pending : pendingVideoPreparations_)
-        previewEngine_->cancelSourcePreparation(pending.id);
+        cancel(pending.id);
     for (const auto& pending : pendingAudioPreparations_)
-        previewEngine_->cancelSourcePreparation(pending.id);
+        cancel(pending.id);
     pendingVideoPreparations_.clear();
     pendingAudioPreparations_.clear();
     ++playbackPreparationGeneration_;
 }
 
+void MvmController::reapStaleSourcePreparations() {
+    const auto stale = stalePreparations_;
+    for (const auto id : stale)
+        adoptPreparationOutcome(id, previewEngine_->waitSourcePreparation(id));
+}
+
+preview::Result<preview::PreviewPreparationId>
+MvmController::requestPlaybackSourcePreparation(const preview::PreviewSourceDescriptor& descriptor) {
+    auto requested = previewEngine_->requestSourcePreparation(descriptor);
+    // 取り消した準備は、engine が受け取るまで登録の枠を持っている。枠が足りなければ、
+    // 取り消しの完了を待って (open の前か途中で止まるので短い) 枠を空け、要求し直す。
+    if (!requested &&
+        requested.error().code == preview::PreviewErrorCode::RegistrationCapacityExceeded &&
+        !stalePreparations_.empty()) {
+        reapStaleSourcePreparations();
+        requested = previewEngine_->requestSourcePreparation(descriptor);
+    }
+    return requested;
+}
+
 void MvmController::adoptPreparationOutcome(preview::PreviewPreparationId id,
                                             preview::Result<preview::PreviewSourceId> outcome) {
+    // 取り消した準備。成功していても (取り消しが間に合わなかった) 使わずに外す。
+    if (const auto stale = std::find(stalePreparations_.begin(), stalePreparations_.end(), id);
+        stale != stalePreparations_.end()) {
+        stalePreparations_.erase(stale);
+        ++playbackStalePreparationCount_;
+        if (outcome && !previewEngine_->removeSource(outcome.value()))
+            retiredSources_.push_back(outcome.value());
+        return;
+    }
     const auto video =
         std::find_if(pendingVideoPreparations_.begin(), pendingVideoPreparations_.end(),
                      [&](const auto& pending) { return pending.id == id; });
@@ -3858,7 +3913,7 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHand
         // 要求に使った時間だけ (完了を待たない)。
         const auto began = std::chrono::steady_clock::now();
         const auto requested =
-            previewEngine_->requestSourcePreparation(previewVideoDescriptorOf(project_, clip));
+            requestPlaybackSourcePreparation(previewVideoDescriptorOf(project_, clip));
         playbackMaxPreparationMs_ = std::max(
             playbackMaxPreparationMs_,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
@@ -3895,7 +3950,7 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHand
         if (!audioDescriptorFor(audio.layers[index], descriptor, reason))
             return false;
         const auto began = std::chrono::steady_clock::now();
-        const auto requested = previewEngine_->requestSourcePreparation(descriptor);
+        const auto requested = requestPlaybackSourcePreparation(descriptor);
         playbackMaxPreparationMs_ = std::max(
             playbackMaxPreparationMs_,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
@@ -5887,6 +5942,7 @@ bool MvmController::stepEditHistory(std::vector<UndoEntry>& from, std::vector<Un
     currentRevision_ = entry.revision;
     from.pop_back();
     to.push_back(std::move(current));
+    trimEditHistory();
 
     selectedClipIds_.clear();
     for (const auto& id : previousSelection) {

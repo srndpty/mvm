@@ -220,6 +220,45 @@ void testTextClipFilter() {
     check(texts.rowCount() == 1 && idAt(texts, 0) == QStringLiteral("text") &&
               texts.data(texts.index(0, 0), TimelineClipModel::ClipRowRole).toInt() == 1,
           "文字 clip だけを全 clip の行番号付きで通しません");
+
+    // 字幕のように短い文字 clip が 10,000 あっても、通すのは再生位置に掛かるものと固定した
+    // ものだけ。文字 clip の境界を跨がない再生位置の移動では全行を判定し直さない。
+    mvm::project::Project subtitles = mvm::project::createDefaultProject();
+    for (int index = 0; index < 10000; ++index) {
+        auto line = clip(("line-" + std::to_string(index)).c_str(), 1, index * 10LL, 10);
+        line.kind = mvm::project::TimelineClipKind::Text;
+        subtitles.timelineClips.push_back(std::move(line));
+    }
+    TimelineClipModel many;
+    many.setProject(subtitles);
+    mvm::app::TextClipFilterModel active;
+    active.setSourceModel(&many);
+    active.setPlayheadFrame(5005);
+    check(active.rowCount() == 1 && idAt(active, 0) == QStringLiteral("line-500"),
+          "再生位置に掛かる文字 clip だけを通しません");
+    const auto refilters = active.playheadRefilterCountForTest();
+    active.setPlayheadFrame(5009);
+    check(active.playheadRefilterCountForTest() == refilters && active.rowCount() == 1,
+          "文字 clip の境界を跨がない再生位置の移動で全行を判定し直しました");
+    active.setPlayheadFrame(5010);
+    check(active.rowCount() == 1 && idAt(active, 0) == QStringLiteral("line-501") &&
+              active.playheadRefilterCountForTest() == refilters + 1,
+          "文字 clip の境界を跨いだ再生位置で絞り直しません");
+    // 前へ戻っても絞り直す (範囲の下限)。
+    active.setPlayheadFrame(5009);
+    check(active.rowCount() == 1 && idAt(active, 0) == QStringLiteral("line-500"),
+          "再生位置を戻したときに絞り直しません");
+    // ドラッグしている文字 clip は、再生位置から外れても残す。
+    active.setPinnedClipIds({QStringLiteral("line-0")});
+    check(active.rowCount() == 2, "固定した文字 clip を通しません");
+    active.setPinnedClipIds({});
+    check(active.rowCount() == 1, "固定を外した文字 clip が残っています");
+    // 編集で再生位置に掛かるようになった文字 clip は、範囲の内側でも通す。
+    auto moved = subtitles;
+    moved.timelineClips[0].timelineStartFrame = 5000;
+    moved.timelineClips[0].sourceOutFrame = 10;
+    many.setProject(moved);
+    check(active.rowCount() == 2, "編集で再生位置に掛かった文字 clip を通しません");
 }
 
 } // namespace

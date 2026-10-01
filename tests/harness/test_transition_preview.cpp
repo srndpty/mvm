@@ -468,8 +468,17 @@ int main(int argc, char** argv) {
                     check(controller.playbackMaxPreparationMs() < kMaxPreparationMs,
                           "source の準備が先読み幅の半分を超えました");
                 }
+                // 映像だけの区間から audio の区間へ入ると、engine は最初の audio を公開するときに
+                // WASAPI endpoint を control thread で open する (準備用の thread へ移せない)。
+                // その時間を記録する (閾値は置かない)。
+                const auto endpoint = mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(
+                    *controller.previewEngineForTest());
+                if (std::string(label) == "cut-silent-to-audio")
+                    check(endpoint.playingAudioEndpointOpenCount >= 1,
+                          "前提: 再生中に最初の audio の endpoint を open していません");
                 std::printf("%s: 提示 %llu、drop %llu、最大の提示間隔 %lld frame、組み直し %llu、"
-                            "準備最大 %.1fms、理由: %s、status: %s\n",
+                            "準備最大 %.1fms、再生中の endpoint open %llu 回 (最大 %.1fms)、"
+                            "理由: %s、status: %s\n",
                             label,
                             static_cast<unsigned long long>(after.presentedFrameCount -
                                                             before.presentedFrameCount),
@@ -478,6 +487,8 @@ int main(int argc, char** argv) {
                             static_cast<long long>(steps.maxForward),
                             static_cast<unsigned long long>(controller.playbackRebuildCount()),
                             controller.playbackMaxPreparationMs(),
+                            static_cast<unsigned long long>(endpoint.playingAudioEndpointOpenCount),
+                            endpoint.maxPlayingAudioEndpointOpenMs,
                             controller.lastPlaybackRebuildReason().toUtf8().constData(),
                             controller.statusText().toUtf8().constData());
                 controller.pauseTimeline();
@@ -565,13 +576,27 @@ int main(int argc, char** argv) {
         // 先読みの準備 (open / seek) は engine の準備用の thread で進み、完了は後から公開される。
         // 準備している間に transport や Project が変わったら、完了しても公開・使用しない。
         // 準備用の thread を open の前で止めておき、その間に変化を起こしてから再開する。
-        enum class StaleCause { EnginePause, EngineSeek, ControllerPause, TrackEdit, EngineReset };
+        enum class StaleCause {
+            EnginePause,
+            EngineSeek,
+            ControllerPause,
+            TrackEdit,
+            TrackEditHeldToBoundary,
+            EngineReset
+        };
         const auto runStalePreparation = [&](const char* label, StaleCause cause) {
             auto staleProject = mvm::project::createDefaultProject();
             staleProject.timelineClips = {
                 half(video, "stale-v-out", TrackKind::Video, 0, 0),
                 half(copiedVideo, "stale-v-in", TrackKind::Video, 120, 120),
                 half(copiedWav, "stale-a-in", TrackKind::Audio, 120, 120)};
+            // 境界まで止める場合は映像だけにする。audio sink がまだ無いとき、始まった後に完了した
+            // 主入力の audio は公開できない (sample の連続を要求する。§21.4) ので、境界で待つと
+            // 準備し直しの成否に関係なく組み直しになる。
+            const bool withAudio = cause != StaleCause::TrackEditHeldToBoundary;
+            if (!withAudio)
+                staleProject.timelineClips.pop_back();
+            const std::size_t boundarySources = withAudio ? 2 : 1;
             // 編集の commit (保存の検証) は clip が素材を指すことを要求する。
             mvm::test::attachFixtureMedia(staleProject);
             check(mvm::project::validateTimeline(staleProject).success,
@@ -599,7 +624,9 @@ int main(int argc, char** argv) {
             // 境界 (120) の video と audio の準備を要求し、準備用の thread が止まっている。
             const bool requested =
                 started &&
-                pumpUntil([&] { return controller.pendingSourcePreparationCount() == 2; }, 5000);
+                pumpUntil(
+                    [&] { return controller.pendingSourcePreparationCount() == boundarySources; },
+                    5000);
             check(requested,
                   (std::string(label) + ": 前提: 境界の source の準備を要求しません").c_str());
             if (!requested) {
@@ -627,6 +654,7 @@ int main(int argc, char** argv) {
                 check(controller.pauseTimeline(), "前提: 再生を止められません");
                 break;
             case StaleCause::TrackEdit:
+            case StaleCause::TrackEditHeldToBoundary:
                 // 再生を止めない編集 (空の V2 を隠す)。準備は変わる前の Project で決めた。
                 check(controller.setTracksMuted(QStringLiteral("video"), {1}, true) &&
                           controller.playing(),
@@ -640,24 +668,49 @@ int main(int argc, char** argv) {
                       "作り直した後も古い engine の準備を持っています");
                 break;
             }
+            if (cause == StaleCause::TrackEditHeldToBoundary) {
+                // 準備用の thread を止めたまま境界を越える (境界で完了を待たれた準備だけが進む)。
+                // 変わる前の Project の準備が境界まで残っても、それを「準備中」と数えて新しい
+                // 要求を出さないままにしない。変わった後の Project で要求し直し、境界で待って
+                // 引き継ぐ (組み直さない)。
+                const bool rerequested = pumpUntil(
+                    [&] {
+                        return controller.pendingSourcePreparationCount() == boundarySources &&
+                               controller.playbackStalePreparationCount() >=
+                                   controllerStaleBefore + boundarySources;
+                    },
+                    5000);
+                check(rerequested, "Project が変わった後に境界の source を準備し直しません");
+                pumpUntil(
+                    [&] { return !controller.playing() || controller.playheadFrame() >= 150; },
+                    15000);
+                check(controller.playbackPreparationWaitCount() >= 1,
+                      "前提: 境界で準備の完了を待っていません (止めた準備が境界まで残りません)");
+            }
             controller.holdSourcePreparationsForTest(false);
             if (cause == StaleCause::EngineReset) {
                 controller.shutdown();
                 return;
             }
-            if (cause == StaleCause::TrackEdit) {
+            if (cause == StaleCause::TrackEdit || cause == StaleCause::TrackEditHeldToBoundary) {
                 // 古い完了は外し、変わった後の Project で準備し直して境界を越える。
                 const bool crossed = pumpUntil(
                     [&] { return !controller.playing() || controller.playheadFrame() >= 150; },
                     15000);
-                check(controller.playbackStalePreparationCount() >= controllerStaleBefore + 2,
+                check(controller.playbackStalePreparationCount() >=
+                          controllerStaleBefore + boundarySources,
                       "Project が変わる前に要求した準備の完了を使いました");
                 check(crossed && controller.playing() && controller.playbackRebuildCount() == 0,
                       "Project が変わった後に準備し直して境界を越えられません");
-                std::printf("%s: controller が捨てた準備 %llu、組み直し %llu\n", label,
-                            static_cast<unsigned long long>(
-                                controller.playbackStalePreparationCount() - controllerStaleBefore),
-                            static_cast<unsigned long long>(controller.playbackRebuildCount()));
+                std::printf(
+                    "%s: controller が捨てた準備 %llu、組み直し %llu、境界で待った準備 %llu、"
+                    "理由: %s\n",
+                    label,
+                    static_cast<unsigned long long>(controller.playbackStalePreparationCount() -
+                                                    controllerStaleBefore),
+                    static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                    static_cast<unsigned long long>(controller.playbackPreparationWaitCount()),
+                    controller.lastPlaybackRebuildReason().toUtf8().constData());
                 controller.pauseTimeline();
                 controller.shutdown();
                 return;
@@ -670,12 +723,19 @@ int main(int argc, char** argv) {
                 },
                 10000);
             check(drained, (std::string(label) + ": 準備の完了を受け取りません").c_str());
-            check(diagnostics().staleSourcePreparationRejectCount >= engineStaleBefore + 2,
+            check(diagnostics().staleSourcePreparationRejectCount >=
+                      engineStaleBefore + boundarySources,
                   (std::string(label) + ": 古くなった準備を engine が捨てません").c_str());
-            // 古い準備の完了は controller まで届かない (engine が公開しない)。
-            check(
-                controller.playbackStalePreparationCount() == controllerStaleBefore,
-                (std::string(label) + ": 古くなった準備の完了が controller へ届きました").c_str());
+            // engine だけを止めた・seek した準備は engine が捨て、controller まで届かない。
+            // controller の pause は自分で取り消して数える。
+            if (cause == StaleCause::ControllerPause)
+                check(controller.playbackStalePreparationCount() >=
+                          controllerStaleBefore + boundarySources,
+                      (std::string(label) + ": 取り消した準備を controller が外しません").c_str());
+            else
+                check(controller.playbackStalePreparationCount() == controllerStaleBefore,
+                      (std::string(label) + ": 古くなった準備の完了が controller へ届きました")
+                          .c_str());
             // pause した engine は準備し直しも受理しないので、公開数は増えない (seek は再生を
             // 続け、新しい世代で準備し直すので見ない)。
             if (cause != StaleCause::EngineSeek)
@@ -692,6 +752,7 @@ int main(int argc, char** argv) {
         runStalePreparation("stale-engine-seek", StaleCause::EngineSeek);
         runStalePreparation("stale-controller-pause", StaleCause::ControllerPause);
         runStalePreparation("stale-track-edit", StaleCause::TrackEdit);
+        runStalePreparation("stale-track-edit-held", StaleCause::TrackEditHeldToBoundary);
         runStalePreparation("stale-engine-reset", StaleCause::EngineReset);
 
         const auto playFrom =
