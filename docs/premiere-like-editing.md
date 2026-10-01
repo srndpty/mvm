@@ -2111,3 +2111,46 @@ reconcile がトランジションを消す。このとき、通常の trim が�
   それぞれ壊す mutant は落ちる
 
 `[未検証]` 手で GUI を操作した見た目 (パネル幅 340 px での配置、斜線の描画、ドラッグの手触り) は確かめていない。
+
+## 20. トラックヘッダの表示・ミュート・ソロ
+
+### 20.1 Project schema 14 (track の solo)
+
+`[事実]` `kProjectSchemaVersion` を 14 にし、track に `solo` (必須) を足した。互換分岐は持たず、schema 13 の
+ファイルは読まない (`m5_timeline_edit_focused` と `m7a_1_clip_effects_focused` が出力の版を 13 に書き換えて
+拒否を確かめる)。solo は audio track だけが持つ。video track の `"solo": true` は JSON の読み込みと
+`setTrackSolo` の両方が拒否する。
+
+- video track の目玉は既存の `muted` (layer から外し、下の track が見える) をそのまま使う
+- 出力の判定は `isTrackOutputEnabled` (`src/project/project.cpp`) に一本化した。audio は「mute でなく、
+  solo の track が 1 つも無いか自分が solo」なら鳴らす。solo でも mute が優先する (Premiere と同じ)。
+  preview の layer / audio、シャトル、`previewVideoAtPlayhead`、`clipVisibleAtPlayhead` がこれを呼ぶ。
+  mute だけを見る経路を残すと、そこでだけ solo が効かなくなる
+- 空き track を探す配置 (`placeOnFirstFreeTrack`、コピーの空き track 探し) は従来どおり mute だけを見る。
+  solo は聴き分けの操作なので、置き場所を変えない
+
+`[回避策]` 書き出しは mute も solo も見ない (従来から mute を見ていない)。preview と書き出しで聞こえ方が
+違いうる。
+
+`[事実]` 手元の `build/ucrt64-debug/m6a-gui/project.mvm` は schema 13 と同じ手順でテキスト変換した
+(track 11 件に `"solo": false` を追加。元ファイルは `*.schema13.bak`)。
+
+### 20.2 目玉のドラッグ塗り
+
+`[事実]` Premiere には無い、Photoshop のレイヤーの目玉と同じ操作。目玉を押すとその track の表示を反転し、
+押したまま上下へドラッグすると通った video track を同じ状態にする。判定は `TrackEyePaint.js` の状態を
+持たない関数にあり、`tst_track_eye_paint.qml` が手で数えた値で検査する。
+
+- 速く動かして move event が行を飛ばしても、間の track を通ったものとして塗る。戻っても一度塗った
+  track は外さない
+- ruler や audio の行へはみ出しても端の video track に寄せる (塗りが途切れない)
+- 通った track は先に見た目だけ変え、離したときに `setTracksMuted` でまとめて確定する (1 回の undo、
+  preview の組み直しも 1 回)。途中で確定すると model の作り直しで押した delegate が消え、ドラッグが切れる。
+  そのため preview はドラッグ中には変わらず、離したときに変わる
+
+`[事実]` `text_ui_direct_input` (workstation) が実 window で、V1 の目玉を押して最上段まで引くと途中では
+確定せず通った目玉だけが非表示に見え、離すと全 video track が非表示になり 1 回の undo で戻ること、
+audio の S を押すと solo になることを見る。塗りの追加をやめる mutant は落ちる。
+
+`[未検証]` 目玉・M・S の見た目は手で確かめていない。`setTrackMuted` / `setTrackSolo` は従来どおり再生を
+止めてから確定する (Premiere は再生中も切り替えられる)。

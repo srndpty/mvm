@@ -69,12 +69,12 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         return result;
     }
     for (const auto& entry : plan.video) {
-        // 無効にした clip は区間に含まれない。mute した video track は「黒」ではなく layer から
+        // 無効にした clip は区間に含まれない。非表示にした video track は「黒」ではなく layer から
         // 外す (下の track が見える)。
         const auto& segment = entry.segment;
         const int track = segment.original.track.index;
         if (timelineFrame < entry.start || timelineFrame >= entry.end ||
-            project.videoTracks[static_cast<std::size_t>(track)].muted)
+            !project::isTrackOutputEnabled(project, {project::TrackKind::Video, track}))
             continue;
         const int slot = plan.slotBases[static_cast<std::size_t>(track)] + segment.lane;
         const auto& clip = segment.clip;
@@ -262,7 +262,7 @@ TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& proj
         const auto& segment = entry.segment;
         const int track = segment.original.track.index;
         if (timelineFrame < entry.start || timelineFrame >= entry.end ||
-            project.audioTracks[static_cast<std::size_t>(track)].muted)
+            !project::isTrackOutputEnabled(project, {project::TrackKind::Audio, track}))
             continue;
         const auto& clip = segment.clip;
         result.layers.push_back({track, segment.clipIndex, clip.id,

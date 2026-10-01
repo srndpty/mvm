@@ -101,6 +101,19 @@ int textClipCount(const mvm::app::MvmController& controller) {
     return count;
 }
 
+// track model の行 index の role 値。video track の目玉や audio の solo の確定を見る。
+bool trackRole(QAbstractItemModel* model, int row, const char* roleName) {
+    const auto roles = model->roleNames();
+    for (auto role = roles.cbegin(); role != roles.cend(); ++role)
+        if (role.value() == roleName)
+            return model->data(model->index(row, 0), role.key()).toBool();
+    return false;
+}
+
+QPoint itemCenter(QQuickItem* item) {
+    return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint();
+}
+
 qint64 transitionValue(const mvm::app::MvmController& controller, const char* key) {
     return controller.selectedTransition().value(QString::fromLatin1(key)).toLongLong();
 }
@@ -1230,6 +1243,75 @@ int main(int argc, char** argv) {
                 }
                 QTest::keyClick(window, Qt::Key_Escape);
                 pump(300);
+            }
+            // 15. トラックヘッダ: video の目玉を押して上の track までドラッグすると、通った
+            //     track がすべて非表示になる (Photoshop のレイヤーの目玉)。途中では確定せず見た目
+            //     だけ変え、離したときに 1 undo で確定する。audio の S は押すと solo になる。
+            {
+                // 手順 14 の速度ダイアログは、入力欄を確定した後は focus が外れて Esc が届かず
+                // 開いたまま残る。modal の背景が残っていると最初の press がダイアログを閉じるのに
+                // 使われるので、閉じてから始める。
+                const auto modalOpen = [&] {
+                    for (QQuickItem* item : visualItems(window))
+                        if (item->parentItem() && item->parentItem()->inherits("QQuickOverlay") &&
+                            item->isVisible() && item->width() >= window->width() &&
+                            item->height() >= window->height())
+                            return true;
+                    return false;
+                };
+                for (QObject* object : window->findChildren<QObject*>())
+                    if (object->inherits("QQuickPopup") && object->property("visible").toBool())
+                        QMetaObject::invokeMethod(object, "close");
+                pumpUntil([&] { return !modalOpen(); }, 3000);
+                check(!modalOpen(), "前提: modal のダイアログが閉じません");
+                auto* videoTracks = controller.videoTrackModel();
+                const int top = controller.videoTrackCount() - 1;
+                auto* bottomEye = findVisualItem(window, QStringLiteral("trackEye_video_0"));
+                auto* topEye = findVisualItem(window, QStringLiteral("trackEye_video_%1").arg(top));
+                auto* topIcon =
+                    findVisualItem(window, QStringLiteral("trackEyeIcon_video_%1").arg(top));
+                check(top >= 1 && bottomEye && topEye && topIcon && bottomEye->isVisible(),
+                      "前提: video track 2 本以上の目玉がありません");
+                bool allShown = true;
+                for (int index = 0; index <= top; ++index)
+                    allShown = allShown && !trackRole(videoTracks, index, "trackMuted");
+                check(allShown, "前提: video track が非表示になっています");
+                if (top >= 1 && bottomEye && topEye && topIcon) {
+                    const QPoint from = itemCenter(bottomEye);
+                    const QPoint to = itemCenter(topEye);
+                    QTest::mousePress(window, Qt::LeftButton, {}, from);
+                    pump(50);
+                    for (int step = 1; step <= 6; ++step) {
+                        QTest::mouseMove(window, from + (to - from) * step / 6);
+                        pump(30);
+                    }
+                    check(topIcon->property("hidden").toBool() &&
+                              !trackRole(videoTracks, top, "trackMuted"),
+                          "ドラッグ中に通った track の目玉を変えない、または途中で確定しました");
+                    QTest::mouseRelease(window, Qt::LeftButton, {}, to);
+                    pump(300);
+                    bool allHidden = true;
+                    for (int index = 0; index <= top; ++index)
+                        allHidden = allHidden && trackRole(videoTracks, index, "trackMuted");
+                    check(allHidden, "目玉のドラッグで通った video track を非表示にしません");
+                    controller.undoLastEdit();
+                    pump(300);
+                    bool restored = true;
+                    for (int index = 0; index <= top; ++index)
+                        restored = restored && !trackRole(videoTracks, index, "trackMuted");
+                    check(restored, "目玉のドラッグ塗りが 1 回の undo で戻りません");
+                }
+
+                auto* audioTracks = controller.audioTrackModel();
+                auto* solo = findVisualItem(window, QStringLiteral("trackSolo_audio_0"));
+                check(solo && solo->isVisible(), "audio track の S がありません");
+                if (solo) {
+                    QTest::mouseClick(window, Qt::LeftButton, {}, itemCenter(solo));
+                    pump(300);
+                    check(trackRole(audioTracks, 0, "trackSolo"), "S を押しても solo になりません");
+                    controller.undoLastEdit();
+                    pump(300);
+                }
             }
             return failures == 0 ? 0 : 1;
         };

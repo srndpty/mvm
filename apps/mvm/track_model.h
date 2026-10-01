@@ -16,6 +16,8 @@ public:
     enum Role {
         TrackNameRole = Qt::UserRole + 1,
         MutedRole,
+        SoloRole,
+        OutputEnabledRole,
         TrackKindRole,
         TrackIndexRole,
     };
@@ -32,6 +34,8 @@ private:
     struct Item {
         QString name;
         bool muted = false;
+        bool solo = false;
+        bool outputEnabled = true;
     };
 
     project::TrackKind kind_;

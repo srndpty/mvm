@@ -161,6 +161,18 @@ bool isValidTrackRef(const Project& project, TrackRef track) {
     return track.index >= 0 && track.index < static_cast<int>(tracks.size());
 }
 
+bool isTrackOutputEnabled(const Project& project, TrackRef track) {
+    if (!isValidTrackRef(project, track))
+        return false;
+    const auto& tracks = tracksOfKind(project, track.kind);
+    const auto& target = tracks[static_cast<std::size_t>(track.index)];
+    if (target.muted)
+        return false;
+    if (track.kind == TrackKind::Video || target.solo)
+        return true;
+    return std::none_of(tracks.begin(), tracks.end(), [](const Track& t) { return t.solo; });
+}
+
 bool clipKindFitsTrackKind(TimelineClipKind clipKind, TrackKind trackKind) {
     return (clipKind == TimelineClipKind::Audio) == (trackKind == TrackKind::Audio);
 }

@@ -18,6 +18,10 @@ QVariant TrackModel::data(const QModelIndex& index, int role) const {
         return item.name;
     case MutedRole:
         return item.muted;
+    case SoloRole:
+        return item.solo;
+    case OutputEnabledRole:
+        return item.outputEnabled;
     case TrackKindRole:
         return QString::fromLatin1(project::trackKindName(kind_));
     case TrackIndexRole:
@@ -30,6 +34,8 @@ QVariant TrackModel::data(const QModelIndex& index, int role) const {
 QHash<int, QByteArray> TrackModel::roleNames() const {
     return {{TrackNameRole, "trackName"},
             {MutedRole, "trackMuted"},
+            {SoloRole, "trackSolo"},
+            {OutputEnabledRole, "trackOutputEnabled"},
             {TrackKindRole, "trackKind"},
             {TrackIndexRole, "trackIndex"}};
 }
@@ -37,8 +43,12 @@ QHash<int, QByteArray> TrackModel::roleNames() const {
 void TrackModel::setProject(const project::Project& project) {
     beginResetModel();
     items_.clear();
-    for (const auto& track : project::tracksOfKind(project, kind_))
-        items_.append({QString::fromStdString(track.name), track.muted});
+    const auto& tracks = project::tracksOfKind(project, kind_);
+    for (int index = 0; index < static_cast<int>(tracks.size()); ++index) {
+        const auto& track = tracks[static_cast<std::size_t>(index)];
+        items_.append({QString::fromStdString(track.name), track.muted, track.solo,
+                       project::isTrackOutputEnabled(project, {kind_, index})});
+    }
     endResetModel();
 }
 

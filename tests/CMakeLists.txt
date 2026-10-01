@@ -277,6 +277,16 @@ set_tests_properties(m7b_4_transition_editor_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
+# video track の目玉のドラッグ塗り (apps/mvm/TrackEyePaint.js)。
+add_test(NAME m7b_4_track_eye_paint_qml
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_track_eye_paint.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/m7b4-track-eye-paint-qml.txt)
+set_tests_properties(m7b_4_track_eye_paint_qml PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 add_test(NAME m7b_4_external_save_continuation
     COMMAND pwsh -NoProfile -File
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-external-save-continuation.ps1)

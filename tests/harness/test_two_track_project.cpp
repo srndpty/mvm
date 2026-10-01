@@ -71,8 +71,8 @@ std::string readText(const std::filesystem::path& path) {
 // 欠けたファイルを暗黙の既定値で読まないことを確認する。
 void testSchemaIsFailClosed(const std::filesystem::path& root) {
     const std::string header =
-        R"JSON({"schema_version":13,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":100,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,)JSON"
-        R"JSON("video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],)JSON";
+        R"JSON({"schema_version":14,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":100,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,)JSON"
+        R"JSON("video_tracks":[{"name":"V1","muted":false,"solo":false}],"audio_tracks":[],"manim_assets":[],)JSON";
     const std::string clipHead =
         R"JSON("timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"A","id":"a",)JSON"
         R"JSON("source_fps_num":60,"source_fps_den":1,"source_frame_count":100,"source_in_frame":0,)JSON"
@@ -93,7 +93,7 @@ void testSchemaIsFailClosed(const std::filesystem::path& root) {
     const auto missingTracks = root / "missing-tracks.mvm";
     writeText(
         missingTracks,
-        R"JSON({"schema_version":13,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,)JSON"
+        R"JSON({"schema_version":14,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,)JSON"
         R"JSON("timeline_fps_den":1,"manim_assets":[],"timeline_clips":[]})JSON");
     check(!mvm::project::loadProjectJson(missingTracks).success,
           "track配列が無いProjectを受理しました");
@@ -215,6 +215,7 @@ void testRoundTrip(const std::filesystem::path& root) {
     Project project = mvm::project::createDefaultProject();
     check(mvm::project::addTrack(project, TrackKind::Video).success, "V3を追加できません");
     project.videoTracks[1].muted = true;
+    project.audioTracks[0].solo = true;
     auto bottom = clip("bottom", kV1, 120);
     auto top = clip("top", TrackRef{TrackKind::Video, 2}, 40);
     auto voice = clip("voice", kA1, 5);
@@ -251,6 +252,25 @@ void testRoundTrip(const std::filesystem::path& root) {
               loaded.project.videoTracks == project.videoTracks &&
               loaded.project.audioTracks == project.audioTracks,
           "track構成、mute、任意start、ClipEffectsがJSON round-tripしません");
+    check(savedText.find("\"solo\": true") != std::string::npos,
+          "保存JSONがaudio trackのsoloを書きません");
+
+    // 負例は保存した JSON (上で読めることを確かめた対照群) から 1 か所だけ変える。
+    // 先頭の track は V1 (video)。
+    const auto variant = [&](const char* name, const std::string& from, const std::string& to) {
+        auto text = savedText;
+        const auto at = text.find(from);
+        check(at != std::string::npos, "負例の置換位置が保存されていません");
+        if (at != std::string::npos)
+            text.replace(at, from.size(), to);
+        const auto variantPath = root / name;
+        std::ofstream(variantPath, std::ios::binary) << text;
+        return mvm::project::loadProjectJson(variantPath);
+    };
+    check(!variant("missing-solo.mvm", ", \"solo\": false", "").success,
+          "soloの無いtrackを既定値で受理しました");
+    check(!variant("video-solo.mvm", "\"solo\": false", "\"solo\": true").success,
+          "video trackのsoloを受理しました");
 }
 
 } // namespace

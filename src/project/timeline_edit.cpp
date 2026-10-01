@@ -3091,12 +3091,41 @@ TimelineEditResult removeTrack(Project& project, TrackRef track) {
 }
 
 TimelineEditResult setTrackMuted(Project& project, TrackRef track, bool muted) {
+    return setTracksMuted(project, track.kind, {track.index}, muted);
+}
+
+TimelineEditResult setTracksMuted(Project& project, TrackKind kind, const std::vector<int>& indices,
+                                  bool muted) {
+    TimelineEditResult result;
+    if (indices.empty()) {
+        result.error = "track が指定されていません";
+        return result;
+    }
+    for (const int index : indices) {
+        if (!isValidTrackRef(project, {kind, index})) {
+            result.error = "track が存在しません";
+            return result;
+        }
+    }
+    auto& tracks = tracksOfKind(project, kind);
+    for (const int index : indices)
+        tracks[static_cast<std::size_t>(index)].muted = muted;
+    result.success = true;
+    result.selectedIndex = indices.front();
+    return result;
+}
+
+TimelineEditResult setTrackSolo(Project& project, TrackRef track, bool solo) {
     TimelineEditResult result;
     if (!isValidTrackRef(project, track)) {
         result.error = "track が存在しません";
         return result;
     }
-    tracksOfKind(project, track.kind)[static_cast<std::size_t>(track.index)].muted = muted;
+    if (track.kind != TrackKind::Audio) {
+        result.error = "solo は audio track だけに設定できます";
+        return result;
+    }
+    project.audioTracks[static_cast<std::size_t>(track.index)].solo = solo;
     result.success = true;
     result.selectedIndex = track.index;
     return result;

@@ -425,6 +425,12 @@ TimelineEditResult setTimelineFrameRate(Project& project, std::int64_t fpsNum, s
 TimelineEditResult addTrack(Project& project, TrackKind kind);
 TimelineEditResult removeTrack(Project& project, TrackRef track);
 TimelineEditResult setTrackMuted(Project& project, TrackRef track, bool muted);
+// 同じ kind の複数 track の mute をまとめて変える (目玉のドラッグ塗り)。1 つでも不正な
+// index があれば何も変えずに失敗する。
+TimelineEditResult setTracksMuted(Project& project, TrackKind kind, const std::vector<int>& indices,
+                                  bool muted);
+// audio track だけが対象。video track を渡すと失敗する。
+TimelineEditResult setTrackSolo(Project& project, TrackRef track, bool solo);
 
 struct TimelineGap {
     bool found = false;

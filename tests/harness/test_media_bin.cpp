@@ -490,8 +490,8 @@ void testJson(const std::filesystem::path& root) {
           "project配下の素材pathがrelativeで保存されていません");
 
     const std::string header =
-        R"JSON({"schema_version":13,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,)JSON"
-        R"JSON("video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],)JSON"
+        R"JSON({"schema_version":14,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,)JSON"
+        R"JSON("video_tracks":[{"name":"V1","muted":false,"solo":false}],"audio_tracks":[],"manim_assets":[],)JSON"
         R"JSON("timeline_clips":[],"media_folders":[],)JSON";
     const std::string item =
         R"JSON({"id":"a","kind":"audio","media_path":"a.wav","name":"a.wav","folder_id":"",)JSON"
@@ -528,10 +528,11 @@ void testJson(const std::filesystem::path& root) {
 
     // binを持たない schema 3 は移行せずに拒否する。
     const auto schema3 = root / "schema3.mvm";
-    writeText(schema3,
-              R"JSON({"schema_version":3,"format":"mvm-project","timeline_fps_num":60,)JSON"
-              R"JSON("timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],)JSON"
-              R"JSON("audio_tracks":[],"manim_assets":[],"timeline_clips":[]})JSON");
+    writeText(
+        schema3,
+        R"JSON({"schema_version":3,"format":"mvm-project","timeline_fps_num":60,)JSON"
+        R"JSON("timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false,"solo":false}],)JSON"
+        R"JSON("audio_tracks":[],"manim_assets":[],"timeline_clips":[]})JSON");
     check(!mvm::project::loadProjectJson(schema3).success, "schema 3のProjectを受理しました");
 }
 
