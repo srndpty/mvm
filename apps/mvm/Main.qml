@@ -862,233 +862,247 @@ ApplicationWindow {
                         Layout.fillHeight: true
                         currentIndex: root.leftPanelTab
 
-                        // 項目が増えるとパネルの高さを超え、下の再生時間の表示に重なっていた。
-                        // 縦にスクロールさせ、はみ出した分は切り取る。端では跳ね返らずにそのまま止める。
-                        Flickable {
-                            id: effectControlsScroll
-                            clip: true
-                            contentWidth: width
-                            contentHeight: effectControlsColumn.implicitHeight
-                            flickableDirection: Flickable.VerticalFlick
-                            boundsBehavior: Flickable.StopAtBounds
-                            boundsMovement: Flickable.StopAtBounds
-                            ScrollBar.vertical: ScrollBar {
-                                id: effectControlsScrollBar
-                                policy: ScrollBar.AsNeeded
+                        // トランジションを選んでいる間は、clip の項目の代わりにトランジションの
+                        // 長さと配置を出す (Premiere のエフェクトコントロールと同じ領域)。
+                        Item {
+                            TransitionInspector {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                visible: root.mvmController.selectedTransitionId !== ""
+                                mvmController: root.mvmController
                             }
 
-                            ColumnLayout {
-                                id: effectControlsColumn
-                                // scrollbar が出ている間は、その幅だけ項目を狭めて重ならないようにする。
-                                width: effectControlsScroll.width
-                                       - (effectControlsScrollBar.visible ? effectControlsScrollBar.width : 0)
-                                spacing: 6
-
-                                // 文字 clip の名前は本文の先頭なので、本文の欄と重複する。出さない。
-                                Label {
-                                    Layout.fillWidth: true
-                                    visible: root.mvmController.selectedTextClip.clipId === undefined
-                                    text: root.mvmController.currentClipIndex >= 0
-                                          ? root.mvmController.currentClipName
-                                          : "クリップ未選択"
-                                    color: "#9aa2ad"
-                                    font.pixelSize: 11
-                                    elide: Text.ElideMiddle
+                            // 項目が増えるとパネルの高さを超え、下の再生時間の表示に重なっていた。
+                            // 縦にスクロールさせ、はみ出した分は切り取る。端では跳ね返らずにそのまま止める。
+                            Flickable {
+                                id: effectControlsScroll
+                                anchors.fill: parent
+                                visible: root.mvmController.selectedTransitionId === ""
+                                clip: true
+                                contentWidth: width
+                                contentHeight: effectControlsColumn.implicitHeight
+                                flickableDirection: Flickable.VerticalFlick
+                                boundsBehavior: Flickable.StopAtBounds
+                                boundsMovement: Flickable.StopAtBounds
+                                ScrollBar.vertical: ScrollBar {
+                                    id: effectControlsScrollBar
+                                    policy: ScrollBar.AsNeeded
                                 }
 
-                                TextClipInspector {
-                                    Layout.fillWidth: true
-                                    visible: root.mvmController.selectedTextClip.clipId !== undefined
-                                    mvmController: root.mvmController
-                                }
+                                ColumnLayout {
+                                    id: effectControlsColumn
+                                    // scrollbar が出ている間は、その幅だけ項目を狭めて重ならないようにする。
+                                    width: effectControlsScroll.width
+                                           - (effectControlsScrollBar.visible ? effectControlsScrollBar.width : 0)
+                                    spacing: 6
 
-                                GridLayout {
-                                    id: inspectorGrid
-                                    Layout.fillWidth: true
-                                    visible: root.mvmController.selectedTextClip.clipId === undefined
-                                    columns: 2
-                                    columnSpacing: 6
-                                    rowSpacing: 4
-                                    enabled: root.mvmController.currentClipIndex >= 0 && !root.mvmController.busy
-                                             && !root.mvmController.playing
-
-                                    DragNumberField {
+                                    // 文字 clip の名前は本文の先頭なので、本文の欄と重複する。出さない。
+                                    Label {
                                         Layout.fillWidth: true
-                                        labelText: "位置 X"
-                                        suffix: " %"
-                                        value: root.mvmController.effectPositionX
-                                        minimumValue: -1000
-                                        maximumValue: 1000
-                                        stepPerPixel: 0.5
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("positionX", newValue, commit)
-                                    }
-                                    DragNumberField {
-                                        Layout.fillWidth: true
-                                        labelText: "位置 Y"
-                                        suffix: " %"
-                                        value: root.mvmController.effectPositionY
-                                        minimumValue: -1000
-                                        maximumValue: 1000
-                                        stepPerPixel: 0.5
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("positionY", newValue, commit)
-                                    }
-                                    DragNumberField {
-                                        Layout.fillWidth: true
-                                        labelText: "拡大率 X"
-                                        suffix: " %"
-                                        value: root.mvmController.effectScaleX
-                                        minimumValue: 1
-                                        maximumValue: 1000
-                                        stepPerPixel: 0.5
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.setEffectScale("scaleX", newValue, commit)
-                                    }
-                                    DragNumberField {
-                                        Layout.fillWidth: true
-                                        labelText: "拡大率 Y"
-                                        suffix: " %"
-                                        value: root.mvmController.effectScaleY
-                                        minimumValue: 1
-                                        maximumValue: 1000
-                                        stepPerPixel: 0.5
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.setEffectScale("scaleY", newValue, commit)
-                                    }
-                                    CheckBox {
-                                        Layout.columnSpan: 2
-                                        text: "縦横比を固定"
-                                        checked: root.lockEffectScaleAspect
+                                        visible: root.mvmController.selectedTextClip.clipId === undefined
+                                        text: root.mvmController.currentClipIndex >= 0
+                                              ? root.mvmController.currentClipName
+                                              : "クリップ未選択"
+                                        color: "#9aa2ad"
                                         font.pixelSize: 11
-                                        onToggled: root.lockEffectScaleAspect = checked
+                                        elide: Text.ElideMiddle
                                     }
-                                    DragNumberField {
-                                        Layout.fillWidth: true
-                                        labelText: "回転"
-                                        suffix: " °"
-                                        value: root.mvmController.effectRotation
-                                        minimumValue: -360
-                                        maximumValue: 360
-                                        stepPerPixel: 0.5
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("rotation", newValue, commit)
-                                    }
-                                    DragNumberField {
-                                        Layout.fillWidth: true
-                                        labelText: "不透明度"
-                                        suffix: " %"
-                                        value: root.mvmController.effectOpacity
-                                        minimumValue: 0
-                                        maximumValue: 100
-                                        stepPerPixel: 0.3
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("opacity", newValue, commit)
-                                    }
-                                    Item { Layout.fillWidth: true; implicitHeight: 1 }
 
-                                    DragNumberField {
+                                    TextClipInspector {
                                         Layout.fillWidth: true
-                                        labelText: "Crop 左"
-                                        suffix: " %"
-                                        value: root.mvmController.effectCropLeft
-                                        minimumValue: 0
-                                        maximumValue: 99
-                                        stepPerPixel: 0.2
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropLeft", newValue, commit)
+                                        visible: root.mvmController.selectedTextClip.clipId !== undefined
+                                        mvmController: root.mvmController
                                     }
-                                    DragNumberField {
-                                        Layout.fillWidth: true
-                                        labelText: "Crop 右"
-                                        suffix: " %"
-                                        value: root.mvmController.effectCropRight
-                                        minimumValue: 0
-                                        maximumValue: 99
-                                        stepPerPixel: 0.2
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropRight", newValue, commit)
-                                    }
-                                    DragNumberField {
-                                        Layout.fillWidth: true
-                                        labelText: "Crop 上"
-                                        suffix: " %"
-                                        value: root.mvmController.effectCropTop
-                                        minimumValue: 0
-                                        maximumValue: 99
-                                        stepPerPixel: 0.2
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropTop", newValue, commit)
-                                    }
-                                    DragNumberField {
-                                        Layout.fillWidth: true
-                                        labelText: "Crop 下"
-                                        suffix: " %"
-                                        value: root.mvmController.effectCropBottom
-                                        minimumValue: 0
-                                        maximumValue: 99
-                                        stepPerPixel: 0.2
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropBottom", newValue, commit)
-                                    }
-                                    DragNumberField {
-                                        Layout.fillWidth: true
-                                        labelText: "フェードイン (素材f)"
-                                        value: root.mvmController.effectFadeIn
-                                        minimumValue: 0
-                                        maximumValue: 1000000
-                                        stepPerPixel: 1
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("fadeIn", newValue, commit)
-                                    }
-                                    DragNumberField {
-                                        Layout.fillWidth: true
-                                        labelText: "フェードアウト (素材f)"
-                                        value: root.mvmController.effectFadeOut
-                                        minimumValue: 0
-                                        maximumValue: 1000000
-                                        stepPerPixel: 1
-                                        onEditCanceled: root.mvmController.cancelEffectPreview()
-                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("fadeOut", newValue, commit)
-                                    }
-                                }
 
-                                Frame {
-                                    Layout.fillWidth: true
-                                    visible: root.mvmController.hasManimAsset
-                                    padding: 6
+                                    GridLayout {
+                                        id: inspectorGrid
+                                        Layout.fillWidth: true
+                                        visible: root.mvmController.selectedTextClip.clipId === undefined
+                                        columns: 2
+                                        columnSpacing: 6
+                                        rowSpacing: 4
+                                        enabled: root.mvmController.currentClipIndex >= 0 && !root.mvmController.busy
+                                                 && !root.mvmController.playing
 
-                                    contentItem: ColumnLayout {
-                                        spacing: 4
-                                        Label {
+                                        DragNumberField {
                                             Layout.fillWidth: true
-                                            text: "Manim: " + root.mvmController.manimSceneName
-                                            color: "#e6e8ec"
-                                            elide: Text.ElideRight
-                                            font.pixelSize: 11
+                                            labelText: "位置 X"
+                                            suffix: " %"
+                                            value: root.mvmController.effectPositionX
+                                            minimumValue: -1000
+                                            maximumValue: 1000
+                                            stepPerPixel: 0.5
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("positionX", newValue, commit)
                                         }
-                                        Label {
-                                            text: root.mvmController.manimStateText
-                                            color: root.mvmController.manimStateText === "SourceChanged" ? "#f2c66d" : "#a8d5a2"
-                                            font.pixelSize: 11
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "位置 Y"
+                                            suffix: " %"
+                                            value: root.mvmController.effectPositionY
+                                            minimumValue: -1000
+                                            maximumValue: 1000
+                                            stepPerPixel: 0.5
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("positionY", newValue, commit)
                                         }
-                                        RowLayout {
-                                            Button {
-                                                text: root.mvmController.busy ? "生成中…" : "再生成"
-                                                enabled: !root.mvmController.busy
-                                                onClicked: root.mvmController.regenerateManimClip()
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "拡大率 X"
+                                            suffix: " %"
+                                            value: root.mvmController.effectScaleX
+                                            minimumValue: 1
+                                            maximumValue: 1000
+                                            stepPerPixel: 0.5
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.setEffectScale("scaleX", newValue, commit)
+                                        }
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "拡大率 Y"
+                                            suffix: " %"
+                                            value: root.mvmController.effectScaleY
+                                            minimumValue: 1
+                                            maximumValue: 1000
+                                            stepPerPixel: 0.5
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.setEffectScale("scaleY", newValue, commit)
+                                        }
+                                        CheckBox {
+                                            Layout.columnSpan: 2
+                                            text: "縦横比を固定"
+                                            checked: root.lockEffectScaleAspect
+                                            font.pixelSize: 11
+                                            onToggled: root.lockEffectScaleAspect = checked
+                                        }
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "回転"
+                                            suffix: " °"
+                                            value: root.mvmController.effectRotation
+                                            minimumValue: -360
+                                            maximumValue: 360
+                                            stepPerPixel: 0.5
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("rotation", newValue, commit)
+                                        }
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "不透明度"
+                                            suffix: " %"
+                                            value: root.mvmController.effectOpacity
+                                            minimumValue: 0
+                                            maximumValue: 100
+                                            stepPerPixel: 0.3
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("opacity", newValue, commit)
+                                        }
+                                        Item { Layout.fillWidth: true; implicitHeight: 1 }
+
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "Crop 左"
+                                            suffix: " %"
+                                            value: root.mvmController.effectCropLeft
+                                            minimumValue: 0
+                                            maximumValue: 99
+                                            stepPerPixel: 0.2
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropLeft", newValue, commit)
+                                        }
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "Crop 右"
+                                            suffix: " %"
+                                            value: root.mvmController.effectCropRight
+                                            minimumValue: 0
+                                            maximumValue: 99
+                                            stepPerPixel: 0.2
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropRight", newValue, commit)
+                                        }
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "Crop 上"
+                                            suffix: " %"
+                                            value: root.mvmController.effectCropTop
+                                            minimumValue: 0
+                                            maximumValue: 99
+                                            stepPerPixel: 0.2
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropTop", newValue, commit)
+                                        }
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "Crop 下"
+                                            suffix: " %"
+                                            value: root.mvmController.effectCropBottom
+                                            minimumValue: 0
+                                            maximumValue: 99
+                                            stepPerPixel: 0.2
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropBottom", newValue, commit)
+                                        }
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "フェードイン (素材f)"
+                                            value: root.mvmController.effectFadeIn
+                                            minimumValue: 0
+                                            maximumValue: 1000000
+                                            stepPerPixel: 1
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("fadeIn", newValue, commit)
+                                        }
+                                        DragNumberField {
+                                            Layout.fillWidth: true
+                                            labelText: "フェードアウト (素材f)"
+                                            value: root.mvmController.effectFadeOut
+                                            minimumValue: 0
+                                            maximumValue: 1000000
+                                            stepPerPixel: 1
+                                            onEditCanceled: root.mvmController.cancelEffectPreview()
+                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("fadeOut", newValue, commit)
+                                        }
+                                    }
+
+                                    Frame {
+                                        Layout.fillWidth: true
+                                        visible: root.mvmController.hasManimAsset
+                                        padding: 6
+
+                                        contentItem: ColumnLayout {
+                                            spacing: 4
+                                            Label {
+                                                Layout.fillWidth: true
+                                                text: "Manim: " + root.mvmController.manimSceneName
+                                                color: "#e6e8ec"
+                                                elide: Text.ElideRight
+                                                font.pixelSize: 11
                                             }
-                                            Button {
-                                                text: "timelineへ"
-                                                visible: !root.mvmController.hasManimTimelineClip
-                                                enabled: visible && !root.mvmController.busy
-                                                onClicked: root.mvmController.addManimToTimeline()
+                                            Label {
+                                                text: root.mvmController.manimStateText
+                                                color: root.mvmController.manimStateText === "SourceChanged" ? "#f2c66d" : "#a8d5a2"
+                                                font.pixelSize: 11
+                                            }
+                                            RowLayout {
+                                                Button {
+                                                    text: root.mvmController.busy ? "生成中…" : "再生成"
+                                                    enabled: !root.mvmController.busy
+                                                    onClicked: root.mvmController.regenerateManimClip()
+                                                }
+                                                Button {
+                                                    text: "timelineへ"
+                                                    visible: !root.mvmController.hasManimTimelineClip
+                                                    enabled: visible && !root.mvmController.busy
+                                                    onClicked: root.mvmController.addManimToTimeline()
+                                                }
                                             }
                                         }
                                     }
-                                }
 
-                                Item { Layout.fillHeight: true }
+                                    Item { Layout.fillHeight: true }
+                                }
                             }
                         }
 
@@ -3191,11 +3205,14 @@ ApplicationWindow {
                                     modelData.transitionId === root.mvmController.selectedTransitionId
                                 objectName: "timelineTransition_" + modelData.transitionId
                                 x: modelData.start * timelinePanel.pixelsPerFrame
+                                // Premiere と同じく clip の中央に低い帯で描く。上下に残した clip の部分で
+                                // cut の端を掴んで trim できる (離れればトランジションは消える)。
                                 y: timelinePanel.rowY(modelData.trackKind, modelData.trackIndex)
                                    - timelinePanel.tracksTop + 3
+                                   + Math.round((timelinePanel.trackHeight - 6 - height) / 2)
                                 width: Math.max(4, (modelData.end - modelData.start)
                                                    * timelinePanel.pixelsPerFrame)
-                                height: timelinePanel.trackHeight - 6
+                                height: Math.round((timelinePanel.trackHeight - 6) * 0.55)
                                 radius: 2
                                 color: selected ? "#c0e0b040" : "#80c89a3c"
                                 border.color: selected ? "#ffe08a" : "#d8b35a"
@@ -3230,8 +3247,12 @@ ApplicationWindow {
                                     anchors.fill: parent
                                     enabled: !root.mvmController.busy
                                     acceptedButtons: Qt.LeftButton
-                                    onClicked: root.mvmController.selectTransition(
-                                                   transitionItem.modelData.transitionId)
+                                    onClicked: {
+                                        // 選んだトランジションはエフェクトコントロールで編集する。
+                                        if (root.mvmController.selectTransition(
+                                                transitionItem.modelData.transitionId))
+                                            root.leftPanelTab = 0;
+                                    }
                                 }
                             }
                         }

@@ -93,6 +93,15 @@ class MvmController : public QObject {
     // 選択中の編集点 {trackKind, trackIndex, frame}。無ければ空。clip の選択とは排他。
     Q_PROPERTY(QVariantMap selectedEditPoint READ selectedEditPoint NOTIFY stateChanged)
     Q_PROPERTY(QString selectedTransitionId READ selectedTransitionId NOTIFY stateChanged)
+    // エフェクトコントロールに出す選択中のトランジション。無ければ空。
+    // {transitionId, trackKind, cut, framesBeforeCut, framesAfterCut, durationText (timecode),
+    //  maxBefore, maxAfter,
+    //  outgoingClipId, outgoingName, outgoingStart, outgoingEnd,
+    //  incomingClipId, incomingName, incomingStart, incomingEnd} (frame は timeline frame)。
+    // max* は cut の前後に置ける長さの上限 (transitionSpanLimits, リンク相手込み)。
+    // 上限の計算は Project を複写するので、再生中も出る stateChanged では通知しない。
+    Q_PROPERTY(
+        QVariantMap selectedTransition READ selectedTransition NOTIFY selectedTransitionChanged)
     // Delete で消せるもの (トランジション、または clip) が選ばれている。
     Q_PROPERTY(bool canDeleteSelection READ canDeleteSelection NOTIFY stateChanged)
     Q_PROPERTY(qint64 inFrame READ inFrame NOTIFY stateChanged)
@@ -237,6 +246,7 @@ public:
     QVariantMap selectedEditPoint() const;
 
     QString selectedTransitionId() const { return QString::fromStdString(selectedTransitionId_); }
+    QVariantMap selectedTransition() const { return shownSelectedTransition_; }
 
     bool canDeleteSelection() const;
 
@@ -385,6 +395,8 @@ public:
     Q_INVOKABLE bool selectAllClips();
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
     // scrub。drag 中は最新位置だけを coalesce して seek し、release で確定する。
+    // timeline の frame を timecode (currentTimeText と同じ書式) にする。ルーラーの目盛りの文字に使う。
+    Q_INVOKABLE QString frameTimecode(qint64 frame) const;
     Q_INVOKABLE void beginScrub();
     Q_INVOKABLE void scrubToFrame(qint64 frame);
     Q_INVOKABLE void endScrub();
@@ -496,6 +508,13 @@ public:
     // clip の edge ("left" / "right") の編集点を選ぶ。接している clip が無ければ clip を選ぶ。
     Q_INVOKABLE bool selectEditPoint(const QString& clipId, const QString& edge);
     Q_INVOKABLE bool selectTransition(const QString& transitionId);
+    // 選択中のトランジションの cut 前後の長さを変える (リンク相手の既存トランジションも)。
+    // 1 回が 1 undo。素材 frame に乗らない値は最も近い置ける長さへ吸着させる
+    // (nearestTransitionSpan)。keepTotal は長さ・配置・本体のドラッグで総尺を保つ吸着、false は
+    // 片側の端のドラッグ (前後を別々に)。置ける長さが無い、または吸着すると今の値と同じなら、
+    // 理由を status に出して false を返す (Project も再生も変えない)。
+    Q_INVOKABLE bool setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfterCut,
+                                       bool keepTotal);
     // Delete。トランジションを選んでいればそれを消し、そうでなければ clip を消す。
     Q_INVOKABLE bool deleteSelection();
     Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);
@@ -578,6 +597,7 @@ public Q_SLOTS:
 Q_SIGNALS:
     void stateChanged();
     void timelineTransitionsChanged();
+    void selectedTransitionChanged();
     void meterChanged();
     void exportFailed(const QString& message);
     void recoveryDetected();
@@ -855,7 +875,10 @@ private:
     std::string selectedTransitionId_;
     // 最後に通知した timelineTransitions。変わったときだけ timelineTransitionsChanged を出す。
     QVariantList shownTransitions_;
+    // 最後に通知した selectedTransition。
+    QVariantMap shownSelectedTransition_;
     void notifyTimelineTransitions();
+    QVariantMap computeSelectedTransition() const;
     std::vector<project::TimelineClip> clipboardClips_;
     // コピー元 Project の bin にあった、clipboardClips_ の素材。
     std::vector<project::MediaItem> clipboardMediaItems_;

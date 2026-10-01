@@ -788,8 +788,12 @@ QVariantList MvmController::supportedFrameRates() const {
 }
 
 QString MvmController::currentTimeText() const {
+    return frameTimecode(playheadFrame_);
+}
+
+QString MvmController::frameTimecode(qint64 frame) const {
     return QString::fromStdString(
-        core::formatTimecode(playheadFrame_, project_.timelineFpsNum, project_.timelineFpsDen));
+        core::formatTimecode(frame, project_.timelineFpsNum, project_.timelineFpsDen));
 }
 
 bool MvmController::canPlay() const {
@@ -5335,6 +5339,11 @@ bool MvmController::selectClipsFromFrame(qint64 frame, const QString& direction,
 }
 
 void MvmController::notifyTimelineTransitions() {
+    auto selected = computeSelectedTransition();
+    if (selected != shownSelectedTransition_) {
+        shownSelectedTransition_ = std::move(selected);
+        Q_EMIT selectedTransitionChanged();
+    }
     auto shown = timelineTransitions();
     if (shown == shownTransitions_)
         return;
@@ -5417,6 +5426,107 @@ bool MvmController::selectTransition(const QString& transitionId) {
     setCurrentClipSelection(-1);
     selectedTransitionId_ = id;
     setStatus(QStringLiteral("トランジションを選択しました"));
+    notifyTimelineTransitions();
+    Q_EMIT stateChanged();
+    return true;
+}
+
+QVariantMap MvmController::computeSelectedTransition() const {
+    const auto found = std::find_if(
+        project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
+        [&](const auto& transition) { return transition.id == selectedTransitionId_; });
+    if (selectedTransitionId_.empty() || found == project_.timelineTransitions.end())
+        return {};
+    const int outgoing = indexOfClipId(project_.timelineClips, found->outgoingClipId);
+    const int incoming = indexOfClipId(project_.timelineClips, found->incomingClipId);
+    if (outgoing < 0 || incoming < 0)
+        return {};
+    const auto& outgoingClip = project_.timelineClips[static_cast<std::size_t>(outgoing)];
+    const auto& incomingClip = project_.timelineClips[static_cast<std::size_t>(incoming)];
+    const auto outgoingDuration = project::timelineClipDuration(project_, outgoingClip);
+    const auto incomingDuration = project::timelineClipDuration(project_, incomingClip);
+    const auto limits =
+        project::transitionSpanLimits(project_, found->id, project::LinkMode::Linked);
+    if (!outgoingDuration.success || !incomingDuration.success || !limits.success)
+        return {};
+    const qint64 cut = outgoingClip.timelineStartFrame + outgoingDuration.frame;
+    return {
+        {QStringLiteral("transitionId"), QString::fromStdString(found->id)},
+        {QStringLiteral("trackKind"),
+         QString::fromLatin1(project::trackKindName(outgoingClip.track.kind))},
+        {QStringLiteral("cut"), cut},
+        {QStringLiteral("framesBeforeCut"), static_cast<qint64>(found->framesBeforeCut)},
+        {QStringLiteral("framesAfterCut"), static_cast<qint64>(found->framesAfterCut)},
+        {QStringLiteral("durationText"),
+         QString::fromStdString(core::formatTimecode(found->framesBeforeCut + found->framesAfterCut,
+                                                     project_.timelineFpsNum,
+                                                     project_.timelineFpsDen))},
+        {QStringLiteral("maxBefore"), static_cast<qint64>(limits.maxBefore)},
+        {QStringLiteral("maxAfter"), static_cast<qint64>(limits.maxAfter)},
+        {QStringLiteral("outgoingClipId"), QString::fromStdString(outgoingClip.id)},
+        {QStringLiteral("outgoingName"), QString::fromStdString(outgoingClip.name)},
+        {QStringLiteral("outgoingStart"), static_cast<qint64>(outgoingClip.timelineStartFrame)},
+        {QStringLiteral("outgoingEnd"), cut},
+        {QStringLiteral("incomingClipId"), QString::fromStdString(incomingClip.id)},
+        {QStringLiteral("incomingName"), QString::fromStdString(incomingClip.name)},
+        {QStringLiteral("incomingStart"), static_cast<qint64>(incomingClip.timelineStartFrame)},
+        {QStringLiteral("incomingEnd"),
+         static_cast<qint64>(incomingClip.timelineStartFrame + incomingDuration.frame)}};
+}
+
+bool MvmController::setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfterCut,
+                                      bool keepTotal) {
+    if (selectedTransitionId_.empty()) {
+        setStatus(QStringLiteral("長さを変えるトランジションが選択されていません"));
+        return false;
+    }
+    const std::string id = selectedTransitionId_;
+    // 数値欄・ドラッグの値は素材 frame に乗るとは限らない (30fps 素材を 60fps timeline に置くと
+    // 2 frame 単位)。最も近い置ける長さへ吸着させ、吸着したことは status に出す。
+    const auto fitted = project::nearestTransitionSpan(
+        project_, id, framesBeforeCut, framesAfterCut,
+        keepTotal ? project::SpanFitMode::KeepTotal : project::SpanFitMode::EachSide,
+        project::LinkMode::Linked);
+    if (!fitted.success) {
+        setStatus(QString::fromStdString(fitted.error));
+        return false;
+    }
+    // 吸着した結果が今の値と同じなら編集ではない (上限で止まっただけ)。applyTimelineEdit は
+    // 再生を止めるので、何も変わらない操作では入らない。
+    const auto current = std::find_if(
+        project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
+        [&](const auto& transition) { return transition.id == id; });
+    if (current != project_.timelineTransitions.end() &&
+        current->framesBeforeCut == fitted.framesBeforeCut &&
+        current->framesAfterCut == fitted.framesAfterCut) {
+        const bool requestedSame = framesBeforeCut == fitted.framesBeforeCut &&
+                                   framesAfterCut == fitted.framesAfterCut;
+        setStatus(requestedSame
+                      ? QStringLiteral("トランジションの長さは変わっていません")
+                      : QStringLiteral("トランジションはこれ以上変えられません "
+                                       "(素材の余白・フレーム・不透明度の範囲の端です)"));
+        return false;
+    }
+    QString status = QStringLiteral("トランジションを") +
+                     QString::number(fitted.framesBeforeCut + fitted.framesAfterCut) +
+                     QStringLiteral("フレームにしました");
+    if (fitted.framesBeforeCut != framesBeforeCut || fitted.framesAfterCut != framesAfterCut)
+        status += QStringLiteral(" (素材のフレームに合わせて cut の前 ") +
+                  QString::number(fitted.framesBeforeCut) + QStringLiteral(" / 後 ") +
+                  QString::number(fitted.framesAfterCut) + QStringLiteral(")");
+    const bool applied = applyTimelineEdit(
+        [&](project::Project& candidate) {
+            const auto changed = project::setTimelineTransitionSpan(
+                candidate, id, fitted.framesBeforeCut, fitted.framesAfterCut,
+                project::LinkMode::Linked);
+            project::TimelineEditResult result;
+            result.success = changed.success;
+            result.error = changed.error;
+            return result;
+        },
+        std::string{}, status);
+    if (!applied)
+        return false;
     notifyTimelineTransitions();
     Q_EMIT stateChanged();
     return true;

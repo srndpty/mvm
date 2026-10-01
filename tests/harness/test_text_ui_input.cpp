@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <thread>
 
@@ -98,6 +99,213 @@ int textClipCount(const mvm::app::MvmController& controller) {
                 ++count;
     }
     return count;
+}
+
+qint64 transitionValue(const mvm::app::MvmController& controller, const char* key) {
+    return controller.selectedTransition().value(QString::fromLatin1(key)).toLongLong();
+}
+
+// トランジションを選んだ直後に呼ぶ。エフェクトコントロールへ切り替わり、長さ欄の入力と
+// ミニタイムラインのドラッグで長さが 1 undo ずつ変わり、A のドラッグでリップルトリムし、
+// ルーラーを押すとそこへ scrub する。timeline ではトランジションの下側で clip の端を trim でき、
+// 離れたトランジションは消える。各編集は undo して、呼ぶ前の状態 (Shift+D で置いた 30 / 30 を
+// 選んだ状態) へ戻す。
+void testTransitionInspector(QQuickWindow* window, mvm::app::MvmController& controller) {
+    auto* inspector = findVisualItem(window, QStringLiteral("transitionInspector"));
+    check(window->property("leftPanelTab").toInt() == 0 && inspector && inspector->isVisible(),
+          "トランジションを押してもエフェクトコントロールに長さと配置を出しません");
+    check(transitionValue(controller, "framesBeforeCut") == 30 &&
+              transitionValue(controller, "framesAfterCut") == 30,
+          "前提: Shift+D のトランジションが 30 / 30 ではありません");
+
+    // 長さ欄は秒。1 回クリックして 0.5 を入力すると 60fps で 30 frame、配置 (中央) を保って 15 /
+    // 15。 単位をフレームへ切り替えて 20 を入力すると 10 / 10。
+    auto* durationField = findVisualItem(window, QStringLiteral("transitionDurationField"));
+    auto* unitButton = findVisualItem(window, QStringLiteral("transitionDurationUnit"));
+    check(durationField && durationField->isVisible() && unitButton,
+          "トランジションの長さ欄がありません");
+    check(controller.timelineFpsNum() == 60 && controller.timelineFpsDen() == 1,
+          "前提: timeline が 60fps ではありません");
+    const auto enterDuration = [&](const char* text) {
+        QTest::mouseClick(
+            window, Qt::LeftButton, {},
+            durationField
+                ->mapToScene(QPointF(durationField->width() / 2, durationField->height() - 8))
+                .toPoint());
+        pump();
+        typeText(window, text);
+        QTest::keyClick(window, Qt::Key_Return);
+        pump(300);
+    };
+    if (durationField && unitButton) {
+        enterDuration("0.5");
+        check(transitionValue(controller, "framesBeforeCut") == 15 &&
+                  transitionValue(controller, "framesAfterCut") == 15,
+              "長さ欄に秒で入力してもトランジションを中央のまま 0.5 秒にしません");
+        controller.undoLastEdit();
+        pump(300);
+        QTest::mouseClick(
+            window, Qt::LeftButton, {},
+            unitButton->mapToScene(QPointF(unitButton->width() / 2, unitButton->height() / 2))
+                .toPoint());
+        pump();
+        enterDuration("20");
+        check(transitionValue(controller, "framesBeforeCut") == 10 &&
+                  transitionValue(controller, "framesAfterCut") == 10,
+              "単位をフレームにして入力してもトランジションを 20 frame にしません");
+        controller.undoLastEdit();
+        pump(300);
+        // 秒へ戻す (後の試験と製品の既定に合わせる)。
+        QTest::mouseClick(
+            window, Qt::LeftButton, {},
+            unitButton->mapToScene(QPointF(unitButton->width() / 2, unitButton->height() / 2))
+                .toPoint());
+        pump();
+    }
+
+    // ルーラーには目盛りと timecode を書く。表示範囲は cut の前後 60 frame で、cut (60)
+    // は文字の目盛り。
+    auto* ruler = findVisualItem(window, QStringLiteral("transitionMiniRuler"));
+    bool cutLabelled = false;
+    if (ruler) {
+        QList<QQuickItem*> rulerItems;
+        collectItems(ruler, rulerItems);
+        const QString cutText = controller.frameTimecode(transitionValue(controller, "cut"));
+        for (QQuickItem* item : rulerItems)
+            cutLabelled =
+                cutLabelled || (item->isVisible() && item->property("text").toString() == cutText);
+    }
+    check(cutLabelled, "ミニタイムラインのルーラーに cut の timecode を書きません");
+
+    // ミニタイムラインのトランジションの右端を右へドラッグすると、cut の後ろだけが延びる。
+    auto* bar = findVisualItem(window, QStringLiteral("transitionMiniBar"));
+    check(bar && bar->isVisible() && bar->width() > 4,
+          "ミニタイムラインにトランジションを描きません");
+    if (bar) {
+        const QPoint grab = bar->mapToScene(QPointF(bar->width() - 1, bar->height() / 2)).toPoint();
+        const QPoint delta(20, 0);
+        QTest::mousePress(window, Qt::LeftButton, {}, grab);
+        for (int step = 1; step <= 4; ++step)
+            QTest::mouseMove(window, grab + delta * step / 4);
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab + delta);
+        pump(300);
+        check(transitionValue(controller, "framesBeforeCut") == 30 &&
+                  transitionValue(controller, "framesAfterCut") > 30,
+              "ミニタイムラインの右端のドラッグで cut の後ろだけを延ばしません");
+        check(controller.undoLastEdit(), "右端のドラッグを Undo できません");
+        pump(300);
+        check(transitionValue(controller, "framesBeforeCut") == 30 &&
+                  transitionValue(controller, "framesAfterCut") == 30,
+              "右端のドラッグが 1 回の Undo で戻りません");
+    }
+
+    // ミニタイムラインのルーラーで cut の位置を押すと、timeline の再生ヘッドがそこへ動く。
+    auto* lane = findVisualItem(window, QStringLiteral("transitionMiniTimeline"));
+    auto* playhead = findVisualItem(window, QStringLiteral("transitionMiniPlayhead"));
+    check(lane && playhead, "ミニタイムラインの再生ヘッドがありません");
+    if (lane && playhead && bar) {
+        const qint64 cut = transitionValue(controller, "cut");
+        controller.seekTimelineFrame(cut - 20);
+        pump(300);
+        // cut は表示範囲の中央にある。
+        QTest::mouseClick(window, Qt::LeftButton, {},
+                          lane->mapToScene(QPointF(lane->width() / 2, 8)).toPoint());
+        pump(300);
+        check(std::llabs(controller.playheadFrame() - cut) <= 1 && playhead->isVisible() &&
+                  std::abs(playhead->x() - lane->width() / 2) <= 2,
+              "ミニタイムラインを押しても再生ヘッドがそこへ動きません");
+    }
+
+    // ミニタイムラインの A を左へドラッグすると A の終端のリップルトリム。cut が手前へ来て、
+    // トランジションは残る (選んだまま)。
+    auto* clipA = findVisualItem(window, QStringLiteral("transitionMiniClipA"));
+    check(clipA && clipA->isVisible(), "ミニタイムラインに A の行がありません");
+    if (clipA) {
+        const qint64 cutBefore = transitionValue(controller, "cut");
+        const QPoint grab =
+            clipA->mapToScene(QPointF(clipA->width() / 4, clipA->height() / 2)).toPoint();
+        const QPoint delta(-20, 0);
+        QTest::mousePress(window, Qt::LeftButton, {}, grab);
+        for (int step = 1; step <= 4; ++step)
+            QTest::mouseMove(window, grab + delta * step / 4);
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab + delta);
+        pump(300);
+        check(!controller.selectedTransitionId().isEmpty() &&
+                  transitionValue(controller, "cut") < cutBefore &&
+                  transitionValue(controller, "incomingStart") ==
+                      transitionValue(controller, "cut"),
+              "ミニタイムラインの A のドラッグでリップルトリムしません");
+        check(controller.undoLastEdit(), "A のドラッグを Undo できません");
+        pump(300);
+        check(transitionValue(controller, "cut") == cutBefore,
+              "A のドラッグが 1 回の Undo で戻りません");
+    }
+
+    // ミニタイムラインの B を右へドラッグすると、離す前から B の先頭 (とトランジション)
+    // が付いてくる。 離すと B の先頭のリップルトリムで、cut は動かず B の終端が手前へ来る。
+    auto* clipB = findVisualItem(window, QStringLiteral("transitionMiniClipB"));
+    check(clipB && clipB->isVisible() && bar, "ミニタイムラインに B の行がありません");
+    if (clipB && bar) {
+        const qint64 cutBefore = transitionValue(controller, "cut");
+        const qint64 endBefore = transitionValue(controller, "incomingEnd");
+        const qreal barXBefore = bar->x();
+        const QPoint grab =
+            clipB->mapToScene(QPointF(clipB->width() * 3 / 4, clipB->height() / 2)).toPoint();
+        const QPoint delta(20, 0);
+        QTest::mousePress(window, Qt::LeftButton, {}, grab);
+        for (int step = 1; step <= 4; ++step)
+            QTest::mouseMove(window, grab + delta * step / 4);
+        pump();
+        check(bar->x() > barXBefore + 5, "ミニタイムラインの B のドラッグ中に表示が動きません");
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab + delta);
+        pump(300);
+        check(transitionValue(controller, "cut") == cutBefore &&
+                  transitionValue(controller, "incomingEnd") < endBefore &&
+                  !controller.selectedTransitionId().isEmpty(),
+              "ミニタイムラインの B のドラッグで B の先頭をリップルトリムしません");
+        check(controller.undoLastEdit(), "B のドラッグを Undo できません");
+        pump(300);
+        check(transitionValue(controller, "incomingEnd") == endBefore,
+              "B のドラッグが 1 回の Undo で戻りません");
+    }
+
+    // timeline のトランジションは clip の縦中央の低い帯で、下側では cut の端を掴める。
+    // cut の端は incoming の先頭 (outgoing の上に重なる)。右へ trim すると接しなくなり、
+    // トランジションは消える。
+    const QString transitionId = controller.selectedTransitionId();
+    auto* drawn = findVisualItem(window, QStringLiteral("timelineTransition_") + transitionId);
+    auto* outgoing = findVisualItem(window, QStringLiteral("timelineClip_video"));
+    check(drawn && outgoing && drawn->height() < outgoing->height() * 0.7,
+          "timeline のトランジションが track の高さを覆っています");
+    if (drawn && outgoing) {
+        const qreal drawnCenter = drawn->mapToScene(QPointF(0, drawn->height() / 2)).y();
+        const qreal clipCenter = outgoing->mapToScene(QPointF(0, outgoing->height() / 2)).y();
+        check(std::abs(drawnCenter - clipCenter) <= 1.5,
+              "timeline のトランジションが clip の縦中央にありません");
+    }
+    if (drawn && outgoing) {
+        // 再生ヘッド (上のルーラーで cut へ動かした) が端の上に重ならないよう離す。
+        controller.seekTimelineFrame(0);
+        pump(300);
+        const QPoint grab =
+            outgoing->mapToScene(QPointF(outgoing->width() - 2, outgoing->height() - 5)).toPoint();
+        const QPoint delta(20, 0);
+        QTest::mousePress(window, Qt::LeftButton, {}, grab);
+        for (int step = 1; step <= 4; ++step)
+            QTest::mouseMove(window, grab + delta * step / 4);
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab + delta);
+        pump(300);
+        check(
+            controller.timelineTransitions().isEmpty() &&
+                controller.selectedTransitionId().isEmpty(),
+            "トランジションの下側で clip の端を trim できないか、離れたトランジションが残りました");
+        controller.undoLastEdit();
+        pump(300);
+        check(controller.timelineTransitions().size() == 1 &&
+                  controller.selectTransition(transitionId),
+              "trim の Undo でトランジションが戻りません");
+        pump();
+    }
 }
 
 } // namespace
@@ -309,6 +517,8 @@ int main(int argc, char** argv) {
                         check(findVisualItem(window, QStringLiteral("timelineTransition_") + id) ==
                                   drawn,
                               "clip の選択を変えただけでトランジションの表示を作り直しました");
+                        // プロジェクトのタブを開いておき、押したらエフェクトコントロールへ戻ることを見る。
+                        window->setProperty("leftPanelTab", 1);
                         if (drawn) {
                             QTest::mouseClick(
                                 window, Qt::LeftButton, {},
@@ -318,6 +528,7 @@ int main(int argc, char** argv) {
                         }
                         check(controller.selectedTransitionId() == id,
                               "トランジションを押しても選びません");
+                        testTransitionInspector(window, controller);
                         QTest::keyClick(window, Qt::Key_Delete);
                         pump(300);
                         check(controller.timelineTransitions().isEmpty() &&

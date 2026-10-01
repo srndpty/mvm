@@ -267,6 +267,16 @@ set_tests_properties(m7b_4_preview_transform_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
+# エフェクトコントロールでトランジションの長さ・配置を決める計算 (apps/mvm/TransitionEditorMath.js)。
+add_test(NAME m7b_4_transition_editor_qml
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_transition_editor.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/m7b4-transition-editor-qml.txt)
+set_tests_properties(m7b_4_transition_editor_qml PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 add_test(NAME m7b_4_external_save_continuation
     COMMAND pwsh -NoProfile -File
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-external-save-continuation.ps1)

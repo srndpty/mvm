@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -1648,6 +1649,19 @@ TimelineFrameResult clampEdgeEdit(const Project& project, const std::string& cli
         // リップルは開始位置を保つので、この制約を受けない。
         if (kind == EdgeEditKind::Trim && edge == TrimEdge::Left)
             lower = std::max(lower, -clip.timelineStartFrame);
+        // 通常の trim は、接している隣の clip の方へは延ばさない (Premiere と同じく止める。
+        // 延ばすと重なって検証で失敗していた)。縮める向きは自由で、離れればトランジションは消える。
+        if (kind == EdgeEditKind::Trim) {
+            const int neighbor = adjacentClipIndex(project, target, edge, result.error);
+            if (!result.error.empty())
+                return result;
+            if (neighbor >= 0) {
+                if (edge == TrimEdge::Right)
+                    upper = std::min<std::int64_t>(upper, 0);
+                else
+                    lower = std::max<std::int64_t>(lower, 0);
+            }
+        }
     }
     result.success = true;
     result.frame = lower > upper ? 0 : std::clamp(projectFrameDelta, lower, upper);
@@ -2073,6 +2087,239 @@ int linkPartnerIndex(const Project& project, int index) {
     return -1;
 }
 
+// トランジションを置く編集点 (outgoing の終端 = incoming の先頭)。
+struct EditPoint {
+    std::string outgoing;
+    std::string incoming;
+};
+
+// 編集点と、Linked ならリンク相手どうしが同じ cut で接している編集点 (ずらして置いた音声は
+// 別の編集点なので含めない)。
+std::vector<EditPoint> linkedEditPoints(const Project& project, const std::string& outgoingId,
+                                        const std::string& incomingId, LinkMode linkMode) {
+    std::vector<EditPoint> points{{outgoingId, incomingId}};
+    if (linkMode != LinkMode::Linked)
+        return points;
+    const int outgoingIndex = indexOfId(project, outgoingId);
+    const int incomingIndex = indexOfId(project, incomingId);
+    const int outgoingPartner =
+        validIndex(project, outgoingIndex) ? linkPartnerIndex(project, outgoingIndex) : -1;
+    const int incomingPartner =
+        validIndex(project, incomingIndex) ? linkPartnerIndex(project, incomingIndex) : -1;
+    if (outgoingPartner < 0 || incomingPartner < 0)
+        return points;
+    const TimelineTransition mainProbe{"probe", outgoingId, incomingId, 0, 0};
+    const TimelineTransition partnerProbe{
+        "probe", project.timelineClips[static_cast<std::size_t>(outgoingPartner)].id,
+        project.timelineClips[static_cast<std::size_t>(incomingPartner)].id, 0, 0};
+    TransitionClips mainClips;
+    TransitionClips partnerClips;
+    std::string ignored;
+    if (resolveTransitionClips(project, mainProbe, mainClips, ignored) &&
+        resolveTransitionClips(project, partnerProbe, partnerClips, ignored) &&
+        partnerClips.cut == mainClips.cut)
+        points.push_back({partnerProbe.outgoingClipId, partnerProbe.incomingClipId});
+    return points;
+}
+
+// 全編集点の既存のトランジションを外し (prepareEditTransition)、cut の前後に置ける長さの上限を
+// 編集点どうしの小さい方で求める。映像と音声は同じ長さ・同じ cut の前後で置くため。
+bool editPointsUpperBounds(Project& prepared, const std::vector<EditPoint>& points,
+                           std::int64_t frames, std::int64_t& maxBefore, std::int64_t& maxAfter,
+                           std::string& error) {
+    maxBefore = frames;
+    maxAfter = frames;
+    for (const auto& point : points) {
+        std::int64_t pointBefore = 0;
+        std::int64_t pointAfter = 0;
+        if (!prepareEditTransition(prepared, point.outgoing, point.incoming, frames, pointBefore,
+                                   pointAfter, error))
+            return false;
+        maxBefore = std::min(maxBefore, pointBefore);
+        maxAfter = std::min(maxAfter, pointAfter);
+    }
+    return true;
+}
+
+struct PointClips {
+    TimelineClip outgoing;
+    TimelineClip incoming;
+    TransitionClips clips;
+};
+
+// 編集点の clip を引く。長さに依らない条件 (映像の形と、区間の端の frame の不透明度) は
+// ここで理由を付けて断る。
+bool resolvePointClips(const Project& prepared, const std::vector<EditPoint>& points,
+                       std::vector<PointClips>& resolved, std::string& error) {
+    resolved.clear();
+    for (const auto& point : points) {
+        const TimelineTransition probe{"probe", point.outgoing, point.incoming, 0, 0};
+        PointClips entry;
+        if (!resolveTransitionClips(prepared, probe, entry.clips, error))
+            return false;
+        entry.outgoing = prepared.timelineClips[static_cast<std::size_t>(entry.clips.outgoing)];
+        entry.incoming = prepared.timelineClips[static_cast<std::size_t>(entry.clips.incoming)];
+        if (entry.outgoing.track.kind == TrackKind::Video &&
+            !dissolveClipsEligible(prepared, entry.clips, 0, 0, error))
+            return false;
+        resolved.push_back(std::move(entry));
+    }
+    return true;
+}
+
+// 置ける長さは cut の前 (before) と後 (after) で独立に決まる。
+//   before: incoming を cut - before まで延ばせる (素材 frame にちょうど乗る) こと、
+//           映像なら outgoing の最後の before frame が不透明であること
+//   after : outgoing を cut + after まで延ばせること、映像なら incoming を cut + after で
+//           分けられる (lane 1 の区間の終わり) ことと、incoming の最初の after frame
+//           が不透明であること
+// 長さごとに区間の不透明度を検査し直すと、長尺素材で候補ごとに数十万 frame を辿る (cut の近くに
+// 不透明度の下がる frame がある 2 時間の素材で、吸着の探索が 90 秒以上終わらなかった)。不透明度の
+// 条件は長さに対して単調 (長いほど厳しい) なので、cut から連続して不透明な長さを最初に 1 回だけ
+// 数える。素材 frame の条件は長さごとに判定して覚える。
+class SpanFitter {
+public:
+    SpanFitter(const Project& prepared, const std::vector<PointClips>& resolved,
+               std::int64_t maxBefore, std::int64_t maxAfter)
+        : prepared_(prepared), resolved_(resolved), maxBefore_(maxBefore), maxAfter_(maxAfter) {}
+
+    std::int64_t maxBefore() const { return maxBefore_; }
+
+    std::int64_t maxAfter() const { return maxAfter_; }
+
+    // [0, maxBefore] の外は置けない。
+    bool beforeFits(std::int64_t before, bool checkOpacity) {
+        if (before < 0 || before > maxBefore_ || (checkOpacity && before > opaqueBefore()))
+            return false;
+        const auto known = beforeEdge_.find(before);
+        if (known != beforeEdge_.end())
+            return known->second;
+        return beforeEdge_[before] = beforeEdgeFits(before);
+    }
+
+    bool afterFits(std::int64_t after, bool checkOpacity) {
+        if (after < 0 || after > maxAfter_ || (checkOpacity && after > opaqueAfter()))
+            return false;
+        const auto known = afterEdge_.find(after);
+        if (known != afterEdge_.end())
+            return known->second;
+        return afterEdge_[after] = afterEdgeFits(after);
+    }
+
+    // cut の前 / 後に置ける、不透明な長さの上限 (余白の上限で頭打ち)。
+    std::int64_t opaqueBefore() {
+        if (!opaqueBefore_)
+            opaqueBefore_ = countOpaque(true);
+        return *opaqueBefore_;
+    }
+
+    std::int64_t opaqueAfter() {
+        if (!opaqueAfter_)
+            opaqueAfter_ = countOpaque(false);
+        return *opaqueAfter_;
+    }
+
+private:
+    bool beforeEdgeFits(std::int64_t before) const {
+        if (before == 0)
+            return true;
+        std::string ignored;
+        for (const auto& entry : resolved_) {
+            if (!clipWithEdgeAt(prepared_, entry.incoming, TrimEdge::Left, entry.clips.cut - before,
+                                ignored))
+                return false;
+        }
+        return true;
+    }
+
+    bool afterEdgeFits(std::int64_t after) const {
+        if (after == 0)
+            return true;
+        std::string ignored;
+        for (const auto& entry : resolved_) {
+            const auto cut = entry.clips.cut;
+            if (!clipWithEdgeAt(prepared_, entry.outgoing, TrimEdge::Right, cut + after, ignored))
+                return false;
+            if (entry.outgoing.track.kind == TrackKind::Video &&
+                after < entry.clips.incomingDuration &&
+                !clipWithEdgeAt(prepared_, entry.incoming, TrimEdge::Right, cut + after, ignored))
+                return false;
+        }
+        return true;
+    }
+
+    // 映像の編集点ごとに cut から連続して不透明な frame を数え、その最小値を返す。
+    // cut の前は outgoing の終端から手前へ、後は incoming の先頭から奥へ数える。
+    std::int64_t countOpaque(bool beforeCut) const {
+        std::int64_t limit = beforeCut ? maxBefore_ : maxAfter_;
+        std::string ignored;
+        for (const auto& entry : resolved_) {
+            if (entry.outgoing.track.kind != TrackKind::Video)
+                continue;
+            const auto& clip = beforeCut ? entry.outgoing : entry.incoming;
+            std::int64_t count = 0;
+            while (count < limit) {
+                const auto local = beforeCut ? entry.clips.outgoingDuration - 1 - count : count;
+                if (!dissolveClipOpaqueOver(prepared_, clip, local, local + 1, ignored))
+                    break;
+                ++count;
+            }
+            limit = count;
+        }
+        return limit;
+    }
+
+    const Project& prepared_;
+    const std::vector<PointClips>& resolved_;
+    std::int64_t maxBefore_ = 0;
+    std::int64_t maxAfter_ = 0;
+    std::optional<std::int64_t> opaqueBefore_;
+    std::optional<std::int64_t> opaqueAfter_;
+    std::unordered_map<std::int64_t, bool> beforeEdge_;
+    std::unordered_map<std::int64_t, bool> afterEdge_;
+};
+
+// 選んだ長さは描画区間を作れるはずである。作れなければ理由をそのまま返す (黙って縮めない)。
+TimelineEditResult commitTransitionTrial(Project& project, Project trial,
+                                         const std::string& selectedClipId) {
+    TimelineEditResult result;
+    std::vector<TimelineRenderSegment> segments;
+    const auto valid = validateTimeline(trial);
+    if (!valid.success) {
+        result.error = valid.error;
+        return result;
+    }
+    if (!timelineRenderSegments(trial, TrackKind::Video, segments, result.error) ||
+        !timelineRenderSegments(trial, TrackKind::Audio, segments, result.error))
+        return result;
+    const int selectedIndex = indexOfId(project, selectedClipId);
+    return commitCandidate(project, std::move(trial), selectedIndex);
+}
+
+const TimelineTransition* findTransition(const Project& project, const std::string& id) {
+    for (const auto& transition : project.timelineTransitions) {
+        if (transition.id == id)
+            return &transition;
+    }
+    return nullptr;
+}
+
+// 既存のトランジションの長さを変える編集点。Linked ならリンク相手の編集点のうち、既に
+// トランジションがあるものだけを含める (長さの変更で新しく作らない)。
+std::vector<EditPoint> spanEditPoints(const Project& project, const TimelineTransition& transition,
+                                      LinkMode linkMode) {
+    auto points =
+        linkedEditPoints(project, transition.outgoingClipId, transition.incomingClipId, linkMode);
+    std::erase_if(points, [&](const EditPoint& point) {
+        return std::none_of(project.timelineTransitions.begin(), project.timelineTransitions.end(),
+                            [&](const TimelineTransition& other) {
+                                return other.outgoingClipId == point.outgoing &&
+                                       other.incomingClipId == point.incoming;
+                            });
+    });
+    return points;
+}
+
 } // namespace
 
 TransitionEditResult applyDefaultEditTransition(Project& project, const std::string& outgoingId,
@@ -2085,115 +2332,25 @@ TransitionEditResult applyDefaultEditTransition(Project& project, const std::str
         return result;
     }
 
-    // リンク相手も同じ cut で接していれば一緒に置く (ずらして置いた音声は別の編集点)。
-    struct EditPoint {
-        std::string outgoing;
-        std::string incoming;
-    };
-
-    std::vector<EditPoint> points{{outgoingId, incomingId}};
-    if (linkMode == LinkMode::Linked) {
-        const int outgoingIndex = indexOfId(project, outgoingId);
-        const int incomingIndex = indexOfId(project, incomingId);
-        const int outgoingPartner =
-            validIndex(project, outgoingIndex) ? linkPartnerIndex(project, outgoingIndex) : -1;
-        const int incomingPartner =
-            validIndex(project, incomingIndex) ? linkPartnerIndex(project, incomingIndex) : -1;
-        if (outgoingPartner >= 0 && incomingPartner >= 0) {
-            const TimelineTransition mainProbe{"probe", outgoingId, incomingId, 0, 0};
-            const TimelineTransition partnerProbe{
-                "probe", project.timelineClips[static_cast<std::size_t>(outgoingPartner)].id,
-                project.timelineClips[static_cast<std::size_t>(incomingPartner)].id, 0, 0};
-            TransitionClips mainClips;
-            TransitionClips partnerClips;
-            std::string ignored;
-            if (resolveTransitionClips(project, mainProbe, mainClips, ignored) &&
-                resolveTransitionClips(project, partnerProbe, partnerClips, ignored) &&
-                partnerClips.cut == mainClips.cut)
-                points.push_back({partnerProbe.outgoingClipId, partnerProbe.incomingClipId});
-        }
-    }
-    // 映像と音声は同じ長さ・同じ cut の前後で置く。上限は両方の編集点の小さい方。
+    const auto points = linkedEditPoints(project, outgoingId, incomingId, linkMode);
     Project prepared = project;
-    std::int64_t maxBefore = timelineFrames;
-    std::int64_t maxAfter = timelineFrames;
-    for (const auto& point : points) {
-        std::int64_t pointBefore = 0;
-        std::int64_t pointAfter = 0;
-        if (!prepareEditTransition(prepared, point.outgoing, point.incoming, timelineFrames,
-                                   pointBefore, pointAfter, result.error))
-            return result;
-        maxBefore = std::min(maxBefore, pointBefore);
-        maxAfter = std::min(maxAfter, pointAfter);
-    }
-
-    // 置ける長さは cut の前 (before) と後 (after) で独立に決まる。
-    //   before: incoming を cut - before まで延ばせる (素材 frame にちょうど乗る) こと、
-    //           映像なら outgoing の最後の before frame が不透明であること
-    //   after : outgoing を cut + after まで延ばせること、映像なら incoming を cut + after で
-    //           分けられる (lane 1 の区間の終わり) ことと、incoming の最初の after frame
-    //           が不透明であること
-    // それぞれで置ける長さを求めてから、合計が最大で cut に最も近い中央の組を選ぶ。
-    // 長さに依らない条件 (映像の形と、区間の端の frame の不透明度) は先に理由を付けて断る。
-    struct PointClips {
-        TimelineClip outgoing;
-        TimelineClip incoming;
-        TransitionClips clips;
-    };
-
+    std::int64_t maxBefore = 0;
+    std::int64_t maxAfter = 0;
+    if (!editPointsUpperBounds(prepared, points, timelineFrames, maxBefore, maxAfter, result.error))
+        return result;
     std::vector<PointClips> resolved;
-    for (const auto& point : points) {
-        const TimelineTransition probe{"probe", point.outgoing, point.incoming, 0, 0};
-        PointClips entry;
-        if (!resolveTransitionClips(prepared, probe, entry.clips, result.error))
-            return result;
-        entry.outgoing = prepared.timelineClips[static_cast<std::size_t>(entry.clips.outgoing)];
-        entry.incoming = prepared.timelineClips[static_cast<std::size_t>(entry.clips.incoming)];
-        if (entry.outgoing.track.kind == TrackKind::Video &&
-            !dissolveClipsEligible(prepared, entry.clips, 0, 0, result.error))
-            return result;
-        resolved.push_back(std::move(entry));
-    }
-    const auto beforeFits = [&](std::int64_t before, bool checkOpacity) {
-        std::string ignored;
-        for (const auto& entry : resolved) {
-            const auto cut = entry.clips.cut;
-            if (before > 0 &&
-                !clipWithEdgeAt(prepared, entry.incoming, TrimEdge::Left, cut - before, ignored))
-                return false;
-            if (checkOpacity && entry.outgoing.track.kind == TrackKind::Video &&
-                !dissolveClipOpaqueOver(prepared, entry.outgoing,
-                                        entry.clips.outgoingDuration - before,
-                                        entry.clips.outgoingDuration, ignored))
-                return false;
-        }
-        return true;
-    };
-    const auto afterFits = [&](std::int64_t after, bool checkOpacity) {
-        std::string ignored;
-        for (const auto& entry : resolved) {
-            const auto cut = entry.clips.cut;
-            if (after > 0 &&
-                !clipWithEdgeAt(prepared, entry.outgoing, TrimEdge::Right, cut + after, ignored))
-                return false;
-            if (entry.outgoing.track.kind != TrackKind::Video)
-                continue;
-            if (after > 0 && after < entry.clips.incomingDuration &&
-                !clipWithEdgeAt(prepared, entry.incoming, TrimEdge::Right, cut + after, ignored))
-                return false;
-            if (checkOpacity &&
-                !dissolveClipOpaqueOver(prepared, entry.incoming, 0, after, ignored))
-                return false;
-        }
-        return true;
-    };
+    if (!resolvePointClips(prepared, points, resolved, result.error))
+        return result;
+    // before と after のそれぞれで置ける長さを求めてから、合計が最大で cut に最も近い中央の
+    // 組を選ぶ。
+    SpanFitter fitter(prepared, resolved, maxBefore, maxAfter);
     const auto choose = [&](bool checkOpacity, std::int64_t& before, std::int64_t& after) {
         std::vector<bool> beforeOk(static_cast<std::size_t>(maxBefore) + 1);
         std::vector<bool> afterOk(static_cast<std::size_t>(maxAfter) + 1);
         for (std::int64_t value = 0; value <= maxBefore; ++value)
-            beforeOk[static_cast<std::size_t>(value)] = beforeFits(value, checkOpacity);
+            beforeOk[static_cast<std::size_t>(value)] = fitter.beforeFits(value, checkOpacity);
         for (std::int64_t value = 0; value <= maxAfter; ++value)
-            afterOk[static_cast<std::size_t>(value)] = afterFits(value, checkOpacity);
+            afterOk[static_cast<std::size_t>(value)] = fitter.afterFits(value, checkOpacity);
         for (std::int64_t total = std::min(timelineFrames, maxBefore + maxAfter); total >= 1;
              --total) {
             // 合計 total の組のうち、cut を中央に置く組から順に試す。
@@ -2237,18 +2394,7 @@ TransitionEditResult applyDefaultEditTransition(Project& project, const std::str
             firstId = id;
         trial.timelineTransitions.push_back({id, point.outgoing, point.incoming, before, after});
     }
-    // 選んだ長さは描画区間を作れるはずである。作れなければ理由をそのまま返す (黙って縮めない)。
-    std::vector<TimelineRenderSegment> segments;
-    const auto valid = validateTimeline(trial);
-    if (!valid.success) {
-        result.error = valid.error;
-        return result;
-    }
-    if (!timelineRenderSegments(trial, TrackKind::Video, segments, result.error) ||
-        !timelineRenderSegments(trial, TrackKind::Audio, segments, result.error))
-        return result;
-    const auto committed =
-        commitCandidate(project, std::move(trial), indexOfId(project, incomingId));
+    const auto committed = commitTransitionTrial(project, std::move(trial), incomingId);
     if (!committed.success) {
         result.error = committed.error;
         return result;
@@ -2256,6 +2402,190 @@ TransitionEditResult applyDefaultEditTransition(Project& project, const std::str
     result.success = true;
     result.transitionId = firstId;
     result.frames = before + after;
+    result.transitionCount = static_cast<int>(points.size());
+    return result;
+}
+
+TransitionSpanLimits transitionSpanLimits(const Project& project, const std::string& transitionId,
+                                          LinkMode linkMode) {
+    TransitionSpanLimits result;
+    const auto* transition = findTransition(project, transitionId);
+    if (!transition) {
+        result.error = "トランジションがありません";
+        return result;
+    }
+    Project prepared = project;
+    if (!editPointsUpperBounds(prepared, spanEditPoints(project, *transition, linkMode),
+                               std::numeric_limits<std::int64_t>::max(), result.maxBefore,
+                               result.maxAfter, result.error))
+        return result;
+    result.success = true;
+    return result;
+}
+
+namespace {
+
+// [lower, upper] のうち fits を満たし target に最も近い値。同じ距離なら towards (+1 / -1) の向きを
+// 選ぶ。無ければ -1。
+std::int64_t nearestInRange(std::int64_t target, std::int64_t lower, std::int64_t upper,
+                            std::int64_t towards, const std::function<bool(std::int64_t)>& fits) {
+    if (lower > upper)
+        return -1;
+    target = std::clamp(target, lower, upper);
+    for (std::int64_t distance = 0;; ++distance) {
+        const std::int64_t first = target + towards * distance;
+        const std::int64_t second = target - towards * distance;
+        const bool firstInside = first >= lower && first <= upper;
+        const bool secondInside = second >= lower && second <= upper;
+        if (!firstInside && !secondInside)
+            return -1;
+        if (firstInside && fits(first))
+            return first;
+        if (secondInside && fits(second))
+            return second;
+    }
+}
+
+std::int64_t towardsChange(std::int64_t requested, std::int64_t current) {
+    return requested >= current ? 1 : -1;
+}
+
+} // namespace
+
+TransitionSpanFit nearestTransitionSpan(const Project& project, const std::string& transitionId,
+                                        std::int64_t framesBeforeCut, std::int64_t framesAfterCut,
+                                        SpanFitMode mode, LinkMode linkMode) {
+    TransitionSpanFit result;
+    const auto* transition = findTransition(project, transitionId);
+    if (!transition) {
+        result.error = "トランジションがありません";
+        return result;
+    }
+    const auto points = spanEditPoints(project, *transition, linkMode);
+    Project prepared = project;
+    std::int64_t maxBefore = 0;
+    std::int64_t maxAfter = 0;
+    std::vector<PointClips> resolved;
+    if (!editPointsUpperBounds(prepared, points, std::numeric_limits<std::int64_t>::max(),
+                               maxBefore, maxAfter, result.error) ||
+        !resolvePointClips(prepared, points, resolved, result.error))
+        return result;
+    SpanFitter fitter(prepared, resolved, maxBefore, maxAfter);
+    const auto beforeFits = [&](std::int64_t value) { return fitter.beforeFits(value, true); };
+    const auto afterFits = [&](std::int64_t value) { return fitter.afterFits(value, true); };
+    // 不透明度の上限より外は置けないので、探索をその内側に限る。
+    const std::int64_t beforeLimit = std::min(maxBefore, fitter.opaqueBefore());
+    const std::int64_t afterLimit = std::min(maxAfter, fitter.opaqueAfter());
+    const std::int64_t currentBefore = transition->framesBeforeCut;
+    const std::int64_t currentAfter = transition->framesAfterCut;
+    std::int64_t before = -1;
+    std::int64_t after = -1;
+    if (mode == SpanFitMode::EachSide) {
+        // 片側の端のドラッグ。動かさなかった側は今の値のまま (置けるので変わらない)。
+        before = nearestInRange(framesBeforeCut, 0, beforeLimit,
+                                towardsChange(framesBeforeCut, currentBefore), beforeFits);
+        after = nearestInRange(framesAfterCut, 0, afterLimit,
+                               towardsChange(framesAfterCut, currentAfter), afterFits);
+    } else {
+        // 長さ・配置・本体のドラッグ。総尺を第一に保ち、その総尺の組のうち cut の前が指定に
+        // 最も近いものを選ぶ。指定の総尺で置けなければ、最も近い総尺へ落とす。
+        const auto topBefore = nearestInRange(beforeLimit, 0, beforeLimit, -1, beforeFits);
+        const auto topAfter = nearestInRange(afterLimit, 0, afterLimit, -1, afterFits);
+        const std::int64_t requestedTotal = framesBeforeCut + framesAfterCut;
+        nearestInRange(
+            requestedTotal, 1, topBefore + topAfter,
+            towardsChange(requestedTotal, currentBefore + currentAfter), [&](std::int64_t total) {
+                const auto chosen = nearestInRange(
+                    framesBeforeCut, std::max<std::int64_t>(0, total - topAfter),
+                    std::min(topBefore, total), towardsChange(framesBeforeCut, currentBefore),
+                    [&](std::int64_t value) {
+                        return beforeFits(value) && afterFits(total - value);
+                    });
+                if (chosen < 0)
+                    return false;
+                before = chosen;
+                after = total - chosen;
+                return true;
+            });
+    }
+    if (before < 0 || after < 0 || before + after < 1) {
+        result.error = "素材の余白と不透明度の範囲に置ける長さがありません";
+        return result;
+    }
+    result.success = true;
+    result.framesBeforeCut = before;
+    result.framesAfterCut = after;
+    return result;
+}
+
+TransitionEditResult setTimelineTransitionSpan(Project& project, const std::string& transitionId,
+                                               std::int64_t framesBeforeCut,
+                                               std::int64_t framesAfterCut, LinkMode linkMode) {
+    TransitionEditResult result;
+    const auto* transition = findTransition(project, transitionId);
+    if (!transition) {
+        result.error = "変更するトランジションがありません";
+        return result;
+    }
+    if (framesBeforeCut < 0 || framesAfterCut < 0 ||
+        framesBeforeCut > std::numeric_limits<std::int64_t>::max() - framesAfterCut ||
+        framesBeforeCut + framesAfterCut < 1) {
+        result.error = "トランジションの長さは 1 フレーム以上にしてください";
+        return result;
+    }
+    if (transition->framesBeforeCut == framesBeforeCut &&
+        transition->framesAfterCut == framesAfterCut) {
+        result.error = "トランジションの長さは変わっていません";
+        return result;
+    }
+    const auto points = spanEditPoints(project, *transition, linkMode);
+    Project prepared = project;
+    std::int64_t maxBefore = 0;
+    std::int64_t maxAfter = 0;
+    if (!editPointsUpperBounds(prepared, points, std::numeric_limits<std::int64_t>::max(),
+                               maxBefore, maxAfter, result.error))
+        return result;
+    if (framesBeforeCut > maxBefore || framesAfterCut > maxAfter) {
+        result.error = "素材の余白が足りません (cut の前は最大 " + std::to_string(maxBefore) +
+                       "、後は最大 " + std::to_string(maxAfter) + " フレーム)";
+        return result;
+    }
+    std::vector<PointClips> resolved;
+    if (!resolvePointClips(prepared, points, resolved, result.error))
+        return result;
+    // 余白の内側でも、素材 frame に乗らない長さ (速度変更) と不透明度の下がる区間は断る。
+    // 置ける長さへ黙って丸めない。
+    SpanFitter fitter(prepared, resolved, maxBefore, maxAfter);
+    if (!fitter.beforeFits(framesBeforeCut, false) || !fitter.afterFits(framesAfterCut, false)) {
+        result.error = "この長さは素材のフレームに合わないため設定できません";
+        return result;
+    }
+    if (!fitter.beforeFits(framesBeforeCut, true) || !fitter.afterFits(framesAfterCut, true)) {
+        result.error =
+            std::string(kDissolveRequirement) + "トランジションの区間で不透明度が下がっています";
+        return result;
+    }
+    // ID と並び順を保つため、元の project の中で値だけを置き換える。
+    Project trial = project;
+    for (auto& entry : trial.timelineTransitions) {
+        const bool target = std::any_of(points.begin(), points.end(), [&](const EditPoint& point) {
+            return entry.outgoingClipId == point.outgoing && entry.incomingClipId == point.incoming;
+        });
+        if (!target)
+            continue;
+        entry.framesBeforeCut = framesBeforeCut;
+        entry.framesAfterCut = framesAfterCut;
+    }
+    // transition は project の中を指すので、commit で置き換わる前に複写しておく。
+    const std::string incomingId = transition->incomingClipId;
+    const auto committed = commitTransitionTrial(project, std::move(trial), incomingId);
+    if (!committed.success) {
+        result.error = committed.error;
+        return result;
+    }
+    result.success = true;
+    result.transitionId = transitionId;
+    result.frames = framesBeforeCut + framesAfterCut;
     result.transitionCount = static_cast<int>(points.size());
     return result;
 }

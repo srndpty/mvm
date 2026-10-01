@@ -21,7 +21,7 @@ qt_add_executable(mvm
 # Gestures`) ので、module の qmldir には載せない。載せると Qt は `.pragma library` の無い JS を
 # 各 QML 文書で評価し直すと警告する。`.pragma library` は VS Code の JavaScript 検査が構文エラーに
 # するため書かない (docs/premiere-like-editing.md §19.8)。下の mvm_test_text_ui_input も同じ。
-set_source_files_properties(TimelineGestures.js PreviewTransform.js
+set_source_files_properties(TimelineGestures.js PreviewTransform.js TransitionEditorMath.js
     PROPERTIES QT_QML_SKIP_QMLDIR_ENTRY TRUE)
 
 qt_add_qml_module(mvm
@@ -51,6 +51,8 @@ qt_add_qml_module(mvm
         TimelineToolIcon.qml
         TimelineToolPanel.qml
         TextClipInspector.qml
+        TransitionInspector.qml
+        TransitionEditorMath.js
         ModernColorPicker.qml
         ProjectPanel.qml
 )
@@ -136,6 +138,8 @@ qt_add_qml_module(mvm_test_text_ui_input
         TimelineToolIcon.qml
         TimelineToolPanel.qml
         TextClipInspector.qml
+        TransitionInspector.qml
+        TransitionEditorMath.js
         ModernColorPicker.qml
         ProjectPanel.qml
 )
