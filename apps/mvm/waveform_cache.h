@@ -28,7 +28,10 @@ namespace mvm::app {
 // 素材は実体 (volume + file ID) で区別し、request のたびに size と更新時刻 (100ns)
 // を照合する。同じ path の素材が差し替えられた場合や、失敗後に file が現れた場合は、
 // 次の request で作り直す。size と更新時刻が一致したまま中身だけ差し替えられた場合は
-// request では検出せず、revalidateAll() の内容 fingerprint で検出する。
+// request では検出せず、revalidateAll() の内容の標本 fingerprint (先頭・末尾・size) で
+// 検出を試みる。これは保証ではない: 中央部だけを書き換えて size と更新時刻を戻した素材は
+// 古い波形のまま残りうる。波形は表示専用で preview・書き出しの画素や音には使わないこと、
+// 前面へ戻るたびに全素材 (大きな動画を含む) の全体を読むのは重いことから、標本で済ませる。
 //
 // 完成した peak は byte budget を超えたら、どの WaveformView も参照していない
 // ものから古い順に捨てる。表示中の波形は budget を超えても捨てない。

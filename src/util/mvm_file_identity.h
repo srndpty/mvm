@@ -39,11 +39,17 @@ MvmFileIdentityStatus mvm_file_identity_probe(const wchar_t* path, MvmFileIdenti
 /* mvm_file_identity_probe が OK なら 0、それ以外は非 0。 */
 int mvm_file_identity_query(const wchar_t* path, MvmFileIdentity* out);
 
-/* 先頭と末尾の各 MVM_FILE_FINGERPRINT_EDGE_BYTES と size から 64bit の値を作る。
- * 暗号学的 hash ではなく、size と更新時刻が一致したまま中身だけ差し替えられた
- * ことを検出するためのもの。中央部だけの変更は検出しない。成功で 0。 */
+/* 先頭と末尾の各 MVM_FILE_FINGERPRINT_EDGE_BYTES と size から 64bit の値を作る標本検査。
+ * size と更新時刻が一致したまま中身だけ差し替えられたことを、file 全体を読まずに
+ * 見つけるためのもの。**中央部だけの変更は検出しない** (取りこぼしうる、という契約)。
+ * 差し替えを必ず検出したい用途では mvm_file_content_hash を使う。成功で 0。 */
 #define MVM_FILE_FINGERPRINT_EDGE_BYTES (64 * 1024)
 int mvm_file_content_fingerprint(const wchar_t* path, unsigned long long* out);
+
+/* file 全体と size から 64bit の値を作る (FNV-1a)。暗号学的 hash ではないが、
+ * どの位置の変更も値に反映される。file 全体を読むので、大きな素材を頻繁に検査する
+ * 用途には向かない。成功で 0。 */
+int mvm_file_content_hash(const wchar_t* path, unsigned long long* out);
 
 #ifdef __cplusplus
 }

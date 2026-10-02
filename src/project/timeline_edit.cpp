@@ -65,6 +65,10 @@ int indexOfId(const Project& project, const std::string& id) {
     return -1;
 }
 
+int indexOfId(const ClipIdIndex* index, const Project& project, const std::string& id) {
+    return index ? index->find(id) : indexOfId(project, id);
+}
+
 struct TimelineInterval {
     TrackRef track;
     std::int64_t start = 0;
@@ -412,10 +416,12 @@ struct TransitionClips {
     std::int64_t tailHandle = 0; // outgoing の終端より後に使える素材
 };
 
+// clipIndex は省略できる (null なら clip 列を走査する)。多数のトランジションを解決するときに渡す。
 bool resolveTransitionClips(const Project& project, const TimelineTransition& transition,
-                            TransitionClips& clips, std::string& error) {
-    clips.outgoing = indexOfId(project, transition.outgoingClipId);
-    clips.incoming = indexOfId(project, transition.incomingClipId);
+                            TransitionClips& clips, std::string& error,
+                            const ClipIdIndex* clipIndex = nullptr) {
+    clips.outgoing = indexOfId(clipIndex, project, transition.outgoingClipId);
+    clips.incoming = indexOfId(clipIndex, project, transition.incomingClipId);
     if (!validIndex(project, clips.outgoing) || !validIndex(project, clips.incoming) ||
         clips.outgoing == clips.incoming) {
         error = "トランジションの clip がありません: " + transition.id;
@@ -529,13 +535,14 @@ bool validateTimelineTransitions(const Project& project, std::string& error) {
     std::unordered_map<std::string, std::int64_t> headInside;
     std::unordered_map<std::string, std::int64_t> tailInside;
     std::unordered_map<std::string, std::int64_t> durations;
+    const ClipIdIndex clipIndex(project);
     for (const auto& transition : project.timelineTransitions) {
         if (transition.id.empty() || !ids.insert(transition.id).second) {
             error = "トランジション ID が空または重複しています";
             return false;
         }
         TransitionClips clips;
-        if (!resolveTransitionClips(project, transition, clips, error))
+        if (!resolveTransitionClips(project, transition, clips, error, &clipIndex))
             return false;
         const auto before = transition.framesBeforeCut;
         const auto after = transition.framesAfterCut;
@@ -588,11 +595,12 @@ void reconcileTimelineTransitions(Project& candidate) {
     };
 
     std::vector<Entry> entries;
+    const ClipIdIndex clipIndex(candidate);
     for (std::size_t index = 0; index < candidate.timelineTransitions.size(); ++index) {
         Entry entry{index, {}};
         std::string ignored;
         if (resolveTransitionClips(candidate, candidate.timelineTransitions[index], entry.clips,
-                                   ignored))
+                                   ignored, &clipIndex))
             entries.push_back(entry);
     }
     std::stable_sort(entries.begin(), entries.end(), [&](const Entry& left, const Entry& right) {
@@ -635,6 +643,17 @@ void reconcileTimelineTransitions(Project& candidate) {
             kept.push_back(std::move(candidate.timelineTransitions[index]));
     }
     candidate.timelineTransitions = std::move(kept);
+}
+
+ClipIdIndex::ClipIdIndex(const Project& project) {
+    indices_.reserve(project.timelineClips.size());
+    for (std::size_t index = 0; index < project.timelineClips.size(); ++index)
+        indices_.emplace(project.timelineClips[index].id, static_cast<int>(index));
+}
+
+int ClipIdIndex::find(std::string_view id) const {
+    const auto found = indices_.find(id);
+    return found == indices_.end() ? -1 : found->second;
 }
 
 TimelineValidationResult finalizeTimelineCandidate(Project& candidate) {
@@ -824,16 +843,34 @@ TimelineValidationResult validateTimeline(const Project& project) {
         std::int64_t end = 0;
         if (!clipInterval(project, clip, start, end, result.error))
             return result;
-        for (const auto& interval : intervals) {
-            if (interval.track == clip.track && start < interval.end && interval.start < end) {
-                result.error =
-                    "同じ track の timeline clip が重複しています: " + interval.clip->name + " / " +
-                    clip.name;
-                return result;
-            }
-        }
         intervals.push_back({clip.track, start, end, &clip});
         totalEnd = std::max(totalEnd, end);
+    }
+    // 同じ track の重なり。track ごとに開始位置で並べ、それまでの区間の終端の最大とだけ
+    // 比べる (全組を比べると clip 数の 2 乗になり、大きな timeline の編集が毎回重くなる)。
+    // 区間は空でないので、開始が終端の最大より前なら、その終端を持つ区間と重なっている。
+    std::sort(intervals.begin(), intervals.end(),
+              [](const TimelineInterval& left, const TimelineInterval& right) {
+                  return std::tuple(left.track.kind, left.track.index, left.start, left.clip) <
+                         std::tuple(right.track.kind, right.track.index, right.start, right.clip);
+              });
+    const TimelineInterval* reach = nullptr; // 同じ track で終端が最大の区間
+    for (const auto& interval : intervals) {
+        if (!reach || !(reach->track == interval.track)) {
+            reach = &interval;
+            continue;
+        }
+        ++result.overlapComparisons;
+        if (interval.start < reach->end) {
+            // timelineClips の並びで前にある clip を先に書く。
+            const auto* first = std::min(reach->clip, interval.clip);
+            const auto* second = std::max(reach->clip, interval.clip);
+            result.error = "同じ track の timeline clip が重複しています: " + first->name + " / " +
+                           second->name;
+            return result;
+        }
+        if (interval.end > reach->end)
+            reach = &interval;
     }
     for (const auto& [linkGroupId, group] : linkGroups) {
         if (group.count != 2 || !group.hasAudio || !group.hasVideo) {
@@ -2202,6 +2239,7 @@ public:
         const auto known = beforeEdge_.find(before);
         if (known != beforeEdge_.end())
             return known->second;
+        ++edgeProbes_;
         return beforeEdge_[before] = beforeEdgeFits(before);
     }
 
@@ -2211,6 +2249,7 @@ public:
         const auto known = afterEdge_.find(after);
         if (known != afterEdge_.end())
             return known->second;
+        ++edgeProbes_;
         return afterEdge_[after] = afterEdgeFits(after);
     }
 
@@ -2226,6 +2265,10 @@ public:
             opaqueAfter_ = countOpaque(false);
         return *opaqueAfter_;
     }
+
+    std::uint64_t opacityProbes() const { return opacityProbes_; }
+
+    std::uint64_t edgeProbes() const { return edgeProbes_; }
 
 private:
     bool beforeEdgeFits(std::int64_t before) const {
@@ -2258,7 +2301,7 @@ private:
 
     // 映像の編集点ごとに cut から連続して不透明な frame を数え、その最小値を返す。
     // cut の前は outgoing の終端から手前へ、後は incoming の先頭から奥へ数える。
-    std::int64_t countOpaque(bool beforeCut) const {
+    std::int64_t countOpaque(bool beforeCut) {
         std::int64_t limit = beforeCut ? maxBefore_ : maxAfter_;
         std::string ignored;
         for (const auto& entry : resolved_) {
@@ -2268,6 +2311,7 @@ private:
             std::int64_t count = 0;
             while (count < limit) {
                 const auto local = beforeCut ? entry.clips.outgoingDuration - 1 - count : count;
+                ++opacityProbes_;
                 if (!dissolveClipOpaqueOver(prepared_, clip, local, local + 1, ignored))
                     break;
                 ++count;
@@ -2285,6 +2329,8 @@ private:
     std::optional<std::int64_t> opaqueAfter_;
     std::unordered_map<std::int64_t, bool> beforeEdge_;
     std::unordered_map<std::int64_t, bool> afterEdge_;
+    std::uint64_t opacityProbes_ = 0;
+    std::uint64_t edgeProbes_ = 0;
 };
 
 // 選んだ長さは描画区間を作れるはずである。作れなければ理由をそのまま返す (黙って縮めない)。
@@ -2516,6 +2562,8 @@ TransitionSpanFit nearestTransitionSpan(const Project& project, const std::strin
                 return true;
             });
     }
+    result.opacityProbes = fitter.opacityProbes();
+    result.edgeProbes = fitter.edgeProbes();
     if (before < 0 || after < 0 || before + after < 1) {
         result.error = "素材の余白と不透明度の範囲に置ける長さがありません";
         return result;

@@ -1180,11 +1180,20 @@ ApplicationWindow {
                             // 隠すと render されず、seek が完了しない。
                         }
 
+                        // 再生位置に掛かる文字 clip だけの model (ドラッグ中の文字は固定する)。
+                        // controller へ渡す行番号は全 clip の番号 (clipRow) で、この Repeater の
+                        // index ではない。
+                        Binding {
+                            target: root.mvmController.textClipModel
+                            property: "pinnedClipIds"
+                            value: root.draggingTextClipId !== "" ? [root.draggingTextClipId] : []
+                        }
                         Repeater {
-                            model: root.mvmController.timelineModel
+                            model: root.mvmController.textClipModel
                             delegate: Item {
                                 id: textLayer
-                                required property int index
+                                objectName: "textLayer_" + clipId
+                                required property int clipRow
                                 required property string clipId
                                 required property string clipKind
                                 required property int trackIndex
@@ -1217,7 +1226,7 @@ ApplicationWindow {
                                 visible: clipKind === "text"
                                          && (!root.textEditing || root.editingTextClipId !== clipId)
                                          && root.mvmController.playheadFrame >= timelineStartFrame
-                                         && root.mvmController.textClipVisible(index)
+                                         && root.mvmController.textClipVisible(clipRow)
 
                                 // ドラッグ・編集中の文字だけをここで描く。
                                 // それ以外は engine が track 順に合成済みなので透明にする。
@@ -1226,14 +1235,14 @@ ApplicationWindow {
                                     // textPreviewSerial は数値のドラッグ中の描き直しで増える。
                                     source: textLayer.clipKind === "text"
                                             ? (root.mvmController.textPreviewSerial,
-                                               root.mvmController.textRasterUrl(textLayer.index))
+                                               root.mvmController.textRasterUrl(textLayer.clipRow))
                                             : ""
                                     cache: false
                                     fillMode: Image.Stretch
                                     // UI が描くときも、書き出しと同じ opacity (値・key・fade) を掛ける。
                                     opacity: (root.textOverlayClipId === textLayer.clipId ? 1 : 0)
                                              * (root.mvmController.playheadFrame,
-                                                root.mvmController.textClipOpacity(textLayer.index))
+                                                root.mvmController.textClipOpacity(textLayer.clipRow))
                                 }
 
                                 // 選択中の文字の範囲 (Premiere の選択枠に相当)。掴める範囲と同じ。
@@ -1524,6 +1533,8 @@ ApplicationWindow {
                 zoomIndex === minimumZoomIndex ? fitPixelsPerFrame : zoomLevels[zoomIndex]
             property string activeDragLinkGroup: ""
             property string activeDragClipId: ""
+            // 本体か端を押している clip。表示範囲の外へスクロールしても delegate を残す。
+            property string pressedClipId: ""
             property bool activeDragDuplicate: false
             property bool activeDragMoved: false
             property real activeDragOffsetX: 0
@@ -2084,6 +2095,7 @@ ApplicationWindow {
             // --- スクロール領域 ---
             Flickable {
                 id: timelineFlick
+                objectName: "timelineFlick"
                 x: timelinePanel.toolPanelWidth + timelinePanel.labelWidth
                 y: 0
                 width: parent.width - x - 4
@@ -2392,12 +2404,17 @@ ApplicationWindow {
                                                      timelinePanel.selectionCurrentY);
                                 const bottom = Math.max(timelinePanel.selectionStartY,
                                                         timelinePanel.selectionCurrentY);
+                                // clip の矩形は delegate と同じ式で区間から求める。delegate は表示範囲の
+                                // clip にしか無いので、delegate を数えると範囲外の clip を取りこぼす。
                                 const selectedIds = [];
-                                for (let index = 0; index < timelineClips.count; ++index) {
-                                    const item = timelineClips.itemAt(index);
-                                    if (item && item.x <= right && item.x + item.width >= left
-                                            && item.y <= bottom && item.y + item.height >= top)
-                                        selectedIds.push(root.mvmController.timelineModel.clipIdAt(index));
+                                for (const span of root.mvmController.timelineModel.clipSpans()) {
+                                    const x = span.start * timelinePanel.pixelsPerFrame;
+                                    const width = Math.max(2, (span.end - span.start) * timelinePanel.pixelsPerFrame);
+                                    const y = timelinePanel.rowY(span.trackKind, span.trackIndex)
+                                              - timelinePanel.tracksTop + 3;
+                                    const height = timelinePanel.trackHeight - 6;
+                                    if (x <= right && x + width >= left && y <= bottom && y + height >= top)
+                                        selectedIds.push(span.clipId);
                                 }
                                 timelinePanel.selecting = false;
                                 root.mvmController.selectTimelineClips(selectedIds);
@@ -2466,14 +2483,43 @@ ApplicationWindow {
                         }
 
                         // --- クリップ ---
+                        // 押している clip と、操作中の clip (ドラッグ・リンク相手の追従の起点) は
+                        // 表示範囲の外でも delegate を残す。
+                        Binding {
+                            target: root.mvmController.timelineClipWindow
+                            property: "pinnedClipIds"
+                            value: [timelinePanel.pressedClipId, timelinePanel.activeDragClipId,
+                                    timelinePanel.linkedEditClipId].filter(id => id !== "")
+                        }
+
+                        // 表示範囲 (± 表示幅 1 つ分) に掛かる clip と、押している・操作中の clip だけの
+                        // model。clip が多くても delegate の数は表示範囲に比例する。押している clip を
+                        // 固定するので、操作中にスクロールしても delegate は消えない。
                         Repeater {
                             id: timelineClips
-                            model: root.mvmController.timelineModel
+                            model: root.mvmController.timelineClipWindow
+
+                            // 群のドラッグ中は、ずらして描く clip が範囲外から入ってくるので、
+                            // ドラッグ量だけ逆向きに範囲を広げる (選択中の clip は固定しない)。
+                            readonly property real dragFrames:
+                                timelinePanel.activeDragMoved
+                                ? timelinePanel.activeDragOffsetX / timelinePanel.pixelsPerFrame : 0
+                            readonly property real visibleStartFrame:
+                                timelineFlick.contentX / timelinePanel.pixelsPerFrame - Math.max(0, dragFrames)
+                            readonly property real visibleEndFrame:
+                                (timelineFlick.contentX + timelineFlick.width) / timelinePanel.pixelsPerFrame
+                                - Math.min(0, dragFrames)
+                            onVisibleStartFrameChanged: updateWindow()
+                            onVisibleEndFrameChanged: updateWindow()
+                            Component.onCompleted: updateWindow()
+                            function updateWindow() {
+                                root.mvmController.timelineClipWindow.setVisibleRange(visibleStartFrame,
+                                                                                      visibleEndFrame);
+                            }
 
                             delegate: Rectangle {
                                 id: clipItem
                                 objectName: "timelineClip_" + clipId
-                                required property int index
                                 required property string clipId
                                 required property string displayName
                                 required property string clipKind
@@ -2543,8 +2589,11 @@ ApplicationWindow {
                                 property var bodySnap: null
                                 property bool bodyMoved: false
                                 property bool bodyAdditiveSelection: false
-                                property string dragTrackKind: trackKind
-                                property int dragTrackIndex: trackIndex
+                                // 移動先の track。press で必ず代入し、release でだけ読む。delegate は
+                                // 編集の後も作り直されないので、model の値へ bind しない (代入で外れた
+                                // bind が残って古い値を持ち続ける形にしない)。
+                                property string dragTrackKind: ""
+                                property int dragTrackIndex: -1
                                 // 本体を押したときのツール操作。"move" / "trackSelect" / "razor"
                                 // / "slip" / "slide"。押していない間は空。
                                 property string bodyGesture: ""
@@ -2925,6 +2974,7 @@ ApplicationWindow {
                                     }
                                     onPressed: mouse => {
                                         mouse.accepted = true;
+                                        timelinePanel.pressedClipId = clipItem.clipId;
                                         const pressPoint = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
                                         const pressFrame = Math.round(clipItem.timelineStartFrame
                                                                       + pressPoint.x / timelinePanel.pixelsPerFrame);
@@ -3107,6 +3157,7 @@ ApplicationWindow {
                                         timelinePanel.activeDragMoved = clipItem.bodyMoved;
                                     }
                                     onReleased: mouse => {
+                                        timelinePanel.pressedClipId = "";
                                         if (timelinePanel.tool === "pen" && clipItem.penState === null)
                                             return;
                                         if (clipItem.bodyGesture === "pen") {
@@ -3193,6 +3244,7 @@ ApplicationWindow {
                                         }
                                     }
                                     onCanceled: {
+                                        timelinePanel.pressedClipId = "";
                                         clipItem.previewKeys = null;
                                         clipItem.penState = null;
                                         if (clipItem.bodyGesture === "slip")
@@ -3250,6 +3302,7 @@ ApplicationWindow {
                                             held: parent.pressed
                                         }
                                         onPressed: mouse => {
+                                            timelinePanel.pressedClipId = clipItem.clipId;
                                             pressContentX = mapToItem(timelineContent, mouse.x, mouse.y).x;
                                             dragDelta = 0;
                                             clipItem.beginEdgeDrag("left", mouse.modifiers);
@@ -3277,6 +3330,7 @@ ApplicationWindow {
                                             timelinePanel.adjacentEditDelta = dragDelta;
                                         }
                                         onReleased: {
+                                            timelinePanel.pressedClipId = "";
                                             const delta = dragDelta;
                                             dragDelta = 0;
                                             clipItem.leftPreviewDelta = 0;
@@ -3284,6 +3338,7 @@ ApplicationWindow {
                                             clipItem.commitEdgeDrag("left", delta);
                                         }
                                         onCanceled: {
+                                            timelinePanel.pressedClipId = "";
                                             dragDelta = 0;
                                             clipItem.leftPreviewDelta = 0;
                                             clipItem.rightPreviewDelta = 0;
@@ -3316,6 +3371,7 @@ ApplicationWindow {
                                             held: parent.pressed
                                         }
                                         onPressed: mouse => {
+                                            timelinePanel.pressedClipId = clipItem.clipId;
                                             pressContentX = mapToItem(timelineContent, mouse.x, mouse.y).x;
                                             clipItem.beginEdgeDrag("right", mouse.modifiers);
                                         }
@@ -3335,11 +3391,13 @@ ApplicationWindow {
                                             timelinePanel.adjacentEditDelta = clipItem.rightPreviewDelta;
                                         }
                                         onReleased: {
+                                            timelinePanel.pressedClipId = "";
                                             const delta = clipItem.rightPreviewDelta;
                                             clipItem.rightPreviewDelta = 0;
                                             clipItem.commitEdgeDrag("right", delta);
                                         }
                                         onCanceled: {
+                                            timelinePanel.pressedClipId = "";
                                             clipItem.rightPreviewDelta = 0;
                                             clipItem.endLinkedEdit();
                                         }

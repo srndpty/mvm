@@ -10,6 +10,8 @@
 #include "media/mlt/mvm_mlt_probe.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
+#include "preview_engine/preview_engine_internal.h"
+#include "test_media_fixture.h"
 
 #include <algorithm>
 #include <chrono>
@@ -29,6 +31,7 @@
 #include <QQuickWindow>
 #include <QSGRendererInterface>
 #include <QTemporaryDir>
+#include <QTimer>
 
 namespace {
 
@@ -441,6 +444,8 @@ int main(int argc, char** argv) {
                               controller.lastPlaybackRebuildReason().contains(
                                   QStringLiteral("登録上限")),
                           "登録上限で理由付きの組み直しに戻りませんでした");
+                    check(controller.playbackCapacityResetCount() > 0,
+                          "登録上限を登録枠の不足として扱わず、engine を作り直しませんでした");
                 } else {
                     check(controller.playbackRebuildCount() == 0,
                           "cut の境界でPreviewを組み直しました");
@@ -464,8 +469,21 @@ int main(int argc, char** argv) {
                     check(controller.playbackMaxPreparationMs() < kMaxPreparationMs,
                           "source の準備が先読み幅の半分を超えました");
                 }
+                // 映像だけの区間から audio の区間へ入ると、engine は最初の audio を公開するときに
+                // WASAPI endpoint を control thread で open する (準備用の thread へ移せない)。
+                // その時間を記録する (閾値は置かない)。
+                const auto endpoint = mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(
+                    *controller.previewEngineForTest());
+                if (std::string(label) == "cut-silent-to-audio")
+                    check(endpoint.playingAudioEndpointOpenCount >= 1 &&
+                              endpoint.playingAudioEndpointOpenAttemptCount >=
+                                  endpoint.playingAudioEndpointOpenCount &&
+                              endpoint.maxPlayingAudioEndpointOpenAttemptMs >=
+                                  endpoint.maxPlayingAudioEndpointOpenMs,
+                          "前提: 再生中に最初の audio の endpoint を open していません");
                 std::printf("%s: 提示 %llu、drop %llu、最大の提示間隔 %lld frame、組み直し %llu、"
-                            "準備最大 %.1fms、理由: %s、status: %s\n",
+                            "準備最大 %.1fms、再生中の endpoint open %llu 回 (最大 %.1fms)、"
+                            "理由: %s、status: %s\n",
                             label,
                             static_cast<unsigned long long>(after.presentedFrameCount -
                                                             before.presentedFrameCount),
@@ -474,6 +492,8 @@ int main(int argc, char** argv) {
                             static_cast<long long>(steps.maxForward),
                             static_cast<unsigned long long>(controller.playbackRebuildCount()),
                             controller.playbackMaxPreparationMs(),
+                            static_cast<unsigned long long>(endpoint.playingAudioEndpointOpenCount),
+                            endpoint.maxPlayingAudioEndpointOpenMs,
                             controller.lastPlaybackRebuildReason().toUtf8().constData(),
                             controller.statusText().toUtf8().constData());
                 controller.pauseTimeline();
@@ -500,6 +520,245 @@ int main(int argc, char** argv) {
         runCut("cut-silent-to-head-audio", false, true, 0, false);
         runCut("cut-audio-to-silent", true, false, 120, false);
         runCut("cut-capacity-fallback", false, false, 120, true);
+
+        // 登録枠の不足ではない UnsupportedCapability (audio を扱えない構成) は、作り直しても
+        // 直らない。clip 境界で audio source を準備できなくても、登録枠の不足として engine を
+        // 作り直さない。上の cut-capacity-fallback が、登録枠の不足なら作り直す対照になる。
+        {
+            auto audioProject = mvm::project::createDefaultProject();
+            audioProject.timelineClips = {
+                half(video, "noaudio-v-out", TrackKind::Video, 0, 0),
+                half(copiedVideo, "noaudio-v-in", TrackKind::Video, 120, 120),
+                half(copiedWav, "noaudio-a-in", TrackKind::Audio, 120, 120)};
+            check(mvm::project::validateTimeline(audioProject).success,
+                  "audio 無効化試験の timeline が不正です");
+            const auto audioPath = std::filesystem::path(
+                directory.filePath(QStringLiteral("cut-audio-unsupported.mvm")).toStdWString());
+            mvm::app::MvmController controller(audioPath, {}, audioProject);
+            QQuickWindow window;
+            window.setWidth(640);
+            window.setHeight(360);
+            auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+            surface->setWidth(640);
+            surface->setHeight(360);
+            window.show();
+            controller.attachPreview(surface);
+            const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+            const bool sought =
+                ready &&
+                retryUntilAccepted([&] { return controller.seekTimelineFrame(90); }, 30000) &&
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+            const bool disabled = sought && controller.disablePreviewAudioSourcesForTest();
+            const bool started =
+                disabled && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            check(started, "audio を無効にした engine で cut の前から再生を開始できません");
+            if (started) {
+                pumpUntil(
+                    [&] {
+                        return controller.playbackRebuildCount() > 0 ||
+                               controller.playheadFrame() >= 150 || !controller.playing();
+                    },
+                    15000);
+                // 境界を越えた後の組み直しの結果まで待つ。
+                pumpUntil([&] { return !controller.playing(); }, 5000);
+                const QString reason =
+                    controller.lastPlaybackRebuildReason() + controller.statusText();
+                check(reason.contains(QStringLiteral("扱えません")),
+                      "audio を扱えない構成の失敗が境界で観測されませんでした");
+                check(controller.playbackCapacityResetCount() == 0,
+                      "audio を扱えない構成を登録枠の不足として engine を作り直しました");
+                std::printf(
+                    "cut-audio-unsupported: 組み直し %llu、作り直し %llu、理由: %s\n",
+                    static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                    static_cast<unsigned long long>(controller.playbackCapacityResetCount()),
+                    reason.toUtf8().constData());
+                if (controller.playing())
+                    controller.pauseTimeline();
+            }
+            controller.shutdown();
+        }
+
+        // 先読みの準備 (open / seek) は engine の準備用の thread で進み、完了は後から公開される。
+        // 準備している間に transport や Project が変わったら、完了しても公開・使用しない。
+        // 準備用の thread を open の前で止めておき、その間に変化を起こしてから再開する。
+        enum class StaleCause {
+            EnginePause,
+            EngineSeek,
+            ControllerPause,
+            TrackEdit,
+            TrackEditHeldToBoundary,
+            EngineReset
+        };
+        const auto runStalePreparation = [&](const char* label, StaleCause cause) {
+            auto staleProject = mvm::project::createDefaultProject();
+            staleProject.timelineClips = {
+                half(video, "stale-v-out", TrackKind::Video, 0, 0),
+                half(copiedVideo, "stale-v-in", TrackKind::Video, 120, 120),
+                half(copiedWav, "stale-a-in", TrackKind::Audio, 120, 120)};
+            // 境界まで止める場合は映像だけにする。audio sink がまだ無いとき、始まった後に完了した
+            // 主入力の audio は公開できない (sample の連続を要求する。§21.4) ので、境界で待つと
+            // 準備し直しの成否に関係なく組み直しになる。
+            const bool withAudio = cause != StaleCause::TrackEditHeldToBoundary;
+            if (!withAudio)
+                staleProject.timelineClips.pop_back();
+            const std::size_t boundarySources = withAudio ? 2 : 1;
+            // 編集の commit (保存の検証) は clip が素材を指すことを要求する。
+            mvm::test::attachFixtureMedia(staleProject);
+            check(mvm::project::validateTimeline(staleProject).success,
+                  "先読みの負例の timeline が不正です");
+            const auto stalePath = std::filesystem::path(
+                directory.filePath(QString::fromUtf8(label) + QStringLiteral(".mvm"))
+                    .toStdWString());
+            mvm::app::MvmController controller(stalePath, {}, staleProject);
+            QQuickWindow window;
+            window.setWidth(640);
+            window.setHeight(360);
+            auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+            surface->setWidth(640);
+            surface->setHeight(360);
+            window.show();
+            controller.attachPreview(surface);
+            const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+            const bool sought =
+                ready &&
+                retryUntilAccepted([&] { return controller.seekTimelineFrame(90); }, 30000) &&
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+            controller.holdSourcePreparationsForTest(true);
+            const bool started =
+                sought && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            // 境界 (120) の video と audio の準備を要求し、準備用の thread が止まっている。
+            const bool requested =
+                started &&
+                pumpUntil(
+                    [&] { return controller.pendingSourcePreparationCount() == boundarySources; },
+                    5000);
+            check(requested,
+                  (std::string(label) + ": 前提: 境界の source の準備を要求しません").c_str());
+            if (!requested) {
+                controller.holdSourcePreparationsForTest(false);
+                controller.shutdown();
+                return;
+            }
+            const auto engine = controller.previewEngineForTest();
+            const auto diagnostics = [&] {
+                return mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            };
+            const auto publishedBefore = diagnostics().publishedSourceCount;
+            const auto engineStaleBefore = diagnostics().staleSourcePreparationRejectCount;
+            const auto controllerStaleBefore = controller.playbackStalePreparationCount();
+            switch (cause) {
+            case StaleCause::EnginePause:
+                // controller を通さない (controller は準備を取り消さない)。engine
+                // だけが古さを判定する。
+                check(static_cast<bool>(engine->pause()), "前提: engine を pause できません");
+                break;
+            case StaleCause::EngineSeek:
+                check(static_cast<bool>(engine->seek({100})), "前提: engine を seek できません");
+                break;
+            case StaleCause::ControllerPause:
+                check(controller.pauseTimeline(), "前提: 再生を止められません");
+                break;
+            case StaleCause::TrackEdit:
+            case StaleCause::TrackEditHeldToBoundary:
+                // 再生を止めない編集 (空の V2 を隠す)。準備は変わる前の Project で決めた。
+                check(controller.setTracksMuted(QStringLiteral("video"), {1}, true) &&
+                          controller.playing(),
+                      "前提: 再生中に track を隠せません");
+                break;
+            case StaleCause::EngineReset:
+                // 準備用の thread が止まったままでも、shutdown が取り消して join する
+                // (待ち続けない)。
+                check(controller.resetPreviewEngineForTest(), "準備中の engine を作り直せません");
+                check(controller.pendingSourcePreparationCount() == 0,
+                      "作り直した後も古い engine の準備を持っています");
+                break;
+            }
+            if (cause == StaleCause::TrackEditHeldToBoundary) {
+                // 準備用の thread を止めたまま境界を越える (境界で完了を待たれた準備だけが進む)。
+                // 変わる前の Project の準備が境界まで残っても、それを「準備中」と数えて新しい
+                // 要求を出さないままにしない。変わった後の Project で要求し直し、境界で待って
+                // 引き継ぐ (組み直さない)。
+                const bool rerequested = pumpUntil(
+                    [&] {
+                        return controller.pendingSourcePreparationCount() == boundarySources &&
+                               controller.playbackStalePreparationCount() >=
+                                   controllerStaleBefore + boundarySources;
+                    },
+                    5000);
+                check(rerequested, "Project が変わった後に境界の source を準備し直しません");
+                pumpUntil(
+                    [&] { return !controller.playing() || controller.playheadFrame() >= 150; },
+                    15000);
+                check(controller.playbackPreparationWaitCount() >= 1,
+                      "前提: 境界で準備の完了を待っていません (止めた準備が境界まで残りません)");
+            }
+            controller.holdSourcePreparationsForTest(false);
+            if (cause == StaleCause::EngineReset) {
+                controller.shutdown();
+                return;
+            }
+            if (cause == StaleCause::TrackEdit || cause == StaleCause::TrackEditHeldToBoundary) {
+                // 古い完了は外し、変わった後の Project で準備し直して境界を越える。
+                const bool crossed = pumpUntil(
+                    [&] { return !controller.playing() || controller.playheadFrame() >= 150; },
+                    15000);
+                check(controller.playbackStalePreparationCount() >=
+                          controllerStaleBefore + boundarySources,
+                      "Project が変わる前に要求した準備の完了を使いました");
+                check(crossed && controller.playing() && controller.playbackRebuildCount() == 0,
+                      "Project が変わった後に準備し直して境界を越えられません");
+                std::printf(
+                    "%s: controller が捨てた準備 %llu、組み直し %llu、境界で待った準備 %llu、"
+                    "理由: %s\n",
+                    label,
+                    static_cast<unsigned long long>(controller.playbackStalePreparationCount() -
+                                                    controllerStaleBefore),
+                    static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                    static_cast<unsigned long long>(controller.playbackPreparationWaitCount()),
+                    controller.lastPlaybackRebuildReason().toUtf8().constData());
+                controller.pauseTimeline();
+                controller.shutdown();
+                return;
+            }
+            // 準備の完了は controller の poll が受け取る。engine が古いと判定して捨て、公開しない。
+            const bool drained = pumpUntil(
+                [&] {
+                    return diagnostics().pendingSourcePreparationCount == 0 &&
+                           controller.pendingSourcePreparationCount() == 0;
+                },
+                10000);
+            check(drained, (std::string(label) + ": 準備の完了を受け取りません").c_str());
+            check(diagnostics().staleSourcePreparationRejectCount >=
+                      engineStaleBefore + boundarySources,
+                  (std::string(label) + ": 古くなった準備を engine が捨てません").c_str());
+            // engine だけを止めた・seek した準備は engine が捨て、controller まで届かない。
+            // controller の pause は自分で取り消して数える。
+            if (cause == StaleCause::ControllerPause)
+                check(controller.playbackStalePreparationCount() >=
+                          controllerStaleBefore + boundarySources,
+                      (std::string(label) + ": 取り消した準備を controller が外しません").c_str());
+            else
+                check(controller.playbackStalePreparationCount() == controllerStaleBefore,
+                      (std::string(label) + ": 古くなった準備の完了が controller へ届きました")
+                          .c_str());
+            // pause した engine は準備し直しも受理しないので、公開数は増えない (seek は再生を
+            // 続け、新しい世代で準備し直すので見ない)。
+            if (cause != StaleCause::EngineSeek)
+                check(diagnostics().publishedSourceCount <= publishedBefore,
+                      (std::string(label) + ": 古くなった準備の source を公開しました").c_str());
+            std::printf("%s: engine が捨てた準備 %llu、公開 %llu -> %llu\n", label,
+                        static_cast<unsigned long long>(
+                            diagnostics().staleSourcePreparationRejectCount - engineStaleBefore),
+                        static_cast<unsigned long long>(publishedBefore),
+                        static_cast<unsigned long long>(diagnostics().publishedSourceCount));
+            controller.shutdown();
+        };
+        runStalePreparation("stale-engine-pause", StaleCause::EnginePause);
+        runStalePreparation("stale-engine-seek", StaleCause::EngineSeek);
+        runStalePreparation("stale-controller-pause", StaleCause::ControllerPause);
+        runStalePreparation("stale-track-edit", StaleCause::TrackEdit);
+        runStalePreparation("stale-track-edit-held", StaleCause::TrackEditHeldToBoundary);
+        runStalePreparation("stale-engine-reset", StaleCause::EngineReset);
 
         const auto playFrom =
             [&](const char* label, const mvm::project::Project& playProject, qint64 from,
@@ -550,6 +809,426 @@ int main(int argc, char** argv) {
                     controller.pauseTimeline();
                 controller.shutdown();
             };
+
+        // 再生中の track の表示・M/S の切り替えは再生を止めない。変わる前の Project で準備し終えた
+        // source (まだ引き継いでいない) は、使わなくなっても登録枠を持ち続けてはいけない。
+        {
+            auto hideProject = mvm::project::createDefaultProject();
+            auto a2 = half(copiedVideo, "hide-a2", TrackKind::Video, 0, 0);
+            auto b2 = half(video, "hide-b2", TrackKind::Video, 120, 170);
+            a2.track.index = 1;
+            b2.track.index = 1;
+            hideProject.timelineClips = {half(video, "hide-a1", TrackKind::Video, 0, 0),
+                                         half(copiedVideo, "hide-b1", TrackKind::Video, 120, 170),
+                                         a2, b2};
+            mvm::test::attachFixtureMedia(hideProject);
+            check(mvm::project::validateTimeline(hideProject).success,
+                  "準備済みの source の試験の timeline が不正です");
+            playFrom(
+                "prepared-track-hide", hideProject, 90, [] {},
+                [&](mvm::app::MvmController& controller) {
+                    const bool prepared = pumpUntil(
+                        [&] {
+                            return controller.preparedPlaybackSourceCountForTest() == 2 &&
+                                   controller.pendingSourcePreparationCount() == 0;
+                        },
+                        5000);
+                    check(prepared && controller.playheadFrame() < 120,
+                          "前提: 境界の前に 2 track の source を準備し終えません");
+                    check(controller.setTracksMuted(QStringLiteral("video"), {1}, true) &&
+                              controller.playing(),
+                          "前提: 再生中に V2 を隠せません");
+                    const bool crossed = pumpUntil(
+                        [&] { return !controller.playing() || controller.playheadFrame() >= 150; },
+                        15000);
+                    check(crossed && controller.playing() &&
+                              controller.playbackRebuildCount() == 0 &&
+                              controller.playbackCapacityResetCount() == 0,
+                          "準備済みの track を隠した後に組み直しなしで境界を越えられません");
+                    // 越えた後は次の境界が無いので、登録しているのは再生中の source だけになる。
+                    // 終端 (240) で止まると準備済みの source も外れるので、再生している間に見る。
+                    const auto releasedNow = [&] {
+                        return controller.preparedPlaybackSourceCountForTest() == 0 &&
+                               controller.publishedPreviewSourceCountForTest() ==
+                                   controller.activePlaybackSourceCountForTest();
+                    };
+                    pumpUntil(
+                        [&] {
+                            return releasedNow() || !controller.playing() ||
+                                   controller.playheadFrame() >= 200;
+                        },
+                        3000);
+                    const bool released =
+                        controller.playing() && controller.playheadFrame() < 240 && releasedNow();
+                    check(released,
+                          "Project が変わる前に準備した source が登録枠を持ち続けています");
+                    std::printf("prepared-track-hide: 準備済み %zu、公開 %llu、再生中 %zu、"
+                                "組み直し %llu\n",
+                                controller.preparedPlaybackSourceCountForTest(),
+                                static_cast<unsigned long long>(
+                                    controller.publishedPreviewSourceCountForTest()),
+                                controller.activePlaybackSourceCountForTest(),
+                                static_cast<unsigned long long>(controller.playbackRebuildCount()));
+                });
+        }
+
+        // 変わる前の Project で準備に失敗した境界 (V1 の素材が無い) は、track を隠して原因が
+        // 無くなったら、同じ frame の境界でも変わった後の Project で準備し直す。
+        {
+            auto failedProject = mvm::project::createDefaultProject();
+            auto missing = half(video, "fail-missing", TrackKind::Video, 120, 170);
+            missing.mediaPath = std::filesystem::path(
+                directory.filePath(QStringLiteral("missing.mp4")).toStdWString());
+            auto other = half(copiedVideo, "fail-other", TrackKind::Video, 120, 170);
+            other.track.index = 1;
+            failedProject.timelineClips = {half(video, "fail-a1", TrackKind::Video, 0, 0), missing,
+                                           other};
+            mvm::test::attachFixtureMedia(failedProject);
+            check(mvm::project::validateTimeline(failedProject).success,
+                  "準備に失敗する境界の試験の timeline が不正です");
+            playFrom(
+                "failed-boundary-track-hide", failedProject, 90, [] {},
+                [&](mvm::app::MvmController& controller) {
+                    const bool failed = pumpUntil(
+                        [&] { return controller.playbackPreparationFailureCount() >= 1; }, 5000);
+                    check(failed && controller.playheadFrame() < 120 &&
+                              controller.preparedPlaybackSourceCountForTest() == 0 &&
+                              controller.pendingSourcePreparationCount() == 0,
+                          "前提: 境界の前に準備に失敗し、他の source を準備していません");
+                    check(controller.setTracksMuted(QStringLiteral("video"), {0}, true) &&
+                              controller.playing(),
+                          "前提: 再生中に V1 を隠せません");
+                    const bool crossed = pumpUntil(
+                        [&] { return !controller.playing() || controller.playheadFrame() >= 150; },
+                        15000);
+                    check(crossed && controller.playing() && controller.playbackRebuildCount() == 0,
+                          "失敗の原因の track を隠した後も、同じ frame の境界を準備し直しません");
+                    std::printf("failed-boundary-track-hide: 失敗 %llu、組み直し %llu、理由: %s\n",
+                                static_cast<unsigned long long>(
+                                    controller.playbackPreparationFailureCount()),
+                                static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                                controller.lastPlaybackRebuildReason().toUtf8().constData());
+                });
+        }
+
+        // 取り消した準備は、engine が受け取るまで登録枠を使う。decoder の seek
+        // の途中のように取り消しの 効かない段で止まっていても、control thread
+        // でその完了を待たない。
+        // - 境界の前に枠が返る (800ms): 枠が返った後の tick で要求し直し、組み直しなしで越える
+        // - 境界を過ぎても枠が返らない (3000ms): engine を作り直さず (作り直しは止まった準備の
+        // thread
+        //   を join する)、境界で止めたまま枠が返るのを待ち、同じ engine で組み直して再生を続ける
+        // どちらも UI の timer (10ms) が止まらないことを見る。
+        const auto runBlockedStaleCapacity = [&](const char* label, int blockedMs) {
+            const bool crossesWhileBlocked = blockedMs > 2000;
+            auto blockedProject = mvm::project::createDefaultProject();
+            blockedProject.timelineClips = {
+                half(video, "blocked-a", TrackKind::Video, 0, 0),
+                half(copiedVideo, "blocked-b", TrackKind::Video, 120, 170)};
+            mvm::test::attachFixtureMedia(blockedProject);
+            check(mvm::project::validateTimeline(blockedProject).success,
+                  "取り消しの効かない準備の試験の timeline が不正です");
+            const auto blockedPath = std::filesystem::path(
+                directory.filePath(QString::fromUtf8(label) + QStringLiteral(".mvm"))
+                    .toStdWString());
+            mvm::app::MvmController controller(blockedPath, {}, blockedProject);
+            QQuickWindow window;
+            window.setWidth(640);
+            window.setHeight(360);
+            auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+            surface->setWidth(640);
+            surface->setHeight(360);
+            window.show();
+            controller.attachPreview(surface);
+            const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+            const bool sought =
+                ready &&
+                retryUntilAccepted([&] { return controller.seekTimelineFrame(0); }, 30000) &&
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+            // 再生中の A と、境界 (120 = 2 秒先) の B の準備だけが登録枠に入る。
+            const bool limited =
+                sought &&
+                retryUntilAccepted([&] { return controller.setPreviewRegistrationLimitForTest(2); },
+                                   10000);
+            controller.blockNextSourcePreparationForTest(blockedMs);
+            const bool started =
+                limited && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            const bool requested =
+                started &&
+                pumpUntil([&] { return controller.pendingSourcePreparationCount() == 1; }, 5000);
+            check(requested && controller.playheadFrame() < 60,
+                  (std::string(label) + ": 前提: 境界の source の準備を要求しません").c_str());
+            if (requested) {
+                const double before = controller.playbackMaxPreparationMs();
+                // UI の heartbeat。control thread が止まると、間隔が開く。
+                QTimer heartbeat;
+                heartbeat.setInterval(10);
+                auto lastBeat = std::chrono::steady_clock::now();
+                double maxBeatGapMs = 0.0;
+                QObject::connect(&heartbeat, &QTimer::timeout, [&] {
+                    const auto now = std::chrono::steady_clock::now();
+                    maxBeatGapMs =
+                        std::max(maxBeatGapMs,
+                                 std::chrono::duration<double, std::milli>(now - lastBeat).count());
+                    lastBeat = now;
+                });
+                heartbeat.start();
+                // 再生を止めない編集 (空の V2 を隠す)。B の準備は取り消され、止まったまま枠を
+                // 持つ。次の tick の B の要求は登録上限に当たる。
+                const auto editBegan = std::chrono::steady_clock::now();
+                check(controller.setTracksMuted(QStringLiteral("video"), {1}, true) &&
+                          controller.playing(),
+                      "前提: 再生中に track を隠せません");
+                const double editMs = std::chrono::duration<double, std::milli>(
+                                          std::chrono::steady_clock::now() - editBegan)
+                                          .count();
+                const bool crossed = pumpUntil(
+                    [&] {
+                        return (!crossesWhileBlocked && !controller.playing()) ||
+                               (controller.playing() && controller.playheadFrame() >= 150);
+                    },
+                    15000);
+                heartbeat.stop();
+                check(editMs < 200 && controller.playbackMaxPreparationMs() < 200 &&
+                          maxBeatGapMs < 400,
+                      (std::string(label) + ": 取り消した準備の完了を control thread で待ちました")
+                          .c_str());
+                check(
+                    crossed && controller.playing() && controller.playbackCapacityResetCount() == 0,
+                    (std::string(label) +
+                     ": engine を作り直さずに、取り消した準備の枠が返った後で境界を越えられません")
+                        .c_str());
+                if (crossesWhileBlocked)
+                    check(controller.playbackSlotWaitCount() >= 1,
+                          "前提: 境界で登録枠が空くのを待っていません");
+                else
+                    check(controller.playbackRebuildCount() == 0,
+                          "境界の前に枠が返ったのに組み直しました");
+                std::printf(
+                    "%s: 編集 %.1fms、準備の最大 %.1fms -> %.1fms、UI の最大間隔 %.1fms、"
+                    "外した準備 %llu、枠待ち %llu、組み直し %llu、作り直し %llu、理由: %s\n",
+                    label, editMs, before, controller.playbackMaxPreparationMs(), maxBeatGapMs,
+                    static_cast<unsigned long long>(controller.playbackStalePreparationCount()),
+                    static_cast<unsigned long long>(controller.playbackSlotWaitCount()),
+                    static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                    static_cast<unsigned long long>(controller.playbackCapacityResetCount()),
+                    controller.lastPlaybackRebuildReason().toUtf8().constData());
+                controller.pauseTimeline();
+            }
+            controller.shutdown();
+        };
+        runBlockedStaleCapacity("blocked-stale-capacity", 800);
+        runBlockedStaleCapacity("blocked-stale-past-boundary", 3000);
+
+        // 準備の thread を作れない (OS の thread の上限・メモリ不足) ときは、例外を再生の tick へ
+        // 通さず失敗として返し、予約した video source を登録枠へ返す。登録上限を 2 (再生中の A と
+        // 境界の B) にしておくので、返さなければ境界で登録上限に当たる。
+        {
+            auto threadProject = mvm::project::createDefaultProject();
+            threadProject.timelineClips = {
+                half(video, "thread-a", TrackKind::Video, 0, 0),
+                half(copiedVideo, "thread-b", TrackKind::Video, 120, 170)};
+            mvm::test::attachFixtureMedia(threadProject);
+            const auto threadPath = std::filesystem::path(
+                directory.filePath(QStringLiteral("preparation-thread-failure.mvm"))
+                    .toStdWString());
+            mvm::app::MvmController controller(threadPath, {}, threadProject);
+            QQuickWindow window;
+            window.setWidth(640);
+            window.setHeight(360);
+            auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+            surface->setWidth(640);
+            surface->setHeight(360);
+            window.show();
+            controller.attachPreview(surface);
+            const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+            const bool limited =
+                ready &&
+                retryUntilAccepted([&] { return controller.seekTimelineFrame(0); }, 30000) &&
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000) &&
+                retryUntilAccepted([&] { return controller.setPreviewRegistrationLimitForTest(2); },
+                                   10000);
+            const auto engine = controller.previewEngineForTest();
+            using mvm::preview::internal::PreviewRenderPort;
+            if (engine)
+                PreviewRenderPort::failNextSourcePreparationThreadForTest(*engine);
+            const bool started =
+                limited && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            const bool failed =
+                started &&
+                pumpUntil([&] { return controller.playbackPreparationFailureCount() >= 1; }, 5000);
+            const auto afterFailure = PreviewRenderPort::runtimeDiagnostics(*engine);
+            check(failed && controller.playing() && controller.playheadFrame() < 120 &&
+                      afterFailure.registeredVideoSourceCount == 1,
+                  "準備の thread を作れないときに、予約した source を返して失敗として閉じません");
+            const bool crossed =
+                failed &&
+                pumpUntil(
+                    [&] { return !controller.playing() || controller.playheadFrame() >= 150; },
+                    15000);
+            check(crossed && controller.playing() && controller.playbackCapacityResetCount() == 0 &&
+                      controller.previewEngineForTest() == engine,
+                  "準備の thread を作れなかった後に、engine を作り直さずに境界を越えられません");
+            std::printf(
+                "preparation-thread-failure: 準備の失敗 %llu、登録済みの video %llu、"
+                "組み直し %llu、作り直し %llu、理由: %s\n",
+                static_cast<unsigned long long>(controller.playbackPreparationFailureCount()),
+                static_cast<unsigned long long>(afterFailure.registeredVideoSourceCount),
+                static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                static_cast<unsigned long long>(controller.playbackCapacityResetCount()),
+                controller.lastPlaybackRebuildReason().toUtf8().constData());
+            if (controller.playing())
+                controller.pauseTimeline();
+            controller.shutdown();
+        }
+
+        // 受理されない編集・変更の無い編集では再生を止めない。Project・Undo 履歴も変えない。
+        // 編集の入口が増えても同じ表で確かめる。
+        {
+            auto noopProject = mvm::project::createDefaultProject();
+            // 0-60 は空白 (選択中の clip が無い)。clip は 60 から。
+            noopProject.timelineClips = {half(video, "noop-v", TrackKind::Video, 60, 0)};
+            mvm::test::attachFixtureMedia(noopProject);
+            const auto noopPath = std::filesystem::path(
+                directory.filePath(QStringLiteral("noop-edits-while-playing.mvm")).toStdWString());
+            mvm::app::MvmController controller(noopPath, {}, noopProject);
+            QQuickWindow window;
+            window.setWidth(640);
+            window.setHeight(360);
+            auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+            surface->setWidth(640);
+            surface->setHeight(360);
+            window.show();
+            controller.attachPreview(surface);
+            const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+            const bool sought =
+                ready && retryUntilAccepted([&] { return controller.seekTimelineFrame(0); }, 30000);
+            const bool started =
+                sought && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            check(started && controller.currentClipIndex() < 0,
+                  "前提: 選択中の clip が無い位置から再生を始められません");
+
+            const struct {
+                const char* label;
+                std::function<void()> call;
+            } noops[] = {
+                {"元に戻す編集が無い Undo", [&] { controller.undoLastEdit(); }},
+                {"やり直す編集が無い Redo", [&] { controller.redoLastEdit(); }},
+                {"同じ値の Project 設定",
+                 [&] {
+                     controller.setProjectVideoSettings(
+                         controller.outputWidth(), controller.outputHeight(),
+                         controller.timelineFpsNum(), controller.timelineFpsDen());
+                 }},
+                {"不正な値の Project 設定",
+                 [&] {
+                     controller.setProjectVideoSettings(0, 0, controller.timelineFpsNum(),
+                                                        controller.timelineFpsDen());
+                 }},
+                {"削除する clip が無い削除", [&] { controller.deleteCurrentClip(); }},
+                {"空白ではない位置のリップル削除",
+                 [&] { controller.rippleDeleteGap(QStringLiteral("video"), 0, 90); }},
+                {"存在しない track の削除",
+                 [&] { controller.removeTrack(QStringLiteral("video"), 99); }},
+                {"存在しない clip の移動",
+                 [&] {
+                     controller.moveTimelineClip(QStringLiteral("missing"), QStringLiteral("video"),
+                                                 0, 10, false);
+                 }},
+            };
+
+            for (const auto& noop : noops) {
+                if (!started)
+                    break;
+                // 前の行で止まっていたら、行ごとに判定できるよう選択中の clip が無い位置から
+                // 再生し直す (止めない実装では再生し直さない)。
+                if (!controller.playing() &&
+                    !(retryUntilAccepted([&] { return controller.seekTimelineFrame(0); }, 30000) &&
+                      retryUntilAccepted([&] { return controller.playTimeline(); }, 30000)))
+                    break;
+                const auto revision = controller.currentRevisionForTest();
+                const auto undoDepth = controller.undoDepthForTest();
+                noop.call();
+                check(
+                    controller.playing() && controller.currentRevisionForTest() == revision &&
+                        controller.undoDepthForTest() == undoDepth,
+                    (std::string(noop.label) + " で再生を止めたか、Project を変えました").c_str());
+            }
+            if (controller.playing())
+                controller.pauseTimeline();
+            controller.shutdown();
+        }
+
+        // 再生中の endpoint の open が失敗しても、control thread を止めた時間を記録する。open の
+        // 失敗と、open した後の再生開始の失敗は分けて数える。
+        const auto runEndpointFailure = [&](const char* label, bool failStart) {
+            auto failProject = mvm::project::createDefaultProject();
+            failProject.timelineClips = {
+                half(video, "endpoint-v-out", TrackKind::Video, 0, 0),
+                half(copiedVideo, "endpoint-v-in", TrackKind::Video, 120, 120),
+                half(copiedWav, "endpoint-a-in", TrackKind::Audio, 120, 120)};
+            mvm::test::attachFixtureMedia(failProject);
+            constexpr int kFailDelayMs = 150;
+            const auto failPath = std::filesystem::path(
+                directory.filePath(QString::fromUtf8(label) + QStringLiteral(".mvm"))
+                    .toStdWString());
+            mvm::app::MvmController controller(failPath, {}, failProject);
+            QQuickWindow window;
+            window.setWidth(640);
+            window.setHeight(360);
+            auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+            surface->setWidth(640);
+            surface->setHeight(360);
+            window.show();
+            controller.attachPreview(surface);
+            const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+            const bool sought =
+                ready &&
+                retryUntilAccepted([&] { return controller.seekTimelineFrame(90); }, 30000) &&
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+            const auto engine = controller.previewEngineForTest();
+            using mvm::preview::internal::PreviewRenderPort;
+            if (failStart)
+                PreviewRenderPort::failNextPlayingAudioTransportStartForTest(*engine);
+            else
+                PreviewRenderPort::failNextPlayingAudioEndpointOpenForTest(*engine, kFailDelayMs);
+            const bool started =
+                sought && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            const bool attempted =
+                started && pumpUntil(
+                               [&] {
+                                   const auto now = PreviewRenderPort::runtimeDiagnostics(*engine);
+                                   return now.playingAudioEndpointOpenFailureCount +
+                                                  now.playingAudioTransportStartFailureCount >=
+                                              1 ||
+                                          controller.previewEngineForTest() != engine;
+                               },
+                               10000);
+            const auto failed = PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (failStart)
+                check(attempted && failed.playingAudioEndpointOpenAttemptCount >= 1 &&
+                          failed.playingAudioEndpointOpenFailureCount == 0 &&
+                          failed.playingAudioTransportStartFailureCount >= 1,
+                      "open した後の再生開始の失敗を open の失敗と分けて数えません");
+            else
+                check(attempted && failed.playingAudioEndpointOpenAttemptCount >= 1 &&
+                          failed.playingAudioEndpointOpenFailureCount >= 1 &&
+                          failed.playingAudioTransportStartFailureCount == 0 &&
+                          failed.maxPlayingAudioEndpointOpenAttemptMs >= kFailDelayMs,
+                      "失敗した再生中の endpoint の open の時間を記録しません");
+            std::printf(
+                "%s: 試み %llu、open の失敗 %llu、再生開始の失敗 %llu、試みの最大 %.1fms、"
+                "成功の最大 %.1fms\n",
+                label, static_cast<unsigned long long>(failed.playingAudioEndpointOpenAttemptCount),
+                static_cast<unsigned long long>(failed.playingAudioEndpointOpenFailureCount),
+                static_cast<unsigned long long>(failed.playingAudioTransportStartFailureCount),
+                failed.maxPlayingAudioEndpointOpenAttemptMs, failed.maxPlayingAudioEndpointOpenMs);
+            if (controller.playing())
+                controller.pauseTimeline();
+            controller.shutdown();
+        };
+        runEndpointFailure("endpoint-open-failure", false);
+        runEndpointFailure("endpoint-start-failure", true);
 
         // 別の clip を先読み幅 (2 秒) より密に並べる (100ms の clip を 24 個)。先読み幅の中の境界を
         // 全部準備すると、使う前の source を engine の既定の登録上限 (2 × 8 + 1) まで積み、同期の

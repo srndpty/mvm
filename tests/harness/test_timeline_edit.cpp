@@ -103,6 +103,109 @@ clip(const char* name, mvm::project::TimelineClipKind kind = mvm::project::Timel
     return value;
 }
 
+// 大きな timeline の検証が clip 数の 2 乗にならないこと。時間の閾値は環境で揺れるので、
+// 区間を比べた回数を見る。全組を比べる実装なら N(N-1)/2 回になる。
+void testLargeTimelineValidationScales() {
+    constexpr int kClipsPerTrack = 10000;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    project.timelineClips.reserve(2 * kClipsPerTrack);
+    // V1 と V2 にそれぞれ隙間なく並べる。clip の並びは track をまたいで交互にする
+    // (track ごとに並べ直していなければ、隣どうしを見るだけでは重なりを見落とす)。
+    for (int index = 0; index < kClipsPerTrack; ++index) {
+        for (int track = 0; track < 2; ++track) {
+            const std::string name = "big-" + std::to_string(track) + "-" + std::to_string(index);
+            auto value = clip(name.c_str(), mvm::project::TimelineClipKind::Video,
+                              {mvm::project::TrackKind::Video, track});
+            value.sourceOutFrame = 10;
+            value.timelineStartFrame = static_cast<std::int64_t>(kClipsPerTrack - 1 - index) * 10;
+            project.timelineClips.push_back(std::move(value));
+        }
+    }
+    const auto started = std::chrono::steady_clock::now();
+    const auto valid = mvm::project::validateTimeline(project);
+    const auto elapsedMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+            .count();
+    check(valid.success && valid.totalFrames == kClipsPerTrack * 10,
+          "隙間なく並べた大きな timeline を受理しません");
+    // track ごとに先頭以外の clip を 1 回ずつ比べる。
+    check(valid.overlapComparisons == 2 * (kClipsPerTrack - 1),
+          "同じ track の重なりの検査が clip 数に対して線形ではありません");
+    std::printf("large timeline: clip %d、区間の比較 %llu 回、検証 %.1fms\n", 2 * kClipsPerTrack,
+                static_cast<unsigned long long>(valid.overlapComparisons), elapsedMs);
+
+    // 対照: 離れた位置の clip と重ねると検出する (並べ替えた後の隣だけを見ても漏れない)。
+    // 終端の最大を持つ長い clip が、間に短い clip を挟んだ後ろの clip と重なる形も見る。
+    auto overlapping = project;
+    overlapping.timelineClips.back().timelineStartFrame = 5;
+    const auto rejected = mvm::project::validateTimeline(overlapping);
+    check(!rejected.success && rejected.error.find("重複") != std::string::npos,
+          "離れた位置の clip を重ねても重複を検出しません");
+    mvm::project::Project nested = mvm::project::createDefaultProject();
+    auto longClip = clip("long");
+    auto shortClip = clip("short");
+    auto lateClip = clip("late");
+    shortClip.sourceOutFrame = 10;
+    shortClip.timelineStartFrame = 10;
+    lateClip.sourceOutFrame = 10;
+    lateClip.timelineStartFrame = 100;
+    nested.timelineClips = {lateClip, shortClip, longClip};
+    const auto nestedResult = mvm::project::validateTimeline(nested);
+    check(!nestedResult.success && nestedResult.error.find("long") != std::string::npos &&
+              nestedResult.error.find("short") != std::string::npos,
+          "長い clip の内側の clip との重なりを検出しません");
+}
+
+// Undo 履歴は件数だけでなく Project の大きさでも上限を決める。期待値は直書きする。
+void testUndoHistoryBudget() {
+    using mvm::project::editHistoryEntriesToDrop;
+    const auto drops = [](const std::vector<std::size_t>& undo,
+                          const std::vector<std::size_t>& redo, std::size_t maxEntries,
+                          std::size_t maxBytes, std::size_t undoDrop, std::size_t redoDrop) {
+        const auto drop = editHistoryEntriesToDrop(undo, redo, maxEntries, maxBytes);
+        return drop.undo == undoDrop && drop.redo == redoDrop;
+    };
+    // 件数の上限: 101 件を 100 件に。
+    check(drops(std::vector<std::size_t>(101, 1), {}, 100, 1000, 1, 0),
+          "件数の上限を超えた Undo 履歴を切り詰めません");
+    // byte の上限: 40 + 40 + 40 = 120 > 100 なので古い 1 件を捨てて 80。
+    check(drops({40, 40, 40}, {}, 100, 100, 1, 0), "byte の上限を超えた Undo 履歴を切り詰めません");
+    // 対照: 上限ちょうどは捨てない。
+    check(drops({40, 60}, {}, 100, 100, 0, 0), "上限ちょうどの Undo 履歴を切り詰めました");
+    // 最新の 1 件は予算を超えても残す。
+    check(drops({10, 500}, {}, 100, 100, 1, 0) && drops({500}, {}, 100, 100, 0, 0),
+          "予算を超える最新の編集を元に戻せなくしました");
+    // Redo も同じ予算に入る。Undo 30 + 30 と Redo 30 + 30 は 120 > 100。現在の状態から最も遠い
+    // 世代 (距離 2 は両側にあり、同じなら Undo 側) から 1 件捨てて 90。
+    check(drops({30, 30}, {30, 30}, 100, 100, 1, 0),
+          "Undo と Redo の合計で byte の上限を守りません");
+    // Redo 側の方が遠ければ Redo 側から捨てる (Redo の先頭が最後にやり直す編集)。
+    check(drops({30}, {30, 30, 30}, 100, 100, 0, 1),
+          "現在の状態から遠い Redo の世代を先に捨てません");
+    // 件数の上限も合計で数える。
+    check(drops({1, 1}, {1, 1}, 3, 1000, 1, 0), "Undo と Redo の合計で件数の上限を守りません");
+    // 現在の状態に隣り合う Undo と Redo の 1 件ずつは、予算を超えても残す。
+    check(drops({10, 500}, {10, 500}, 100, 100, 1, 1) && drops({500}, {500}, 100, 100, 0, 0),
+          "現在の状態に隣り合う Undo か Redo を予算のために捨てました");
+
+    // 概算 byte 数は clip・キーフレーム・素材の量に比例して増える。
+    auto small = mvm::project::createDefaultProject();
+    small.timelineClips = {clip("A")};
+    auto large = small;
+    for (int index = 0; index < 1000; ++index) {
+        auto value = clip(("many-" + std::to_string(index)).c_str());
+        value.effects.opacityKeys.resize(10);
+        large.timelineClips.push_back(std::move(value));
+    }
+    const auto smallBytes = mvm::project::approximateProjectBytes(small);
+    const auto largeBytes = mvm::project::approximateProjectBytes(large);
+    check(smallBytes >= sizeof(mvm::project::Project) + sizeof(mvm::project::TimelineClip),
+          "Project の概算 byte 数が struct の大きさより小さいです");
+    check(largeBytes >= smallBytes + 1000 * (sizeof(mvm::project::TimelineClip) +
+                                             10 * sizeof(mvm::project::ClipKeyframe)),
+          "clip とキーフレームの量が Project の概算 byte 数に入っていません");
+}
+
 mvm::project::Project threeClips() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     project.timelineClips = {clip("A"), clip("Manim", mvm::project::TimelineClipKind::Manim),
@@ -2109,7 +2212,9 @@ void testSetTransitionSpan() {
 // まで。余白の上限まで延ばす要求を、 この境界へ吸着させる
 // (不透明度は区間の先頭から検査するので、候補ごとに不透明な区間を長く
 // 辿ってから違反に当たる、最も重い配置)。
-// 期待値は手で数えた値。時間は計測して出す (debug でも走るので、閾値は通常の数十倍に取る)。
+// 期待値は手で数えた値。時間の閾値は環境で揺れる (CI の runner では手元の 10 倍以上掛かった) ので、
+// 時間は出すだけにし、不透明度と素材 frame を調べた回数を見る。候補ごとに区間を辿り直す実装なら、
+// 余白 (216000 frame) の数倍になる。
 void testTransitionSpanFitOnLongMedia() {
     using mvm::project::LinkMode;
     mvm::project::Project project = mvm::project::createDefaultProject();
@@ -2135,12 +2240,26 @@ void testTransitionSpanFitOnLongMedia() {
     const auto elapsed =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
             .count();
-    std::fprintf(stderr, "  長尺素材の吸着: %.1f ms\n", elapsed);
+    std::fprintf(stderr,
+                 "  長尺素材の吸着: %.1f ms、不透明度の検査 %llu / %llu 回、"
+                 "素材 frame の検査 %llu / %llu 回\n",
+                 elapsed, static_cast<unsigned long long>(fitted.opacityProbes),
+                 static_cast<unsigned long long>(kept.opacityProbes),
+                 static_cast<unsigned long long>(fitted.edgeProbes),
+                 static_cast<unsigned long long>(kept.edgeProbes));
     check(fitted.success && fitted.framesBeforeCut == 99 && fitted.framesAfterCut == 30,
           "長尺素材で不透明な範囲の端へ吸着させません");
     check(kept.success && kept.framesBeforeCut == 99 && kept.framesAfterCut == 215931,
           "長尺素材で総尺を保って吸着させません");
-    check(elapsed < 2000.0, "長尺素材の吸着に時間が掛かりすぎます");
+    // 不透明な長さは cut の前後で 1 回ずつ、cut から違反か余白の上限まで数える (前は 99 frame
+    // 不透明で 100 frame 目が違反なので 100 回、後は余白の上限まで 216000 回)。素材 frame の
+    // 判定は長さごとに覚えるので、前後の余白の長さの合計を超えない。
+    constexpr std::uint64_t kOpacityProbes = 100 + 216000;
+    constexpr std::uint64_t kEdgeProbeLimit = 2 * (216000 + 1);
+    check(fitted.opacityProbes == kOpacityProbes && kept.opacityProbes == kOpacityProbes,
+          "長尺素材の吸着で不透明度を候補ごとに調べ直しています");
+    check(fitted.edgeProbes <= kEdgeProbeLimit && kept.edgeProbes <= kEdgeProbeLimit,
+          "長尺素材の吸着で素材 frame の判定を覚えていません");
 }
 
 // 上書き移動。V1 の long [0, 300) の上へ V2 の mover (60 frame) を動かす。期待値は手で数えた値。
@@ -3273,6 +3392,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     testFrameConversions();
+    testLargeTimelineValidationScales();
+    testUndoHistoryBudget();
     testSpeedDurationAndFrameHold();
     testTimelineMarks(fromUtf8(argv[1]));
     testClipKeyEditing();

@@ -7,12 +7,14 @@
 #include "preview_engine/preview_engine.h"
 #include "project/media_bin.h"
 #include "project/project.h"
+#include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "timeline_clip_model.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -73,6 +75,11 @@ class MvmController : public QObject {
     Q_PROPERTY(QString manimStateText READ manimStateText NOTIFY stateChanged)
     Q_PROPERTY(QStringList clipNames READ clipNames NOTIFY stateChanged)
     Q_PROPERTY(mvm::app::TimelineClipModel* timelineModel READ timelineModel CONSTANT)
+    // timeline の clip delegate 用。表示範囲と固定する clip だけを通す (timelineModel を絞る)。
+    Q_PROPERTY(mvm::app::TimelineClipWindowModel* timelineClipWindow READ timelineClipWindow
+                   CONSTANT)
+    // preview の文字 layer 用。文字 clip だけを通す。
+    Q_PROPERTY(mvm::app::TextClipFilterModel* textClipModel READ textClipModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* videoTrackModel READ videoTrackModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* audioTrackModel READ audioTrackModel CONSTANT)
     Q_PROPERTY(mvm::app::MediaBinModel* mediaBinModel READ mediaBinModel CONSTANT)
@@ -183,7 +190,60 @@ public:
     // 境界の前に準備して、まだ引き継いでいない source の数の最大。先読みが次の境界だけに
     // 留まっていることの検査に使う。
     std::size_t playbackMaxPreparedSourceCount() const { return playbackMaxPreparedSourceCount_; }
+    // 先読みの準備のうち、要求の後に再生や Project が変わったので取り消した、または完了しても
+    // 使わずに外した回数 (controller を通さない engine の pause / seek で捨てたものは含まない)。
+    std::uint64_t playbackStalePreparationCount() const { return playbackStalePreparationCount_; }
+    // clip 境界までに先読みの準備が終わらず、境界で完了を待った回数。
+    std::uint64_t playbackPreparationWaitCount() const { return playbackPreparationWaitCount_; }
+    std::size_t pendingSourcePreparationCount() const {
+        return pendingVideoPreparations_.size() + pendingAudioPreparations_.size();
+    }
+    // 準備が済み、まだ引き継いでいない source の数。
+    std::size_t preparedPlaybackSourceCountForTest() const {
+        return preparedVideoSources_.size() + preparedAudioSources_.size();
+    }
+    // 再生中の composition が使っている source の数。
+    std::size_t activePlaybackSourceCountForTest() const {
+        return trackSources_.size() + audioSources_.size();
+    }
+    void holdSourcePreparationsForTest(bool held);
+    // recovery の書き込み (serialize + atomic write) を差し替える (試験用)。
+    using RecoveryWriter = std::function<project::ProjectIoResult(
+        const project::Project&, const std::filesystem::path&, const std::filesystem::path&,
+        const std::string&, const std::string&, const std::string&)>;
+    void setRecoveryWriterForTest(RecoveryWriter writer) { recoveryWriter_ = std::move(writer); }
+    // recovery の worker thread の作り方を差し替える (試験用。作れない場合を試す)。
+    using RecoveryThreadFactory = std::function<std::thread(std::function<void()>)>;
+    void setRecoveryThreadFactoryForTest(RecoveryThreadFactory factory) {
+        recoveryThreadFactory_ = std::move(factory);
+    }
+    // debounce を待たずに自動保存を始める (試験用)。書き込みの完了は待たない。
+    void writeRecoveryAutosaveForTest() { writeRecoveryAutosave(); }
+    bool recoveryWriteInFlightForTest() const {
+        return recoveryWrite_ != nullptr || !recoveryQueue_.empty();
+    }
+    // 自動保存に失敗した後の再試行の timer が動いている (試験用)。
+    bool recoveryRetryScheduledForTest() const { return recoveryMaximumTimer_.isActive(); }
+    std::uint64_t recoveryRevisionForTest() const { return recoveryRevision_; }
+    std::uint64_t currentRevisionForTest() const { return currentRevision_; }
+    std::uint64_t recoveryWriteCompletionCountForTest() const {
+        return recoveryWriteCompletionCount_;
+    }
+    // 次に要求する準備を、取り消しの効かない段 (decoder の seek の途中に相当) で止める。
+    void blockNextSourcePreparationForTest(int milliseconds);
+    // controller を通さずに engine の transport を変える負例 (engine 側の古さの判定) に使う。
+    std::shared_ptr<preview::PreviewEngine> previewEngineForTest() const { return previewEngine_; }
+    bool resetPreviewEngineForTest() { return resetPreviewEngine(); }
+    // engine が公開している source の数と、古くなって捨てた準備の数。
+    std::uint64_t publishedPreviewSourceCountForTest() const;
+    std::uint64_t engineStaleSourcePreparationCountForTest() const;
+    // clip 境界で登録枠の不足と判定して Preview engine を作り直した回数。登録枠の不足ではない
+    // 失敗 (恒久的に扱えない構成など) で作り直していないことの検査に使う。
+    std::uint64_t playbackCapacityResetCount() const { return playbackCapacityResetCount_; }
+    // 境界で登録枠の一時的な不足に当たり、engine を作り直さずに枠が返るのを待った回数。
+    std::uint64_t playbackSlotWaitCount() const { return playbackSlotWaitCount_; }
     bool setPreviewRegistrationLimitForTest(std::size_t limit);
+    bool disablePreviewAudioSourcesForTest();
     std::vector<std::int64_t> presentedFrameHistoryForTest() const;
     std::vector<std::int64_t> unpairedFrameHistoryForTest() const;
     // 直近に提示した output frame と、そのとき提示した composition の最前面 layer の不透明度。
@@ -226,6 +286,8 @@ public:
 
     QStringList clipNames() const;
     TimelineClipModel* timelineModel() const;
+    TimelineClipWindowModel* timelineClipWindow() const { return timelineClipWindow_.get(); }
+    TextClipFilterModel* textClipModel() const { return textClipModel_.get(); }
     QAbstractItemModel* videoTrackModel() const;
     QAbstractItemModel* audioTrackModel() const;
     MediaBinModel* mediaBinModel() const;
@@ -265,6 +327,13 @@ public:
     bool canPlay() const;
 
     bool canUndo() const { return !undoHistory_.empty() && !busy_; }
+    // 受理されなかった操作が Undo 履歴を積んでいないことの検査に使う。
+    std::size_t undoDepthForTest() const { return undoHistory_.size(); }
+    // Undo / Redo 履歴が持つ Project の複製の概算 byte 数の合計。
+    std::size_t editHistoryBytes() const;
+    std::size_t redoDepthForTest() const { return redoHistory_.size(); }
+    // 履歴の byte 予算を差し替える (試験用)。次の編集・Undo・Redo から効く。
+    void setEditHistoryByteBudgetForTest(std::size_t bytes) { editHistoryByteBudget_ = bytes; }
 
     bool canRedo() const { return !redoHistory_.empty() && !busy_; }
 
@@ -735,7 +804,25 @@ private:
     static void releaseLockHandle(void* handle);
     QString canonicalFileSha256(bool& readable) const;
     void scheduleRecoveryAutosave();
+    // timer から呼ぶ。serialize と書き込みは worker thread で行い、control thread では
+    // Project の複製だけを作る (UI スレッドでファイル I/O を行わない)。
     void writeRecoveryAutosave();
+    // waitForCompletion なら書き終えるまで待つ (shutdown の最後の書き込み)。
+    void startRecoveryWrite(bool waitForCompletion);
+    // recovery の書き込み・削除は、積んだ順に 1 つずつ worker thread で行う。書き込み中に
+    // 保存済みの状態へ戻ったら削除を積んで待たずに戻る (書き込みの後に消える)。
+    struct RecoveryTask;
+    struct RecoveryWriteJob;
+    void enqueueRecoveryDelete();
+    void pumpRecoveryQueue();
+    // 書き込み中・積んだままの recovery の処理を終わらせ、結果を反映する。利用者が明示した
+    // 操作 (保存・破棄・切り替え・復元) と shutdown で、recovery file を消す・path を変える・
+    // recoveryRevision_ を読み替える前に呼ぶ (後から書き込みが届いて、消した recovery や古い
+    // path の recovery を作り直さない)。
+    void settleRecoveryWrite();
+    void completeRecoveryWrite(const std::shared_ptr<RecoveryWriteJob>& job);
+    void applyRecoveryWriteResult(const RecoveryWriteJob& job);
+    project::ProjectIoResult runRecoveryTask(const RecoveryTask& task) const;
     void detectRecovery();
     void setCurrentClipSelection(int index);
     // expandLinks なら選んだ clip のリンク相手も選択に含める。
@@ -830,6 +917,9 @@ private:
     std::shared_ptr<preview::PreviewEngine> previewEngine_;
     std::shared_ptr<preview::PreviewEventDispatcher> dispatcher_;
     std::unique_ptr<TimelineClipModel> timelineModel_;
+    // timelineModel_ より後に置き、先に破棄する。
+    std::unique_ptr<TimelineClipWindowModel> timelineClipWindow_;
+    std::unique_ptr<TextClipFilterModel> textClipModel_;
     std::unique_ptr<TrackModel> videoTrackModel_;
     std::unique_ptr<TrackModel> audioTrackModel_;
     std::unique_ptr<MediaBinModel> mediaBinModel_;
@@ -840,6 +930,43 @@ private:
     std::vector<AudioPreviewSource> audioSources_;
     std::vector<TrackPreviewSource> preparedVideoSources_;
     std::vector<AudioPreviewSource> preparedAudioSources_;
+    // 先読みを要求して engine の準備用の thread が open / seek している source。完了は
+    // collectSourcePreparations が受け取り、prepared*Sources_ へ移す。
+    struct PendingVideoPreparation {
+        preview::PreviewPreparationId id;
+        TrackPreviewSource entry; // source は完了するまで未定
+        std::int64_t boundary = 0;
+        std::uint64_t generation = 0;
+    };
+
+    struct PendingAudioPreparation {
+        preview::PreviewPreparationId id;
+        AudioPreviewSource entry; // source は完了するまで未定
+        std::int64_t boundary = 0;
+        std::uint64_t generation = 0;
+    };
+
+    std::vector<PendingVideoPreparation> pendingVideoPreparations_;
+    std::vector<PendingAudioPreparation> pendingAudioPreparations_;
+    // 停止・組み直し・engine の作り直し・Project の変更で進める。要求した後にこれが進んだ
+    // 準備の完了は使わずに外す (古い Project・古い再生で決めた source を残さない)。
+    std::uint64_t playbackPreparationGeneration_ = 0;
+    // 世代が進んで取り消した準備。engine が取り消しを終えて登録の枠を返すまで残る。
+    // 新しい世代の要求がこの枠のために登録の上限に当たっても、control thread で取り消しの完了を
+    // 待たない (decoder の open / seek の途中では取り消しが効かず、待つと止まる)。完了は毎 tick と
+    // poll が受け取り、枠が空いた後の tick で要求し直す。
+    std::vector<preview::PreviewPreparationId> stalePreparations_;
+    std::uint64_t playbackStalePreparationCount_ = 0;
+    std::uint64_t playbackPreparationWaitCount_ = 0;
+    void collectSourcePreparations();
+    // boundary までに完了しなかった準備を待って受け取る (境界でだけ待つ)。
+    void waitDueSourcePreparations(std::int64_t frame);
+    // 準備の完了を受け取る。使えるなら prepared*Sources_ へ移し、古ければ source を外す。
+    void adoptPreparationOutcome(preview::PreviewPreparationId id,
+                                 preview::Result<preview::PreviewSourceId> outcome);
+    // 準備中のものを取り消して stalePreparations_ へ移し、世代を進める。次の tick は今の
+    // Project と再生で準備し直す (古い準備が境界まで残って、新しい要求を塞がない)。
+    void cancelSourcePreparations();
     QString playbackPreparationFailure_;
     // 準備に失敗した境界。その境界を越えるまで準備し直さない (壊れた素材の seek 待ちを
     // 毎 tick 繰り返さない)。
@@ -848,8 +975,14 @@ private:
     std::size_t playbackMaxPreparedSourceCount_ = 0;
     bool playbackCapacityFailure_ = false;
     std::optional<std::int64_t> pendingCapacityRebuildFrame_;
+    // 境界の登録上限が、取り消した準備・削除待ちの旧 source が枠を持っているための一時的な
+    // 不足だった。engine を作り直さず (作り直しは取り消した準備の thread を join する)、境界で
+    // 止めたまま枠が返るのを poll で待ち、同じ engine で組み直して再生を続ける。
+    std::optional<std::int64_t> pendingSlotRebuildFrame_;
+    std::uint64_t playbackSlotWaitCount_ = 0;
     QString lastPlaybackRebuildReason_;
     std::uint64_t playbackRebuildCount_ = 0;
+    std::uint64_t playbackCapacityResetCount_ = 0;
     double playbackMaxPreparationMs_ = 0.0;
     // 最後に engine が受理した composition。同じ内容を出し直さないために持つ。
     std::shared_ptr<const preview::CompositionSnapshot> submittedComposition_;
@@ -932,12 +1065,22 @@ private:
         std::string currentClipId;
         std::int64_t playheadFrame = 0;
         std::uint64_t revision = 0;
+        // project の approximateProjectBytes。履歴へ積むときに埋める。
+        std::size_t bytes = 0;
     };
 
+    // Undo / Redo 履歴は、両方の合計の件数と Project の複製の概算 byte 数で上限を決める。
+    // clip・素材・キーフレームの多い Project では、件数だけだと 1 世代ごとの大きさに比例して
+    // memory が増える。新しい編集・Undo・Redo のたびに切り詰め、現在の状態に隣り合う Undo と
+    // Redo の 1 件ずつは予算を超えても残す (project::editHistoryEntriesToDrop)。
+    static constexpr std::size_t kMaximumUndoEntries = 100;
+    static constexpr std::size_t kMaximumUndoBytes = 256 * 1024 * 1024;
+    std::size_t editHistoryByteBudget_ = kMaximumUndoBytes;
     std::vector<UndoEntry> undoHistory_;
     // undo で戻した編集。新しい編集を commit すると捨てる。
     std::vector<UndoEntry> redoHistory_;
     void pushUndoEntry(UndoEntry entry);
+    void trimEditHistory();
     void clearEditHistory();
     // from の末尾へ戻し、いまの状態を to へ積む。undo / redo の共通手順。
     bool stepEditHistory(std::vector<UndoEntry>& from, std::vector<UndoEntry>& to, bool redo);
@@ -957,6 +1100,18 @@ private:
     std::uint64_t savedRevision_ = 0;
     std::uint64_t nextRevision_ = 1;
     std::uint64_t recoveryRevision_ = 0;
+    // 処理中の recovery の書き込み・削除 (同時に 1 つだけ)。完了はこの job と同じときだけ反映する。
+    std::shared_ptr<RecoveryWriteJob> recoveryWrite_;
+    // 処理を待っている書き込み・削除 (積んだ順に行う)。
+    std::deque<std::shared_ptr<RecoveryTask>> recoveryQueue_;
+    std::uint64_t recoveryTaskSequence_ = 0;
+    // 最後に積んだ削除の番号。これより前に積んだ書き込みの完了は recovery 済みにしない。
+    std::uint64_t recoveryDeleteSequence_ = 0;
+    RecoveryWriter recoveryWriter_;
+    RecoveryThreadFactory recoveryThreadFactory_;
+    // 書き込み中に次の自動保存の時刻が来た。完了した後にもう一度書く。
+    bool recoveryWriteAgain_ = false;
+    std::uint64_t recoveryWriteCompletionCount_ = 0;
     std::int64_t playheadFrame_ = 0;
     std::int64_t totalTimelineFrames_ = 0;
     double audioMeterDbLeft_ = kMeterSilenceDb;

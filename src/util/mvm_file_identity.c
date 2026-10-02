@@ -60,6 +60,49 @@ static int read_at(HANDLE file, long long offset, unsigned char* buffer, DWORD s
     return ReadFile(file, buffer, size, read, NULL) ? 0 : 1;
 }
 
+int mvm_file_content_hash(const wchar_t* path, unsigned long long* out) {
+    if (!out)
+        return 1;
+    *out = 0;
+    if (!path || !path[0])
+        return 1;
+    HANDLE file = open_shared(path, GENERIC_READ);
+    if (file == INVALID_HANDLE_VALUE)
+        return 1;
+
+    enum { CHUNK = 1024 * 1024 };
+
+    /* worker thread から並行に呼ばれるので、static buffer は使わない。 */
+    unsigned char* chunk = (unsigned char*)HeapAlloc(GetProcessHeap(), 0, CHUNK);
+    LARGE_INTEGER size;
+    int failed = !chunk || !GetFileSizeEx(file, &size);
+    unsigned long long hash = 14695981039346656037ULL;
+    if (!failed)
+        hash = fnv1a(hash, (const unsigned char*)&size.QuadPart, sizeof(size.QuadPart));
+    long long total = 0;
+    while (!failed) {
+        DWORD read = 0;
+        if (!ReadFile(file, chunk, CHUNK, &read, NULL)) {
+            failed = 1;
+            break;
+        }
+        if (read == 0)
+            break;
+        hash = fnv1a(hash, chunk, read);
+        total += read;
+    }
+    /* 読んでいる間に伸び縮みした file は、読んだ範囲が size と合わない。 */
+    if (!failed && total != size.QuadPart)
+        failed = 1;
+    if (chunk)
+        HeapFree(GetProcessHeap(), 0, chunk);
+    CloseHandle(file);
+    if (failed)
+        return 1;
+    *out = hash;
+    return 0;
+}
+
 int mvm_file_content_fingerprint(const wchar_t* path, unsigned long long* out) {
     if (!out)
         return 1;

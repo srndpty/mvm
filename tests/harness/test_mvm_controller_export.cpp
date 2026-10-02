@@ -8,11 +8,13 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <future>
+#include <mutex>
 #include <stdexcept>
 #include <system_error>
 #include <thread>
@@ -785,6 +787,34 @@ void testSpeedDurationAndFrameHoldUndo(const std::filesystem::path& path) {
     }
 }
 
+// Undo / Redo は現在の Project を反対側の履歴へ積む。積んだ後も、Undo と Redo の合計が
+// byte の予算を超えない。track を足すたびに Project は少しずつ大きくなるので、Undo で
+// 積む現在の Project は、取り出す 1 つ前の世代より大きい。
+void testEditHistoryBudgetAfterUndo(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "履歴予算試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    for (int index = 0; index < 6; ++index)
+        check(controller.addTrack("video"), "履歴予算試験の編集ができません");
+    // いまの履歴の大きさをちょうど予算にする。Undo で積む現在の Project の方が取り出す世代より
+    // 大きいので、積む側だけを見る切り詰めでは予算を超える。
+    const auto budget = controller.editHistoryBytes();
+    controller.setEditHistoryByteBudgetForTest(budget);
+    check(controller.undoLastEdit() && controller.redoDepthForTest() == 1,
+          "履歴予算試験の Undo ができません");
+    check(controller.editHistoryBytes() <= budget,
+          "Undo した後の Undo と Redo の履歴が byte の予算を超えました");
+    check(controller.undoLastEdit() && controller.redoLastEdit() &&
+              controller.editHistoryBytes() <= budget,
+          "Undo / Redo を続けた後の履歴が byte の予算を超えました");
+    // 予算がどれだけ小さくても、現在の状態に隣り合う Undo と Redo は 1 件ずつ残す。
+    controller.setEditHistoryByteBudgetForTest(1);
+    check(controller.undoLastEdit() && controller.undoDepthForTest() == 1 &&
+              controller.redoDepthForTest() == 1 && controller.canUndo() && controller.canRedo(),
+          "予算を超えても現在の状態に隣り合う Undo と Redo を残しません");
+}
+
 void testRedoRestoresDirtyState(const std::filesystem::path& path) {
     const auto initial = videoProject();
     check(mvm::project::saveProjectJson(initial, path).success,
@@ -893,6 +923,162 @@ void testUnlinkUndo(const std::filesystem::path& path) {
           "Undoでリンク選択が復元されません");
 }
 
+// recovery の自動保存は、serialize と書き込みを worker で行う (UI スレッドでファイル I/O を
+// 行わない)。書き込みは 1 つずつで、書き始めた revision だけを recovery 済みとして扱う。
+// 書き込み中に保存済みの状態まで Undo したら、書き込みを待たずに戻り、書き込みの後に消す。
+void testRecoveryAutosaveOffControlThread(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "非同期の自動保存の試験の初期Projectを保存できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    std::filesystem::remove(recoveryPath);
+    mvm::app::MvmController controller(path, {}, initial);
+    std::mutex mutex;
+    std::condition_variable changed;
+    int started = 0;
+    int released = 0;
+    // 1 番目と 2 番目の書き込みは試験が許すまで止める。3 番目以降は 1000ms 掛かる。
+    controller.setRecoveryWriterForTest([&](const mvm::project::Project& project,
+                                            const std::filesystem::path& recovery,
+                                            const std::filesystem::path& canonical,
+                                            const std::string& sha, const std::string& savedAt,
+                                            const std::string& session) {
+        int index = 0;
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            index = ++started;
+            changed.notify_all();
+            if (index <= 2)
+                changed.wait_for(lock, std::chrono::seconds(5), [&] { return released >= index; });
+        }
+        if (index > 2)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        return mvm::project::saveProjectRecovery(project, recovery, canonical, sha, savedAt,
+                                                 session);
+    });
+    const auto release = [&](int count) {
+        std::lock_guard<std::mutex> lock(mutex);
+        released = count;
+        changed.notify_all();
+    };
+
+    check(controller.addTrack("video"), "自動保存の対象の編集ができません");
+    const auto firstRevision = controller.currentRevisionForTest();
+    const auto began = std::chrono::steady_clock::now();
+    controller.writeRecoveryAutosaveForTest();
+    const double startMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+    check(startMs < 1000 && controller.recoveryWriteInFlightForTest(),
+          "自動保存の書き込みを control thread で待ちました");
+
+    // 書き込み中の編集。1 番目の完了は書き始めた revision までを recovery 済みにする。
+    check(controller.addTrack("video"), "書き込み中の編集ができません");
+    controller.writeRecoveryAutosaveForTest();
+    release(1);
+    check(pumpUntil([&] { return controller.recoveryWriteCompletionCountForTest() >= 1; }, 4000),
+          "1 番目の自動保存が完了しません");
+    check(controller.recoveryRevisionForTest() == firstRevision &&
+              controller.recoveryRevisionForTest() != controller.currentRevisionForTest() &&
+              controller.recoveryWriteInFlightForTest(),
+          "書き込みより後の編集を recovery 済みとして扱ったか、書き直しを始めません");
+    release(2);
+    check(pumpUntil(
+              [&] {
+                  return controller.recoveryWriteCompletionCountForTest() >= 2 &&
+                         !controller.recoveryWriteInFlightForTest();
+              },
+              4000),
+          "2 番目の自動保存が完了しません");
+    const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
+    check(controller.recoveryRevisionForTest() == controller.currentRevisionForTest() &&
+              recovery.success && recovery.project.videoTracks.size() == 4,
+          "書き込み中の編集を recovery へ書き直しません");
+
+    // 書き込み中に保存済みの状態まで戻す。Undo は書き込み (1000ms) を待たずに戻る。recovery は
+    // 書き込みの後に消すので、後から書き込みが届いて recovery を作り直さない。
+    check(controller.addTrack("video"), "3 番目の自動保存の対象の編集ができません");
+    controller.writeRecoveryAutosaveForTest();
+    check(controller.recoveryWriteInFlightForTest(), "前提: 3 番目の自動保存を始めません");
+    double slowestUndoMs = 0.0;
+    while (controller.canUndo()) {
+        const auto undoBegan = std::chrono::steady_clock::now();
+        check(controller.undoLastEdit(), "保存済みの状態まで Undo できません");
+        slowestUndoMs = std::max(slowestUndoMs, std::chrono::duration<double, std::milli>(
+                                                    std::chrono::steady_clock::now() - undoBegan)
+                                                    .count());
+    }
+    check(!controller.dirty() && slowestUndoMs < 400,
+          "保存済みの状態まで戻す Undo が recovery の書き込みを待ちました");
+    check(pumpUntil(
+              [&] {
+                  return !std::filesystem::exists(recoveryPath) &&
+                         !controller.recoveryWriteInFlightForTest();
+              },
+              5000),
+          "書き込み中に保存済みの状態へ戻した後も recovery が残っています");
+    pumpUntil([] { return false; }, 300);
+    check(!std::filesystem::exists(recoveryPath) && controller.recoveryRevisionForTest() == 0,
+          "消した後に書き込みが届いて recovery を作り直しました");
+    std::printf("recovery async: 保存済みまでの Undo の最大 %.1fms\n", slowestUndoMs);
+    controller.shutdown();
+}
+
+// recovery の書き込みが例外を投げても、worker thread を作れなくても、process を終わらせず
+// 保存の失敗として扱い、再試行の timer を動かす。直れば次の自動保存で書ける。
+void testRecoveryAutosaveFailures(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "自動保存の失敗の試験の初期Projectを保存できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    std::filesystem::remove(recoveryPath);
+    mvm::app::MvmController controller(path, {}, initial);
+
+    controller.setRecoveryWriterForTest(
+        [](const mvm::project::Project&, const std::filesystem::path&, const std::filesystem::path&,
+           const std::string&, const std::string&,
+           const std::string&) -> mvm::project::ProjectIoResult {
+            throw std::runtime_error("試験の例外");
+        });
+    check(controller.addTrack("video"), "自動保存の失敗の試験の編集ができません");
+    const auto beforeThrow = controller.recoveryWriteCompletionCountForTest();
+    controller.writeRecoveryAutosaveForTest();
+    check(pumpUntil([&] { return controller.recoveryWriteCompletionCountForTest() > beforeThrow; },
+                    4000),
+          "例外を投げた自動保存が完了しません");
+    check(controller.statusText().contains(QStringLiteral("自動復旧データを保存できません")) &&
+              controller.statusText().contains(QStringLiteral("試験の例外")) &&
+              controller.recoveryRevisionForTest() == 0 &&
+              controller.recoveryRetryScheduledForTest() && !std::filesystem::exists(recoveryPath),
+          "書き込みの例外を保存の失敗として扱い、再試行を予定しません");
+
+    controller.setRecoveryWriterForTest({});
+    controller.setRecoveryThreadFactoryForTest([](std::function<void()>) -> std::thread {
+        throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+    });
+    const auto beforeThread = controller.recoveryWriteCompletionCountForTest();
+    controller.writeRecoveryAutosaveForTest();
+    check(controller.recoveryWriteCompletionCountForTest() > beforeThread &&
+              controller.statusText().contains(QStringLiteral("thread を作れません")) &&
+              controller.recoveryRetryScheduledForTest() &&
+              !controller.recoveryWriteInFlightForTest(),
+          "worker thread を作れない自動保存を保存の失敗として扱い、再試行を予定しません");
+
+    // 直れば次の自動保存で書ける。
+    controller.setRecoveryThreadFactoryForTest({});
+    controller.writeRecoveryAutosaveForTest();
+    check(pumpUntil(
+              [&] {
+                  return controller.recoveryRevisionForTest() ==
+                             controller.currentRevisionForTest() &&
+                         std::filesystem::exists(recoveryPath);
+              },
+              4000),
+          "失敗の後の自動保存で recovery を書けません");
+    controller.shutdown();
+}
+
 void testRecoveryAutosave(const std::filesystem::path& path) {
     const auto initial = videoProject();
     check(mvm::project::saveProjectJson(initial, path).success,
@@ -972,8 +1158,9 @@ void testUndoRemovesRecovery(const std::filesystem::path& path) {
     check(controller.addTrack("audio") && controller.dirty(), "recovery削除対象の編集ができません");
     check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
           "Undo前のrecoveryが作成されません");
+    // recovery は worker が消す (Undo は削除を待たない)。
     check(controller.undoLastEdit() && !controller.dirty() &&
-              !std::filesystem::exists(recoveryPath),
+              pumpUntil([&] { return !std::filesystem::exists(recoveryPath); }, 4000),
           "保存済みrevisionまでUndoしてもrecoveryが残ります");
 }
 
@@ -2235,6 +2422,7 @@ int main(int argc, char** argv) {
     testLinkedClipboard(directory / L"clipboard-linked.mvm");
     testMultipleClipClipboard(directory / L"clipboard-multiple.mvm");
     testRedoRestoresDirtyState(directory / L"redo-dirty.mvm");
+    testEditHistoryBudgetAfterUndo(directory / L"history-budget.mvm");
     testSlipPreviewDoesNotEdit(directory / L"slip-preview.mvm");
     testPenKeyUndoRedo(directory / L"pen-undo-redo.mvm");
     testSpeedDurationAndFrameHoldUndo(directory / L"speed-hold-undo.mvm");
@@ -2242,6 +2430,8 @@ int main(int argc, char** argv) {
     testProjectVideoSettings(directory / L"project-video-settings.mvm");
     testUnlinkUndo(directory / L"unlink-undo.mvm");
     testRecoveryAutosave(directory / L"recovery-autosave.mvm");
+    testRecoveryAutosaveOffControlThread(directory / L"recovery-async.mvm");
+    testRecoveryAutosaveFailures(directory / L"recovery-failures.mvm");
     testExplicitSaveContract(directory / L"explicit-save.mvm");
     testUndoRemovesRecovery(directory / L"undo-recovery.mvm");
     testUndoRedoRewritesRecovery(directory / L"undo-redo-recovery.mvm");

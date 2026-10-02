@@ -1861,9 +1861,8 @@ timeline sample の時計に合わせて置く (素材を先頭から使う音�
 すぐ切り替えると素材の先頭からの無音から音声の条件が提示の飛びで落ちる。削除待ちの間の登録上限を
 失敗として覚えると、8 track の試験が 3 世代目の 2 本目で準備失敗と組み直しを起こして落ちる。
 
-`[未検証]` source の準備 (`addSource` の open / seek) は control thread で同期に待つ。
-境界での停止は避けたが、待ち時間そのものは境界の前へ移っただけで、playhead 更新や入力処理を
-その間止めうる。open / seek を worker で進め、準備完了を control thread で公開する形は未実装。
+`[当時]` source の準備 (`addSource` の open / seek) は control thread で同期に待っていた。
+§21.4 で準備用の thread へ移した。
 
 `[未検証]` 他の GPU / 音声 endpoint、長尺素材、操作中の高負荷環境での境界欠落率は未測定。
 
@@ -2089,7 +2088,8 @@ reconcile がトランジションを消す。このとき、通常の trim が�
 `[事実]` 確認したこと:
 - `m5_timeline_edit_focused`: 吸着 (30fps 素材で 31 → 32、29 → 28、不透明度と余白の内側へ)、総尺を保つ
   吸着 (不透明な前 30 で 50 / 50 → 30 / 70、本体のずらし 33 / 27 → 34 / 26、置けない総尺 61 → 62)、
-  長尺素材の吸着の結果と時間 (`testTransitionSpanFitOnLongMedia`)、trim で離れると
+  長尺素材の吸着の結果と時間 (`testTransitionSpanFitOnLongMedia`、`[当時]` 時間は 2000ms の閾値で見ていた。
+  調べた回数で見る形は §25.1)、trim で離れると
   トランジションが消えること、接している隣への trim を止めること (縮め・ローリングは止めない)、
   上限 (300 / 300、反対端のトランジションがあると後ろ 200)、cut で開始への変更と
   ID の維持、上限ちょうど、同じ値・0 frame・負・上限超え・未知 ID の拒否 (Project 不変)、不透明度と
@@ -2184,3 +2184,555 @@ focus が popup の外へ出るので、Esc がダイアログに届かず閉じ
 `focusReturnItem` を外す mutant は落ちる。
 
 `[未検証]` 目玉・M・S の見た目は手で操作して確かめていない (起動して配置だけを画面で確認した)。
+
+## 21. 全体レビュー指摘への対応 (P1 1 件 / P2 8 件 / P3 1 件)
+
+番号はレビューの番号。再現はいずれも `pwsh scripts/build.ps1 -Target <test の exe>` の後に
+`ctest --test-dir build/ucrt64-release -R '<test 名>' --output-on-failure --timeout 900`。
+
+### 21.1 出力しない clip の素材を書き出しの前処理で読んでいた (#1, P1)
+
+`[事実]` `exportTimeline` は `project.timelineClips` の全件について、文字を raster 化し画像を decode
+していた。MLT へ渡すのは `mapTimelineExportPlan` が残した `plan.clips` だけなので、非表示 track・ミュート・
+ソロ除外・無効の clip の素材が壊れていると、preview にも書き出しにも使わないのに書き出しが失敗した。
+`plan.clips` に現れる `projectClipIndex` だけを一度ずつ stage するようにした。
+
+`image_clip_contract` が、V1 に正常な画像・V2 に読めない画像 (アニメーションへ差し替え) を置き、
+V2 を表示したままなら失敗する (対照)、V2 を非表示にする・V2 の clip を無効にすると 30 frame を書き出せる
+ことを見る。修正を外すと後の 2 件が落ちることを確かめた。
+
+### 21.2 大きな timeline の検証が clip 数の 2 乗だった (#2)
+
+`[事実]` `validateTimeline` の同じ track の重なりの検査を、track ごとに開始位置で並べて終端の最大と
+比べる形にした (O(N log N))。clip ID → 位置の索引 (`ClipIdIndex`) を足し、トランジションの検証・
+描画区間の計算でトランジションごとに全 clip を走査しないようにした。`validateMediaReferences` も
+clip ごとに素材列を走査せず、素材の表記上の key を素材ごとに 1 回だけ作る。
+
+`m5_timeline_edit_focused` が 2 track × 10,000 clip (track をまたいで交互に並べ、開始位置は逆順) で、
+区間の比較が 19,998 回 (track ごとに clip 数 - 1) であることを `overlapComparisons` で見る。全組を比べる
+実装なら約 1 億回になる。時間は閾値にしない (この開発機の release で 8.5ms)。離れた位置の重なりと、
+長い clip の内側の短い clip を挟んだ重なりを検出することを対照にした。
+
+`[未検証]` 編集 1 回で Project を controller と編集関数の両方で複製し、`finalizeTimelineCandidate`・
+`serializeProjectJson`・`refreshTimelineModel` がそれぞれ検証する構造は残っている。検証は線形対数に
+なったので定数倍の重複であり、「検証済みの候補」を commit へ渡す形への変更は行っていない。
+
+### 21.3 Timeline の clip delegate を全件生成し、編集のたびに作り直す (#3)
+
+`[事実]` 次の 3 つに分けて直した。
+
+- `TimelineClipModel::setProject` は model を作り直さない。clip ID の並びが一致する先頭と末尾の行は
+  残し、値の変わった role だけを `dataChanged` で知らせる。間 (追加・削除・並べ替えのあった範囲) だけを
+  行の削除・挿入にする。編集しても表示中の delegate は作り直されない
+- timeline の clip の Repeater は `TimelineClipWindowModel` (`QSortFilterProxyModel`) を model にする。
+  表示範囲に左右へ表示幅 1 つ分の余白を足した範囲に掛かる clip と、固定する clip (押している clip・
+  ドラッグ中の clip・リンク編集の起点) だけを通す。余白の内側を見ている間のスクロールでは絞り直さない。
+  選択中の clip は固定しない (全選択で全 clip の delegate を作らない)。群のドラッグ中は、ずらして描く
+  clip が範囲外から入ってくるので、ドラッグ量だけ範囲を広げる
+- preview の文字 layer の Repeater は文字 clip だけを通す (`TextClipFilterModel`)。以前は文字以外の
+  clip にも preview 全面の delegate を作っていた。controller へ渡す行番号は全 clip の番号 (`clipRow` role)。
+  `[当時]` 時間では絞っていなかった。再生位置で絞る形は §22.3
+
+delegate の数に依存しないよう、矩形選択は delegate を数えずに `clipSpans()` から delegate と同じ式で
+clip の矩形を求める。drag の移動先 (`dragTrackKind` / `dragTrackIndex`) は model の値へ bind せず、
+press で必ず代入する (delegate が作り直されなくなったので、代入で外した bind を残さない)。
+
+`m7b_4_timeline_clip_model_focused` が、値だけの編集・変化なし・削除・追加でそれぞれ作り直さず
+必要な行と role だけを知らせること、10,000 clip で表示範囲と余白の 30 clip だけを通すこと、余白の内側の
+スクロールで絞り直さないこと、拡大後に広い範囲を残さないこと、固定した clip は通し全選択では増えない
+こと、編集で範囲に出入りした clip を絞り直すことを見る。
+
+`[事実]` `text_ui_direct_input` (workstation) が 10,000 clip の Project を実 window に読み込み、clip の
+delegate が 58 個 (末尾へスクロールした後は 52 個) であること、表示範囲の clip を trim しても delegate が
+同じ item のままであること、スクロール先の clip に delegate ができ外れた clip の delegate が消えることを
+見る。Repeater の model を全 clip の model に戻す mutant では delegate が 10,000 個になり落ちる。
+
+`[事実]` Qt 6.11 の `QSortFilterProxyModel` は、filterRole を含まない `dataChanged` でも変わった行を
+絞り直す。絞り込み専用の role を足して通知に含める形を試したが、外しても上の試験は通ったので入れていない。
+
+### 21.4 再生中の source の準備を control thread で同期に待つ (#4)
+
+`[事実]` 先読み (次の clip 境界の source の準備) は、decoder の open と初期 seek を engine の準備用の
+thread で行い、control thread では待たなくした。
+
+- `PreviewEngine::addSource` を 3 段に分けた。begin (engine lock 内で検査し worker を作り、再生位置から
+  決まる seek 先を確定する)、run (lock 外で open / seek を待つ)、publish (lock 内で state を検査し直し、
+  audio mix / sink へ繋いで公開する)。同期の `addSource` と先読みの準備は同じ段を通る
+- `requestSourcePreparation` は begin だけを control thread で行い、run を準備用の thread へ渡す。
+  完了は `takeCompletedSourcePreparations` (controller の毎 tick と 100ms の poll) が control thread で
+  公開する。境界までに終わらなかった準備だけを `waitSourcePreparation` で境界で待つ
+- 要求した時点の transport の世代 (pause / seek / shutdown で進む) を準備に持たせ、公開する時点と
+  違えば公開せずに捨てる (`PreviewErrorCode::PreparationStale`)。取り消した準備も同じ。controller も
+  停止・組み直し・engine の作り直し・Project の変更で世代を進め、古い世代の完了は使わずに外す
+- 準備中の source も登録枠を使うものとして数える。public source ID は begin で予約する (並行する準備の
+  audio worker の内部 ID を重ねない)。公開しなかった ID は、後に別の予約が無ければ戻す
+- `requestShutdown` は最初に準備を取り消して準備用の thread を join し、作りかけの worker を止めてから
+  teardown へ進む (準備用の thread は render device を使う)
+- WASAPI endpoint の open は、COM を初期化した thread で open / 解放する必要があるため、publish
+  (control thread) に残した。audio sink がまだ無い再生中に、これから始まる区間の audio を初めて公開する
+  ときだけ、endpoint の open をそこで待つ。sink が無く区間が既に始まっている audio (主入力は sample の
+  連続を要求する) は先読みでは受け付けない
+
+`transition_preview` (workstation) が、準備用の thread を open の前で止めた状態で、engine だけの pause、
+engine だけの seek、controller の pause、再生中の track 編集、engine の作り直しを起こしてから再開し、
+次を見る。engine だけの pause / seek では engine が 2 件 (video / audio) とも捨てて controller へ
+届けないこと、track 編集では controller が 2 件とも外して準備し直し、組み直しなしで境界を越えること、
+作り直しでは止まった準備を待ち続けずに戻ること。engine の世代の照合を外す mutant では engine だけの
+pause / seek が、controller の世代の照合を外す mutant では track 編集が落ちる。
+
+`[事実]` control thread が先読みの準備に使った最大時間 (`playbackMaxPreparationMs`、境界での待ちを含む)
+は、同じ試験で変更前 10〜58ms (cut 15〜19ms、8 track x 3 世代 58ms) から 0.0〜3.2ms になった
+(1 回ずつの測定)。
+
+`[事実]` cut の前後の drop は変更前後ともに 0〜20 の範囲でばらついた。cut-av は変更前 4 回で
+0 / 19 / 0 / 0、変更後 10 回で 6 / 3 / 20 / 20 / 20 / 0 / 8 / 5 / 0 / 12。他の cut の条件も変更前後で
+0〜20。drop が増えたとも減ったとも言えない。提示の飛び・戻り・pairing の検査はどちらも全回通過した。
+
+`[当時]` audio sink が無い状態からの最初の audio の公開で待つ endpoint の open の時間は測っていなかった。
+測定は §22.5。
+
+### 21.5 登録枠の不足ではない UnsupportedCapability で engine を作り直していた (#5)
+
+`[事実]` controller は `addSource` の失敗の category が `UnsupportedCapability` なら登録枠の不足と
+みなして Preview engine を作り直していた。同じ category には「audio を扱えない構成」や
+「48000 Hz / stereo / float32 ではない」という作り直しても直らない失敗も含まれる。`PreviewError` に
+機械向けの細分類 `PreviewErrorCode` を足し、登録枠の不足 (video の登録上限・audio の登録上限) だけに
+`RegistrationCapacityExceeded` を付けた。controller はこの code だけで作り直しを決める。
+
+- `preview_engine_p5b_unit` が audio domain の非対応に code が付かないことを見る
+- `transition_preview` (workstation) の `cut-audio-unsupported` が、audio を扱えない構成にした engine で
+  audio clip の境界を越えると、組み直しは起きるが engine の作り直し (`playbackCapacityResetCount`) は
+  0 回で、理由に「扱えません」が残ることを見る。`cut-capacity-fallback` が、登録上限なら作り直す対照になる
+  (実測: 前者は組み直し 1・作り直し 0、後者は登録上限で組み直し)
+
+### 21.6 case-sensitive directory の別ファイルを同じ path と判定しうる (#6)
+
+`[事実]` `canonicalPathKey` は大文字小文字を畳み、`comparePathIdentity` は file ID を見る前に表記の一致で
+`Same` を返していた。NTFS は directory ごとに case sensitivity を有効にでき、そこでは `A.mp4` と
+`a.mp4` が別のファイルになる。cache 用の identity (`media_source_identity.h`) は畳まないので、規則が
+二系統で食い違っていた。
+
+- `canonicalPathKey` は大文字小文字を畳まない (区切り文字と `..` は揃える)
+- `comparePathIdentity` は両方の file ID が取れていれば表記より file ID で決める
+- 大文字小文字だけが違う素材は I/O なしでは同じと言えないので、素材の重複として Project を開けなく
+  しない。clip と素材の path の照合 (`validateMediaReferences`) も大文字小文字を区別する
+
+`media_bin_project_focused` が、表記を揃えた key が同じでも file ID が違えば `Different`、file ID が同じなら
+表記が違っても `Same`、key が大文字小文字を畳まないことを、組み立てた `FileIdentityKey` で見る
+(case-sensitive directory は権限と機能の有無で作れない環境があるため)。case-insensitive な通常の
+directory で `VOICE.WAV` と `Voice.wav` が同じ素材になることは従来どおり実ファイルで見る。
+
+`[当時]` 互換分岐は持たず、大文字小文字だけが clip と素材で違う既存の `.mvm` は読めなくなるとしていた。
+同じ schema 14 のまま読めなくなるので、読み込み時に揃える形へ改めた (§22.4)。
+
+### 21.7 内容の fingerprint が中央部の変更を見逃す (#7)
+
+`[事実]` 画像の raster cache は、size と更新時刻が同じまま中身だけ変わった素材を、先頭・末尾 64KiB と
+size の標本で検出していた。中央だけを書き換えると古い raster が残る。raster は preview の画素になるので、
+内容全体の hash (`mvm_file_content_hash`) で照合するようにした (画像は動画ほど大きくない)。
+
+`image_raster_cache_focused` が、768KiB の BMP の中央 64KiB だけを書き換えて更新時刻を戻すと、
+`revalidateAll` で作り直すことを見る。標本の fingerprint に戻すとこの検査が落ちることを確かめた。
+
+`[事実]` 波形の cache は標本の fingerprint のままにし、契約の記述を「検出を試みる (中央部だけの変更は
+取りこぼしうる)」へ弱めた。波形は表示専用で preview・書き出しの画素や音に使わないこと、前面へ戻るたびに
+全素材 (大きな動画を含む) の全体を読むのは重いことによる。
+
+### 21.8 受理されない編集・書き出しで再生が止まる (#8)
+
+`[事実]` `applyTimelineEdit` は再生を止めてから候補を作っていたので、存在しない clip・限界を超えた trim・
+変更なしなど、受理されない操作だけで再生が止まった。候補の作成と検証を先に行い、成功したときだけ
+止めて commit する。書き出しも、clip が無い・ローカルでない書き出し先の検査を止める前に行う。
+
+`text_ui_direct_input` (workstation) の手順 18 が、再生中に存在しない clip の trim とローカルでない
+書き出し先を投げても再生が続き、Undo 履歴の深さと未保存状態が変わらないことを見る。
+
+`[未検証]` 他の入口 (track 操作・Undo/Redo・素材操作など) は今も入口ごとに止めてから処理する。
+「候補の作成 → transport の方針 → commit」を 1 つの transaction にまとめる整理は行っていない。
+
+### 21.9 Undo 履歴が Project の複製を件数だけで制限していた (#9)
+
+`[事実]` 履歴の上限を件数 (100) に加えて、Project の複製の概算 byte 数 (`approximateProjectBytes`) の
+合計 256MiB で決める。最新の 1 件は予算を超えても残す (`undoEntriesToDrop`)。`[当時]` 予算は Undo 側だけに
+掛けており、Undo / Redo で反対側へ積むと合計が予算を超えた。Undo と Redo の合計に掛ける形は §22.1。commit と Undo / Redo は、
+確定した後の現在の Project を複製せずに履歴へ移すようにした (編集 1 回あたりの複製が 1 つ減る)。
+`editHistoryBytes` で履歴の概算の合計を読める。
+
+`m5_timeline_edit_focused` が切り詰めの規則 (件数・byte・上限ちょうど・最新の 1 件) と、概算 byte 数が
+clip とキーフレームの量で増えることを見る。
+
+`[事実]` 静的契約 `m7b_4_timeline_ui_architecture` (ビルド非依存の群) は Undo の手順をソースの字面で
+照合しており、`project_ = entry.project;` を複製しない形にした時点で落ちていた (最初の対応では
+`dev.ps1 test` だけを回し、この群を回していなかった)。照合する字面を `project_ = std::move(entry.project);`
+へ合わせた。
+
+`[未検証]` 差分 (command / delta) で持つ Undo や、構造を共有する Project model には変えていない。
+大規模な fixture での実際の memory 使用量は測っていない。
+
+### 21.10 README の現在の状態が古い (#10, P3)
+
+`[事実]` README の冒頭を現在の製品実装の状態にし、Phase 0〜4 の判定は末尾の
+「Historical: Phase 0-4」へ移した。
+
+## 22. 再レビュー指摘への対応 (P2 5 件 / P3 1 件)
+
+§21 の対応への再レビューで受けた指摘への対応を記録する。番号は再レビューの番号。
+
+### 22.1 Undo の byte 予算が Redo 側を含まない (#1)
+
+`[事実]` §21.9 の予算は新しい編集で Undo 側に積むときだけ掛けていた。Undo / Redo は現在の Project を
+反対側へ積むので、現在の Project が取り出す世代より大きいと、Undo と Redo の合計が予算を超えた。
+
+切り詰めを `trimEditHistory` に一本化し、新しい編集・Undo・Redo のたびに呼ぶ。規則
+(`editHistoryEntriesToDrop`) は次のとおり。
+
+- 件数 (100) と概算 byte 数 (256MiB) は Undo と Redo の合計で数える
+- 現在の状態から最も遠い世代から捨てる (Undo は古い順、Redo は最後にやり直す編集から順。距離が同じなら
+  Undo 側)
+- 現在の状態に隣り合う Undo と Redo の 1 件ずつは、予算を超えても残す (直前の編集を必ず元に戻せ、
+  戻した直後に必ずやり直せる)
+
+`m5_timeline_edit_focused` が規則を直書きの期待値で見る (合計での byte・件数、遠い側から捨てる、隣り合う
+1 件ずつは残す)。`m7b_4_controller_export_lifecycle` が controller で、track を足して Project を少しずつ
+大きくした後に、その時点の履歴の大きさをちょうど予算にして Undo し、Undo と Redo の合計が予算以内で
+あること、Undo / Redo を続けても予算以内であること、予算が 1 byte でも Undo と Redo が 1 件ずつ残ることを
+見る。Undo / Redo で切り詰めない mutant ではこの 3 件が落ちる。
+
+### 22.2 古い世代の準備が、新しい世代の要求を塞ぐ (#2)
+
+`[事実]` §21.4 では Project が変わると controller の世代を進め、古い世代の完了は使わずに外していた。
+ただし「準備中か」の照合は世代を見ていなかったので、古い世代の準備が境界まで残ると、それを準備中と数えて
+新しい世代の要求を出さず、境界で待った完了を古いとして捨て、組み直しになった。
+
+- Project が変わったら (`refreshTimelineModel`)、準備中のものを engine で取り消し、controller の準備中の
+  一覧から外す。次の tick が変わった後の Project で要求し直す。`[当時]` 準備済みの source と失敗した境界は
+  残していた。まとめて無効にする形は §23.1
+- 取り消した準備は、engine が受け取るまで登録の枠を持つ。新しい要求が登録の上限に当たったら、取り消した
+  準備の完了を待って (open の前か途中で止まるので短い) 枠を空け、1 回だけ要求し直す。`[当時]` decoder の
+  seek の途中では取り消しが効かないので、この待ちは control thread を止めうる。待たない形は §23.2
+- 取り消した準備の完了は、成功していても (取り消しが間に合わなかった) 使わずに外して数える
+  (`playbackStalePreparationCount`。controller の pause による取り消しもここに入る)
+
+試験用の hold (準備用の thread を open の前で止める) は、境界で完了を待たれた準備
+(`waitSourcePreparation`) を止めないようにした。待つ側と hold を外す側が同じ control thread なので、
+止めると待ち続ける (最初の mutant の実行はここで 120 秒の timeout になり、何も判定できなかった)。
+
+`transition_preview` の `stale-track-edit-held` が、準備を止めたまま再生中に track を編集し、止めたまま
+境界を越える。変わった後の Project で要求し直すこと (準備中 1 件・外した準備 1 件)、境界で完了を待ち
+(待った準備 1)、組み直し 0 で越えることを見る。Project の変更で取り消さない mutant では、要求し直さず、
+境界で古い準備を捨てて組み直しになり (理由「stale-v-in のvideo sourceを準備できませんでした」) 落ちる。
+
+`[未検証]` Project の変更で準備を取り消すようになったので、controller の準備中の一覧に古い世代の準備は
+残らない。§21.4 の controller の世代の照合 (古い世代の完了を外す) は防御として残したが、照合を外す mutant
+で `stale-track-edit` が落ちるかは今回は確かめていない (§21.4 の mutant の記録は取り消しを入れる前のもの)。
+
+`[事実]` この試験の境界は映像だけにした。audio sink がまだ無いとき、区間が始まった後に完了した主入力の
+audio は公開できない (§21.4。sample の連続を要求する)。映像と audio の両方で止めたまま境界を越えると、
+修正の有無に関係なく audio の準備が古いとして捨てられ、組み直し 1 になった。先読みの準備が境界までの
+2 秒で終わらなかった audio は、修正後も組み直しに戻る。
+
+### 22.3 preview の文字 layer が全文字 clip 分の delegate を作る (#3)
+
+`[事実]` `TextClipFilterModel` は文字 clip を種別だけで通していたので、字幕のように文字 clip が多いと、
+再生位置で見えている文字が 1 つでも preview 全面の delegate を全文字 clip 分作っていた。
+
+- 再生位置に掛かる文字 clip と、固定する文字 clip (preview 上でドラッグしている文字) だけを通す
+- 再生位置は controller の `stateChanged` で渡す。毎 frame 全行を判定し直さないよう、通す組が変わらない
+  範囲 (前後の最も近い文字 clip の端) を絞り込みのついでに求め、その内側の移動では絞り直さない。範囲は
+  行の追加・変更で狭めるだけで広げない (実際より狭いことはあっても広いことはない)
+
+`m7b_4_timeline_clip_model_focused` が 10,000 個の文字 clip (10 frame ずつ) で、再生位置に掛かる 1 件だけを
+通すこと、端を跨がない移動で全行を判定し直さないこと、跨いだら前後どちらへも絞り直すこと、固定した文字を
+通し固定を外すと消えること、編集で再生位置に掛かった文字を通すことを見る。`text_ui_direct_input`
+(workstation) が 10,000 個の文字 clip の Project を実 window に読み込み、文字 layer の delegate が 1 個で、
+再生位置を動かすとその位置の文字の layer に入れ替わることを見る。時間で絞らない mutant では、前者の
+7 件が落ち、後者は 10,000 個の delegate で 120 秒の timeout になる。
+
+### 22.4 同じ schema 14 で以前の版が開けた Project を開けない (#4)
+
+`[事実]` §21.6 で clip と素材の path の照合を大文字小文字を区別するようにしたので、以前の版が開けた
+(大文字小文字だけが clip と素材で違う) schema 14 の `.mvm` を開けなくなっていた。schema を上げず、
+読み込むときだけ clip の path を素材の表記へ揃える (`adoptMediaItemPathSpelling`)。
+
+- 揃えるのは、clip が `mediaItemId` で指す素材と「以前の規則 (大文字小文字を畳む) では同じ、今の規則では
+  違う」clip だけ。`[当時]` 実体を見ていなかった。実体で決める形は §23.3。表記は素材 (`mediaItemId` が指す authority) のものを使い、clip 側の path を authority に
+  しない
+- それ以外の食い違い (別のファイル) は従来どおり読み込みを拒否する。読み込んだ後の照合は §21.6 の規則の
+  まま
+
+`media_bin_project_focused` が、保存した JSON の素材か clip のどちらか一方の path を大文字にして読み込み、
+clip の path が素材の表記へ揃うこと、別名のファイルへ書き換えたものは拒否することを見る。揃えない mutant
+では前者が落ちる。
+
+`[推測]` case-sensitive directory で、大文字小文字だけが違う別のファイルを clip が指していた Project は、
+以前の版でも素材と同じファイルとして扱われていたので、揃えても以前の版より悪くはならない。
+
+### 22.5 再生中の最初の audio で endpoint の open を control thread で待つ (#5)
+
+`[事実]` engine の診断に、再生中に最初の audio を公開した回数と、そのとき control thread が endpoint の
+open から再生開始までに掛かった時間の最大 (`playingAudioEndpointOpenCount` /
+`maxPlayingAudioEndpointOpenMs`) を足した。`transition_preview` の cut の条件が出力する (閾値は置かない)。
+映像だけの区間から audio の区間へ入る `cut-silent-to-audio` では 1 回以上 open することを前提として見る。
+
+`[事実]` この開発機での 1 回ずつの実測で、`cut-silent-to-audio` は 5.4ms、`cut-silent-to-head-audio` は
+5.5ms。どちらも組み直し 0、提示の最大の間隔 3 frame (他の cut と同じ)。endpoint を常に open しておく形や、
+COM を初期化した専用の audio control thread は入れていない。
+
+`[未検証]` Bluetooth など open の遅い出力機器での時間は測っていない。`[当時]` 成功した open だけを
+記録していた。失敗した open も記録する形は §23.6。
+
+### 22.6 1 回の編集で Project の複製と検証が重なる (#6, P3)
+
+`[未検証]` §21.2 の記録のとおり、controller と編集関数がそれぞれ Project を複製し、
+`finalizeTimelineCandidate`・`serializeProjectJson`・`refreshTimelineModel` がそれぞれ検証する構造は
+残っている。検証は線形対数なので定数倍の重複であり、今回も「検証済みの候補」の型や in-place で編集する
+API への整理は行っていない。
+
+## 23. 3 回目のレビュー指摘への対応 (P1 1 件 / P2 3 件 / P3 2 件)
+
+§22 の対応への 3 回目のレビューで受けた指摘への対応を記録する。番号はレビューの番号。
+
+### 23.1 Project が変わっても、準備済みの source と失敗した境界が残る (#1, P1)
+
+`[事実]` §22.2 は Project の変更で準備中の source だけを取り消し、準備し終えて引き継ぎを待っている source
+(`preparedVideoSources_` / `preparedAudioSources_`) と、準備に失敗した境界 (`failedPreparationStart_` ほか)
+を残していた。再生中の track の表示・M/S の切り替えは再生を止めないので、使わなくなった準備済みの source が
+終端や pause まで登録枠を持ち続け、変わる前の Project で失敗した境界は、原因の track を隠しても同じ frame の
+境界の準備を拒み続けた。
+
+`refreshTimelineModel` で、pause と同じ `retirePreparedPlaybackSources` を呼ぶ。準備中は取り消し、準備済みの
+source は外して登録枠を返し、失敗した境界と登録上限の印を忘れて世代を進める。再生中の source はそのまま使う。
+
+`transition_preview` の 2 つの条件で見る。
+
+- `prepared-track-hide`: 2 track の次の境界の source を準備し終えた後に V2 を隠す。組み直し・engine の
+  作り直しなしで境界を越え、終端より前の再生中に、準備済みが 0 で、公開している source が再生中の source と
+  同じ数になる
+- `failed-boundary-track-hide`: V1 の境界の素材が無いので準備に失敗した後に V1 を隠す。V2 の同じ frame の
+  境界を準備し直し、組み直しなしで越える
+
+準備中だけを取り消す mutant では両方が落ちる (準備済み 1・公開 2・再生中 1、組み直し 1 で理由は
+「fail-other のvideo sourceを準備できませんでした; 先読み: fail-missing のファイルがありません」)。最初の形の
+試験は終端 (240) まで待っていたので、終端の pause が準備済みの source を外して mutant でも通っていた。
+終端より前に見る形にした。
+
+### 23.2 取り消した準備の登録枠を、control thread で待って空ける (#2)
+
+`[事実]` §22.2 は、新しい要求が取り消した準備の登録枠のために上限に当たると、取り消した準備の完了を
+`waitSourcePreparation` で待っていた。取り消しは段の間でしか効かない (decoder の初期 seek
+`seekBlocking` や audio の preroll 待ちの途中では効かない) ので、遅い・壊れた素材ではこの待ちが control
+thread を止める。
+
+待つ処理を外した。取り消した準備が残っている間の登録上限は、引き継いだ直後の旧 source と同じ一時的な不足と
+して扱い、失敗した境界として覚えない。完了は毎 tick (`handOffPlaybackSources` の最初) と状態の poll が
+受け取り、枠が空いた後の tick で要求し直す。取り消した準備が境界まで終わらなければ、その境界は組み直しに
+なる (control thread は止めない)。`[当時]` この組み直しは登録上限の失敗として engine を作り直し、作り直しが
+止まった準備の thread を join していたので、control thread は止まった。止めない形は §24.1。
+
+試験用に、次に要求する準備を「取り消しも待ちも効かない段」で指定時間止める seam
+(`blockNextSourcePreparationForTest`。decoder の seek の途中に相当) を足した。`transition_preview` の
+`blocked-stale-capacity` が、登録上限を 2 (再生中の A と境界の B) にし、B の準備を 800ms 止めたまま再生中に
+空の V2 を隠す。編集が 0.2ms で戻り、先読みの準備で control thread を止めた最大時間が 0.0ms のままで、
+組み直し・作り直しなしで境界 (2 秒先) を越えることを見る。待つ処理を戻した mutant では、準備の最大が
+795.0ms になって落ちる。
+
+### 23.3 大文字小文字の移行が、別のファイルを素材へ差し替えうる (#3)
+
+`[事実]` §22.4 の移行は表記だけで判断していたので、case-sensitive directory で `A.mp4` と `a.mp4` が別の
+ファイルとして実在すると、clip が以前の版で再生していたファイルを、黙って素材のファイルへ差し替えた。
+
+揃えてよいかを実体で決める (`mayAdoptLegacyCaseSpelling`)。
+
+- 両方の file ID が取れて同じ: 揃える (case-insensitive な通常の directory)
+- 両方とも何も指していない: 揃える (再生する実体は変わらない。素材がオフラインの Project も開ける)
+- file ID が違う・片方だけ実在する・実体を確かめられない (`Unavailable`): 揃えず、読み込みは照合で拒否する
+
+`media_bin_project_focused` が、組み立てた `FileIdentityKey` で上の 5 通り (同じ file ID、違う file ID、
+両方無い、片方だけ、確かめられない) を見る。実ファイル (`Voice.wav` を `VOICE.WAV` と書いた clip) で、
+読み込み時に素材の表記へ揃うことも見る。常に揃える mutant では、違う file ID・片方だけ・確かめられない
+の 3 件が落ちる。
+
+`[推測]` ネットワーク上など file ID を取れない場所の Project で、大文字小文字だけが違う clip を持つものは
+開けない。黙って差し替えるより安全な側に倒した。
+
+### 23.4 自動復旧の保存が UI スレッドで serialize と書き込みを行う (#4)
+
+`[事実]` `writeRecoveryAutosave` は timer から呼ばれ、その場で Project 全体の JSON を作って recovery file を
+atomic に書いていた (README の「UI スレッドでファイル I/O を行わない」に反する)。
+
+- control thread では Project の複製だけを作り、serialize と書き込みは worker thread で行う。書き込みは
+  同時に 1 つだけで、書いている間に自動保存の時刻が来たら、完了した後にもう一度書く (古い revision の
+  書き込みが後から新しい recovery を上書きしない)
+- 完了は control thread で受け取り、書き始めた時点の revision だけを recovery 済み (`recoveryRevision_`)
+  にする。書いている間に Project file の path が変わっていたら反映しない
+- recovery file を消す・別名で保存する・保存する・Project を切り替える・復元する・検出し直す前と、
+  shutdown では、書き込み中のものを待って結果を反映してから進める (`settleRecoveryWrite`)。
+  `[当時]` 保存済みの状態まで Undo したときの削除もここを通り、Undo が書き込みを待った。待たない形は §24.2後から書き込みが
+  届いて、消した recovery を作り直さない。この待ちは利用者が明示した操作の中だけで起こる
+- 書き込み処理は試験で差し替えられる (`setRecoveryWriterForTest`)
+- 静的契約 `m7b_4_timeline_ui_architecture` は recovery を `project::saveProjectRecovery(` の呼び出しで
+  書くことを字面で照合していた。既定の書き込み処理として渡す形になったので、照合する字面を
+  `RecoveryWriter(project::saveProjectRecovery)` へ合わせた (最初のゲートの実行でこの群だけが落ちた)
+
+`m7b_4_controller_export_lifecycle` が、書き込みを止める writer で次を見る。自動保存の開始がすぐ戻り
+書き込み中になること、書き込み中の編集の後に 1 番目が完了すると、書き始めた revision だけを recovery 済み
+にして書き直しを始めること、2 番目の完了で recovery が最新の Project (4 track) になること、3 番目の
+書き込み中に保存済みの状態まで Undo すると、書き込みを待ってから recovery を消し、後から作り直さないこと。
+同期で書く mutant では最初の 3 件が、消す前に待たない mutant では最後の 1 件が落ちる。
+
+`[未検証]` 消す前に待つことは `removeRecoveryBeside` 経由の経路だけを mutant で確かめた。別名で保存・
+切り替え・復元・検出し直しの前の待ちは mutant で確かめていない。
+
+### 23.5 Project が変わるたびに全 clip の automation key を QVariant にする (#5, P3)
+
+`[事実]` `TimelineClipModel::setProject` は、変わっていない clip も含めて全 clip の不透明度・音量の key を
+`QVariantMap` の列にしてから、前の値と比べていた。key は `ClipKeyframe` の配列のまま持ち、QML が
+`automationKeys` を読むときだけ列にする (`data()`)。比較も配列のまま行う。
+
+`m7b_4_timeline_clip_model_focused` が、10,000 clip × 100 key で、role の値が従来と同じ形
+({frame, value} の列) であること、key の変わらない clip の編集では `automationKeys` を知らせず、key を
+変えた clip では知らせることを見る。同じ試験で 1 clip を trim した `setProject` の時間は、変更前 280.0〜
+281.2ms、変更後 11.5〜13.6ms (この開発機の release、3 回ずつ)。時間は閾値にしていないので、変更前の
+実装でもこの試験は通る (性能の負例は無い)。
+
+### 23.6 失敗した endpoint の open の時間を記録しない (#6, P3)
+
+`[事実]` §22.5 の計測は、open から再生開始まで成功したときだけ記録していた。失敗した遅い open が
+control thread を止めても 0 のままになる。成功・失敗にかかわらず、再生中の open の試みの回数・失敗の回数・
+掛かった時間の最大 (`playingAudioEndpointOpenAttemptCount` / `playingAudioEndpointOpenFailureCount` /
+`maxPlayingAudioEndpointOpenAttemptMs`) を記録する。
+
+`[当時]` 失敗の回数は、open の後の再生開始の失敗も含んでいた。分けた形は §24.5。
+
+試験用に、次の再生中の open を指定時間待ってから失敗させる seam を足した。`transition_preview` の
+`endpoint-open-failure` が、150ms 待って失敗させたときに、試み 1・失敗 1・試みの最大 150ms 以上 (実測
+160.7ms、成功の最大は 0.0ms) になることを見る。成功だけを記録する mutant では試み 0 になって落ちる。
+
+## 24. 4 回目のレビュー指摘への対応 (P1 1 件 / P2 3 件 / P3 1 件)
+
+§23 の対応への 4 回目のレビューで受けた指摘への対応を記録する。番号はレビューの番号。
+
+### 24.1 取り消した準備が境界まで残ると、engine の作り直しで join を待つ (#1, P1)
+
+`[事実]` §23.2 で、取り消した準備の枠のための登録上限は先読みの tick では待たなくなったが、準備が境界
+までに終わらないと、境界の引き継ぎの失敗は登録上限の失敗として engine を作り直していた。作り直し
+(`requestShutdown`) は、render device を安全に片付けるために準備の thread を join するので、取り消しの効かない
+段にいる準備を control thread で待った。
+
+境界の登録上限の失敗が、取り消した準備・削除待ちの旧 source が枠を持っているための一時的な不足なら、
+engine を作り直さない。境界で再生を止めたまま、状態の poll (100ms) で枠が返るのを待ち、返ったら同じ engine で
+組み直して再生を続ける (`pendingSlotRebuildFrame_`、回数は `playbackSlotWaitCount`)。待っている間に利用者が
+pause・再生・seek したら、待ちを取り消す。engine を作り直す場合も待ちを捨てる。取り消した準備・旧 source が
+無いのに登録上限に当たったときは、従来どおり engine を作り直す。
+
+`transition_preview` の `blocked-stale-capacity` を 2 つの長さで行う。準備を取り消しの効かない段で 800ms
+止める場合 (境界の前に枠が返る) は組み直しなしで越える。3000ms 止める場合 (境界 = 2 秒先を過ぎても返らない)
+は、枠待ち 1・組み直し 1・engine の作り直し 0 で、枠が返った後に再生を続けて 150 を越える。どちらも UI の
+timer (10ms) の最大の間隔が 400ms 未満であることを見る (実測 20.7ms / 21.2ms)。一時的な不足として扱わない
+mutant では、3000ms の場合に engine を作り直し、UI の最大の間隔が 1031.4ms になって落ちる。
+
+`[未検証]` 準備が取り消しの効かない段から戻らない (decoder が応答しない) と、境界で止まったまま再生を続け
+ない。UI は動き、pause・seek で抜けられる。shutdown と engine の作り直しは、従来どおりその thread を待つ。
+
+### 24.2 保存済みの状態まで Undo すると、recovery の書き込みを待つ (#2)
+
+`[事実]` §23.4 は recovery file を消す前に書き込み中のものを待っていたので、保存済みの状態まで Undo すると
+(`scheduleRecoveryAutosave` が recovery を消す)、Undo が書き込みの完了を control thread で待った。
+
+recovery の書き込み・削除を、積んだ順に 1 つずつ worker thread で行う列にした。保存済みの状態へ戻ったときは
+削除を積んで待たずに戻る。削除は書き込み中のものの後に行われるので、後から書き込みが recovery を作り直す
+ことはない。削除より前に積んだ書き込みの完了は recovery 済みにしない。保存・破棄・切り替え・復元・検出し直し
+と shutdown は、従来どおり列を終わらせてから進める (失敗を同期で知らせる必要がある)。
+
+`m7b_4_controller_export_lifecycle` が、書き込みを 1000ms 止めた状態で保存済みの状態まで Undo し、どの
+Undo も 400ms 未満で戻ること (実測 0.1ms)、その後に recovery が消え、作り直されないことを見る。以前の同期の
+削除に戻す mutant では Undo が書き込みを待って落ちる。既存の `testUndoRemovesRecovery` は Undo の直後に
+recovery が無いことを見ていたので、削除を待って見る形にした。
+
+### 24.3 recovery の worker の例外と thread を作れない場合 (#3)
+
+`[事実]` worker の中の例外は `std::terminate` になり、thread を作れないと `std::system_error` が control
+thread の event の経路へ出ていた。
+
+- worker は書き込み・削除の例外を捕まえ、失敗として control thread へ返す
+- thread を作れなければ、書き込みは失敗として扱い再試行の timer に任せる。削除はその場で行う (小さく、
+  残すと消したはずの recovery が残る)
+- thread の作り方は試験で差し替えられる (`setRecoveryThreadFactoryForTest`)
+
+`m7b_4_controller_export_lifecycle` が、例外を投げる writer で、process が続き、状態表示に
+「自動復旧データを保存できません」と例外の内容が出て、recovery 済みにならず、再試行の timer が動くことを
+見る。thread を作れない factory でも同じく失敗として扱い再試行を予定すること、直れば次の自動保存で書ける
+ことを見る。worker の例外を捕まえない mutant と、thread の作成の失敗を捕まえない mutant では、どちらも
+`terminate called after throwing` で process が終わる。
+
+### 24.4 受理されない・変更の無い編集で再生が止まる入口 (#4)
+
+`[事実]` §21.8 で `applyTimelineEdit` と書き出しは「検証してから止める」形にしたが、個別の入口のいくつかは
+先に再生を止めていた。次の入口で、候補の作成と検証・変更の有無の判定を再生を止める前に行う。
+
+- `moveTimelineClip` / `deleteCurrentClip` / `removeTrack` / `rippleDeleteGap`: 候補を作って検証し、commit
+  の直前に止める
+- `setProjectVideoSettings`: 変更が無い・値が不正なら止める前に返す。再生位置の換算は止めた後 (止めると
+  再生位置が確定する)
+- `stepEditHistory` (Undo / Redo): 戻す編集が無い・直列化できないなら止める前に返す。現在の状態を履歴へ
+  積むのは止めた後
+
+`transition_preview` の表 (`noop-edits-while-playing`) が、選択中の clip の無い位置から再生しながら、
+元に戻す編集の無い Undo、やり直す編集の無い Redo、同じ値・不正な値の Project 設定、削除する clip の無い
+削除、空白ではない位置のリップル削除、存在しない track の削除、存在しない clip の移動を行い、それぞれで
+再生が続き、revision と Undo の深さが変わらないことを見る。行ごとに判定できるよう、止まっていたら再生し
+直してから次の行へ進む。6 つの入口の先頭で止める mutant では 8 行すべてが落ちる。
+
+`[未検証]` 入口ごとに並べ替えただけで、レビューが勧める「候補の作成 → 再生の扱い → commit → preview の更新」
+の共通の transaction にはしていない。Manim の生成・素材の追加・切り替えなど、他の入口の順序は見直していない。
+
+### 24.5 再生開始の失敗を endpoint の open の失敗として数える (#5, P3)
+
+`[事実]` §23.6 の失敗の回数は、endpoint の open は成功し、その後の mix への接続・再生開始に失敗した場合も
+open の失敗として数えていた。open の失敗 (`playingAudioEndpointOpenFailureCount`) と、open の後の失敗
+(`playingAudioTransportStartFailureCount`) に分けた。試みの回数と時間は両方を含む。
+
+試験用に、次の再生中の open を成功させ再生開始を失敗させる seam を足した。`transition_preview` の
+`endpoint-start-failure` が、試み 1・open の失敗 0・再生開始の失敗 1 になること、`endpoint-open-failure` が
+open の失敗 1・再生開始の失敗 0 になることを見る。分けずに数える mutant では前者が落ちる。
+
+## 25. CI の失敗と 5 回目のレビュー指摘への対応
+
+### 25.1 長尺素材の吸着の時間の閾値で CI が落ちる
+
+`[事実]` CI (`ucrt64-debug`) で `m5_timeline_edit_focused` が「長尺素材の吸着に時間が掛かりすぎます」で
+落ちた (2135.5ms、閾値 2000ms)。同じ run の大きな timeline の検証は 414.6ms で、手元の debug (吸着 約 170ms・
+検証 約 37ms) の 11 倍前後だった。吸着の実装は変えておらず、runner が遅いことによる。
+
+時間の閾値をやめ、`testLargeTimelineValidationScales` と同じく仕事の量を見る。`TransitionSpanFit` に、
+frame ごとの不透明度を調べた回数 (`opacityProbes`) と、長さごとに素材 frame へ乗るかを調べた回数
+(`edgeProbes`) を足した。試験の配置では不透明度は cut の前で 100 回 (99 frame 不透明で 100 frame 目が違反)、
+後で余白の上限の 216000 回で、合計 216100 回になる (手で数えた値。実測も 216100)。素材 frame の判定は長さ
+ごとに覚えるので、前後の余白の合計を超えないことを見る (実測 2 / 3 回)。時間は出すだけにした。
+
+不透明な長さを覚えずに毎回数え直す mutant では、回数が 432200 / 648300 になって落ちる (この mutant の
+時間は 119.6ms で、以前の時間の閾値では落ちなかった)。
+
+### 25.2 先読みの準備の thread を作れないと例外が再生の tick から抜ける (P2)
+
+`[事実]` `requestSourcePreparation` は public ID と video source を予約した後で `std::thread` を作る。
+thread を作れない (OS の thread の上限・メモリ不足) と `std::system_error` が再生の tick から抜け、process
+が終わっていた。
+
+thread の作成の例外 (`std::system_error`・`std::bad_alloc`) を捕まえ、予約した source を返して (`rollbackSourceWorkLocked`)、失敗の `Result`
+(`DeviceFailure`) を返す。準備の ID は thread を作れた後に振る。controller は登録上限以外の準備の失敗と
+して扱い、境界で組み直す (§23 までの経路のまま)。
+
+試験用に、次に要求する準備の thread の作成を失敗させる seam (`failNextSourcePreparationThreadForTest`)
+を足した。`transition_preview` の `preparation-thread-failure` が、登録上限を 2 (再生中の A と境界の B) に
+した状態で thread の作成を失敗させ、準備の失敗が 1 回数えられ、再生が続き、登録済みの video source が 1
+(予約を返した) であること、engine を作り直さずに境界を越えることを見る。例外を捕まえない mutant では
+`terminate called after throwing an instance of 'std::system_error'` で process が終わり、捕まえても予約
+を返さない mutant では登録済みの video source が 2 になって落ちる (境界は組み直しで越えるので、登録数
+で見ないと見落とす)。
+
+`[未検証]` `transition_preview` を手元で繰り返すと、変更と関係の無い検査 (再生中のディゾルブの不透明度、
+Project が変わった後の境界、23.976fps の準備) がまれに落ちる (変更後 16 回中 3 回、変更前の build で 15 回中
+2 回)。23.976fps の失敗は時間切れを待たずに起きており、`pumpUntil` が条件の成立後にもう一度 event を
+処理してから条件を見直すため、その間に preview の更新が始まると準備できていないと判定する、と推測して
+いる (`[推測]`)。原因は確かめていない。

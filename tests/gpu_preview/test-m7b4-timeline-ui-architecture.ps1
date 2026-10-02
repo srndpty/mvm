@@ -553,7 +553,7 @@ foreach ($needle in @('project::timelineClipIndexAt(project_, current.track, cla
                       'UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_, currentRevision_};',
                       'std::vector<std::string> deletedIds = selectedClipIds_;',
                       'for (const auto& id : deletedIds)',
-                      'project_ = entry.project;',
+                      'project_ = std::move(entry.project);',
                       'scheduleRecoveryAutosave();',
                       'from.pop_back();',
                       'to.push_back(std::move(current));',
@@ -566,7 +566,7 @@ foreach ($needle in @('project::timelineClipIndexAt(project_, current.track, cla
 }
 foreach ($needle in @('FILE_FLAG_DELETE_ON_CLOSE',
                       'ERROR_SHARING_VIOLATION',
-                      'project::saveProjectRecovery(',
+                      'RecoveryWriter(project::saveProjectRecovery)',
                       'project::classifyRecovery(',
                       'savedCanonicalSha256_',
                       'canonicalBaseMatchesDisk(')) {

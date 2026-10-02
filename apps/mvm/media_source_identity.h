@@ -51,14 +51,25 @@ inline MediaSourceProbe probeMediaSource(const QString& mediaPath) {
     return result;
 }
 
-// 内容の fingerprint。size と更新時刻が一致したまま中身だけ差し替えられた素材を見つける。
-// file を読むので GUI thread では呼ばない。取れなければ nullopt。
+// 内容の標本 fingerprint (先頭・末尾・size)。size と更新時刻が一致したまま中身だけ
+// 差し替えられた素材を、file 全体を読まずに見つける。中央部だけの変更は取りこぼす
+// ので、検出は保証しない。file を読むので GUI thread では呼ばない。取れなければ nullopt。
 inline std::optional<std::uint64_t> mediaContentFingerprint(const QString& mediaPath) {
     unsigned long long fingerprint = 0;
     const std::wstring widePath = mediaPath.toStdWString();
     if (mvm_file_content_fingerprint(widePath.c_str(), &fingerprint) != 0)
         return std::nullopt;
     return fingerprint;
+}
+
+// 内容全体の hash。どの位置の変更も値に反映されるので、差し替えを必ず検出したい cache が
+// 使う。file 全体を読むので GUI thread では呼ばない。取れなければ nullopt。
+inline std::optional<std::uint64_t> mediaContentHash(const QString& mediaPath) {
+    unsigned long long hash = 0;
+    const std::wstring widePath = mediaPath.toStdWString();
+    if (mvm_file_content_hash(widePath.c_str(), &hash) != 0)
+        return std::nullopt;
+    return hash;
 }
 
 } // namespace mvm::app

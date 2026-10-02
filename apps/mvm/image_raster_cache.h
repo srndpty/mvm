@@ -31,7 +31,7 @@ namespace mvm::app {
 //     大きな画像でも初回表示で GUI が止まらない
 //   - key は素材の実体 (volume + file ID) と出力解像度。request のたびに size と更新時刻を
 //     照合し、差し替えられていれば作り直す。size と更新時刻が同じまま中身だけ変わったものは
-//     revalidateAll() の内容 fingerprint で見つける
+//     revalidateAll() の内容全体の hash で見つける (どの位置の変更も hash に反映される)
 //   - retainOnly() で、現在の Project が使わない key (clip が消えた・出力解像度が変わった)
 //     を捨てる
 //   - byte budget を超えたら、engine も controller も参照していないものから古い順に捨てる。

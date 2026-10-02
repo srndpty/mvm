@@ -8,11 +8,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cwctype>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 
 namespace mvm::project {
@@ -1703,6 +1705,41 @@ ProjectIoResult saveProjectJsonTransaction(Project& liveProject, Project candida
     return result;
 }
 
+namespace {
+
+std::wstring caseFoldedPathKey(const std::filesystem::path& path) {
+    auto key = canonicalPathKey(path);
+    for (auto& character : key)
+        character = static_cast<wchar_t>(std::towlower(character));
+    return key;
+}
+
+// 以前の版は clip と素材の path を大文字小文字を畳んで照合していた (同じ schema 14)。
+// その版で保存した、clip の path が素材の path と大文字小文字だけ違う Project も開けるよう、
+// 読み込むときだけ clip の path を素材 (mediaItemId が指す authority) の表記へ揃える。
+// 揃えるのは「以前の規則では同じ、今の規則では違う」clip のうち、同じ実体と言えるものだけ
+// (mayAdoptLegacyCaseSpelling)。case-sensitive directory で実在する別ファイルを指していたら
+// 揃えず、照合で読み込みを拒否する (黙って再生するファイルを差し替えない)。
+void adoptMediaItemPathSpelling(Project& project) {
+    std::unordered_map<std::string, const MediaItem*> items;
+    for (const auto& item : project.mediaItems)
+        items.try_emplace(item.id, &item);
+    for (auto& clip : project.timelineClips) {
+        if (clip.mediaItemId.empty())
+            continue;
+        const auto item = items.find(clip.mediaItemId);
+        if (item == items.end())
+            continue;
+        const auto& itemPath = item->second->mediaPath;
+        if (canonicalPathKey(clip.mediaPath) != canonicalPathKey(itemPath) &&
+            caseFoldedPathKey(clip.mediaPath) == caseFoldedPathKey(itemPath) &&
+            mayAdoptLegacyCaseSpelling(fileIdentityKey(clip.mediaPath), fileIdentityKey(itemPath)))
+            clip.mediaPath = itemPath;
+    }
+}
+
+} // namespace
+
 ProjectLoadResult parseProjectJsonText(const std::string& jsonText,
                                        const std::filesystem::path& projectPath) {
     ProjectLoadResult result;
@@ -1745,6 +1782,7 @@ ProjectLoadResult parseProjectJsonText(const std::string& jsonText,
             clip.mediaPath = resolveSourcePath(clip.mediaPath, projectDirectory);
     for (auto& item : parsed.mediaItems)
         item.mediaPath = resolveSourcePath(item.mediaPath, projectDirectory);
+    adoptMediaItemPathSpelling(parsed);
     // media_path の重複は解決後の path で判定する。
     const auto mediaBin = validateMediaBin(parsed);
     if (!mediaBin.success) {

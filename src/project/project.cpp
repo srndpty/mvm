@@ -185,6 +185,84 @@ Project createDefaultProject() {
     return project;
 }
 
+namespace {
+
+std::size_t heapBytes(const std::string& text) {
+    return text.size();
+}
+
+std::size_t heapBytes(const std::filesystem::path& path) {
+    return path.native().size() * sizeof(std::filesystem::path::value_type);
+}
+
+} // namespace
+
+std::size_t approximateProjectBytes(const Project& project) {
+    std::size_t bytes = sizeof(Project);
+    for (const auto* tracks : {&project.videoTracks, &project.audioTracks}) {
+        bytes += tracks->size() * sizeof(Track);
+        for (const auto& track : *tracks)
+            bytes += heapBytes(track.name);
+    }
+    bytes += project.manimAssets.size() * sizeof(ManimAsset);
+    for (const auto& asset : project.manimAssets)
+        bytes += heapBytes(asset.scriptPath) + heapBytes(asset.sceneName) +
+                 heapBytes(asset.generatedVideoPath) + heapBytes(asset.sourceFingerprint);
+    bytes += project.timelineClips.size() * sizeof(TimelineClip);
+    for (const auto& clip : project.timelineClips) {
+        bytes += heapBytes(clip.mediaPath) + heapBytes(clip.name) + heapBytes(clip.id) +
+                 heapBytes(clip.mediaItemId) + heapBytes(clip.linkGroupId);
+        bytes += heapBytes(clip.text.content) + heapBytes(clip.text.fontFamily) +
+                 heapBytes(clip.text.color) + heapBytes(clip.text.alignment) +
+                 heapBytes(clip.text.outlineColor) + heapBytes(clip.text.backgroundColor);
+        bytes += (clip.effects.opacityKeys.size() + clip.effects.volumeKeys.size()) *
+                 sizeof(ClipKeyframe);
+    }
+    bytes += project.timelineTransitions.size() * sizeof(TimelineTransition);
+    for (const auto& transition : project.timelineTransitions)
+        bytes += heapBytes(transition.id) + heapBytes(transition.outgoingClipId) +
+                 heapBytes(transition.incomingClipId);
+    bytes += project.timelineMarkers.size() * sizeof(std::int64_t);
+    bytes += project.mediaFolders.size() * sizeof(MediaFolder);
+    for (const auto& folder : project.mediaFolders)
+        bytes += heapBytes(folder.id) + heapBytes(folder.name) + heapBytes(folder.parentId);
+    bytes += project.mediaItems.size() * sizeof(MediaItem);
+    for (const auto& item : project.mediaItems)
+        bytes += heapBytes(item.id) + heapBytes(item.mediaPath) + heapBytes(item.name) +
+                 heapBytes(item.folderId);
+    return bytes;
+}
+
+EditHistoryDrop editHistoryEntriesToDrop(const std::vector<std::size_t>& undoFarthestFirst,
+                                         const std::vector<std::size_t>& redoFarthestFirst,
+                                         std::size_t maxEntries, std::size_t maxBytes) {
+    std::size_t total = 0;
+    for (const auto* history : {&undoFarthestFirst, &redoFarthestFirst})
+        for (const auto bytes : *history)
+            total += bytes;
+    EditHistoryDrop drop;
+    std::size_t undoRemaining = undoFarthestFirst.size();
+    std::size_t redoRemaining = redoFarthestFirst.size();
+    while (undoRemaining + redoRemaining > maxEntries || total > maxBytes) {
+        // 残っている中で最も遠い世代は、Undo 側なら undoRemaining 番目、Redo 側なら
+        // redoRemaining 番目の距離にある。隣り合う 1 件 (残り 1 件) は捨てない。
+        const bool undoDroppable = undoRemaining > 1;
+        const bool redoDroppable = redoRemaining > 1;
+        if (!undoDroppable && !redoDroppable)
+            break;
+        if (undoDroppable && (!redoDroppable || undoRemaining >= redoRemaining)) {
+            total -= undoFarthestFirst[drop.undo];
+            ++drop.undo;
+            --undoRemaining;
+        } else {
+            total -= redoFarthestFirst[drop.redo];
+            ++drop.redo;
+            --redoRemaining;
+        }
+    }
+    return drop;
+}
+
 const char* manimGenerationStateName(ManimGenerationState state) {
     switch (state) {
     case ManimGenerationState::NotGenerated:

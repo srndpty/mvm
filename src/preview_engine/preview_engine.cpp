@@ -17,16 +17,20 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <exception>
 #include <limits>
 #include <map>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -51,6 +55,13 @@ PreviewError makeError(PreviewErrorCategory category, PreviewOperation operation
     error.severity = severity;
     error.operation = operation;
     error.detail = std::move(detail);
+    return error;
+}
+
+PreviewError capacityError(PreviewOperation operation, std::string detail) {
+    auto error =
+        makeError(PreviewErrorCategory::UnsupportedCapability, operation, std::move(detail));
+    error.code = PreviewErrorCode::RegistrationCapacityExceeded;
     return error;
 }
 
@@ -588,6 +599,16 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         };
         finish(shutdownThread);
         finish(detachedTeardownThread);
+        // 通常は requestShutdown が準備を取り消して join 済み。経路を問わず thread を残さない。
+        for (auto& [id, preparation] : preparations) {
+            (void)id;
+            preparation->cancelled.store(true, std::memory_order_release);
+        }
+        preparationHold->wakeAll();
+        for (auto& [id, preparation] : preparations) {
+            (void)id;
+            finish(preparation->thread);
+        }
     }
 
     mutable std::mutex mutex;
@@ -775,6 +796,103 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
 
     std::uint64_t nextPublicSourceId = 1;
     PreviewFrameRate configuredFrameRate{60, 1};
+
+    // 再生中の audio source の位置。addSource と先読みの準備が、要求した時点と公開する時点で
+    // 同じ規則で求める。
+    struct AudioPlacement {
+        std::int64_t timelineSample = 0;
+        // 初期 seek 先の素材 sample (0 未満は 0)。
+        std::int64_t mediaSample = 0;
+        // audio sink がまだ無く、この source の区間がこれから始まる。sink は主入力を外し、
+        // mix 入力として offset 付きで鳴らす。
+        bool futureFirst = false;
+        std::int64_t activationFrame = -1;
+    };
+
+    // source の登録の途中の状態。addSource と先読みの準備が同じ段 (begin / run / publish) を通る。
+    //   begin   engine lock 内。検査し、worker を作り、再生位置から決まる値を確定する
+    //   run     engine lock 外。decoder の open と初期 seek を待つ (先読みでは準備用の thread)
+    //   publish engine lock 内。state を検査し直し、audio mix / sink へ繋いで公開する
+    struct SourceWork {
+        PreviewSourceDescriptor descriptor;
+        bool whilePlaying = false;
+        std::string path;
+        PreviewFrameRate configuredFrameRate{};
+        // begin で予約した public source ID。公開しなかったら releaseReservedIdLocked で戻す。
+        std::uint64_t reservedId = 0;
+        gpu::SourceId internalVideo{};
+        std::unique_ptr<gpu::SourceDecodeWorker> videoWorker;
+        long long videoFirstSourceFrame = 0;
+        long long videoFirstOutputFrame = 0;
+        audio::SourceId internalAudio{};
+        std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
+        AudioPlacement audioPlacement;
+        // run が decoder の open で失敗した (telemetry の decodeFailureCount へ数える)。
+        bool decodeFailed = false;
+    };
+
+    // 準備用の thread を試験から止める。止めている間に pause / seek などを起こし、古くなった
+    // 完了が公開されないことを決定論的に確かめる。取り消した準備は止めない。
+    struct PreparationHold {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool held = false;
+
+        void wakeAll() {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+            }
+            changed.notify_all();
+        }
+    };
+
+    struct SourcePreparation {
+        std::uint64_t id = 0;
+        // 要求した時点の transportGeneration。公開する時点と違えば古い。
+        std::uint64_t generation = 0;
+        SourceWork work;
+        std::thread thread;
+        std::atomic<bool> cancelled{false};
+        // 完了を待たれている。試験用の hold でも止めない (待つ側と hold を外す側が同じ
+        // control thread なので、止めると待ち続ける)。
+        std::atomic<bool> awaited{false};
+        std::atomic<bool> done{false};
+        // thread が書き、done を立てた後に control thread が読む。
+        std::optional<Result<void>> result;
+    };
+
+    std::map<std::uint64_t, std::shared_ptr<SourcePreparation>> preparations;
+    std::uint64_t nextPreparationId = 1;
+    // pause / seek / shutdown で進める。要求の後に transport が変わった準備を見分ける。
+    std::uint64_t transportGeneration = 0;
+    std::uint64_t staleSourcePreparationRejectCount = 0;
+    // 再生中に最初の audio を公開したときに、control thread で endpoint の open から再生開始まで
+    // に掛かった時間 (WASAPI は COM を初期化した thread で扱うので準備用の thread へ移せない)。
+    std::uint64_t playingAudioEndpointOpenCount = 0;
+    double maxPlayingAudioEndpointOpenMs = 0.0;
+    // 試験用: 次に要求する準備を、取り消しの効かない段でこの時間止める。
+    std::chrono::milliseconds nextPreparationBlockForTest{0};
+    // 試験用: 次に要求する準備の thread の作成を失敗させる。
+    bool failNextPreparationThreadForTest = false;
+    // 再生中の endpoint の open を試みた回数・失敗した回数・掛かった時間の最大 (成功・失敗とも)。
+    std::uint64_t playingAudioEndpointOpenAttemptCount = 0;
+    std::uint64_t playingAudioEndpointOpenFailureCount = 0;
+    std::uint64_t playingAudioTransportStartFailureCount = 0;
+    double maxPlayingAudioEndpointOpenAttemptMs = 0.0;
+    // 試験用: 次の再生中の endpoint の open を、この時間待ってから失敗させる。
+    std::optional<std::chrono::milliseconds> failNextPlayingEndpointOpenForTest;
+    // 試験用: 次の再生中の endpoint の open は成功させ、再生開始を失敗させる。
+    bool failNextPlayingTransportStartForTest = false;
+    std::shared_ptr<PreparationHold> preparationHold = std::make_shared<PreparationHold>();
+
+    Result<AudioPlacement> audioPlacementLocked(const PreviewSourceDescriptor& descriptor) const;
+    Result<void> beginSourceWorkLocked(const PreviewSourceDescriptor& descriptor, SourceWork& work);
+    Result<PreviewSourceId>
+    publishSourceWorkLocked(SourceWork& work, std::unique_lock<std::mutex>& lock, bool deferred);
+    void rollbackSourceWorkLocked(SourceWork& work);
+    Result<PreviewSourceId> finishPreparationLocked(SourcePreparation& preparation,
+                                                    std::unique_lock<std::mutex>& lock);
+    static Result<void> runSourceWork(SourceWork& work, const std::atomic<bool>* cancelled);
 
     // P5-D2 private audio backend。public headerへWASAPI/FFmpeg型を漏らさない。
     std::optional<core::CheckedOutputTimebase> timebase;
@@ -1831,296 +1949,410 @@ Result<void> PreviewEngine::detachEventSink() {
     return Result<void>::success();
 }
 
-Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& descriptor) {
-    std::unique_lock<std::mutex> lock(impl_->mutex);
-    Result<void> affinity = impl_->requireControlThread(PreviewOperation::AddSource);
-    if (!affinity) {
-        return Result<PreviewSourceId>::failure(affinity.error());
-    }
-    Result<void> valid = validatePreviewSourceDescriptor(descriptor);
-    if (!valid) {
-        return Result<PreviewSourceId>::failure(valid.error());
-    }
-    const bool addingWhilePlaying = impl_->machine.state() == PreviewEngineState::Playing;
-    if (impl_->machine.state() != PreviewEngineState::ReadyPaused && !addingWhilePlaying) {
-        return Result<PreviewSourceId>::failure(
-            makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
-                      "source registrationを受理できないstateです"));
-    }
-    if (!impl_->nativeDeviceAttached || !impl_->compositor || !impl_->renderDevice->valid()) {
-        return Result<PreviewSourceId>::failure(
-            makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
-                      "native render deviceの準備前にsourceを登録できません"));
-    }
-    // source-set切替中は旧sourceを新composition提示まで保持する。active compositionの
-    // 上限は引き続きcapabilityの値であり、登録slotだけを旧set + 新set + slip preview 1本まで許す。
-    if (descriptor.videoEnabled &&
-        impl_->videoSources.size() >= impl_->registeredVideoSourceLimit) {
-        return Result<PreviewSourceId>::failure(
-            makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                      "source-set切替用のvideo source登録上限を超えています"));
-    }
-    if (descriptor.audioEnabled) {
-        if (impl_->capability.configuredMaxActiveAudioSources == 0) {
-            return Result<PreviewSourceId>::failure(
-                makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                          "audio sourceは現在の構成では扱えません"));
-        }
-        const std::size_t registeredAudioCount =
-            (impl_->publicAudioSource ? 1U : 0U) + impl_->extraAudioSources.size();
-        if (registeredAudioCount >= impl_->capability.configuredMaxActiveAudioSources) {
-            return Result<PreviewSourceId>::failure(
-                makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                          "active audio sourceの登録上限を超えています"));
-        }
-    }
-    if (impl_->nextPublicSourceId == 0) {
-        return Result<PreviewSourceId>::failure(makeError(PreviewErrorCategory::InvalidSource,
-                                                          PreviewOperation::AddSource,
-                                                          "PreviewSourceIdがoverflowしました"));
-    }
+namespace {
 
-    const auto utf8Path = descriptor.mediaPath.u8string();
-    const std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
+// begin で予約した ID を、公開しなかったときに戻す。後に別の予約があれば戻さない (欠番になる)。
+void releaseReservedId(std::uint64_t& next, std::uint64_t reserved) {
+    if (reserved != 0 && next == reserved + 1)
+        next = reserved;
+}
 
-    // video registration。失敗時はsource tableとregistryを呼び出し前へ戻す。
-    gpu::SourceId internalVideo{};
-    std::unique_ptr<gpu::SourceDecodeWorker> newVideoWorker;
-    if (descriptor.videoEnabled) {
-        internalVideo = impl_->sourceRegistry.registerSource();
-        newVideoWorker = std::make_unique<gpu::SourceDecodeWorker>(
-            internalVideo, *impl_->renderDevice, impl_->readbacks, 6);
+PreviewError stalePreparationError(std::string detail) {
+    auto error = makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
+                           std::move(detail));
+    error.code = PreviewErrorCode::PreparationStale;
+    return error;
+}
+
+} // namespace
+
+// decoder の open と初期 seek。engine lock を持たずに呼ぶ。engine の状態には触れない
+// (先読みでは準備用の thread で走る)。cancelled が立てば段の間で止める。
+Result<void> PreviewEngine::Impl::runSourceWork(SourceWork& work,
+                                                const std::atomic<bool>* cancelled) {
+    const auto stopped = [cancelled] {
+        return cancelled && cancelled->load(std::memory_order_acquire);
+    };
+    const auto& descriptor = work.descriptor;
+    if (work.videoWorker) {
         std::string openError;
-        if (descriptor.videoTimelineMappingEnabled &&
-            !newVideoWorker->configureOutputMapping(
-                descriptor.videoSourceInFrame, descriptor.videoSourceFrameCount,
-                {descriptor.speedNum, descriptor.speedDen}, descriptor.videoTimelineStartFrame,
-                {static_cast<long long>(impl_->configuredFrameRate.numerator),
-                 static_cast<long long>(impl_->configuredFrameRate.denominator)},
-                descriptor.videoHoldOutputFrames, openError)) {
-            impl_->sourceRegistry.unregisterSource(internalVideo);
-            return Result<PreviewSourceId>::failure(makeError(
-                PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource, openError));
-        }
-        lock.unlock();
-        const bool videoStarted = newVideoWorker->start(path, openError);
-        lock.lock();
-        if (!videoStarted) {
-            newVideoWorker->stop();
-            impl_->sourceRegistry.unregisterSource(internalVideo);
-            ++impl_->telemetrySnapshot.decodeFailureCount;
-            return Result<PreviewSourceId>::failure(
+        if (stopped())
+            return Result<void>::failure(stalePreparationError("準備を取り消しました"));
+        if (!work.videoWorker->start(work.path, openError)) {
+            work.decodeFailed = true;
+            return Result<void>::failure(
                 makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::AddSource,
                           "D3D11VA video sourceをopenできません: " + openError));
         }
-        const gpu::SourceDecoderSnapshot opened = newVideoWorker->snapshot();
+        const gpu::SourceDecoderSnapshot opened = work.videoWorker->snapshot();
         Result<void> supportedRate = internal::validateSourceFrameRate(
-            opened.info.frameRate.num, opened.info.frameRate.den, impl_->configuredFrameRate);
-        if (!supportedRate) {
-            newVideoWorker->stop();
-            impl_->sourceRegistry.unregisterSource(internalVideo);
-            return Result<PreviewSourceId>::failure(supportedRate.error());
-        }
+            opened.info.frameRate.num, opened.info.frameRate.den, work.configuredFrameRate);
+        if (!supportedRate)
+            return supportedRate;
         if (descriptor.videoTimelineMappingEnabled) {
-            const Result<void> expectedRate = internal::validateExpectedSourceFrameRate(
+            Result<void> expectedRate = internal::validateExpectedSourceFrameRate(
                 opened.info.frameRate.num, opened.info.frameRate.den,
                 descriptor.expectedVideoSourceFrameRate);
-            if (!expectedRate) {
-                newVideoWorker->stop();
-                impl_->sourceRegistry.unregisterSource(internalVideo);
-                return Result<PreviewSourceId>::failure(expectedRate.error());
-            }
+            if (!expectedRate)
+                return expectedRate;
         }
-        if (addingWhilePlaying) {
+        if (work.whilePlaying) {
+            if (stopped())
+                return Result<void>::failure(stalePreparationError("準備を取り消しました"));
             double decodeReadyMs = 0.0;
-            const long long firstSourceFrame =
-                descriptor.videoTimelineMappingEnabled
-                    ? descriptor.videoSourceInFrame
-                    : impl_->telemetrySnapshot.status.position.outputFrame + 1;
-            const long long firstOutputFrame = descriptor.videoTimelineMappingEnabled
-                                                   ? descriptor.videoTimelineStartFrame
-                                                   : firstSourceFrame;
-            lock.unlock();
-            const bool videoReady = newVideoWorker->seekBlocking(firstSourceFrame, firstOutputFrame,
-                                                                 decodeReadyMs, openError);
-            lock.lock();
-            if (!videoReady) {
-                newVideoWorker->stop();
-                impl_->sourceRegistry.unregisterSource(internalVideo);
-                return Result<PreviewSourceId>::failure(
+            if (!work.videoWorker->seekBlocking(work.videoFirstSourceFrame,
+                                                work.videoFirstOutputFrame, decodeReadyMs,
+                                                openError)) {
+                return Result<void>::failure(
                     makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::AddSource,
                               "再生中のvideo source初期seekに失敗しました: " + openError));
             }
         }
     }
-
-    // audio registration。sinkはworkerのqueueとclockを参照するため、この順で組む。
-    std::shared_ptr<audio::AudioMasterClock> newAudioClock;
-    std::shared_ptr<audio::AudioDecodeWorker> newAudioWorker;
-    std::shared_ptr<audio::WasapiAudioSink> newAudioSink;
-    audio::SourceId internalAudio{};
-    std::int64_t newAudioStartSample = 0;
-    bool futureFirstAudio = false;
-    std::int64_t futureAudioActivationFrame = -1;
-    if (descriptor.audioEnabled) {
-        const auto rollbackVideo = [&] {
-            if (!newVideoWorker)
-                return;
-            newVideoWorker->stop();
-            impl_->sourceRegistry.unregisterSource(internalVideo);
-        };
-        internalAudio = audio::SourceId{impl_->nextPublicSourceId};
-        newAudioWorker = std::make_shared<audio::AudioDecodeWorker>(internalAudio);
-        newAudioWorker->queue().setGainAtSample(descriptor.audioGainAtMediaSample);
+    if (work.audioWorker) {
         std::string audioError;
-        lock.unlock();
-        const bool audioStarted =
-            newAudioWorker->setPlaybackSpeed(descriptor.speedNum, descriptor.speedDen,
-                                             descriptor.audioPreservePitch, audioError) &&
-            newAudioWorker->start(path, audioError);
-        lock.lock();
-        if (!audioStarted) {
-            newAudioWorker->stop();
-            rollbackVideo();
-            ++impl_->telemetrySnapshot.decodeFailureCount;
-            return Result<PreviewSourceId>::failure(
-                makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::AddSource,
-                          "audio sourceをopenできません: " + audioError));
+        if (stopped())
+            return Result<void>::failure(stalePreparationError("準備を取り消しました"));
+        if (!work.audioWorker->setPlaybackSpeed(descriptor.speedNum, descriptor.speedDen,
+                                                descriptor.audioPreservePitch, audioError) ||
+            !work.audioWorker->start(work.path, audioError)) {
+            work.decodeFailed = true;
+            return Result<void>::failure(makeError(PreviewErrorCategory::DecodeFailure,
+                                                   PreviewOperation::AddSource,
+                                                   "audio sourceをopenできません: " + audioError));
         }
-        if (addingWhilePlaying) {
-            const auto timelineSample = impl_->timebase->seekTargetSample(
-                impl_->telemetrySnapshot.status.position.outputFrame + 1);
-            std::int64_t mediaSample = 0;
-            if (!timelineSample || !core::checkedAdd(timelineSample.value(),
-                                                     descriptor.audioSampleOffset, mediaSample)) {
-                newAudioWorker->stop();
-                rollbackVideo();
-                return Result<PreviewSourceId>::failure(
-                    makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
-                              "再生中のaudio source位置を換算できません"));
-            }
-            if (!impl_->audioSink) {
-                futureAudioActivationFrame = descriptor.audioTimelineStartFrame;
-                if (futureAudioActivationFrame < 0 && mediaSample < 0) {
-                    std::int64_t firstTimelineSample = 0;
-                    if (!core::checkedSubtract(std::int64_t{0}, descriptor.audioSampleOffset,
-                                               firstTimelineSample)) {
-                        newAudioWorker->stop();
-                        rollbackVideo();
-                        return Result<PreviewSourceId>::failure(makeError(
-                            PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
-                            "audio sourceの開始sampleを表せません"));
-                    }
-                    const auto firstFrame =
-                        impl_->timebase->schedulerOutputFrame(firstTimelineSample);
-                    if (!firstFrame) {
-                        newAudioWorker->stop();
-                        rollbackVideo();
-                        return Result<PreviewSourceId>::failure(makeError(
-                            PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
-                            "audio sourceの開始frameを換算できません"));
-                    }
-                    futureAudioActivationFrame = firstFrame.value();
-                }
-                futureFirstAudio = futureAudioActivationFrame >
-                                   impl_->telemetrySnapshot.status.position.outputFrame + 1;
-            }
-            mediaSample = std::max<std::int64_t>(0, mediaSample);
-            newAudioStartSample = futureFirstAudio ? timelineSample.value() : mediaSample;
+        if (work.whilePlaying) {
+            const std::int64_t mediaSample = work.audioPlacement.mediaSample;
             audio::AudioSeekTicket ticket;
-            if (newAudioWorker->requestSeek(mediaSample, ticket, audioError) !=
+            if (work.audioWorker->requestSeek(mediaSample, ticket, audioError) !=
                 audio::AudioSeekRequestResult::Accepted) {
-                newAudioWorker->stop();
-                rollbackVideo();
-                return Result<PreviewSourceId>::failure(
+                return Result<void>::failure(
                     makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
                               "再生中のaudio source初期seekを受理できません: " + audioError));
             }
             audio::AudioSeekCompletion completion;
-            lock.unlock();
             const auto waitResult =
-                newAudioWorker->waitSeek(ticket, audio::kPrerollTimeoutMs, completion);
-            lock.lock();
+                work.audioWorker->waitSeek(ticket, audio::kPrerollTimeoutMs, completion);
             if (waitResult != audio::AudioSeekWaitResult::Ready || !completion.completed ||
                 completion.firstOutputSample != mediaSample) {
-                newAudioWorker->stop();
-                rollbackVideo();
-                return Result<PreviewSourceId>::failure(
+                return Result<void>::failure(
                     makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
                               "再生中のaudio source初期seekを完了できません"));
             }
-            newAudioWorker->play();
+            work.audioWorker->play();
         }
+    }
+    return Result<void>::success();
+}
+
+Result<PreviewEngine::Impl::AudioPlacement>
+PreviewEngine::Impl::audioPlacementLocked(const PreviewSourceDescriptor& descriptor) const {
+    AudioPlacement placement;
+    const std::int64_t position = telemetrySnapshot.status.position.outputFrame;
+    const auto unconvertible = [] {
+        return Result<AudioPlacement>::failure(
+            makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
+                      "再生中のaudio source位置を換算できません"));
+    };
+    if (!timebase)
+        return unconvertible();
+    const auto timelineSample = timebase->seekTargetSample(position + 1);
+    std::int64_t mediaSample = 0;
+    if (!timelineSample ||
+        !core::checkedAdd(timelineSample.value(), descriptor.audioSampleOffset, mediaSample))
+        return unconvertible();
+    placement.timelineSample = timelineSample.value();
+    if (!audioSink) {
+        placement.activationFrame = descriptor.audioTimelineStartFrame;
+        if (placement.activationFrame < 0 && mediaSample < 0) {
+            std::int64_t firstTimelineSample = 0;
+            if (!core::checkedSubtract(std::int64_t{0}, descriptor.audioSampleOffset,
+                                       firstTimelineSample)) {
+                return Result<AudioPlacement>::failure(
+                    makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
+                              "audio sourceの開始sampleを表せません"));
+            }
+            const auto firstFrame = timebase->schedulerOutputFrame(firstTimelineSample);
+            if (!firstFrame) {
+                return Result<AudioPlacement>::failure(
+                    makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
+                              "audio sourceの開始frameを換算できません"));
+            }
+            placement.activationFrame = firstFrame.value();
+        }
+        placement.futureFirst = placement.activationFrame > position + 1;
+    }
+    placement.mediaSample = std::max<std::int64_t>(0, mediaSample);
+    return Result<AudioPlacement>::success(placement);
+}
+
+Result<void> PreviewEngine::Impl::beginSourceWorkLocked(const PreviewSourceDescriptor& descriptor,
+                                                        SourceWork& work) {
+    Result<void> valid = validatePreviewSourceDescriptor(descriptor);
+    if (!valid)
+        return valid;
+    const bool addingWhilePlaying = machine.state() == PreviewEngineState::Playing;
+    if (machine.state() != PreviewEngineState::ReadyPaused && !addingWhilePlaying) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::InvalidState,
+                                               PreviewOperation::AddSource,
+                                               "source registrationを受理できないstateです"));
+    }
+    if (!nativeDeviceAttached || !compositor || !renderDevice->valid()) {
+        return Result<void>::failure(
+            makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
+                      "native render deviceの準備前にsourceを登録できません"));
+    }
+    // 準備中 (未公開) の source も登録枠を使う。公開した時点で枠を超えないように数える。
+    std::size_t pendingVideo = 0;
+    std::size_t pendingAudio = 0;
+    for (const auto& [id, preparation] : preparations) {
+        (void)id;
+        pendingVideo += preparation->work.descriptor.videoEnabled ? 1U : 0U;
+        pendingAudio += preparation->work.descriptor.audioEnabled ? 1U : 0U;
+    }
+    // source-set切替中は旧sourceを新composition提示まで保持する。active compositionの
+    // 上限は引き続きcapabilityの値であり、登録slotだけを旧set + 新set + slip preview 1本まで許す。
+    if (descriptor.videoEnabled &&
+        videoSources.size() + pendingVideo >= registeredVideoSourceLimit) {
+        return Result<void>::failure(capacityError(
+            PreviewOperation::AddSource, "source-set切替用のvideo source登録上限を超えています"));
+    }
+    if (descriptor.audioEnabled) {
+        if (capability.configuredMaxActiveAudioSources == 0) {
+            return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
+                                                   PreviewOperation::AddSource,
+                                                   "audio sourceは現在の構成では扱えません"));
+        }
+        const std::size_t registeredAudioCount =
+            (publicAudioSource ? 1U : 0U) + extraAudioSources.size() + pendingAudio;
+        if (registeredAudioCount >= capability.configuredMaxActiveAudioSources) {
+            return Result<void>::failure(capacityError(
+                PreviewOperation::AddSource, "active audio sourceの登録上限を超えています"));
+        }
+    }
+    if (nextPublicSourceId == 0) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::InvalidSource,
+                                               PreviewOperation::AddSource,
+                                               "PreviewSourceIdがoverflowしました"));
+    }
+
+    work.descriptor = descriptor;
+    work.whilePlaying = addingWhilePlaying;
+    const auto utf8Path = descriptor.mediaPath.u8string();
+    work.path.assign(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
+    work.configuredFrameRate = configuredFrameRate;
+    // 準備が並行しても audio worker の内部 ID が重ならないよう、公開する ID を先に予約する。
+    work.reservedId = nextPublicSourceId++;
+
+    if (descriptor.videoEnabled) {
+        work.internalVideo = sourceRegistry.registerSource();
+        work.videoWorker = std::make_unique<gpu::SourceDecodeWorker>(work.internalVideo,
+                                                                     *renderDevice, readbacks, 6);
+        std::string openError;
+        if (descriptor.videoTimelineMappingEnabled &&
+            !work.videoWorker->configureOutputMapping(
+                descriptor.videoSourceInFrame, descriptor.videoSourceFrameCount,
+                {descriptor.speedNum, descriptor.speedDen}, descriptor.videoTimelineStartFrame,
+                {static_cast<long long>(configuredFrameRate.numerator),
+                 static_cast<long long>(configuredFrameRate.denominator)},
+                descriptor.videoHoldOutputFrames, openError)) {
+            rollbackSourceWorkLocked(work);
+            return Result<void>::failure(makeError(PreviewErrorCategory::InvalidSource,
+                                                   PreviewOperation::AddSource, openError));
+        }
+        if (addingWhilePlaying) {
+            work.videoFirstSourceFrame = descriptor.videoTimelineMappingEnabled
+                                             ? descriptor.videoSourceInFrame
+                                             : telemetrySnapshot.status.position.outputFrame + 1;
+            work.videoFirstOutputFrame = descriptor.videoTimelineMappingEnabled
+                                             ? descriptor.videoTimelineStartFrame
+                                             : work.videoFirstSourceFrame;
+        }
+    }
+    if (descriptor.audioEnabled) {
+        work.internalAudio = audio::SourceId{work.reservedId};
+        work.audioWorker = std::make_shared<audio::AudioDecodeWorker>(work.internalAudio);
+        work.audioWorker->queue().setGainAtSample(descriptor.audioGainAtMediaSample);
+        if (addingWhilePlaying) {
+            auto placement = audioPlacementLocked(descriptor);
+            if (!placement) {
+                rollbackSourceWorkLocked(work);
+                return Result<void>::failure(placement.error());
+            }
+            work.audioPlacement = placement.value();
+        }
+    }
+    return Result<void>::success();
+}
+
+void PreviewEngine::Impl::rollbackSourceWorkLocked(SourceWork& work) {
+    if (work.audioWorker) {
+        work.audioWorker->stop();
+        work.audioWorker.reset();
+    }
+    if (work.videoWorker) {
+        work.videoWorker->stop();
+        work.videoWorker.reset();
+    }
+    if (work.internalVideo.value) {
+        sourceRegistry.unregisterSource(work.internalVideo);
+        work.internalVideo = {};
+    }
+    if (work.decodeFailed)
+        ++telemetrySnapshot.decodeFailureCount;
+    work.decodeFailed = false;
+    releaseReservedId(nextPublicSourceId, work.reservedId);
+    work.reservedId = 0;
+}
+
+Result<PreviewSourceId>
+PreviewEngine::Impl::publishSourceWorkLocked(SourceWork& work, std::unique_lock<std::mutex>& lock,
+                                             bool deferred) {
+    const auto& descriptor = work.descriptor;
+    const bool addingWhilePlaying = work.whilePlaying;
+    AudioPlacement placement = work.audioPlacement;
+    if (deferred && descriptor.audioEnabled) {
+        // 準備している間に再生位置が進んだ。sink を作るか (主入力)、mix へ足すかは公開する
+        // 時点で決め直す。主入力は sample の連続を要求するので、区間が既に始まっていたら
+        // 要求した時点の seek 先では鳴らせない。
+        auto current = audioPlacementLocked(descriptor);
+        if (!current) {
+            rollbackSourceWorkLocked(work);
+            return Result<PreviewSourceId>::failure(current.error());
+        }
+        placement.timelineSample = current.value().timelineSample;
+        placement.futureFirst = current.value().futureFirst;
+        placement.activationFrame = current.value().activationFrame;
+        if (!audioSink && !placement.futureFirst) {
+            rollbackSourceWorkLocked(work);
+            ++staleSourcePreparationRejectCount;
+            return Result<PreviewSourceId>::failure(
+                stalePreparationError("先読みした主audioの区間が準備の間に始まりました"));
+        }
+    }
+    const bool futureFirstAudio = placement.futureFirst;
+    const std::int64_t newAudioStartSample =
+        futureFirstAudio ? placement.timelineSample : placement.mediaSample;
+
+    std::shared_ptr<audio::AudioMasterClock> newAudioClock;
+    std::shared_ptr<audio::WasapiAudioSink> newAudioSink;
+    const auto rollback = [&] {
+        if (newAudioSink)
+            newAudioSink->stop();
+        rollbackSourceWorkLocked(work);
+    };
+    if (descriptor.audioEnabled) {
         // ここはengine configの検査である。sample rateはtimebaseが保持する実際の値、
         // channelはcapabilityが公開している実際の値を使う。decode出力そのものの
         // domainは、実データが出そろうplay()側で観測値を使って検査する。
-        const std::int64_t configuredSampleRate =
-            impl_->timebase ? impl_->timebase->audioSampleRate() : 0;
+        const std::int64_t configuredSampleRate = timebase ? timebase->audioSampleRate() : 0;
         Result<void> domain = internal::validateQualifiedAudioDomain(
             static_cast<int>(configuredSampleRate),
-            static_cast<int>(impl_->capability.configuredAudioChannelCount), "flt");
+            static_cast<int>(capability.configuredAudioChannelCount), "flt");
         if (!domain) {
-            newAudioWorker->stop();
-            rollbackVideo();
+            rollback();
             return Result<PreviewSourceId>::failure(domain.error());
         }
-        if (!impl_->audioSink) {
+        if (!audioSink) {
+            // WASAPI endpoint は COM を初期化した thread で open / 解放する必要があるので、
+            // 先読みでも control thread のここで open する。
+            std::string audioError;
+            const auto endpointBegan = std::chrono::steady_clock::now();
+
+            // 再生中の open は、成功・失敗にかかわらず control thread を止めた時間を記録する
+            // (失敗した open が遅い機器を見落とさない)。抜けるときは必ず engine lock を持つ。
+            struct EndpointAttempt {
+                Impl& impl;
+                bool playing;
+                std::chrono::steady_clock::time_point began;
+                // endpoint の open が成功した。その後の mix への接続・再生開始の失敗は open の
+                // 失敗と分けて数える (open 自体が遅い・失敗する機器の診断と混ぜない)。
+                bool opened = false;
+                bool succeeded = false;
+
+                ~EndpointAttempt() {
+                    if (!playing)
+                        return;
+                    ++impl.playingAudioEndpointOpenAttemptCount;
+                    if (!opened)
+                        ++impl.playingAudioEndpointOpenFailureCount;
+                    else if (!succeeded)
+                        ++impl.playingAudioTransportStartFailureCount;
+                    impl.maxPlayingAudioEndpointOpenAttemptMs =
+                        std::max(impl.maxPlayingAudioEndpointOpenAttemptMs,
+                                 std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - began)
+                                     .count());
+                }
+            } attempt{*this, addingWhilePlaying, endpointBegan};
+
             newAudioClock = std::make_shared<audio::AudioMasterClock>();
             newAudioSink =
-                std::make_shared<audio::WasapiAudioSink>(newAudioWorker->queue(), *newAudioClock);
+                std::make_shared<audio::WasapiAudioSink>(work.audioWorker->queue(), *newAudioClock);
+            const auto injectedFailure =
+                addingWhilePlaying ? std::exchange(failNextPlayingEndpointOpenForTest, std::nullopt)
+                                   : std::nullopt;
+            const bool injectedStartFailure =
+                addingWhilePlaying && std::exchange(failNextPlayingTransportStartForTest, false);
             lock.unlock();
-            const bool endpointOpened = newAudioSink->open(audioError, impl_->audioSessionVolume);
+            bool endpointOpened = false;
+            if (injectedFailure) {
+                std::this_thread::sleep_for(*injectedFailure);
+                audioError = "試験で open を失敗させました";
+            } else {
+                endpointOpened = newAudioSink->open(audioError, audioSessionVolume);
+            }
             lock.lock();
             if (!endpointOpened) {
-                newAudioSink->stop();
-                newAudioWorker->stop();
-                rollbackVideo();
-                ++impl_->audioTransportFailureCount;
+                rollback();
+                ++audioTransportFailureCount;
                 return Result<PreviewSourceId>::failure(makeError(
                     PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
                     "WASAPI shared event-driven endpointをopenできません: " + audioError));
             }
+            attempt.opened = true;
             if (addingWhilePlaying) {
                 if (futureFirstAudio) {
-                    if (!newAudioSink->detachPrimaryInput(newAudioWorker->queue(), audioError) ||
+                    if (!newAudioSink->detachPrimaryInput(work.audioWorker->queue(), audioError) ||
                         !newAudioSink->addMixInput(
-                            newAudioWorker->queue(), descriptor.audioSampleOffset,
-                            newAudioWorker->snapshot().sourceGeneration, audioError)) {
-                        newAudioSink->stop();
-                        newAudioWorker->stop();
-                        rollbackVideo();
+                            work.audioWorker->queue(), descriptor.audioSampleOffset,
+                            work.audioWorker->snapshot().sourceGeneration, audioError)) {
+                        rollback();
                         return Result<PreviewSourceId>::failure(makeError(
                             PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
                             "先読みaudio inputを登録できません: " + audioError));
                     }
                 }
                 lock.unlock();
-                const bool endpointPlaying = newAudioSink->play(
-                    newAudioStartSample, newAudioWorker->snapshot().sourceGeneration, audioError);
+                bool endpointPlaying = false;
+                if (injectedStartFailure)
+                    audioError = "試験で再生開始を失敗させました";
+                else
+                    endpointPlaying = newAudioSink->play(
+                        newAudioStartSample, work.audioWorker->snapshot().sourceGeneration,
+                        audioError);
                 lock.lock();
                 if (!endpointPlaying) {
-                    newAudioSink->stop();
-                    newAudioWorker->stop();
-                    rollbackVideo();
+                    rollback();
                     return Result<PreviewSourceId>::failure(
                         makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
                                   "再生中のaudio transportを開始できません: " + audioError));
                 }
+                attempt.succeeded = true;
+                ++playingAudioEndpointOpenCount;
+                maxPlayingAudioEndpointOpenMs =
+                    std::max(maxPlayingAudioEndpointOpenMs,
+                             std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - endpointBegan)
+                                 .count());
             }
         }
     }
 
-    if (impl_->machine.state() !=
+    if (machine.state() !=
             (addingWhilePlaying ? PreviewEngineState::Playing : PreviewEngineState::ReadyPaused) ||
-        !impl_->nativeDeviceAttached) {
-        if (newAudioSink)
-            newAudioSink->stop();
-        if (newAudioWorker)
-            newAudioWorker->stop();
-        if (newVideoWorker) {
-            newVideoWorker->stop();
-            impl_->sourceRegistry.unregisterSource(internalVideo);
-        }
+        !nativeDeviceAttached) {
+        rollback();
         return Result<PreviewSourceId>::failure(
             makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
                       "sourceの準備中にengine stateが変わりました"));
@@ -2128,75 +2360,237 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
 
     // 複合 source はaudio mixへの登録まで成功してから公開する。先にvideo tableへ
     // 入れると、offset換算失敗時にvideoだけ残ってしまう。
-    const auto rollbackUnpublished = [&] {
-        if (newAudioWorker)
-            newAudioWorker->stop();
-        if (newVideoWorker) {
-            newVideoWorker->stop();
-            impl_->sourceRegistry.unregisterSource(internalVideo);
-        }
-    };
-    if (descriptor.audioEnabled && impl_->audioSink) {
+    if (descriptor.audioEnabled && audioSink) {
         std::int64_t delta = 0;
-        if (!core::checkedSubtract(descriptor.audioSampleOffset, impl_->audioSampleOffset, delta)) {
-            rollbackUnpublished();
+        if (!core::checkedSubtract(descriptor.audioSampleOffset, audioSampleOffset, delta)) {
+            rollback();
             return Result<PreviewSourceId>::failure(
                 makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
                           "audio mix offsetの差がint64範囲を超えています"));
         }
         std::string mixError;
-        if (!impl_->audioSink->addMixInput(newAudioWorker->queue(), delta,
-                                           newAudioWorker->snapshot().sourceGeneration, mixError)) {
-            rollbackUnpublished();
+        if (!audioSink->addMixInput(work.audioWorker->queue(), delta,
+                                    work.audioWorker->snapshot().sourceGeneration, mixError)) {
+            rollback();
             return Result<PreviewSourceId>::failure(
                 makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
                           "audio mix inputを登録できません: " + mixError));
         }
     }
 
-    const PreviewSourceId published{impl_->nextPublicSourceId++};
+    const PreviewSourceId published{work.reservedId};
+    work.reservedId = 0;
     if (descriptor.videoEnabled) {
-        impl_->videoSources.emplace(published.value, PreviewEngine::Impl::VideoSourceEntry{
-                                                         internalVideo, std::move(newVideoWorker)});
+        videoSources.emplace(published.value,
+                             VideoSourceEntry{work.internalVideo, std::move(work.videoWorker)});
+        work.internalVideo = {};
         if (addingWhilePlaying)
-            impl_->videoSources.at(published.value).worker->play();
-        impl_->workerJoined = false;
-        impl_->deviceReleased = false;
-        impl_->telemetrySnapshot.currentSourceQueueDepth = 0;
+            videoSources.at(published.value).worker->play();
+        workerJoined = false;
+        deviceReleased = false;
+        telemetrySnapshot.currentSourceQueueDepth = 0;
     }
-    if (descriptor.audioEnabled && !impl_->audioSink) {
-        impl_->internalAudioSource = internalAudio;
-        impl_->publicAudioSource = published;
-        impl_->audioClock = std::move(newAudioClock);
-        impl_->audioWorker = std::move(newAudioWorker);
-        impl_->audioSink = std::move(newAudioSink);
-        impl_->audioSinkJoined = false;
-        impl_->audioWorkerJoined = false;
-        impl_->resumeAudioSample = 0;
-        impl_->audioSampleOffset = futureFirstAudio ? 0 : descriptor.audioSampleOffset;
-        impl_->primaryAudioSampleOffset = descriptor.audioSampleOffset;
-        impl_->primaryAudioAsMix = futureFirstAudio;
+    if (descriptor.audioEnabled && !audioSink) {
+        internalAudioSource = work.internalAudio;
+        publicAudioSource = published;
+        audioClock = std::move(newAudioClock);
+        audioWorker = std::move(work.audioWorker);
+        audioSink = std::move(newAudioSink);
+        audioSinkJoined = false;
+        audioWorkerJoined = false;
+        resumeAudioSample = 0;
+        audioSampleOffset = futureFirstAudio ? 0 : descriptor.audioSampleOffset;
+        primaryAudioSampleOffset = descriptor.audioSampleOffset;
+        primaryAudioAsMix = futureFirstAudio;
         if (futureFirstAudio) {
-            impl_->primaryAudioActivationFrame = futureAudioActivationFrame;
-            impl_->pendingAudioActivationFrame = futureAudioActivationFrame;
+            primaryAudioActivationFrame = placement.activationFrame;
+            pendingAudioActivationFrame = placement.activationFrame;
         }
         if (addingWhilePlaying)
-            impl_->audioMasterActive = !futureFirstAudio;
-        const audio::WasapiSnapshot endpoint = impl_->audioSink->snapshot();
-        impl_->deviceSnapshot.audioSampleRate =
+            audioMasterActive = !futureFirstAudio;
+        const audio::WasapiSnapshot endpoint = audioSink->snapshot();
+        deviceSnapshot.audioSampleRate =
             static_cast<std::uint32_t>(endpoint.deviceFormat.sampleRate);
-        impl_->deviceSnapshot.audioChannelCount =
+        deviceSnapshot.audioChannelCount =
             static_cast<std::uint32_t>(endpoint.deviceFormat.channels);
     } else if (descriptor.audioEnabled) {
-        impl_->extraAudioSources.emplace(
-            published.value,
-            PreviewEngine::Impl::ExtraAudioSourceEntry{internalAudio, std::move(newAudioWorker),
-                                                       descriptor.audioSampleOffset});
+        extraAudioSources.emplace(
+            published.value, ExtraAudioSourceEntry{work.internalAudio, std::move(work.audioWorker),
+                                                   descriptor.audioSampleOffset});
     }
-    impl_->eligibleSources.emplace(
-        published.value,
-        internal::EligibleSource{descriptor.videoEnabled, descriptor.audioEnabled});
+    eligibleSources.emplace(published.value, internal::EligibleSource{descriptor.videoEnabled,
+                                                                      descriptor.audioEnabled});
     return Result<PreviewSourceId>::success(published);
+}
+
+Result<PreviewSourceId>
+PreviewEngine::Impl::finishPreparationLocked(SourcePreparation& preparation,
+                                             std::unique_lock<std::mutex>& lock) {
+    // 取り消した準備、要求の後に transport が変わった準備は公開しない。open / seek が失敗して
+    // いても古さを理由にする (呼び出し側はもう使わないので、失敗として数えさせない)。
+    if (preparation.cancelled.load(std::memory_order_acquire) ||
+        preparation.generation != transportGeneration ||
+        machine.state() != PreviewEngineState::Playing) {
+        rollbackSourceWorkLocked(preparation.work);
+        ++staleSourcePreparationRejectCount;
+        return Result<PreviewSourceId>::failure(
+            stalePreparationError(preparation.cancelled.load(std::memory_order_acquire)
+                                      ? "準備を取り消しました"
+                                      : "準備の間にpause / seek / shutdownがありました"));
+    }
+    if (!preparation.result || !*preparation.result) {
+        rollbackSourceWorkLocked(preparation.work);
+        return Result<PreviewSourceId>::failure(
+            preparation.result ? preparation.result->error()
+                               : makeError(PreviewErrorCategory::InvalidState,
+                                           PreviewOperation::AddSource, "準備が完了していません"));
+    }
+    return publishSourceWorkLocked(preparation.work, lock, true);
+}
+
+Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& descriptor) {
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    Result<void> affinity = impl_->requireControlThread(PreviewOperation::AddSource);
+    if (!affinity) {
+        return Result<PreviewSourceId>::failure(affinity.error());
+    }
+    Impl::SourceWork work;
+    Result<void> begun = impl_->beginSourceWorkLocked(descriptor, work);
+    if (!begun)
+        return Result<PreviewSourceId>::failure(begun.error());
+    lock.unlock();
+    Result<void> ran = Impl::runSourceWork(work, nullptr);
+    lock.lock();
+    if (!ran) {
+        impl_->rollbackSourceWorkLocked(work);
+        return Result<PreviewSourceId>::failure(ran.error());
+    }
+    return impl_->publishSourceWorkLocked(work, lock, false);
+}
+
+Result<PreviewPreparationId>
+PreviewEngine::requestSourcePreparation(const PreviewSourceDescriptor& descriptor) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    Result<void> affinity = impl_->requireControlThread(PreviewOperation::AddSource);
+    if (!affinity)
+        return Result<PreviewPreparationId>::failure(affinity.error());
+    if (impl_->machine.state() != PreviewEngineState::Playing) {
+        return Result<PreviewPreparationId>::failure(
+            makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
+                      "先読みの準備は再生中だけ受理します"));
+    }
+    auto preparation = std::make_shared<Impl::SourcePreparation>();
+    Result<void> begun = impl_->beginSourceWorkLocked(descriptor, preparation->work);
+    if (!begun)
+        return Result<PreviewPreparationId>::failure(begun.error());
+    // 主入力の audio (sink がまだ無い) は sample の連続を要求する。区間が既に始まっている
+    // ものを先読みすると、公開した時点では要求した時点の seek 先が古くなっている。
+    if (descriptor.audioEnabled && !impl_->audioSink &&
+        !preparation->work.audioPlacement.futureFirst) {
+        impl_->rollbackSourceWorkLocked(preparation->work);
+        return Result<PreviewPreparationId>::failure(
+            makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
+                      "再生中に始まっている主audioは先読みで準備できません"));
+    }
+    preparation->generation = impl_->transportGeneration;
+    const auto hold = impl_->preparationHold;
+    const auto blockedFor = std::exchange(impl_->nextPreparationBlockForTest, {});
+    // thread を作れない (OS の thread の上限・メモリ不足) ときは、予約した public ID と
+    // video source を返して失敗として閉じる。例外を再生の tick へ通さない。
+    try {
+        if (std::exchange(impl_->failNextPreparationThreadForTest, false))
+            throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again),
+                                    "試験で thread の作成を失敗させました");
+        preparation->thread = std::thread([preparation, hold, blockedFor] {
+            {
+                std::unique_lock<std::mutex> holdLock(hold->mutex);
+                hold->changed.wait(holdLock, [&] {
+                    return !hold->held || preparation->cancelled.load(std::memory_order_acquire) ||
+                           preparation->awaited.load(std::memory_order_acquire);
+                });
+            }
+            // 試験用: decoder の seek の途中のように、取り消しも待ちも効かない段で止まる。
+            if (blockedFor.count() > 0)
+                std::this_thread::sleep_for(blockedFor);
+            preparation->result = Impl::runSourceWork(preparation->work, &preparation->cancelled);
+            preparation->done.store(true, std::memory_order_release);
+        });
+    } catch (const std::exception& error) {
+        // std::system_error (thread の上限) と std::bad_alloc (thread の状態を確保できない)。
+        impl_->rollbackSourceWorkLocked(preparation->work);
+        return Result<PreviewPreparationId>::failure(
+            makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::AddSource,
+                      std::string("先読みの準備の thread を作れません: ") + error.what()));
+    }
+    preparation->id = impl_->nextPreparationId++;
+    impl_->preparations.emplace(preparation->id, preparation);
+    return Result<PreviewPreparationId>::success(PreviewPreparationId{preparation->id});
+}
+
+std::vector<PreviewPreparationOutcome> PreviewEngine::takeCompletedSourcePreparations() {
+    std::vector<std::shared_ptr<Impl::SourcePreparation>> completed;
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    if (!impl_->requireControlThread(PreviewOperation::AddSource))
+        return {};
+    for (auto entry = impl_->preparations.begin(); entry != impl_->preparations.end();) {
+        if (entry->second->done.load(std::memory_order_acquire)) {
+            completed.push_back(entry->second);
+            entry = impl_->preparations.erase(entry);
+        } else {
+            ++entry;
+        }
+    }
+    if (completed.empty())
+        return {};
+    lock.unlock();
+    for (const auto& preparation : completed)
+        preparation->thread.join();
+    lock.lock();
+    std::vector<PreviewPreparationOutcome> outcomes;
+    outcomes.reserve(completed.size());
+    for (const auto& preparation : completed)
+        outcomes.push_back({PreviewPreparationId{preparation->id},
+                            impl_->finishPreparationLocked(*preparation, lock)});
+    return outcomes;
+}
+
+Result<PreviewSourceId> PreviewEngine::waitSourcePreparation(PreviewPreparationId preparationId) {
+    std::shared_ptr<Impl::SourcePreparation> preparation;
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    Result<void> affinity = impl_->requireControlThread(PreviewOperation::AddSource);
+    if (!affinity)
+        return Result<PreviewSourceId>::failure(affinity.error());
+    const auto found = impl_->preparations.find(preparationId.value);
+    if (found == impl_->preparations.end()) {
+        return Result<PreviewSourceId>::failure(makeError(
+            PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource, "未登録の準備です"));
+    }
+    preparation = found->second;
+    impl_->preparations.erase(found);
+    lock.unlock();
+    preparation->awaited.store(true, std::memory_order_release);
+    impl_->preparationHold->wakeAll();
+    preparation->thread.join();
+    lock.lock();
+    return impl_->finishPreparationLocked(*preparation, lock);
+}
+
+Result<void> PreviewEngine::cancelSourcePreparation(PreviewPreparationId preparationId) {
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        Result<void> affinity = impl_->requireControlThread(PreviewOperation::AddSource);
+        if (!affinity)
+            return affinity;
+        const auto found = impl_->preparations.find(preparationId.value);
+        if (found == impl_->preparations.end()) {
+            return Result<void>::failure(makeError(PreviewErrorCategory::InvalidSource,
+                                                   PreviewOperation::AddSource,
+                                                   "未登録の準備です"));
+        }
+        found->second->cancelled.store(true, std::memory_order_release);
+    }
+    impl_->preparationHold->wakeAll();
+    return Result<void>::success();
 }
 
 Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
@@ -2550,6 +2944,8 @@ Result<void> PreviewEngine::pause() {
             return affinity;
         if (impl_->machine.state() != PreviewEngineState::Playing)
             return invalidState(PreviewOperation::Pause, "pauseを受理できないstateです");
+        // 再生中に要求した先読みの準備は、この後に完了しても公開しない。
+        ++impl_->transportGeneration;
         // 提示だけ先に止める。audio clockを止める前にschedulerを黙らせないと、
         // render threadがclock停止をprojection失敗として誤検出する。
         // ただしtransport stateはまだcommitしない (sink停止を確認するまでPlayingのまま)。
@@ -2732,6 +3128,8 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
             extraAudioTargets.push_back({publicId, entry.worker, extraSample});
         }
 
+        // seek より前の位置で要求した先読みの準備は、この後に完了しても公開しない。
+        ++impl_->transportGeneration;
         // transportを止めてからrequestする。動作中のschedulerとseekを競合させない。
         impl_->schedulerEnabled = false;
         impl_->audioMasterActive = false;
@@ -2910,6 +3308,32 @@ PreviewDeviceInfo PreviewEngine::deviceInfo() const {
 }
 
 Result<void> PreviewEngine::requestShutdown() {
+    // 先読みの準備用の thread は render device を使う。teardown が device を手放す前に、
+    // 取り消して join し、作りかけの worker を止める。
+    {
+        std::vector<std::shared_ptr<Impl::SourcePreparation>> pending;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            Result<void> affinity = impl_->requireControlThread(PreviewOperation::Shutdown);
+            if (!affinity)
+                return affinity;
+            ++impl_->transportGeneration;
+            for (auto& [id, preparation] : impl_->preparations) {
+                (void)id;
+                preparation->cancelled.store(true, std::memory_order_release);
+                pending.push_back(preparation);
+            }
+            impl_->preparations.clear();
+        }
+        impl_->preparationHold->wakeAll();
+        for (const auto& preparation : pending)
+            preparation->thread.join();
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        for (const auto& preparation : pending) {
+            impl_->rollbackSourceWorkLocked(preparation->work);
+            ++impl_->staleSourcePreparationRejectCount;
+        }
+    }
     std::shared_ptr<PreviewEventDispatcher> pendingDispatch;
     PreviewEngineState before;
     PreviewEngineState after;
@@ -4185,6 +4609,19 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.deviceReleased = engine.impl_->deviceReleased;
     result.unsafeGpuResourcesRetained = engine.impl_->unsafeGpuResourcesRetained;
     result.registeredVideoSourceCount = engine.impl_->sourceRegistry.registeredSourceCount();
+    result.pendingSourcePreparationCount = engine.impl_->preparations.size();
+    result.staleSourcePreparationRejectCount = engine.impl_->staleSourcePreparationRejectCount;
+    result.playingAudioEndpointOpenCount = engine.impl_->playingAudioEndpointOpenCount;
+    result.maxPlayingAudioEndpointOpenMs = engine.impl_->maxPlayingAudioEndpointOpenMs;
+    result.playingAudioEndpointOpenAttemptCount =
+        engine.impl_->playingAudioEndpointOpenAttemptCount;
+    result.playingAudioEndpointOpenFailureCount =
+        engine.impl_->playingAudioEndpointOpenFailureCount;
+    result.playingAudioTransportStartFailureCount =
+        engine.impl_->playingAudioTransportStartFailureCount;
+    result.maxPlayingAudioEndpointOpenAttemptMs =
+        engine.impl_->maxPlayingAudioEndpointOpenAttemptMs;
+    result.publishedSourceCount = engine.impl_->eligibleSources.size();
     const std::size_t first =
         (engine.impl_->presentedOutputFrameNext + engine.impl_->presentedOutputFrames.size() -
          engine.impl_->presentedOutputFrameCount) %
@@ -4490,6 +4927,47 @@ Result<void> PreviewRenderPort::setRegisteredVideoSourceLimitForTest(PreviewEngi
         return invalidState(PreviewOperation::AddSource,
                             "登録上限はReadyPausedで既存source数以上に設定してください");
     engine.impl_->registeredVideoSourceLimit = limit;
+    return Result<void>::success();
+}
+
+void PreviewRenderPort::failNextPlayingAudioTransportStartForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    engine.impl_->failNextPlayingTransportStartForTest = true;
+}
+
+void PreviewRenderPort::failNextPlayingAudioEndpointOpenForTest(PreviewEngine& engine,
+                                                                int delayMilliseconds) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    engine.impl_->failNextPlayingEndpointOpenForTest = std::chrono::milliseconds(delayMilliseconds);
+}
+
+void PreviewRenderPort::failNextSourcePreparationThreadForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    engine.impl_->failNextPreparationThreadForTest = true;
+}
+
+void PreviewRenderPort::blockNextSourcePreparationForTest(PreviewEngine& engine, int milliseconds) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    engine.impl_->nextPreparationBlockForTest = std::chrono::milliseconds(milliseconds);
+}
+
+void PreviewRenderPort::holdSourcePreparationsForTest(PreviewEngine& engine, bool held) {
+    const auto hold = engine.impl_->preparationHold;
+    {
+        std::lock_guard<std::mutex> lock(hold->mutex);
+        hold->held = held;
+    }
+    hold->changed.notify_all();
+}
+
+Result<void> PreviewRenderPort::disableAudioSourcesForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (engine.impl_->machine.state() != PreviewEngineState::ReadyPaused ||
+        engine.impl_->publicAudioSource || !engine.impl_->extraAudioSources.empty())
+        return invalidState(
+            PreviewOperation::AddSource,
+            "audio sourceの無効化はReadyPausedかつaudio source未登録時に行ってください");
+    engine.impl_->capability.configuredMaxActiveAudioSources = 0;
     return Result<void>::success();
 }
 

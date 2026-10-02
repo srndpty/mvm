@@ -2,7 +2,6 @@
 
 #include "util/mvm_file_identity.h"
 
-#include <cwctype>
 #include <system_error>
 
 namespace mvm::project {
@@ -12,10 +11,7 @@ std::wstring canonicalPathKey(const std::filesystem::path& path) {
     const auto absolute = std::filesystem::absolute(path, error).lexically_normal();
     if (error)
         return {};
-    auto text = absolute.generic_wstring();
-    for (auto& character : text)
-        character = static_cast<wchar_t>(std::towlower(character));
-    return text;
+    return absolute.generic_wstring();
 }
 
 FileIdentityKey fileIdentityKey(const std::filesystem::path& path) {
@@ -47,13 +43,15 @@ FileIdentityKey fileIdentityKey(const std::filesystem::path& path) {
 PathSameness comparePathIdentity(const FileIdentityKey& left, const FileIdentityKey& right) {
     if (left.pathKey.empty() || right.pathKey.empty())
         return PathSameness::Unknown;
+    // 実体が取れているなら表記より実体で決める。表記の一致だけで Same にすると、
+    // 実体の違いを見落とす経路が残る。
+    if (left.status == FileIdentityStatus::FileId && right.status == FileIdentityStatus::FileId)
+        return left.fileKey == right.fileKey ? PathSameness::Same : PathSameness::Different;
     if (left.pathKey == right.pathKey)
         return PathSameness::Same;
     if (left.status == FileIdentityStatus::Unavailable ||
         right.status == FileIdentityStatus::Unavailable)
         return PathSameness::Unknown;
-    if (left.status == FileIdentityStatus::FileId && right.status == FileIdentityStatus::FileId)
-        return left.fileKey == right.fileKey ? PathSameness::Same : PathSameness::Different;
     // 少なくとも片方は何も指していない。表記も違うので同じ実体ではない。
     return PathSameness::Different;
 }
@@ -61,6 +59,12 @@ PathSameness comparePathIdentity(const FileIdentityKey& left, const FileIdentity
 PathSameness comparePathIdentity(const std::filesystem::path& left,
                                  const std::filesystem::path& right) {
     return comparePathIdentity(fileIdentityKey(left), fileIdentityKey(right));
+}
+
+bool mayAdoptLegacyCaseSpelling(const FileIdentityKey& clip, const FileIdentityKey& item) {
+    if (clip.status == FileIdentityStatus::FileId && item.status == FileIdentityStatus::FileId)
+        return clip.fileKey == item.fileKey;
+    return clip.status == FileIdentityStatus::Missing && item.status == FileIdentityStatus::Missing;
 }
 
 } // namespace mvm::project

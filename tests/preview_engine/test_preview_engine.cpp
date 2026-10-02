@@ -1395,6 +1395,11 @@ void p5dAudioDomainAndCapabilities() {
     requireFailure(validateQualifiedAudioDomain(0, 0, ""),
                    PreviewErrorCategory::UnsupportedCapability,
                    "未確定のaudio domainを受理しました");
+    // 同じ UnsupportedCapability でも恒久的な非対応であり、登録枠の不足ではない。
+    // controller はこの code だけで engine の作り直しを決める。
+    require(validateQualifiedAudioDomain(44100, 2, "flt").error().code ==
+                PreviewErrorCode::Unspecified,
+            "audio domainの非対応を登録枠の不足として分類しました");
 
     // audio統合後もcapabilityは実体を報告する。
     PreviewEngine engine;

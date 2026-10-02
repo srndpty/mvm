@@ -43,8 +43,9 @@ void WaveformCache::revalidateAll() {
     // size / 更新時刻 / 実体の変化は、各 view の request し直しで検出する。
     Q_EMIT entryChanged(QString());
 
-    // size と更新時刻が一致したまま中身だけ差し替えられた素材は、内容 fingerprint で
-    // 検出する。file を読むので GUI thread ではなく worker で行う。
+    // size と更新時刻が一致したまま中身だけ差し替えられた素材は、内容の標本 fingerprint で
+    // 検出を試みる (中央部だけの変更は取りこぼす。waveform_cache.h)。file を読むので
+    // GUI thread ではなく worker で行う。
     struct Target {
         QString key;
         std::uint64_t ticket = 0;
@@ -116,7 +117,7 @@ WaveformCache::Entry WaveformCache::request(const QString& mediaPath) {
     records_.insert(key, record);
 
     pool_.start([this, key, ticket = record.ticket, cancel = record.cancel, mediaPath] {
-        // decode より前に取る。decode 中に差し替えられても、次の再検証で必ず不一致になる。
+        // decode より前に取る。decode 中に先頭・末尾が差し替えられれば、次の再検証で不一致になる。
         const auto fingerprint = mediaContentFingerprint(mediaPath);
         auto result = decode_(mediaPath.toStdString(), cancel.get());
         if (result.cancelled || cancel->load(std::memory_order_relaxed))

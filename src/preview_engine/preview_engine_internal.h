@@ -115,6 +115,24 @@ struct P5CRuntimeDiagnostics {
     bool deviceReleased = true;
     bool unsafeGpuResourcesRetained = false;
     std::uint64_t registeredVideoSourceCount = 0;
+    // 先読みの準備のうち、まだ公開も破棄もしていないもの。
+    std::uint64_t pendingSourcePreparationCount = 0;
+    // 取り消し・pause / seek / shutdown で古くなり、公開せずに捨てた準備の数。
+    std::uint64_t staleSourcePreparationRejectCount = 0;
+    // 公開している source (video / audio) の数。捨てた準備が登録を残していないことを見る。
+    std::uint64_t publishedSourceCount = 0;
+    // 再生中に最初の audio を公開した回数と、そのとき control thread が endpoint の open から
+    // 再生開始までに掛かった時間の最大 (ms)。
+    std::uint64_t playingAudioEndpointOpenCount = 0;
+    double maxPlayingAudioEndpointOpenMs = 0.0;
+    // 上と同じ open の試み (成功・失敗とも) の回数・失敗の回数・control thread を止めた時間の
+    // 最大 (ms)。失敗した open が遅い機器 (Bluetooth など) を見落とさない。
+    std::uint64_t playingAudioEndpointOpenAttemptCount = 0;
+    // endpoint の open 自体の失敗だけを数える。open の後の mix への接続・再生開始の失敗は
+    // playingAudioTransportStartFailureCount。
+    std::uint64_t playingAudioEndpointOpenFailureCount = 0;
+    std::uint64_t playingAudioTransportStartFailureCount = 0;
+    double maxPlayingAudioEndpointOpenAttemptMs = 0.0;
     std::vector<std::int64_t> recentPresentedOutputFrames;
     // recentPresentedOutputFrames と同じ順に、提示した composition の layer 数と最前面 layer の
     // 不透明度。
@@ -321,6 +339,23 @@ public:
     static Result<void> setVideoSourceLimitForTest(PreviewEngine& engine, std::uint32_t limit);
     static Result<void> setRegisteredVideoSourceLimitForTest(PreviewEngine& engine,
                                                              std::size_t limit);
+    // audio source を扱えない構成 (UnsupportedCapability だが登録枠の不足ではない) を作る seam。
+    // 恒久的な非対応を登録枠の不足と取り違えないことを controller で検査する。
+    static Result<void> disableAudioSourcesForTest(PreviewEngine& engine);
+    // 先読みの準備用の thread を open の前で止める / 再開する。止めている間に pause / seek など
+    // を起こし、古くなった完了が公開されないことを決定論的に確かめる。境界で完了を待たれた
+    // 準備 (waitSourcePreparation) は止めない。
+    static void holdSourcePreparationsForTest(PreviewEngine& engine, bool held);
+    // 次に要求する準備を、取り消しも待ちも効かない段 (decoder の seek の途中に相当) で
+    // milliseconds だけ止める。取り消した準備の完了を control thread で待たないことを見る。
+    static void blockNextSourcePreparationForTest(PreviewEngine& engine, int milliseconds);
+    // 次に要求する準備の thread の作成を失敗させる (OS の thread の上限に相当)。
+    static void failNextSourcePreparationThreadForTest(PreviewEngine& engine);
+    // 次の再生中の WASAPI endpoint の open は成功させ、その後の再生開始を失敗させる。
+    static void failNextPlayingAudioTransportStartForTest(PreviewEngine& engine);
+    // 次の再生中の WASAPI endpoint の open を、delayMilliseconds 待ってから失敗させる。
+    static void failNextPlayingAudioEndpointOpenForTest(PreviewEngine& engine,
+                                                        int delayMilliseconds);
     // seek completionで得たaudio generationをengineが実際にenforceしているか
     // 検査するseam。要求generationが決して揃わない状況を作る。
     static Result<void> injectSeekAudioGenerationMismatchForTest(PreviewEngine& engine);
