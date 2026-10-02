@@ -238,6 +238,7 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             plan.backend = TimelineExportResult::Backend::Tractor;
         if (mapped.audio) {
             anyAudio = true;
+            mapped.mixerPan = segment->mixerPan;
             for (std::int64_t frame = 0; frame < duration.frame; ++frame) {
                 const auto gain = project::renderSegmentGain(
                     *segment, request.fpsNum, request.fpsDen, clip.timelineStartFrame + frame);
@@ -452,6 +453,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
         auto& gainKeys = gainStorage.emplace_back();
         for (const auto& key : planned.gainKeys)
             gainKeys.push_back({key.localFrame, key.gain});
+        mapped.mixer_pan = planned.mixerPan;
         mapped.gain_keyframes = gainKeys.data();
         mapped.gain_keyframe_count = static_cast<int>(gainKeys.size());
         clips.push_back(mapped);

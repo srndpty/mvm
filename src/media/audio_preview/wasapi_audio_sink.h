@@ -42,14 +42,15 @@ struct WasapiSnapshot {
     std::uint64_t audioRenderThreadJoinLeak = 0;
     std::uint64_t audioDeviceReleaseBeforeJoin = 0;
     std::uint64_t audioLifecycleViolation = 0;
-    // 要求された session volume。
+    // 要求されたマスター倍率。1を超える部分はPCM側で増幅する。
     float sessionVolume = 1.0F;
-    // 実際に endpoint へ設定した値 (sessionVolume x 試験用の倍率 MVM_TEST_AUDIO_VOLUME_SCALE)。
+    // 実際のendpoint設定値 (min(sessionVolume, 1) × MVM_TEST_AUDIO_VOLUME_SCALE)。
     float endpointVolume = 1.0F;
-    // 直近に endpoint へ送った PCM の channel ごと peak (linear, 0..1)。
+    // endpointへ送ったPCMのピーク (非負、1を超える値も保持)。session減衰より前。
     // UI の polling 間隔で peak を取りこぼさないよう、減衰は render 側で行う。
     float meterPeakLeft = 0.0F;
     float meterPeakRight = 0.0F;
+    bool meterClipped = false;
     std::string lastError;
 };
 
@@ -64,7 +65,8 @@ public:
     WasapiAudioSink(const WasapiAudioSink&) = delete;
     WasapiAudioSink& operator=(const WasapiAudioSink&) = delete;
 
-    // sessionVolume は Windows の per-process endpoint session volume である。
+    // sessionVolume はマスター倍率 (0〜+15 dB)。1以下はWindowsのsession volume、
+    // 1を超える増幅はPCM側で適用する。
     // 既定は unity で、その場合は一切設定しない (既存の挙動を変えない)。試験では環境変数
     // MVM_TEST_AUDIO_VOLUME_SCALE の倍率を掛けて endpoint へ設定する (tests/CMakeLists.txt)。
     // 非 unity を要求して適用できなかった場合は、黙って全音量で鳴らさず失敗する。
@@ -73,6 +75,9 @@ public:
     bool pause(std::string& error);
     bool resetForSeek(std::string& error);
     bool setSessionVolume(float volume, std::string& error);
+
+    void clearMeterClip() { meterClipped_.store(false); }
+
     bool addMixInput(AudioFrameQueue& queue, std::int64_t sampleOffsetDelta,
                      SourceGeneration generation, std::string& error);
     bool removeMixInput(AudioFrameQueue& queue, std::string& error);
@@ -142,10 +147,13 @@ private:
     };
 
     std::vector<MixInput> mixInputs_;
+    std::vector<AudioMixerBus*> mixerBuses_;
     std::thread thread_;
     std::atomic<bool> acceptingCommands_{true};
     std::atomic<bool> threadRunning_{false};
     std::atomic<bool> playing_{false};
+    std::atomic<bool> meterClipped_{false};
+    std::atomic<float> masterGain_{1.0F};
     std::atomic<float> meterPeakLeft_{0.0F};
     std::atomic<float> meterPeakRight_{0.0F};
     std::atomic<bool> renderFaultInjected_{false};

@@ -122,6 +122,14 @@ AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t req
                 output[sample * kInternalChannels + 1] *= gain;
             }
         }
+        if (mixerBus_) {
+            const float left = mixerBus_->leftGain.load(std::memory_order_relaxed);
+            const float right = mixerBus_->rightGain.load(std::memory_order_relaxed);
+            for (std::int64_t sample = 0; sample < take; ++sample) {
+                output[sample * kInternalChannels] *= left;
+                output[sample * kInternalChannels + 1] *= right;
+            }
+        }
         result.audioSamples += take;
         result.lastSampleExclusive = chunk.startSample + take;
         chunk.startSample += take;

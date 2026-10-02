@@ -281,14 +281,14 @@ int main() {
 
     // endpoint session volume。範囲外の要求はCOM/endpointへ触る前に弾き、
     // 「設定できなかったので全音量で鳴らす」へ縮退させない。
-    // 期待値は実装helperを呼ばず、契約 (0.0〜1.0) から直接与える。
+    // 期待値は実装helperを呼ばず、契約 (無音〜+15 dB) から直接与える。
     {
         AudioFrameQueue volumeQueue({1}, {1});
         AudioMasterClock volumeClock;
         WasapiAudioSink volumeSink(volumeQueue, volumeClock);
         std::string volumeError;
-        check(!volumeSink.open(volumeError, 1.5F) && !volumeError.empty(),
-              "1.0超のsession volumeを拒否する negative test");
+        check(!volumeSink.open(volumeError, 5.7F) && !volumeError.empty(),
+              "+15 dBを超えるマスター音量を拒否する負例");
         volumeError.clear();
         check(!volumeSink.open(volumeError, -0.1F) && !volumeError.empty(),
               "負のsession volumeを拒否する negative test");

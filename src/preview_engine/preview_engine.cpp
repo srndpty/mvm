@@ -2173,6 +2173,7 @@ Result<void> PreviewEngine::Impl::beginSourceWorkLocked(const PreviewSourceDescr
         work.internalAudio = audio::SourceId{work.reservedId};
         work.audioWorker = std::make_shared<audio::AudioDecodeWorker>(work.internalAudio);
         work.audioWorker->queue().setGainAtSample(descriptor.audioGainAtMediaSample);
+        work.audioWorker->queue().setMixerBus(descriptor.audioMixerBus);
         if (addingWhilePlaying) {
             auto placement = audioPlacementLocked(descriptor);
             if (!placement) {
@@ -3298,6 +3299,7 @@ PreviewTelemetry PreviewEngine::telemetry() const {
         const audio::WasapiSnapshot endpoint = impl_->audioSink->snapshot();
         result.audioMeterPeakLeft = endpoint.meterPeakLeft;
         result.audioMeterPeakRight = endpoint.meterPeakRight;
+        result.audioMeterClipped = endpoint.meterClipped;
     }
     return result;
 }
@@ -3395,11 +3397,17 @@ Result<void> PreviewEngine::requestShutdown() {
     return Result<void>::success();
 }
 
+void PreviewEngine::clearAudioMeterClip() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->audioSink)
+        impl_->audioSink->clearMeterClip();
+}
+
 Result<void> PreviewEngine::setMasterVolume(float volume) {
-    if (!(volume >= 0.0F) || volume > 1.0F) {
+    if (!(volume >= 0.0F) || volume > audio::kMaximumMasterGain) {
         return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
                                                PreviewOperation::Initialize,
-                                               "master volumeは0.0〜1.0で指定してください"));
+                                               "master volumeは0.0〜5.623414で指定してください"));
     }
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->audioSink) {
@@ -4729,7 +4737,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
 
 Result<void> PreviewRenderPort::setVerificationAudioVolume(PreviewEngine& engine, float volume) {
     std::lock_guard<std::mutex> lock(engine.impl_->mutex);
-    if (!(volume >= 0.0F) || volume > 1.0F) {
+    if (!(volume >= 0.0F) || volume > audio::kMaximumMasterGain) {
         return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
                                                PreviewOperation::Initialize,
                                                "session volumeは0.0〜1.0で指定してください"));

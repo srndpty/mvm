@@ -858,7 +858,9 @@ void engineFacadeAndEvents() {
     sink->engine = &engine;
     require(engine.initialize(measuredConfig(), dispatcher), "engine initializeに失敗しました");
     require(engine.setMasterVolume(0.35F), "source登録前のmaster volumeを設定できません");
-    requireFailure(engine.setMasterVolume(1.01F), PreviewErrorCategory::UnsupportedCapability,
+    require(engine.setMasterVolume(5.623413F), "+15 dBのマスター音量を設定できません");
+    require(engine.setMasterVolume(0.35F), "マスター音量を元へ戻せません");
+    requireFailure(engine.setMasterVolume(5.7F), PreviewErrorCategory::UnsupportedCapability,
                    "範囲外のmaster volumeを受理しました");
     const PreviewCapabilities productCapabilities = engine.capabilities();
     require(productCapabilities.configuredMaxActiveVideoSources == 8 &&

@@ -20,6 +20,9 @@ public:
         OutputEnabledRole,
         TrackKindRole,
         TrackIndexRole,
+        MixerNameRole,
+        MixerGainRole,
+        MixerPanRole,
     };
 
     explicit TrackModel(project::TrackKind kind, QObject* parent = nullptr);
@@ -29,6 +32,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void setProject(const project::Project& project);
+    void setMixerValues(int row, double gain, double pan);
 
 private:
     struct Item {
@@ -36,6 +40,9 @@ private:
         bool muted = false;
         bool solo = false;
         bool outputEnabled = true;
+        QString mixerName;
+        double mixerGain = 0.0;
+        double mixerPan = 0.0;
         bool operator==(const Item&) const = default;
     };
 

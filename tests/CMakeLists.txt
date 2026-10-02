@@ -3852,6 +3852,29 @@ add_test(NAME lint_still_image_isolation_control
     COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/lint.ps1"
             -Path "${CMAKE_SOURCE_DIR}/tests/lint-negative/still-image-bad" -AsLayer preview_qt)
 
+# ミキサーのPCM・永続化と、フェーダー/パン/数値入力/ピーク保持の実操作。
+add_executable(mvm_test_audio_mixer harness/test_audio_mixer.cpp)
+target_link_libraries(mvm_test_audio_mixer PRIVATE mvm::project mvm::audio_preview mvm::warnings)
+add_test(NAME audio_mixer_pcm_and_project COMMAND mvm_test_audio_mixer)
+set_tests_properties(audio_mixer_pcm_and_project PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 30)
+add_test(NAME audio_mixer_controls_qml
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_audio_mixer.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/audio-mixer-qml.txt)
+set_tests_properties(audio_mixer_controls_qml PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QUICK_CONTROLS_STYLE=Basic"
+    TIMEOUT 30)
+
+add_test(NAME audio_mixer_product_ui COMMAND mvm_test_text_ui_input --audio-mixer)
+set_tests_properties(audio_mixer_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav"
+    LABELS workstation
+    TIMEOUT 60)
+
 # --- workstation テストの排他制御 -------------------------------------------
 # workstation ラベルは「この開発機の実 GPU / audio endpoint / display を使う」
 # という意味である。並列実行 (ctest -j) では、これらが同時に走ると

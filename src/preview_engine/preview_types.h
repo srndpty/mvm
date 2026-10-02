@@ -10,6 +10,10 @@
 #include <utility>
 #include <vector>
 
+namespace mvm::audio {
+struct AudioMixerBus;
+}
+
 namespace mvm::preview {
 
 struct PreviewSourceId {
@@ -77,6 +81,7 @@ struct PreviewSourceDescriptor {
     std::int64_t speedDen = 1;
     bool audioPreservePitch = false;
     std::function<float(std::int64_t)> audioGainAtMediaSample;
+    std::shared_ptr<audio::AudioMixerBus> audioMixerBus;
     // video source frame と timeline output frame の対応原点。
     // false の場合は従来どおり source/output を1:1で扱う。
     bool videoTimelineMappingEnabled = false;
@@ -327,6 +332,7 @@ struct PreviewTelemetry {
     // 無い間は 0。dB への換算は表示側の責務にする。
     float audioMeterPeakLeft = 0.0F;
     float audioMeterPeakRight = 0.0F;
+    bool audioMeterClipped = false;
     PreviewStatus status;
 };
 

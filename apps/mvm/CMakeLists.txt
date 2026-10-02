@@ -45,6 +45,11 @@ qt_add_qml_module(mvm
         ModernDialogProgressBar.qml
         DragNumberField.qml
         AudioMeter.qml
+        AudioValueField.qml
+        AudioFader.qml
+        AudioPanKnob.qml
+        AudioMixerStrip.qml
+        AudioMixerPanel.qml
         MediaKindIcon.qml
         TimelineGestures.js
         PreviewTransform.js
@@ -134,6 +139,11 @@ qt_add_qml_module(mvm_test_text_ui_input
         ModernDialogProgressBar.qml
         DragNumberField.qml
         AudioMeter.qml
+        AudioValueField.qml
+        AudioFader.qml
+        AudioPanKnob.qml
+        AudioMixerStrip.qml
+        AudioMixerPanel.qml
         MediaKindIcon.qml
         TimelineGestures.js
         PreviewTransform.js

@@ -54,6 +54,7 @@ struct TimelineExportClipMapping {
     // 書き出す区間に合わせた clip (project::TimelineRenderSegment::clip)。トランジションで
     // 延ばした分の素材範囲を含む。producer に渡す素材範囲・速度はこちらを使う。
     project::TimelineClip renderClip;
+    double mixerPan = 0.0;
     bool audio = false;
     bool still = false; // 文字・画像。全画面の透過 PNG を stage して qimage で開く
     // MLT の映像 layer (下から 0, 1, ...)。track ごとに lane 0 と、トランジションがあれば

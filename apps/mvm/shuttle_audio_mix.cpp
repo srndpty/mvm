@@ -84,8 +84,9 @@ bool mixShuttleBlock(const ShuttleAudioPlan& plan, std::int64_t outputStart,
                      std::vector<float>& pcm, std::string& error) {
     // 64bit では SIZE_MAX / channels が int64 の最大値を超え上限にならないので、
     // vector が実際に持てる要素数で判定する。
-    if (sampleCount <= 0 || static_cast<std::uint64_t>(sampleCount) >
-                                pcm.max_size() / static_cast<std::size_t>(audio::kInternalChannels)) {
+    if (sampleCount <= 0 ||
+        static_cast<std::uint64_t>(sampleCount) >
+            pcm.max_size() / static_cast<std::size_t>(audio::kInternalChannels)) {
         error = "シャトル音声のblock sample数が不正です";
         return false;
     }
@@ -137,8 +138,8 @@ bool mixShuttleBlock(const ShuttleAudioPlan& plan, std::int64_t outputStart,
             const auto index =
                 static_cast<std::size_t>(*sourceSample - first) * audio::kInternalChannels;
             const auto output = static_cast<std::size_t>(i) * audio::kInternalChannels;
-            const auto timelineSample = timelineShuttleSampleAt(plan.baseSample, plan.rate,
-                                                                outputStart + i);
+            const auto timelineSample =
+                timelineShuttleSampleAt(plan.baseSample, plan.rate, outputStart + i);
             if (!timelineSample) {
                 error = "シャトル音声のtimeline sampleを換算できません";
                 return false;
@@ -149,15 +150,16 @@ bool mixShuttleBlock(const ShuttleAudioPlan& plan, std::int64_t outputStart,
                 error = "シャトル音声のtimeline frameを換算できません";
                 return false;
             }
-            const auto evaluated = project::renderSegmentGain(
-                clip.segment, plan.timelineFpsNum, plan.timelineFpsDen, frame.value());
+            const auto evaluated = project::renderSegmentGain(clip.segment, plan.timelineFpsNum,
+                                                              plan.timelineFpsDen, frame.value());
             if (!evaluated) {
                 error = "シャトル音声の音量カーブ位置が不正です";
                 return false;
             }
             const float gain = static_cast<float>(*evaluated);
-            pcm[output] += source[index] * gain;
-            pcm[output + 1] += source[index + 1] * gain;
+            const auto balance = project::audioMixGains(0.0, clip.segment.mixerPan);
+            pcm[output] += source[index] * gain * static_cast<float>(balance.first);
+            pcm[output + 1] += source[index + 1] * gain * static_cast<float>(balance.second);
         }
     }
     for (auto& sample : pcm)

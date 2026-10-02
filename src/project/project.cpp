@@ -2,10 +2,22 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <numeric>
 #include <utility>
 
 namespace mvm::project {
+
+bool isValidAudioMix(double gainDb, double pan) {
+    return std::isfinite(gainDb) && gainDb >= -96.0 && gainDb <= 15.0 && std::isfinite(pan) &&
+           pan >= -1.0 && pan <= 1.0;
+}
+
+std::pair<double, double> audioMixGains(double gainDb, double pan) {
+    const double gain = gainDb <= -96.0 ? 0.0 : std::pow(10.0, gainDb / 20.0);
+    return {gain * (pan > 0.0 ? 1.0 - pan : 1.0), gain * (pan < 0.0 ? 1.0 + pan : 1.0)};
+}
+
 namespace {
 
 bool isSha256(const std::string& value) {
@@ -202,7 +214,7 @@ std::size_t approximateProjectBytes(const Project& project) {
     for (const auto* tracks : {&project.videoTracks, &project.audioTracks}) {
         bytes += tracks->size() * sizeof(Track);
         for (const auto& track : *tracks)
-            bytes += heapBytes(track.name);
+            bytes += heapBytes(track.name) + heapBytes(track.mixerName);
     }
     bytes += project.manimAssets.size() * sizeof(ManimAsset);
     for (const auto& asset : project.manimAssets)

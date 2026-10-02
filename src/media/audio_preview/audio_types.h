@@ -10,6 +10,7 @@ namespace mvm::audio {
 
 inline constexpr int kInternalSampleRate = 48000;
 inline constexpr int kInternalChannels = 2;
+inline constexpr float kMaximumMasterGain = 5.6234132519F; // +15 dB
 inline constexpr int kQueueTargetMs = 250;
 inline constexpr int kQueueHardMaxMs = 500;
 inline constexpr int kAudioPrerollMs = 100;

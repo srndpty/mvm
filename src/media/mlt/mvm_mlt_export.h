@@ -59,6 +59,7 @@ typedef struct {
     long long hold_position;
     long long hold_speed_num;
     long long hold_speed_den;
+    double mixer_pan;   /* -1 (左) 〜 +1 (右)。ステレオのバランス */
     int is_audio;       /* 非0なら映像を隠して独立audio trackとしてmixする */
     int is_still_image; /* 非0なら明示した qimage producer で透過 PNG を開く (文字・画像) */
     int effects_enabled;

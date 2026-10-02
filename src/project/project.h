@@ -65,6 +65,9 @@ struct Track {
     // audio だけが持つ。どれか 1 つでも solo なら、solo の track だけが鳴る。
     // video track では常に false (JSON の読み込みと setTrackSolo が拒否する)。
     bool solo = false;
+    std::string mixerName{};
+    double mixerGainDb = 0.0; // -96 は無音。上限は +15 dB。
+    double mixerPan = 0.0;    // -1 (左) 〜 +1 (右)、中央は減衰なし。
     bool operator==(const Track&) const = default;
 };
 
@@ -220,6 +223,8 @@ bool isValidTrackRef(const Project& project, TrackRef track);
 // なく、かつ solo の track が 1 つも無いか自分が solo なら鳴らす。描画・音声の経路はすべて
 // これで判定する (mute だけを見ると solo が効かない経路ができる)。
 bool isTrackOutputEnabled(const Project& project, TrackRef track);
+bool isValidAudioMix(double gainDb, double pan);
+std::pair<double, double> audioMixGains(double gainDb, double pan);
 // clip の kind がその track に載ってよいか。audio clip を video track へ置かせない。
 bool clipKindFitsTrackKind(TimelineClipKind clipKind, TrackKind trackKind);
 std::string defaultTrackName(TrackKind kind, int index);

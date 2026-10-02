@@ -470,6 +470,225 @@ int checkLargeTextOverlayDelegates(const std::filesystem::path& projectPath) {
     return 0;
 }
 
+// 製品のミキサーパネルと実際の音声出力を接続して検査する。
+int checkAudioMixerPanel(const std::filesystem::path& projectPath) {
+    auto project = mvm::project::createDefaultProject();
+    project.audioTracks.push_back({"A2", false});
+    project.audioTracks.push_back({"A3", false});
+    mvm::project::TimelineClip clip;
+    clip.id = "mixer-audio";
+    clip.name = "音声";
+    clip.kind = mvm::project::TimelineClipKind::Audio;
+    clip.track = {mvm::project::TrackKind::Audio, 0};
+    clip.mediaPath = std::filesystem::path(MVM_TEXT_TEST_VIDEO).parent_path() / "wav_48k.wav";
+    clip.sourceFpsNum = 60;
+    clip.sourceFrameCount = 300;
+    clip.sourceOutFrame = 150;
+    project.timelineClips.push_back(clip);
+    auto nextClip = clip;
+    nextClip.id = "mixer-next-audio";
+    nextClip.timelineStartFrame = 150;
+    project.timelineClips.push_back(nextClip);
+    mvm::test::attachFixtureMedia(project);
+    mvm::app::MvmController controller(projectPath, {}, project);
+    if (!controller.holdsProjectLock()) {
+        std::fprintf(stderr, "失敗: %s\n", controller.statusText().toUtf8().constData());
+        controller.shutdown();
+        return 3;
+    }
+    controller.setMasterVolume(0.0);
+    mvm::app::WaveformCache cache;
+    QQmlApplicationEngine engine;
+    engine.setInitialProperties(
+        {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&cache)}});
+    engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
+    auto* window = engine.rootObjects().isEmpty()
+                       ? nullptr
+                       : qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+    if (!window) {
+        controller.shutdown();
+        return 3;
+    }
+    window->setProperty("leftPanelWidth", 500);
+    window->setProperty("leftPanelTab", 2);
+    auto* surface =
+        window->findChild<mvm::app::PreviewEngineRhiItem*>(QStringLiteral("previewSurface"));
+    controller.attachPreview(surface);
+    QTest::qWaitForWindowExposed(window);
+    check(pumpUntil([&] { return controller.previewReady(); }, 30000),
+          "ミキサー試験のプレビューを準備できません");
+    pump(100);
+    auto* strip = findVisualItem(window, QStringLiteral("audioMixerTrack0"));
+    check(strip && strip->isVisible() &&
+              findVisualItem(window, QStringLiteral("audioMixerMaster")) &&
+              findVisualItem(window, QStringLiteral("previewMasterMixer")),
+          "製品のミキサーと共通マスターを表示できません");
+    const auto role = [&](const char* name) {
+        auto* model = controller.audioTrackModel();
+        const auto names = model->roleNames();
+        for (auto i = names.cbegin(); i != names.cend(); ++i)
+            if (i.value() == name)
+                return model->data(model->index(0, 0), i.key());
+        return QVariant{};
+    };
+    const auto before = controller.undoDepthForTest();
+    check(controller.setAudioTrackMix(0, 6, -0.5, false) &&
+              controller.undoDepthForTest() == before && role("mixerGainDb").toDouble() == 6,
+          "ドラッグ途中で履歴を作るか、表示へ制御値を反映できません");
+    controller.cancelAudioTrackMix(0);
+    check(role("mixerGainDb").toDouble() == 0, "ドラッグ取消で音量が戻りません");
+    check(controller.setAudioTrackMix(0, 6, -0.5) && controller.undoDepthForTest() == before + 1,
+          "ドラッグ確定が1回の履歴になりません");
+    check(!controller.setAudioTrackMix(0, 16, 0) && !controller.setAudioTrackMix(-1, 0, 0) &&
+              role("mixerPan").toDouble() == -0.5,
+          "不正な制御値でミキサーを変更しました");
+    check(controller.setAudioMixerName(0, QStringLiteral("ナレーション")) &&
+              role("mixerName").toString() == QStringLiteral("ナレーション") &&
+              role("trackName").toString() == QStringLiteral("A1"),
+          "ミキサー名を変えるとタイムライン名も変わります");
+    check(controller.setTrackMuted("audio", 0, true) && role("trackMuted").toBool(),
+          "Muteがタイムラインと同期しません");
+    check(controller.setTrackMuted("audio", 0, false) &&
+              controller.setTrackSolo("audio", 0, true) && role("trackSolo").toBool(),
+          "Soloがタイムラインと同期しません");
+    check(controller.setTrackSolo("audio", 0, false), "Soloを解除できません");
+    // パンの右端: マスターは無音でもトラックの右メーターだけが動く。
+    check(controller.setAudioTrackMix(0, 0, 1), "右パンを設定できません");
+    check(pumpUntil([&] {
+              return controller.previewEngineForTest()->status().state ==
+                     mvm::preview::PreviewEngineState::ReadyPaused;
+          }),
+          "ミキサー試験の音声準備が完了しません");
+    if (!controller.playTimeline()) {
+        std::fprintf(stderr, "失敗: ミキサー再生: %s\n",
+                     controller.statusText().toUtf8().constData());
+        controller.shutdown();
+        return 1;
+    }
+    check(pumpUntil([&] { return controller.audioTrackMeter(0).value("right").toDouble() > -60; },
+                    5000),
+          "実際に消費したトラックPCMのメーターが動きません");
+    check(controller.audioTrackMeter(0).value("left").toDouble() <= -96 &&
+              controller.audioMeterDbLeft() <= -96 && controller.audioMeterDbRight() <= -96,
+          "右パンまたはマスター無音がメーターへ反映されません");
+    check(controller.setAudioTrackMix(0, 0, -1) && controller.playing(),
+          "再生中のパン変更で停止しました");
+    check(pumpUntil(
+              [&] {
+                  return controller.audioTrackMeter(0).value("left").toDouble() > -60 &&
+                         controller.audioTrackMeter(0).value("right").toDouble() <= -96;
+              },
+              3000),
+          "既存の再生経路へ左パンを反映できません");
+    if (strip)
+        check(strip->property("pan").toDouble() == -1,
+              "製品パネルのパンがcontrollerと同期しません");
+    check(controller.setAudioTrackMix(0, 15, -1), "+15 dBを設定できません");
+    check(pumpUntil([&] { return controller.audioTrackMeter(0).value("clipped").toBool(); }, 3000),
+          "実音声の0 dB超過を保持しません");
+    check(pumpUntil([&] { return controller.preparedPlaybackSourceCountForTest() > 0; }, 2000),
+          "次の音声境界のsourceを先読みできません");
+    check(pumpUntil([&] { return controller.playheadFrame() >= 140; }, 4000),
+          "先読み後に境界直前まで再生できません");
+    const auto prepared = controller.preparedPlaybackSourceCountForTest();
+    const auto stale = controller.playbackStalePreparationCount();
+    check(prepared > 0 && controller.setAudioTrackMix(0, 3, -0.5) &&
+              controller.setAudioMixerName(0, QStringLiteral("境界前の名前")) &&
+              controller.preparedPlaybackSourceCountForTest() == prepared &&
+              controller.playbackStalePreparationCount() == stale,
+          "ミキサー値・名前の確定で先読みsourceを破棄しました");
+    check(pumpUntil([&] { return controller.playheadFrame() >= 160; }, 3000) &&
+              controller.playbackRebuildCount() == 0,
+          "ミキサー確定後の境界通過で再生を組み直しました");
+    check(controller.setAudioTrackMix(0, 15, -1) &&
+              controller.setAudioMixerName(0, QStringLiteral("ナレーション")),
+          "境界試験後のミキサー設定を戻せません");
+    const auto screenshot = qEnvironmentVariable("MVM_MIXER_SCREENSHOT");
+    if (!screenshot.isEmpty()) {
+        pump(200);
+        check(window->grabWindow().save(screenshot), "ミキサーの表示画像を保存できません");
+    }
+    check(controller.pauseTimeline(), "ミキサー試験の再生を停止できません");
+    controller.clearAudioTrackClip(0);
+    check(!controller.audioTrackMeter(0).value("clipped").toBool(),
+          "実音声のクリップ表示を解除できません");
+    check(controller.saveProject(), "ミキサー設定を保存できません");
+    const auto restored = mvm::project::loadProjectJson(projectPath);
+    check(restored.success && restored.project.audioTracks[0].mixerName == "ナレーション" &&
+              restored.project.audioTracks[0].mixerPan == -1,
+          "確定したミキサー設定を読み戻せません");
+    check(controller.undoLastEdit() && controller.undoLastEdit() &&
+              role("mixerGainDb").toDouble() == 3,
+          "ミキサー音量をUndoできません");
+    check(controller.redoLastEdit() && role("mixerGainDb").toDouble() == 15,
+          "ミキサー音量をRedoできません");
+    check(pumpUntil([&] {
+              return controller.previewEngineForTest()->status().state ==
+                     mvm::preview::PreviewEngineState::ReadyPaused;
+          }) &&
+              controller.seekTimelineFrame(0) && pumpUntil([&] {
+                  return controller.previewEngineForTest()->status().state ==
+                         mvm::preview::PreviewEngineState::ReadyPaused;
+              }) &&
+              controller.shuttleRight() && controller.shuttleRight(),
+          "no-op検査の2倍シャトルを開始できません");
+    if (controller.shuttleRate() != 2)
+        std::fprintf(stderr, "シャトル開始時の状態: %s\n",
+                     controller.statusText().toUtf8().constData());
+    const auto shuttle = controller.shuttleRate();
+    check(shuttle == 2 && controller.setAudioTrackMix(0, 15, -1) &&
+              controller.shuttleRate() == shuttle,
+          "変更のないミキサー確定でシャトルを停止しました");
+    controller.pauseTimeline();
+    controller.beginScrub();
+    check(controller.scrubAudioSnapshotForTest().sessionVolume == 0,
+          "スクラブ開始時のマスター音量が違います");
+    controller.setMasterVolume(0.1);
+    check(std::abs(controller.scrubAudioSnapshotForTest().sessionVolume - 0.1F) < 1e-6F,
+          "スクラブ中のマスター変更がendpointへ反映されません");
+    check(controller.setAudioTrackMix(0, 0, 1, false), "スクラブ中のパン変更を受理しません");
+    check(pumpUntil(
+              [&] {
+                  const auto meter = controller.scrubAudioSnapshotForTest();
+                  return meter.meterPeakRight > 0.001F && meter.meterPeakLeft < 0.0001F;
+              },
+              3000),
+          "スクラブの実PCMへ変更後の右パンを反映しません");
+    controller.cancelAudioTrackMix(0);
+    check(pumpUntil(
+              [&] {
+                  const auto meter = controller.scrubAudioSnapshotForTest();
+                  return meter.meterPeakLeft > 0.001F && meter.meterPeakRight < 0.0001F;
+              },
+              3000),
+          "スクラブのPCMへ取り消し後の左パンを反映しません");
+    controller.endScrub();
+    controller.setMasterVolume(0);
+    auto oldBus = controller.audioMixerBusForTest(1);
+    oldBus->clipped.store(true);
+    oldBus->peakLeft.store(0.7F);
+    check(controller.removeTrack("audio", 1) && controller.audioMixerBusForTest(1) != oldBus &&
+              !controller.audioTrackMeter(1).value("clipped").toBool() &&
+              controller.audioTrackMeter(1).value("left").toDouble() <= -96,
+          "トラック削除後に別トラックのclip latch・ピークを引き継ぎました");
+    check(controller.undoLastEdit(), "構造変更を取り消せません");
+    check(controller.saveProject(), "切替前の変更を保存できません");
+    const auto otherProjectPath = projectPath.parent_path() / "other-mixer.mvm";
+    std::filesystem::copy_file(projectPath, otherProjectPath);
+    oldBus = controller.audioMixerBusForTest(0);
+    oldBus->clipped.store(true);
+    check(controller.openProject(
+              QUrl::fromLocalFile(QString::fromStdWString(otherProjectPath.wstring()))) &&
+              controller.audioMixerBusForTest(0) != oldBus &&
+              !controller.audioTrackMeter(0).value("clipped").toBool(),
+          "同じトラック数のProject切替でclip latchを引き継ぎました");
+    controller.shutdown();
+    if (!failures)
+        std::puts("製品ミキサーの表示・履歴・同期・保存と、実音声の再生中パンを確認しました");
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
     QGuiApplication application(argc, argv);
@@ -489,6 +708,13 @@ int main(int argc, char** argv) {
     application.setApplicationName(QStringLiteral("project-panel"));
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+
+    if (application.arguments().contains(QStringLiteral("--audio-mixer"))) {
+        const int mixerResult =
+            checkAudioMixerPanel(directory.filePath(QStringLiteral("mixer.mvm")).toStdWString());
+        mvm_mlt_runtime_shutdown();
+        return mixerResult;
+    }
 
     // V1 に映像を置く。文字は映像の上 (V2) に置かれ、engine が合成する経路を通る。
     auto project = mvm::project::createDefaultProject();

@@ -77,6 +77,7 @@ public:
     Result<void> seekFrameRequest(const PreviewFrameRequest& request);
     // preview endpoint の master volume。再生中にも即時反映する。
     Result<void> setMasterVolume(float volume);
+    void clearAudioMeterClip();
 
     PreviewStatus status() const;
     PreviewCapabilities capabilities() const;

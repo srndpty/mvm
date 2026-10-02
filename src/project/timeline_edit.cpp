@@ -718,6 +718,16 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "video track は solo を持てません";
             return result;
         }
+        if (!track.mixerName.empty() || track.mixerGainDb != 0.0 || track.mixerPan != 0.0) {
+            result.error = "video track はミキサー設定を持てません";
+            return result;
+        }
+    }
+    for (const auto& track : project.audioTracks) {
+        if (!isValidAudioMix(track.mixerGainDb, track.mixerPan)) {
+            result.error = "トラック音量またはパンが範囲外です";
+            return result;
+        }
     }
     std::unordered_set<std::string> ids;
 

@@ -102,15 +102,16 @@ WasapiAudioSink::~WasapiAudioSink() {
 }
 
 bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
+    mixerBuses_.reserve(32);
     // caller error は COM/endpoint に触る前に弾く。
-    if (!(sessionVolume >= 0.0F) || sessionVolume > 1.0F) {
-        error = "session volume は 0.0〜1.0 の範囲で指定してください";
+    if (!(sessionVolume >= 0.0F) || sessionVolume > kMaximumMasterGain) {
+        error = "session volume は 0.0〜5.623414 の範囲で指定してください";
         return false;
     }
     float scale = 1.0F;
     if (!testVolumeScale(scale, error))
         return false;
-    const float endpointVolume = sessionVolume * scale;
+    const float endpointVolume = std::min(sessionVolume, 1.0F) * scale;
     std::lock_guard lock(mutex_);
     if (metrics_.open) {
         error = "WASAPI endpoint は既に open されています";
@@ -181,6 +182,7 @@ bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
             return false;
         }
         // open() 入口で mutex_ を保持済みのため、ここで再取得しない。
+        masterGain_.store(sessionVolume);
         metrics_.sessionVolume = sessionVolume;
         metrics_.endpointVolume = endpointVolume;
     }
@@ -218,6 +220,8 @@ bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
                                         mixFormat_->nSamplesPerSec, AV_ROUND_UP)) +
         64;
     sourceScratch_.resize(static_cast<std::size_t>(sourceScratchSamples_) * kInternalChannels);
+    if (queue_ && queue_->mixerBus())
+        queue_->mixerBus()->scratch.reserve(sourceScratch_.size());
     metrics_.deviceFormat = AudioFormatInfo{static_cast<int>(mixFormat_->nSamplesPerSec),
                                             static_cast<int>(mixFormat_->nChannels),
                                             sampleFormatName(deviceSampleFormat)};
@@ -360,7 +364,7 @@ bool WasapiAudioSink::prefillEndpoint(std::int64_t mediaStartSample, SourceGener
                 ", queue_last=" + std::to_string(consumed.queueLastAvailableSampleExclusive) + ")";
         return false;
     }
-    updateMeterPeaks(consumed.audioSamples);
+    updateMeterPeaks(sourceNeeded);
     const std::uint8_t* input[] = {reinterpret_cast<const std::uint8_t*>(sourceScratch_.data())};
     std::uint8_t* output[] = {deviceBuffer};
     const int converted =
@@ -441,8 +445,8 @@ bool WasapiAudioSink::pause(std::string& error) {
 }
 
 bool WasapiAudioSink::setSessionVolume(float volume, std::string& error) {
-    if (!(volume >= 0.0F) || volume > 1.0F) {
-        error = "master volume は 0.0〜1.0 の範囲で指定してください";
+    if (!(volume >= 0.0F) || volume > kMaximumMasterGain) {
+        error = "master volume は 0.0〜5.623414 の範囲で指定してください";
         return false;
     }
     float scale = 1.0F;
@@ -459,15 +463,16 @@ bool WasapiAudioSink::setSessionVolume(float volume, std::string& error) {
         error = "endpoint master volume を取得できません: " + hresultText(hr);
         return false;
     }
-    hr = control->SetMasterVolume(volume * scale, nullptr);
+    hr = control->SetMasterVolume(std::min(volume, 1.0F) * scale, nullptr);
     releaseCom(control);
     if (FAILED(hr)) {
         error = "endpoint master volume を設定できません: " + hresultText(hr);
         return false;
     }
     std::lock_guard lock(mutex_);
+    masterGain_.store(volume);
     metrics_.sessionVolume = volume;
-    metrics_.endpointVolume = volume * scale;
+    metrics_.endpointVolume = std::min(volume, 1.0F) * scale;
     return true;
 }
 
@@ -484,6 +489,9 @@ bool WasapiAudioSink::addMixInput(AudioFrameQueue& queue, std::int64_t sampleOff
     input.sampleOffsetDelta = sampleOffsetDelta;
     input.generation = generation;
     input.scratch.resize(static_cast<std::size_t>(sourceScratchSamples_) * kInternalChannels);
+    if (queue.mixerBus())
+        queue.mixerBus()->scratch.reserve(input.scratch.size());
+    mixerBuses_.reserve(mixInputs_.size() + 2);
     mixInputs_.push_back(std::move(input));
     return true;
 }
@@ -529,6 +537,21 @@ bool WasapiAudioSink::updateMixInput(AudioFrameQueue& queue, SourceGeneration ge
 AudioConsumeResult WasapiAudioSink::consumeMixed(std::int64_t requestedSampleStart,
                                                  std::int64_t samples,
                                                  SourceGeneration primaryGeneration) {
+    const auto valueCount = static_cast<std::size_t>(samples) * kInternalChannels;
+    mixerBuses_.clear();
+    auto& buses = mixerBuses_;
+    const auto collect = [&](AudioFrameQueue* queue) {
+        if (queue && queue->mixerBus()) {
+            auto* bus = queue->mixerBus().get();
+            if (std::find(buses.begin(), buses.end(), bus) == buses.end()) {
+                buses.push_back(bus);
+                bus->beginBlock(valueCount);
+            }
+        }
+    };
+    collect(queue_);
+    for (const auto& source : mixInputs_)
+        collect(source.queue);
     AudioConsumeResult primary;
     if (queue_) {
         primary = queue_->consume(sourceScratch_.data(), requestedSampleStart, samples,
@@ -542,8 +565,9 @@ AudioConsumeResult WasapiAudioSink::consumeMixed(std::int64_t requestedSampleSta
         primary.lastSampleExclusive = requestedSampleStart + samples;
         primary.silenceSamples = samples;
     }
+    if (queue_ && queue_->mixerBus())
+        queue_->mixerBus()->addBlock(sourceScratch_.data(), valueCount);
     for (auto& input : mixInputs_) {
-        const std::size_t valueCount = static_cast<std::size_t>(samples) * kInternalChannels;
         std::fill_n(input.scratch.begin(), valueCount, 0.0F);
         std::int64_t requested = 0;
         if (!core::checkedAdd(requestedSampleStart, input.sampleOffsetDelta, requested)) {
@@ -568,9 +592,16 @@ AudioConsumeResult WasapiAudioSink::consumeMixed(std::int64_t requestedSampleSta
                     input.queue->noteUnderflow(samples - gap - mixed.audioSamples);
             }
         }
+        if (input.queue->mixerBus())
+            input.queue->mixerBus()->addBlock(input.scratch.data(), valueCount);
         for (std::size_t index = 0; index < valueCount; ++index)
             sourceScratch_[index] += input.scratch[index];
     }
+    for (auto* bus : buses)
+        bus->publishBlock();
+    const float boost = std::max(1.0F, masterGain_.load(std::memory_order_relaxed));
+    for (std::size_t i = 0; i < valueCount; ++i)
+        sourceScratch_[i] *= boost;
     return primary;
 }
 
@@ -670,6 +701,9 @@ void WasapiAudioSink::updateMeterPeaks(std::int64_t consumedFrames) {
         blockLeft = std::max(blockLeft, std::fabs(sourceScratch_[base]));
         blockRight = std::max(blockRight, std::fabs(sourceScratch_[base + 1]));
     }
+    const float attenuation = std::min(1.0F, masterGain_.load());
+    if (blockLeft * attenuation > 1.0F || blockRight * attenuation > 1.0F)
+        meterClipped_.store(true);
     const float decayedLeft =
         meterPeakLeft_.load(std::memory_order_relaxed) * kMeterPeakDecayPerBlock;
     const float decayedRight =
@@ -756,7 +790,7 @@ bool WasapiAudioSink::renderAvailable() {
             attribution_->firstAudioUnderflow.capture(snapshot);
         }
     }
-    updateMeterPeaks(consumed.audioSamples);
+    updateMeterPeaks(sourceNeeded);
     const std::uint8_t* input[] = {reinterpret_cast<const std::uint8_t*>(sourceScratch_.data())};
     std::uint8_t* output[] = {deviceBuffer};
     const int converted =
@@ -844,6 +878,7 @@ WasapiSnapshot WasapiAudioSink::snapshot() const {
     WasapiSnapshot result = metrics_;
     result.meterPeakLeft = meterPeakLeft_.load(std::memory_order_relaxed);
     result.meterPeakRight = meterPeakRight_.load(std::memory_order_relaxed);
+    result.meterClipped = meterClipped_.load();
     return result;
 }
 
