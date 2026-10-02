@@ -366,6 +366,10 @@ struct TransitionSpanFit {
     std::int64_t framesBeforeCut = 0;
     std::int64_t framesAfterCut = 0;
     std::string error;
+    // frame ごとの不透明度を調べた回数と、長さごとに素材 frame へ乗るかを調べた回数。長尺素材で
+    // 候補ごとに区間を辿り直さない (余白の長さに対して線形に留まる) ことの回帰検査に使う。
+    std::uint64_t opacityProbes = 0;
+    std::uint64_t edgeProbes = 0;
 };
 
 // 吸着で何を保つか。

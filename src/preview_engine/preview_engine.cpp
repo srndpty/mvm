@@ -22,6 +22,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <exception>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -29,6 +30,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -870,6 +872,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     double maxPlayingAudioEndpointOpenMs = 0.0;
     // 試験用: 次に要求する準備を、取り消しの効かない段でこの時間止める。
     std::chrono::milliseconds nextPreparationBlockForTest{0};
+    // 試験用: 次に要求する準備の thread の作成を失敗させる。
+    bool failNextPreparationThreadForTest = false;
     // 再生中の endpoint の open を試みた回数・失敗した回数・掛かった時間の最大 (成功・失敗とも)。
     std::uint64_t playingAudioEndpointOpenAttemptCount = 0;
     std::uint64_t playingAudioEndpointOpenFailureCount = 0;
@@ -2488,24 +2492,37 @@ PreviewEngine::requestSourcePreparation(const PreviewSourceDescriptor& descripto
             makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
                       "再生中に始まっている主audioは先読みで準備できません"));
     }
-    preparation->id = impl_->nextPreparationId++;
     preparation->generation = impl_->transportGeneration;
     const auto hold = impl_->preparationHold;
     const auto blockedFor = std::exchange(impl_->nextPreparationBlockForTest, {});
-    preparation->thread = std::thread([preparation, hold, blockedFor] {
-        {
-            std::unique_lock<std::mutex> holdLock(hold->mutex);
-            hold->changed.wait(holdLock, [&] {
-                return !hold->held || preparation->cancelled.load(std::memory_order_acquire) ||
-                       preparation->awaited.load(std::memory_order_acquire);
-            });
-        }
-        // 試験用: decoder の seek の途中のように、取り消しも待ちも効かない段で止まる。
-        if (blockedFor.count() > 0)
-            std::this_thread::sleep_for(blockedFor);
-        preparation->result = Impl::runSourceWork(preparation->work, &preparation->cancelled);
-        preparation->done.store(true, std::memory_order_release);
-    });
+    // thread を作れない (OS の thread の上限・メモリ不足) ときは、予約した public ID と
+    // video source を返して失敗として閉じる。例外を再生の tick へ通さない。
+    try {
+        if (std::exchange(impl_->failNextPreparationThreadForTest, false))
+            throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again),
+                                    "試験で thread の作成を失敗させました");
+        preparation->thread = std::thread([preparation, hold, blockedFor] {
+            {
+                std::unique_lock<std::mutex> holdLock(hold->mutex);
+                hold->changed.wait(holdLock, [&] {
+                    return !hold->held || preparation->cancelled.load(std::memory_order_acquire) ||
+                           preparation->awaited.load(std::memory_order_acquire);
+                });
+            }
+            // 試験用: decoder の seek の途中のように、取り消しも待ちも効かない段で止まる。
+            if (blockedFor.count() > 0)
+                std::this_thread::sleep_for(blockedFor);
+            preparation->result = Impl::runSourceWork(preparation->work, &preparation->cancelled);
+            preparation->done.store(true, std::memory_order_release);
+        });
+    } catch (const std::exception& error) {
+        // std::system_error (thread の上限) と std::bad_alloc (thread の状態を確保できない)。
+        impl_->rollbackSourceWorkLocked(preparation->work);
+        return Result<PreviewPreparationId>::failure(
+            makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::AddSource,
+                      std::string("先読みの準備の thread を作れません: ") + error.what()));
+    }
+    preparation->id = impl_->nextPreparationId++;
     impl_->preparations.emplace(preparation->id, preparation);
     return Result<PreviewPreparationId>::success(PreviewPreparationId{preparation->id});
 }
@@ -4922,6 +4939,11 @@ void PreviewRenderPort::failNextPlayingAudioEndpointOpenForTest(PreviewEngine& e
                                                                 int delayMilliseconds) {
     std::lock_guard<std::mutex> lock(engine.impl_->mutex);
     engine.impl_->failNextPlayingEndpointOpenForTest = std::chrono::milliseconds(delayMilliseconds);
+}
+
+void PreviewRenderPort::failNextSourcePreparationThreadForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    engine.impl_->failNextPreparationThreadForTest = true;
 }
 
 void PreviewRenderPort::blockNextSourcePreparationForTest(PreviewEngine& engine, int milliseconds) {

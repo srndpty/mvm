@@ -2239,6 +2239,7 @@ public:
         const auto known = beforeEdge_.find(before);
         if (known != beforeEdge_.end())
             return known->second;
+        ++edgeProbes_;
         return beforeEdge_[before] = beforeEdgeFits(before);
     }
 
@@ -2248,6 +2249,7 @@ public:
         const auto known = afterEdge_.find(after);
         if (known != afterEdge_.end())
             return known->second;
+        ++edgeProbes_;
         return afterEdge_[after] = afterEdgeFits(after);
     }
 
@@ -2263,6 +2265,10 @@ public:
             opaqueAfter_ = countOpaque(false);
         return *opaqueAfter_;
     }
+
+    std::uint64_t opacityProbes() const { return opacityProbes_; }
+
+    std::uint64_t edgeProbes() const { return edgeProbes_; }
 
 private:
     bool beforeEdgeFits(std::int64_t before) const {
@@ -2295,7 +2301,7 @@ private:
 
     // 映像の編集点ごとに cut から連続して不透明な frame を数え、その最小値を返す。
     // cut の前は outgoing の終端から手前へ、後は incoming の先頭から奥へ数える。
-    std::int64_t countOpaque(bool beforeCut) const {
+    std::int64_t countOpaque(bool beforeCut) {
         std::int64_t limit = beforeCut ? maxBefore_ : maxAfter_;
         std::string ignored;
         for (const auto& entry : resolved_) {
@@ -2305,6 +2311,7 @@ private:
             std::int64_t count = 0;
             while (count < limit) {
                 const auto local = beforeCut ? entry.clips.outgoingDuration - 1 - count : count;
+                ++opacityProbes_;
                 if (!dissolveClipOpaqueOver(prepared_, clip, local, local + 1, ignored))
                     break;
                 ++count;
@@ -2322,6 +2329,8 @@ private:
     std::optional<std::int64_t> opaqueAfter_;
     std::unordered_map<std::int64_t, bool> beforeEdge_;
     std::unordered_map<std::int64_t, bool> afterEdge_;
+    std::uint64_t opacityProbes_ = 0;
+    std::uint64_t edgeProbes_ = 0;
 };
 
 // 選んだ長さは描画区間を作れるはずである。作れなければ理由をそのまま返す (黙って縮めない)。
@@ -2553,6 +2562,8 @@ TransitionSpanFit nearestTransitionSpan(const Project& project, const std::strin
                 return true;
             });
     }
+    result.opacityProbes = fitter.opacityProbes();
+    result.edgeProbes = fitter.edgeProbes();
     if (before < 0 || after < 0 || before + after < 1) {
         result.error = "素材の余白と不透明度の範囲に置ける長さがありません";
         return result;

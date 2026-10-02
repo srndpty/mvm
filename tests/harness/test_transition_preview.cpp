@@ -1020,6 +1020,68 @@ int main(int argc, char** argv) {
         runBlockedStaleCapacity("blocked-stale-capacity", 800);
         runBlockedStaleCapacity("blocked-stale-past-boundary", 3000);
 
+        // 準備の thread を作れない (OS の thread の上限・メモリ不足) ときは、例外を再生の tick へ
+        // 通さず失敗として返し、予約した video source を登録枠へ返す。登録上限を 2 (再生中の A と
+        // 境界の B) にしておくので、返さなければ境界で登録上限に当たる。
+        {
+            auto threadProject = mvm::project::createDefaultProject();
+            threadProject.timelineClips = {
+                half(video, "thread-a", TrackKind::Video, 0, 0),
+                half(copiedVideo, "thread-b", TrackKind::Video, 120, 170)};
+            mvm::test::attachFixtureMedia(threadProject);
+            const auto threadPath = std::filesystem::path(
+                directory.filePath(QStringLiteral("preparation-thread-failure.mvm"))
+                    .toStdWString());
+            mvm::app::MvmController controller(threadPath, {}, threadProject);
+            QQuickWindow window;
+            window.setWidth(640);
+            window.setHeight(360);
+            auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+            surface->setWidth(640);
+            surface->setHeight(360);
+            window.show();
+            controller.attachPreview(surface);
+            const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+            const bool limited =
+                ready &&
+                retryUntilAccepted([&] { return controller.seekTimelineFrame(0); }, 30000) &&
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000) &&
+                retryUntilAccepted([&] { return controller.setPreviewRegistrationLimitForTest(2); },
+                                   10000);
+            const auto engine = controller.previewEngineForTest();
+            using mvm::preview::internal::PreviewRenderPort;
+            if (engine)
+                PreviewRenderPort::failNextSourcePreparationThreadForTest(*engine);
+            const bool started =
+                limited && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            const bool failed =
+                started &&
+                pumpUntil([&] { return controller.playbackPreparationFailureCount() >= 1; }, 5000);
+            const auto afterFailure = PreviewRenderPort::runtimeDiagnostics(*engine);
+            check(failed && controller.playing() && controller.playheadFrame() < 120 &&
+                      afterFailure.registeredVideoSourceCount == 1,
+                  "準備の thread を作れないときに、予約した source を返して失敗として閉じません");
+            const bool crossed =
+                failed &&
+                pumpUntil(
+                    [&] { return !controller.playing() || controller.playheadFrame() >= 150; },
+                    15000);
+            check(crossed && controller.playing() && controller.playbackCapacityResetCount() == 0 &&
+                      controller.previewEngineForTest() == engine,
+                  "準備の thread を作れなかった後に、engine を作り直さずに境界を越えられません");
+            std::printf(
+                "preparation-thread-failure: 準備の失敗 %llu、登録済みの video %llu、"
+                "組み直し %llu、作り直し %llu、理由: %s\n",
+                static_cast<unsigned long long>(controller.playbackPreparationFailureCount()),
+                static_cast<unsigned long long>(afterFailure.registeredVideoSourceCount),
+                static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                static_cast<unsigned long long>(controller.playbackCapacityResetCount()),
+                controller.lastPlaybackRebuildReason().toUtf8().constData());
+            if (controller.playing())
+                controller.pauseTimeline();
+            controller.shutdown();
+        }
+
         // 受理されない編集・変更の無い編集では再生を止めない。Project・Undo 履歴も変えない。
         // 編集の入口が増えても同じ表で確かめる。
         {

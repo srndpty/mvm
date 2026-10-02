@@ -2212,7 +2212,9 @@ void testSetTransitionSpan() {
 // まで。余白の上限まで延ばす要求を、 この境界へ吸着させる
 // (不透明度は区間の先頭から検査するので、候補ごとに不透明な区間を長く
 // 辿ってから違反に当たる、最も重い配置)。
-// 期待値は手で数えた値。時間は計測して出す (debug でも走るので、閾値は通常の数十倍に取る)。
+// 期待値は手で数えた値。時間の閾値は環境で揺れる (CI の runner では手元の 10 倍以上掛かった) ので、
+// 時間は出すだけにし、不透明度と素材 frame を調べた回数を見る。候補ごとに区間を辿り直す実装なら、
+// 余白 (216000 frame) の数倍になる。
 void testTransitionSpanFitOnLongMedia() {
     using mvm::project::LinkMode;
     mvm::project::Project project = mvm::project::createDefaultProject();
@@ -2238,12 +2240,26 @@ void testTransitionSpanFitOnLongMedia() {
     const auto elapsed =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
             .count();
-    std::fprintf(stderr, "  長尺素材の吸着: %.1f ms\n", elapsed);
+    std::fprintf(stderr,
+                 "  長尺素材の吸着: %.1f ms、不透明度の検査 %llu / %llu 回、"
+                 "素材 frame の検査 %llu / %llu 回\n",
+                 elapsed, static_cast<unsigned long long>(fitted.opacityProbes),
+                 static_cast<unsigned long long>(kept.opacityProbes),
+                 static_cast<unsigned long long>(fitted.edgeProbes),
+                 static_cast<unsigned long long>(kept.edgeProbes));
     check(fitted.success && fitted.framesBeforeCut == 99 && fitted.framesAfterCut == 30,
           "長尺素材で不透明な範囲の端へ吸着させません");
     check(kept.success && kept.framesBeforeCut == 99 && kept.framesAfterCut == 215931,
           "長尺素材で総尺を保って吸着させません");
-    check(elapsed < 2000.0, "長尺素材の吸着に時間が掛かりすぎます");
+    // 不透明な長さは cut の前後で 1 回ずつ、cut から違反か余白の上限まで数える (前は 99 frame
+    // 不透明で 100 frame 目が違反なので 100 回、後は余白の上限まで 216000 回)。素材 frame の
+    // 判定は長さごとに覚えるので、前後の余白の長さの合計を超えない。
+    constexpr std::uint64_t kOpacityProbes = 100 + 216000;
+    constexpr std::uint64_t kEdgeProbeLimit = 2 * (216000 + 1);
+    check(fitted.opacityProbes == kOpacityProbes && kept.opacityProbes == kOpacityProbes,
+          "長尺素材の吸着で不透明度を候補ごとに調べ直しています");
+    check(fitted.edgeProbes <= kEdgeProbeLimit && kept.edgeProbes <= kEdgeProbeLimit,
+          "長尺素材の吸着で素材 frame の判定を覚えていません");
 }
 
 // 上書き移動。V1 の long [0, 300) の上へ V2 の mover (60 frame) を動かす。期待値は手で数えた値。

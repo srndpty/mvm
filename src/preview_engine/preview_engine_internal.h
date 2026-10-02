@@ -349,9 +349,11 @@ public:
     // 次に要求する準備を、取り消しも待ちも効かない段 (decoder の seek の途中に相当) で
     // milliseconds だけ止める。取り消した準備の完了を control thread で待たないことを見る。
     static void blockNextSourcePreparationForTest(PreviewEngine& engine, int milliseconds);
-    // 次の再生中の WASAPI endpoint の open を、delayMilliseconds 待ってから失敗させる。
+    // 次に要求する準備の thread の作成を失敗させる (OS の thread の上限に相当)。
+    static void failNextSourcePreparationThreadForTest(PreviewEngine& engine);
     // 次の再生中の WASAPI endpoint の open は成功させ、その後の再生開始を失敗させる。
     static void failNextPlayingAudioTransportStartForTest(PreviewEngine& engine);
+    // 次の再生中の WASAPI endpoint の open を、delayMilliseconds 待ってから失敗させる。
     static void failNextPlayingAudioEndpointOpenForTest(PreviewEngine& engine,
                                                         int delayMilliseconds);
     // seek completionで得たaudio generationをengineが実際にenforceしているか

@@ -2088,7 +2088,8 @@ reconcile がトランジションを消す。このとき、通常の trim が�
 `[事実]` 確認したこと:
 - `m5_timeline_edit_focused`: 吸着 (30fps 素材で 31 → 32、29 → 28、不透明度と余白の内側へ)、総尺を保つ
   吸着 (不透明な前 30 で 50 / 50 → 30 / 70、本体のずらし 33 / 27 → 34 / 26、置けない総尺 61 → 62)、
-  長尺素材の吸着の結果と時間 (`testTransitionSpanFitOnLongMedia`)、trim で離れると
+  長尺素材の吸着の結果と時間 (`testTransitionSpanFitOnLongMedia`、`[当時]` 時間は 2000ms の閾値で見ていた。
+  調べた回数で見る形は §25.1)、trim で離れると
   トランジションが消えること、接している隣への trim を止めること (縮め・ローリングは止めない)、
   上限 (300 / 300、反対端のトランジションがあると後ろ 200)、cut で開始への変更と
   ID の維持、上限ちょうど、同じ値・0 frame・負・上限超え・未知 ID の拒否 (Project 不変)、不透明度と
@@ -2694,3 +2695,44 @@ open の失敗として数えていた。open の失敗 (`playingAudioEndpointOp
 試験用に、次の再生中の open を成功させ再生開始を失敗させる seam を足した。`transition_preview` の
 `endpoint-start-failure` が、試み 1・open の失敗 0・再生開始の失敗 1 になること、`endpoint-open-failure` が
 open の失敗 1・再生開始の失敗 0 になることを見る。分けずに数える mutant では前者が落ちる。
+
+## 25. CI の失敗と 5 回目のレビュー指摘への対応
+
+### 25.1 長尺素材の吸着の時間の閾値で CI が落ちる
+
+`[事実]` CI (`ucrt64-debug`) で `m5_timeline_edit_focused` が「長尺素材の吸着に時間が掛かりすぎます」で
+落ちた (2135.5ms、閾値 2000ms)。同じ run の大きな timeline の検証は 414.6ms で、手元の debug (吸着 約 170ms・
+検証 約 37ms) の 11 倍前後だった。吸着の実装は変えておらず、runner が遅いことによる。
+
+時間の閾値をやめ、`testLargeTimelineValidationScales` と同じく仕事の量を見る。`TransitionSpanFit` に、
+frame ごとの不透明度を調べた回数 (`opacityProbes`) と、長さごとに素材 frame へ乗るかを調べた回数
+(`edgeProbes`) を足した。試験の配置では不透明度は cut の前で 100 回 (99 frame 不透明で 100 frame 目が違反)、
+後で余白の上限の 216000 回で、合計 216100 回になる (手で数えた値。実測も 216100)。素材 frame の判定は長さ
+ごとに覚えるので、前後の余白の合計を超えないことを見る (実測 2 / 3 回)。時間は出すだけにした。
+
+不透明な長さを覚えずに毎回数え直す mutant では、回数が 432200 / 648300 になって落ちる (この mutant の
+時間は 119.6ms で、以前の時間の閾値では落ちなかった)。
+
+### 25.2 先読みの準備の thread を作れないと例外が再生の tick から抜ける (P2)
+
+`[事実]` `requestSourcePreparation` は public ID と video source を予約した後で `std::thread` を作る。
+thread を作れない (OS の thread の上限・メモリ不足) と `std::system_error` が再生の tick から抜け、process
+が終わっていた。
+
+thread の作成の例外 (`std::system_error`・`std::bad_alloc`) を捕まえ、予約した source を返して (`rollbackSourceWorkLocked`)、失敗の `Result`
+(`DeviceFailure`) を返す。準備の ID は thread を作れた後に振る。controller は登録上限以外の準備の失敗と
+して扱い、境界で組み直す (§23 までの経路のまま)。
+
+試験用に、次に要求する準備の thread の作成を失敗させる seam (`failNextSourcePreparationThreadForTest`)
+を足した。`transition_preview` の `preparation-thread-failure` が、登録上限を 2 (再生中の A と境界の B) に
+した状態で thread の作成を失敗させ、準備の失敗が 1 回数えられ、再生が続き、登録済みの video source が 1
+(予約を返した) であること、engine を作り直さずに境界を越えることを見る。例外を捕まえない mutant では
+`terminate called after throwing an instance of 'std::system_error'` で process が終わり、捕まえても予約
+を返さない mutant では登録済みの video source が 2 になって落ちる (境界は組み直しで越えるので、登録数
+で見ないと見落とす)。
+
+`[未検証]` `transition_preview` を手元で繰り返すと、変更と関係の無い検査 (再生中のディゾルブの不透明度、
+Project が変わった後の境界、23.976fps の準備) がまれに落ちる (変更後 16 回中 3 回、変更前の build で 15 回中
+2 回)。23.976fps の失敗は時間切れを待たずに起きており、`pumpUntil` が条件の成立後にもう一度 event を
+処理してから条件を見直すため、その間に preview の更新が始まると準備できていないと判定する、と推測して
+いる (`[推測]`)。原因は確かめていない。
