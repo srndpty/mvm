@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -211,9 +212,18 @@ public:
         const project::Project&, const std::filesystem::path&, const std::filesystem::path&,
         const std::string&, const std::string&, const std::string&)>;
     void setRecoveryWriterForTest(RecoveryWriter writer) { recoveryWriter_ = std::move(writer); }
+    // recovery の worker thread の作り方を差し替える (試験用。作れない場合を試す)。
+    using RecoveryThreadFactory = std::function<std::thread(std::function<void()>)>;
+    void setRecoveryThreadFactoryForTest(RecoveryThreadFactory factory) {
+        recoveryThreadFactory_ = std::move(factory);
+    }
     // debounce を待たずに自動保存を始める (試験用)。書き込みの完了は待たない。
     void writeRecoveryAutosaveForTest() { writeRecoveryAutosave(); }
-    bool recoveryWriteInFlightForTest() const { return recoveryWrite_ != nullptr; }
+    bool recoveryWriteInFlightForTest() const {
+        return recoveryWrite_ != nullptr || !recoveryQueue_.empty();
+    }
+    // 自動保存に失敗した後の再試行の timer が動いている (試験用)。
+    bool recoveryRetryScheduledForTest() const { return recoveryMaximumTimer_.isActive(); }
     std::uint64_t recoveryRevisionForTest() const { return recoveryRevision_; }
     std::uint64_t currentRevisionForTest() const { return currentRevision_; }
     std::uint64_t recoveryWriteCompletionCountForTest() const {
@@ -230,6 +240,8 @@ public:
     // clip 境界で登録枠の不足と判定して Preview engine を作り直した回数。登録枠の不足ではない
     // 失敗 (恒久的に扱えない構成など) で作り直していないことの検査に使う。
     std::uint64_t playbackCapacityResetCount() const { return playbackCapacityResetCount_; }
+    // 境界で登録枠の一時的な不足に当たり、engine を作り直さずに枠が返るのを待った回数。
+    std::uint64_t playbackSlotWaitCount() const { return playbackSlotWaitCount_; }
     bool setPreviewRegistrationLimitForTest(std::size_t limit);
     bool disablePreviewAudioSourcesForTest();
     std::vector<std::int64_t> presentedFrameHistoryForTest() const;
@@ -797,13 +809,20 @@ private:
     void writeRecoveryAutosave();
     // waitForCompletion なら書き終えるまで待つ (shutdown の最後の書き込み)。
     void startRecoveryWrite(bool waitForCompletion);
-    // 書き込み中の recovery を待ち、結果を反映する。recovery file を消す・path を変える・
-    // recoveryRevision_ を読み替える前に呼ぶ (後から書き込みが届いて、消した recovery や
-    // 古い path の recovery を作り直さない)。
-    void settleRecoveryWrite();
+    // recovery の書き込み・削除は、積んだ順に 1 つずつ worker thread で行う。書き込み中に
+    // 保存済みの状態へ戻ったら削除を積んで待たずに戻る (書き込みの後に消える)。
+    struct RecoveryTask;
     struct RecoveryWriteJob;
+    void enqueueRecoveryDelete();
+    void pumpRecoveryQueue();
+    // 書き込み中・積んだままの recovery の処理を終わらせ、結果を反映する。利用者が明示した
+    // 操作 (保存・破棄・切り替え・復元) と shutdown で、recovery file を消す・path を変える・
+    // recoveryRevision_ を読み替える前に呼ぶ (後から書き込みが届いて、消した recovery や古い
+    // path の recovery を作り直さない)。
+    void settleRecoveryWrite();
     void completeRecoveryWrite(const std::shared_ptr<RecoveryWriteJob>& job);
     void applyRecoveryWriteResult(const RecoveryWriteJob& job);
+    project::ProjectIoResult runRecoveryTask(const RecoveryTask& task) const;
     void detectRecovery();
     void setCurrentClipSelection(int index);
     // expandLinks なら選んだ clip のリンク相手も選択に含める。
@@ -956,6 +975,11 @@ private:
     std::size_t playbackMaxPreparedSourceCount_ = 0;
     bool playbackCapacityFailure_ = false;
     std::optional<std::int64_t> pendingCapacityRebuildFrame_;
+    // 境界の登録上限が、取り消した準備・削除待ちの旧 source が枠を持っているための一時的な
+    // 不足だった。engine を作り直さず (作り直しは取り消した準備の thread を join する)、境界で
+    // 止めたまま枠が返るのを poll で待ち、同じ engine で組み直して再生を続ける。
+    std::optional<std::int64_t> pendingSlotRebuildFrame_;
+    std::uint64_t playbackSlotWaitCount_ = 0;
     QString lastPlaybackRebuildReason_;
     std::uint64_t playbackRebuildCount_ = 0;
     std::uint64_t playbackCapacityResetCount_ = 0;
@@ -1076,9 +1100,15 @@ private:
     std::uint64_t savedRevision_ = 0;
     std::uint64_t nextRevision_ = 1;
     std::uint64_t recoveryRevision_ = 0;
-    // 書き込み中の recovery (同時に 1 つだけ)。完了はこの job と同じときだけ反映する。
+    // 処理中の recovery の書き込み・削除 (同時に 1 つだけ)。完了はこの job と同じときだけ反映する。
     std::shared_ptr<RecoveryWriteJob> recoveryWrite_;
+    // 処理を待っている書き込み・削除 (積んだ順に行う)。
+    std::deque<std::shared_ptr<RecoveryTask>> recoveryQueue_;
+    std::uint64_t recoveryTaskSequence_ = 0;
+    // 最後に積んだ削除の番号。これより前に積んだ書き込みの完了は recovery 済みにしない。
+    std::uint64_t recoveryDeleteSequence_ = 0;
     RecoveryWriter recoveryWriter_;
+    RecoveryThreadFactory recoveryThreadFactory_;
     // 書き込み中に次の自動保存の時刻が来た。完了した後にもう一度書く。
     bool recoveryWriteAgain_ = false;
     std::uint64_t recoveryWriteCompletionCount_ = 0;

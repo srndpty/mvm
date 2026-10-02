@@ -873,9 +873,12 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // 再生中の endpoint の open を試みた回数・失敗した回数・掛かった時間の最大 (成功・失敗とも)。
     std::uint64_t playingAudioEndpointOpenAttemptCount = 0;
     std::uint64_t playingAudioEndpointOpenFailureCount = 0;
+    std::uint64_t playingAudioTransportStartFailureCount = 0;
     double maxPlayingAudioEndpointOpenAttemptMs = 0.0;
     // 試験用: 次の再生中の endpoint の open を、この時間待ってから失敗させる。
     std::optional<std::chrono::milliseconds> failNextPlayingEndpointOpenForTest;
+    // 試験用: 次の再生中の endpoint の open は成功させ、再生開始を失敗させる。
+    bool failNextPlayingTransportStartForTest = false;
     std::shared_ptr<PreparationHold> preparationHold = std::make_shared<PreparationHold>();
 
     Result<AudioPlacement> audioPlacementLocked(const PreviewSourceDescriptor& descriptor) const;
@@ -2258,14 +2261,19 @@ PreviewEngine::Impl::publishSourceWorkLocked(SourceWork& work, std::unique_lock<
                 Impl& impl;
                 bool playing;
                 std::chrono::steady_clock::time_point began;
+                // endpoint の open が成功した。その後の mix への接続・再生開始の失敗は open の
+                // 失敗と分けて数える (open 自体が遅い・失敗する機器の診断と混ぜない)。
+                bool opened = false;
                 bool succeeded = false;
 
                 ~EndpointAttempt() {
                     if (!playing)
                         return;
                     ++impl.playingAudioEndpointOpenAttemptCount;
-                    if (!succeeded)
+                    if (!opened)
                         ++impl.playingAudioEndpointOpenFailureCount;
+                    else if (!succeeded)
+                        ++impl.playingAudioTransportStartFailureCount;
                     impl.maxPlayingAudioEndpointOpenAttemptMs =
                         std::max(impl.maxPlayingAudioEndpointOpenAttemptMs,
                                  std::chrono::duration<double, std::milli>(
@@ -2280,6 +2288,8 @@ PreviewEngine::Impl::publishSourceWorkLocked(SourceWork& work, std::unique_lock<
             const auto injectedFailure =
                 addingWhilePlaying ? std::exchange(failNextPlayingEndpointOpenForTest, std::nullopt)
                                    : std::nullopt;
+            const bool injectedStartFailure =
+                addingWhilePlaying && std::exchange(failNextPlayingTransportStartForTest, false);
             lock.unlock();
             bool endpointOpened = false;
             if (injectedFailure) {
@@ -2296,6 +2306,7 @@ PreviewEngine::Impl::publishSourceWorkLocked(SourceWork& work, std::unique_lock<
                     PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
                     "WASAPI shared event-driven endpointをopenできません: " + audioError));
             }
+            attempt.opened = true;
             if (addingWhilePlaying) {
                 if (futureFirstAudio) {
                     if (!newAudioSink->detachPrimaryInput(work.audioWorker->queue(), audioError) ||
@@ -2309,8 +2320,13 @@ PreviewEngine::Impl::publishSourceWorkLocked(SourceWork& work, std::unique_lock<
                     }
                 }
                 lock.unlock();
-                const bool endpointPlaying = newAudioSink->play(
-                    newAudioStartSample, work.audioWorker->snapshot().sourceGeneration, audioError);
+                bool endpointPlaying = false;
+                if (injectedStartFailure)
+                    audioError = "試験で再生開始を失敗させました";
+                else
+                    endpointPlaying = newAudioSink->play(
+                        newAudioStartSample, work.audioWorker->snapshot().sourceGeneration,
+                        audioError);
                 lock.lock();
                 if (!endpointPlaying) {
                     rollback();
@@ -4584,6 +4600,8 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
         engine.impl_->playingAudioEndpointOpenAttemptCount;
     result.playingAudioEndpointOpenFailureCount =
         engine.impl_->playingAudioEndpointOpenFailureCount;
+    result.playingAudioTransportStartFailureCount =
+        engine.impl_->playingAudioTransportStartFailureCount;
     result.maxPlayingAudioEndpointOpenAttemptMs =
         engine.impl_->maxPlayingAudioEndpointOpenAttemptMs;
     result.publishedSourceCount = engine.impl_->eligibleSources.size();
@@ -4893,6 +4911,11 @@ Result<void> PreviewRenderPort::setRegisteredVideoSourceLimitForTest(PreviewEngi
                             "登録上限はReadyPausedで既存source数以上に設定してください");
     engine.impl_->registeredVideoSourceLimit = limit;
     return Result<void>::success();
+}
+
+void PreviewRenderPort::failNextPlayingAudioTransportStartForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    engine.impl_->failNextPlayingTransportStartForTest = true;
 }
 
 void PreviewRenderPort::failNextPlayingAudioEndpointOpenForTest(PreviewEngine& engine,

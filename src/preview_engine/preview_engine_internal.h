@@ -128,7 +128,10 @@ struct P5CRuntimeDiagnostics {
     // 上と同じ open の試み (成功・失敗とも) の回数・失敗の回数・control thread を止めた時間の
     // 最大 (ms)。失敗した open が遅い機器 (Bluetooth など) を見落とさない。
     std::uint64_t playingAudioEndpointOpenAttemptCount = 0;
+    // endpoint の open 自体の失敗だけを数える。open の後の mix への接続・再生開始の失敗は
+    // playingAudioTransportStartFailureCount。
     std::uint64_t playingAudioEndpointOpenFailureCount = 0;
+    std::uint64_t playingAudioTransportStartFailureCount = 0;
     double maxPlayingAudioEndpointOpenAttemptMs = 0.0;
     std::vector<std::int64_t> recentPresentedOutputFrames;
     // recentPresentedOutputFrames と同じ順に、提示した composition の layer 数と最前面 layer の
@@ -347,6 +350,8 @@ public:
     // milliseconds だけ止める。取り消した準備の完了を control thread で待たないことを見る。
     static void blockNextSourcePreparationForTest(PreviewEngine& engine, int milliseconds);
     // 次の再生中の WASAPI endpoint の open を、delayMilliseconds 待ってから失敗させる。
+    // 次の再生中の WASAPI endpoint の open は成功させ、その後の再生開始を失敗させる。
+    static void failNextPlayingAudioTransportStartForTest(PreviewEngine& engine);
     static void failNextPlayingAudioEndpointOpenForTest(PreviewEngine& engine,
                                                         int delayMilliseconds);
     // seek completionで得たaudio generationをengineが実際にenforceしているか

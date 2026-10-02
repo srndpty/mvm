@@ -687,6 +687,7 @@ bool MvmController::resetPreviewEngine() {
     pendingVideoPreparations_.clear();
     pendingAudioPreparations_.clear();
     stalePreparations_.clear();
+    pendingSlotRebuildFrame_.reset();
     ++playbackPreparationGeneration_;
     playbackPreparationFailure_.clear();
     submittedComposition_.reset();
@@ -1083,8 +1084,8 @@ void MvmController::scheduleRecoveryAutosave() {
     if (!dirty()) {
         recoveryDebounceTimer_.stop();
         recoveryMaximumTimer_.stop();
-        QString ignored;
-        removeRecoveryFile(ignored);
+        // 保存済みの状態へ戻った (Undo など)。書き込み中の recovery を待たず、その後に消す。
+        enqueueRecoveryDelete();
         return;
     }
     recoveryDebounceTimer_.start();
@@ -1092,11 +1093,24 @@ void MvmController::scheduleRecoveryAutosave() {
         recoveryMaximumTimer_.start();
 }
 
-struct MvmController::RecoveryWriteJob {
-    std::thread thread;
-    // 書き始めた時点の revision と Project file の path。
+struct MvmController::RecoveryTask {
+    enum class Kind { Write, Delete };
+    Kind kind = Kind::Write;
+    // 積んだ順の番号。
+    std::uint64_t sequence = 0;
+    // 書き込みは積んだ時点の revision と Project file の path を持つ。
     std::uint64_t revision = 0;
     std::filesystem::path projectPath;
+    std::filesystem::path recoveryPath;
+    project::Project snapshot;
+    std::string canonicalSha256;
+    std::string savedAt;
+    std::string sessionId;
+};
+
+struct MvmController::RecoveryWriteJob {
+    std::thread thread;
+    std::shared_ptr<RecoveryTask> task;
     // thread が書き、join の後に control thread が読む。
     project::ProjectIoResult result;
 };
@@ -1109,11 +1123,13 @@ void MvmController::startRecoveryWrite(bool waitForCompletion) {
     recoveryDebounceTimer_.stop();
     recoveryMaximumTimer_.stop();
     if (!dirty()) {
-        QString ignored;
-        removeRecoveryFile(ignored);
+        // 保存済みの状態へ戻った。書き込み中のものがあっても、その後に消えるので待たない。
+        enqueueRecoveryDelete();
+        if (waitForCompletion)
+            settleRecoveryWrite();
         return;
     }
-    if (recoveryWrite_) {
+    if (recoveryWrite_ || !recoveryQueue_.empty()) {
         // 書き込みは 1 つずつ行う (古い revision の書き込みが後から新しいものを上書きしない)。
         recoveryWriteAgain_ = true;
         if (waitForCompletion) {
@@ -1122,6 +1138,7 @@ void MvmController::startRecoveryWrite(bool waitForCompletion) {
         }
         return;
     }
+    recoveryWriteAgain_ = false;
     if (!projectLockHeld_ || recoveryRevision_ == currentRevision_)
         return;
     // diskを読み直すと、開いたあとの外部変更を基準hashとして記録してしまう。
@@ -1131,23 +1148,81 @@ void MvmController::startRecoveryWrite(bool waitForCompletion) {
         recoveryMaximumTimer_.start();
         return;
     }
-    auto job = std::make_shared<RecoveryWriteJob>();
-    job->revision = currentRevision_;
-    job->projectPath = projectPath_;
-    auto writer = recoveryWriter_ ? recoveryWriter_ : RecoveryWriter(project::saveProjectRecovery);
     // control thread で行うのは Project の複製まで。serialize と書き込みは worker で行う。
-    job->thread = std::thread(
-        [this, job, writer = std::move(writer), snapshot = project_, recovery = recoveryPath(),
-         canonical = projectPath_, sha = savedCanonicalSha256_,
-         savedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString(),
-         session = sessionId_] {
-            job->result = writer(snapshot, recovery, canonical, sha, savedAt, session);
-            QMetaObject::invokeMethod(
-                this, [this, job] { completeRecoveryWrite(job); }, Qt::QueuedConnection);
-        });
-    recoveryWrite_ = job;
+    auto task = std::make_shared<RecoveryTask>();
+    task->kind = RecoveryTask::Kind::Write;
+    task->sequence = ++recoveryTaskSequence_;
+    task->revision = currentRevision_;
+    task->projectPath = projectPath_;
+    task->recoveryPath = recoveryPath();
+    task->snapshot = project_;
+    task->canonicalSha256 = savedCanonicalSha256_;
+    task->savedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString();
+    task->sessionId = sessionId_;
+    recoveryQueue_.push_back(std::move(task));
+    pumpRecoveryQueue();
     if (waitForCompletion)
         settleRecoveryWrite();
+}
+
+void MvmController::enqueueRecoveryDelete() {
+    auto task = std::make_shared<RecoveryTask>();
+    task->kind = RecoveryTask::Kind::Delete;
+    task->sequence = ++recoveryTaskSequence_;
+    task->projectPath = projectPath_;
+    task->recoveryPath = recoveryPath();
+    recoveryDeleteSequence_ = task->sequence;
+    recoveryRevision_ = 0;
+    recoveryQueue_.push_back(std::move(task));
+    pumpRecoveryQueue();
+}
+
+project::ProjectIoResult MvmController::runRecoveryTask(const RecoveryTask& task) const {
+    // 例外は失敗として control thread へ返す (worker の例外で process を終わらせない)。
+    try {
+        if (task.kind == RecoveryTask::Kind::Delete) {
+            std::error_code error;
+            std::filesystem::remove(task.recoveryPath, error);
+            if (error)
+                return {false, error.message()};
+            return {true, {}};
+        }
+        const auto writer =
+            recoveryWriter_ ? recoveryWriter_ : RecoveryWriter(project::saveProjectRecovery);
+        return writer(task.snapshot, task.recoveryPath, task.projectPath, task.canonicalSha256,
+                      task.savedAt, task.sessionId);
+    } catch (const std::exception& error) {
+        return {false, std::string("例外: ") + error.what()};
+    } catch (...) {
+        return {false, "不明な例外"};
+    }
+}
+
+void MvmController::pumpRecoveryQueue() {
+    while (!recoveryWrite_ && !recoveryQueue_.empty()) {
+        auto job = std::make_shared<RecoveryWriteJob>();
+        job->task = std::move(recoveryQueue_.front());
+        recoveryQueue_.pop_front();
+        try {
+            auto work = [this, job] {
+                job->result = runRecoveryTask(*job->task);
+                QMetaObject::invokeMethod(
+                    this, [this, job] { completeRecoveryWrite(job); }, Qt::QueuedConnection);
+            };
+            job->thread =
+                recoveryThreadFactory_ ? recoveryThreadFactory_(work) : std::thread(work);
+            recoveryWrite_ = job;
+        } catch (const std::system_error& error) {
+            // thread を作れない。削除はここで行う (小さく、残すと消したはずの recovery が残る)。
+            // 書き込みは失敗として扱い、再試行の timer に任せる。
+            if (job->task->kind == RecoveryTask::Kind::Delete)
+                job->result = runRecoveryTask(*job->task);
+            else
+                job->result = {false, std::string("自動復旧の thread を作れません: ") +
+                                          error.what()};
+            applyRecoveryWriteResult(*job);
+        }
+    }
 }
 
 void MvmController::completeRecoveryWrite(const std::shared_ptr<RecoveryWriteJob>& job) {
@@ -1157,26 +1232,40 @@ void MvmController::completeRecoveryWrite(const std::shared_ptr<RecoveryWriteJob
     job->thread.join();
     recoveryWrite_.reset();
     applyRecoveryWriteResult(*job);
-    if (recoveryWriteAgain_) {
-        recoveryWriteAgain_ = false;
+    pumpRecoveryQueue();
+    if (recoveryWriteAgain_ && !recoveryWrite_ && recoveryQueue_.empty())
         startRecoveryWrite(false);
-    }
 }
 
 void MvmController::settleRecoveryWrite() {
-    if (!recoveryWrite_)
-        return;
-    const auto job = std::move(recoveryWrite_);
-    recoveryWrite_.reset();
-    job->thread.join();
-    applyRecoveryWriteResult(*job);
+    if (recoveryWrite_) {
+        const auto job = std::move(recoveryWrite_);
+        recoveryWrite_.reset();
+        job->thread.join();
+        applyRecoveryWriteResult(*job);
+    }
+    // 積んだままのものは、順に control thread で行う (呼ぶのは明示した操作と shutdown だけ)。
+    while (!recoveryQueue_.empty()) {
+        RecoveryWriteJob job;
+        job.task = std::move(recoveryQueue_.front());
+        recoveryQueue_.pop_front();
+        job.result = runRecoveryTask(*job.task);
+        applyRecoveryWriteResult(job);
+    }
 }
 
 void MvmController::applyRecoveryWriteResult(const RecoveryWriteJob& job) {
     ++recoveryWriteCompletionCount_;
+    const auto& task = *job.task;
+    if (task.kind == RecoveryTask::Kind::Delete) {
+        if (!job.result.success)
+            setStatus(QStringLiteral("自動復旧データを削除できません: ") +
+                      QString::fromStdString(job.result.error));
+        return;
+    }
     // 書いている間に Project file の path が変わった (別名で保存・切り替え)。書いた recovery は
     // 前の path のもので、今の Project の recovery ではない。
-    if (job.projectPath != projectPath_)
+    if (task.projectPath != projectPath_)
         return;
     if (!job.result.success) {
         setStatus(QStringLiteral("自動復旧データを保存できません: ") +
@@ -1184,8 +1273,11 @@ void MvmController::applyRecoveryWriteResult(const RecoveryWriteJob& job) {
         recoveryMaximumTimer_.start();
         return;
     }
+    // 後に積んだ削除で消える。
+    if (task.sequence < recoveryDeleteSequence_)
+        return;
     // recovery にあるのは書き始めた時点の revision。その後の編集は次の自動保存で書く。
-    recoveryRevision_ = job.revision;
+    recoveryRevision_ = task.revision;
 }
 
 void MvmController::detectRecovery() {
@@ -1532,6 +1624,19 @@ void MvmController::pollPreviewState() {
         if (ready && !busy_ && currentClipPath_.isEmpty() && !hasManimAsset())
             statusText_ = QStringLiteral("素材を追加してください");
         Q_EMIT stateChanged();
+    }
+    if (ready && pendingSlotRebuildFrame_ && stalePreparations_.empty() &&
+        retiredSources_.empty()) {
+        const auto frame = *pendingSlotRebuildFrame_;
+        pendingSlotRebuildFrame_.reset();
+        const auto* selected = topVideoClipAt(project_, frame);
+        const int clipIndex = selected
+                                  ? static_cast<int>(selected - project_.timelineClips.data())
+                                  : -1;
+        if (!queuePreparedPlayback(clipIndex, frame))
+            stopPlaybackWithError(QStringLiteral("登録枠が空いた後のPreviewを準備できません: ") +
+                                  statusText_);
+        return;
     }
     if (ready && pendingCapacityRebuildFrame_) {
         const auto frame = *pendingCapacityRebuildFrame_;
@@ -3661,6 +3766,8 @@ bool MvmController::playTimeline() {
     }
     if (playing_)
         return true;
+    // 枠が空くのを待っている境界からは、ここで改めて再生を始める (待った後の再開と二重にしない)。
+    pendingSlotRebuildFrame_.reset();
     // drag 中に再生を始めたら scrub の断片と通常再生が二重に鳴らないようにする。
     stopScrubAudio();
     if (project_.timelineClips.empty()) {
@@ -3705,6 +3812,7 @@ void MvmController::stopPlaybackWithError(QString error) {
     playbackClipIndex_ = -1;
     pendingPlaybackClipIndex_ = -1;
     pendingCapacityRebuildFrame_.reset();
+    pendingSlotRebuildFrame_.reset();
     retirePreparedPlaybackSources();
     setStatus(std::move(error));
 }
@@ -4242,6 +4350,11 @@ void MvmController::advanceTimelinePlayback() {
     ++playbackRebuildCount_;
     const bool capacityFailure = playbackCapacityFailure_;
     retirePreparedPlaybackSources();
+    // 取り消した準備・削除待ちの旧 source が枠を持っているだけなら、枠は待てば返る。engine を
+    // 作り直すと、取り消しの効かない段 (decoder の seek の途中など) にいる準備の thread を
+    // control thread で join することになる。
+    const bool transientCapacity =
+        capacityFailure && (!stalePreparations_.empty() || !retiredSources_.empty());
     playbackTimer_.stop();
     playbackClock_.invalidate();
     const auto paused = previewEngine_->pause();
@@ -4251,6 +4364,14 @@ void MvmController::advanceTimelinePlayback() {
         return;
     }
     playheadFrame_ = frame;
+    if (transientCapacity) {
+        ++playbackSlotWaitCount_;
+        playing_ = false;
+        pendingSlotRebuildFrame_ = frame;
+        statusText_ = QStringLiteral("登録枠が空くのを待って再生を続けます: ") + handOffFailure;
+        Q_EMIT stateChanged();
+        return;
+    }
     if (capacityFailure) {
         ++playbackCapacityResetCount_;
         if (!resetPreviewEngine()) {
@@ -4323,6 +4444,11 @@ bool MvmController::pauseTimeline() {
                           : QStringLiteral("シャトル停止位置を確定できません: ") + clockError);
             return true;
         }
+    }
+    if (pendingSlotRebuildFrame_) {
+        pendingSlotRebuildFrame_.reset();
+        statusText_ = QStringLiteral("timelineを一時停止しました");
+        Q_EMIT stateChanged();
     }
     if (!playing_)
         return true;
@@ -5023,8 +5149,8 @@ bool MvmController::moveTimelineClip(const QString& clipId, const QString& track
                                      int trackIndex, qint64 timelineStartFrame, bool) {
     if (busy_)
         return false;
-    if (!pauseTimeline())
-        return false;
+    // 候補の作成と検証は再生を止める前に行う (applyTimelineEdit と同じ)。受理されない操作・
+    // 変更の無い操作だけで再生を止めない。
     project::TrackRef destination;
     if (!resolveTrackRef(trackKind, trackIndex, destination)) {
         setStatus(QStringLiteral("移動先trackが不正です"));
@@ -5044,6 +5170,8 @@ bool MvmController::moveTimelineClip(const QString& clipId, const QString& track
         setStatus(QString::fromStdString(moved.error));
         return false;
     }
+    if (!pauseTimeline())
+        return false;
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     const QString status = movedIds.size() > 1 ? QString::number(movedIds.size()) +
@@ -5849,9 +5977,8 @@ bool MvmController::deleteSelection() {
 bool MvmController::deleteCurrentClip() {
     if (busy_)
         return false;
-    if (!pauseTimeline())
-        return false;
-
+    // 候補の作成と検証は再生を止める前に行う (applyTimelineEdit と同じ)。受理されない操作・
+    // 変更の無い操作だけで再生を止めない。
     const std::string currentId = currentClipId();
     if (currentId.empty()) {
         setStatus(QStringLiteral("削除するclipがありません"));
@@ -5880,6 +6007,8 @@ bool MvmController::deleteCurrentClip() {
         setStatus(QStringLiteral("削除するclipがありません"));
         return false;
     }
+    if (!pauseTimeline())
+        return false;
 
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
@@ -5971,20 +6100,23 @@ bool MvmController::stepEditHistory(std::vector<UndoEntry>& from, std::vector<Un
         setStatus(failurePrefix + QStringLiteral("Projectを排他できません"));
         return false;
     }
-    if (!pauseTimeline())
-        return false;
+    // 戻す編集が無い・直列化できない場合は再生を止める前に返す。現在の状態 (再生位置を含む) を
+    // 履歴へ積むのは止めた後 (止めると再生位置が確定する)。
     if (from.empty()) {
         setStatus(redo ? QStringLiteral("やり直せる編集がありません")
                        : QStringLiteral("元に戻せる編集がありません"));
         return false;
     }
-
-    UndoEntry& entry = from.back();
-    const auto serialized = project::serializeProjectJson(entry.project, projectPath_);
-    if (!serialized.success) {
-        setStatus(failurePrefix + QString::fromStdString(serialized.error));
-        return false;
+    {
+        const auto serialized = project::serializeProjectJson(from.back().project, projectPath_);
+        if (!serialized.success) {
+            setStatus(failurePrefix + QString::fromStdString(serialized.error));
+            return false;
+        }
     }
+    if (!pauseTimeline())
+        return false;
+    UndoEntry& entry = from.back();
 
     // 戻した先から逆向きに辿れるよう、いまの状態を反対側の履歴へ積む。どちらも複製せずに移す。
     // currentClipId() は project_ を読むので、移す前に取る。
@@ -6053,10 +6185,8 @@ bool MvmController::addTrack(const QString& trackKind) {
 bool MvmController::removeTrack(const QString& trackKind, int trackIndex) {
     if (busy_)
         return false;
-    // track を消すと後続 track の index が繰り上がる。preview cache は track index を
-    // key にしているので、止めてから組み直さないと stale な対応が残る。
-    if (!pauseTimeline())
-        return false;
+    // 候補の作成と検証は再生を止める前に行う (applyTimelineEdit と同じ)。受理されない操作・
+    // 変更の無い操作だけで再生を止めない。
     project::TrackRef track;
     if (!resolveTrackRef(trackKind, trackIndex, track)) {
         setStatus(QStringLiteral("削除するtrackが不正です"));
@@ -6068,6 +6198,10 @@ bool MvmController::removeTrack(const QString& trackKind, int trackIndex) {
         setStatus(QString::fromStdString(removed.error));
         return false;
     }
+    // track を消すと後続 track の index が繰り上がる。preview cache は track index を
+    // key にしているので、止めてから組み直さないと stale な対応が残る。
+    if (!pauseTimeline())
+        return false;
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     // index の対応が変わったので cache を捨ててから現在位置で組み直す。
@@ -6190,8 +6324,8 @@ bool MvmController::hasClipAt(const QString& trackKind, int trackIndex, qint64 f
 bool MvmController::rippleDeleteGap(const QString& trackKind, int trackIndex, qint64 frame) {
     if (busy_)
         return false;
-    if (!pauseTimeline())
-        return false;
+    // 候補の作成と検証は再生を止める前に行う (applyTimelineEdit と同じ)。受理されない操作・
+    // 変更の無い操作だけで再生を止めない。
     project::TrackRef track;
     if (!resolveTrackRef(trackKind, trackIndex, track)) {
         setStatus(QStringLiteral("trackが不正です"));
@@ -6203,6 +6337,8 @@ bool MvmController::rippleDeleteGap(const QString& trackKind, int trackIndex, qi
         setStatus(QString::fromStdString(rippled.error));
         return false;
     }
+    if (!pauseTimeline())
+        return false;
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     const std::string selectedId =
@@ -6559,13 +6695,23 @@ QVariantMap MvmController::projectSettingsForClip(const QString& clipId) const {
 bool MvmController::setProjectVideoSettings(int width, int height, int fpsNum, int fpsDen) {
     if (busy_)
         return false;
-    if (!pauseTimeline())
-        return false;
+    // 変更の無い設定・不正な値は再生を止める前に返す。再生位置の換算は止めた後に行う
+    // (止めると再生位置が確定する)。
     if (project_.outputWidth == width && project_.outputHeight == height &&
         project_.timelineFpsNum == fpsNum && project_.timelineFpsDen == fpsDen) {
         setStatus(QStringLiteral("Project設定は変更されていません"));
         return true;
     }
+    {
+        project::Project probe = project_;
+        const auto valid = project::setProjectVideoSettings(probe, width, height, fpsNum, fpsDen);
+        if (!valid.success) {
+            setStatus(QString::fromStdString(valid.error));
+            return false;
+        }
+    }
+    if (!pauseTimeline())
+        return false;
 
     const auto convertedPlayhead = project::sourceBoundaryToTimelineBoundary(
         playheadFrame_, project_.timelineFpsNum, project_.timelineFpsDen, fpsNum, fpsDen);

@@ -2525,7 +2525,8 @@ thread を止める。
 待つ処理を外した。取り消した準備が残っている間の登録上限は、引き継いだ直後の旧 source と同じ一時的な不足と
 して扱い、失敗した境界として覚えない。完了は毎 tick (`handOffPlaybackSources` の最初) と状態の poll が
 受け取り、枠が空いた後の tick で要求し直す。取り消した準備が境界まで終わらなければ、その境界は組み直しに
-なる (control thread は止めない)。
+なる (control thread は止めない)。`[当時]` この組み直しは登録上限の失敗として engine を作り直し、作り直しが
+止まった準備の thread を join していたので、control thread は止まった。止めない形は §24.1。
 
 試験用に、次に要求する準備を「取り消しも待ちも効かない段」で指定時間止める seam
 (`blockNextSourcePreparationForTest`。decoder の seek の途中に相当) を足した。`transition_preview` の
@@ -2564,7 +2565,8 @@ atomic に書いていた (README の「UI スレッドでファイル I/O を�
 - 完了は control thread で受け取り、書き始めた時点の revision だけを recovery 済み (`recoveryRevision_`)
   にする。書いている間に Project file の path が変わっていたら反映しない
 - recovery file を消す・別名で保存する・保存する・Project を切り替える・復元する・検出し直す前と、
-  shutdown では、書き込み中のものを待って結果を反映してから進める (`settleRecoveryWrite`)。後から書き込みが
+  shutdown では、書き込み中のものを待って結果を反映してから進める (`settleRecoveryWrite`)。
+  `[当時]` 保存済みの状態まで Undo したときの削除もここを通り、Undo が書き込みを待った。待たない形は §24.2後から書き込みが
   届いて、消した recovery を作り直さない。この待ちは利用者が明示した操作の中だけで起こる
 - 書き込み処理は試験で差し替えられる (`setRecoveryWriterForTest`)
 - 静的契約 `m7b_4_timeline_ui_architecture` は recovery を `project::saveProjectRecovery(` の呼び出しで
@@ -2599,6 +2601,96 @@ control thread を止めても 0 のままになる。成功・失敗にかか�
 掛かった時間の最大 (`playingAudioEndpointOpenAttemptCount` / `playingAudioEndpointOpenFailureCount` /
 `maxPlayingAudioEndpointOpenAttemptMs`) を記録する。
 
+`[当時]` 失敗の回数は、open の後の再生開始の失敗も含んでいた。分けた形は §24.5。
+
 試験用に、次の再生中の open を指定時間待ってから失敗させる seam を足した。`transition_preview` の
 `endpoint-open-failure` が、150ms 待って失敗させたときに、試み 1・失敗 1・試みの最大 150ms 以上 (実測
 160.7ms、成功の最大は 0.0ms) になることを見る。成功だけを記録する mutant では試み 0 になって落ちる。
+
+## 24. 4 回目のレビュー指摘への対応 (P1 1 件 / P2 3 件 / P3 1 件)
+
+§23 の対応への 4 回目のレビューで受けた指摘への対応を記録する。番号はレビューの番号。
+
+### 24.1 取り消した準備が境界まで残ると、engine の作り直しで join を待つ (#1, P1)
+
+`[事実]` §23.2 で、取り消した準備の枠のための登録上限は先読みの tick では待たなくなったが、準備が境界
+までに終わらないと、境界の引き継ぎの失敗は登録上限の失敗として engine を作り直していた。作り直し
+(`requestShutdown`) は、render device を安全に片付けるために準備の thread を join するので、取り消しの効かない
+段にいる準備を control thread で待った。
+
+境界の登録上限の失敗が、取り消した準備・削除待ちの旧 source が枠を持っているための一時的な不足なら、
+engine を作り直さない。境界で再生を止めたまま、状態の poll (100ms) で枠が返るのを待ち、返ったら同じ engine で
+組み直して再生を続ける (`pendingSlotRebuildFrame_`、回数は `playbackSlotWaitCount`)。待っている間に利用者が
+pause・再生・seek したら、待ちを取り消す。engine を作り直す場合も待ちを捨てる。取り消した準備・旧 source が
+無いのに登録上限に当たったときは、従来どおり engine を作り直す。
+
+`transition_preview` の `blocked-stale-capacity` を 2 つの長さで行う。準備を取り消しの効かない段で 800ms
+止める場合 (境界の前に枠が返る) は組み直しなしで越える。3000ms 止める場合 (境界 = 2 秒先を過ぎても返らない)
+は、枠待ち 1・組み直し 1・engine の作り直し 0 で、枠が返った後に再生を続けて 150 を越える。どちらも UI の
+timer (10ms) の最大の間隔が 400ms 未満であることを見る (実測 20.7ms / 21.2ms)。一時的な不足として扱わない
+mutant では、3000ms の場合に engine を作り直し、UI の最大の間隔が 1031.4ms になって落ちる。
+
+`[未検証]` 準備が取り消しの効かない段から戻らない (decoder が応答しない) と、境界で止まったまま再生を続け
+ない。UI は動き、pause・seek で抜けられる。shutdown と engine の作り直しは、従来どおりその thread を待つ。
+
+### 24.2 保存済みの状態まで Undo すると、recovery の書き込みを待つ (#2)
+
+`[事実]` §23.4 は recovery file を消す前に書き込み中のものを待っていたので、保存済みの状態まで Undo すると
+(`scheduleRecoveryAutosave` が recovery を消す)、Undo が書き込みの完了を control thread で待った。
+
+recovery の書き込み・削除を、積んだ順に 1 つずつ worker thread で行う列にした。保存済みの状態へ戻ったときは
+削除を積んで待たずに戻る。削除は書き込み中のものの後に行われるので、後から書き込みが recovery を作り直す
+ことはない。削除より前に積んだ書き込みの完了は recovery 済みにしない。保存・破棄・切り替え・復元・検出し直し
+と shutdown は、従来どおり列を終わらせてから進める (失敗を同期で知らせる必要がある)。
+
+`m7b_4_controller_export_lifecycle` が、書き込みを 1000ms 止めた状態で保存済みの状態まで Undo し、どの
+Undo も 400ms 未満で戻ること (実測 0.1ms)、その後に recovery が消え、作り直されないことを見る。以前の同期の
+削除に戻す mutant では Undo が書き込みを待って落ちる。既存の `testUndoRemovesRecovery` は Undo の直後に
+recovery が無いことを見ていたので、削除を待って見る形にした。
+
+### 24.3 recovery の worker の例外と thread を作れない場合 (#3)
+
+`[事実]` worker の中の例外は `std::terminate` になり、thread を作れないと `std::system_error` が control
+thread の event の経路へ出ていた。
+
+- worker は書き込み・削除の例外を捕まえ、失敗として control thread へ返す
+- thread を作れなければ、書き込みは失敗として扱い再試行の timer に任せる。削除はその場で行う (小さく、
+  残すと消したはずの recovery が残る)
+- thread の作り方は試験で差し替えられる (`setRecoveryThreadFactoryForTest`)
+
+`m7b_4_controller_export_lifecycle` が、例外を投げる writer で、process が続き、状態表示に
+「自動復旧データを保存できません」と例外の内容が出て、recovery 済みにならず、再試行の timer が動くことを
+見る。thread を作れない factory でも同じく失敗として扱い再試行を予定すること、直れば次の自動保存で書ける
+ことを見る。worker の例外を捕まえない mutant と、thread の作成の失敗を捕まえない mutant では、どちらも
+`terminate called after throwing` で process が終わる。
+
+### 24.4 受理されない・変更の無い編集で再生が止まる入口 (#4)
+
+`[事実]` §21.8 で `applyTimelineEdit` と書き出しは「検証してから止める」形にしたが、個別の入口のいくつかは
+先に再生を止めていた。次の入口で、候補の作成と検証・変更の有無の判定を再生を止める前に行う。
+
+- `moveTimelineClip` / `deleteCurrentClip` / `removeTrack` / `rippleDeleteGap`: 候補を作って検証し、commit
+  の直前に止める
+- `setProjectVideoSettings`: 変更が無い・値が不正なら止める前に返す。再生位置の換算は止めた後 (止めると
+  再生位置が確定する)
+- `stepEditHistory` (Undo / Redo): 戻す編集が無い・直列化できないなら止める前に返す。現在の状態を履歴へ
+  積むのは止めた後
+
+`transition_preview` の表 (`noop-edits-while-playing`) が、選択中の clip の無い位置から再生しながら、
+元に戻す編集の無い Undo、やり直す編集の無い Redo、同じ値・不正な値の Project 設定、削除する clip の無い
+削除、空白ではない位置のリップル削除、存在しない track の削除、存在しない clip の移動を行い、それぞれで
+再生が続き、revision と Undo の深さが変わらないことを見る。行ごとに判定できるよう、止まっていたら再生し
+直してから次の行へ進む。6 つの入口の先頭で止める mutant では 8 行すべてが落ちる。
+
+`[未検証]` 入口ごとに並べ替えただけで、レビューが勧める「候補の作成 → 再生の扱い → commit → preview の更新」
+の共通の transaction にはしていない。Manim の生成・素材の追加・切り替えなど、他の入口の順序は見直していない。
+
+### 24.5 再生開始の失敗を endpoint の open の失敗として数える (#5, P3)
+
+`[事実]` §23.6 の失敗の回数は、endpoint の open は成功し、その後の mix への接続・再生開始に失敗した場合も
+open の失敗として数えていた。open の失敗 (`playingAudioEndpointOpenFailureCount`) と、open の後の失敗
+(`playingAudioTransportStartFailureCount`) に分けた。試みの回数と時間は両方を含む。
+
+試験用に、次の再生中の open を成功させ再生開始を失敗させる seam を足した。`transition_preview` の
+`endpoint-start-failure` が、試み 1・open の失敗 0・再生開始の失敗 1 になること、`endpoint-open-failure` が
+open の失敗 1・再生開始の失敗 0 になることを見る。分けずに数える mutant では前者が落ちる。
