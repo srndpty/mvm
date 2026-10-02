@@ -390,6 +390,25 @@ static int attach_tractor_clip_filters(mlt_profile profile, mlt_producer cut,
                                        const MvmExportClip* clip, int track, long long filter_in,
                                        char* err, size_t err_size) {
     if (clip->is_audio) {
+        if (clip->mixer_pan != 0.0) {
+            mlt_filter balance = mlt_factory_filter(profile, "panner", NULL);
+            if (!balance) {
+                set_err(err, err_size, "パンフィルターを作成できません");
+                return 1;
+            }
+            mlt_properties props = MLT_FILTER_PROPERTIES(balance);
+            mlt_properties_set_int(props, "channel", -1);
+            mlt_properties_set_double(props, "start", (clip->mixer_pan + 1.0) * 0.5);
+            mlt_filter_set_in_and_out(
+                balance, (mlt_position)filter_in,
+                (mlt_position)(filter_in + clip->timeline_duration_frames - 1));
+            const int attached = mlt_producer_attach(cut, balance);
+            mlt_filter_close(balance);
+            if (attached != 0) {
+                set_err(err, err_size, "パンフィルターを接続できません");
+                return 1;
+            }
+        }
         const double first_gain = clip->gain_keyframes[0].gain;
         int constant = 1;
         for (int index = 1; index < clip->gain_keyframe_count; ++index)
@@ -878,6 +897,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             goto cleanup;
         }
         if (clip->is_audio) {
+            if (!isfinite(clip->mixer_pan) || clip->mixer_pan < -1.0 || clip->mixer_pan > 1.0) {
+                set_err(err, err_size, "音声パンが範囲外です");
+                goto cleanup;
+            }
             if (!clip->gain_keyframes ||
                 clip->gain_keyframe_count != clip->timeline_duration_frames) {
                 set_err(err, err_size, "audio clip %dのgain key数が尺と一致しません", index);
@@ -886,7 +909,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             for (int key_index = 0; key_index < clip->gain_keyframe_count; ++key_index) {
                 const MvmExportGainKeyframe* key = &clip->gain_keyframes[key_index];
                 if (key->local_frame != key_index || !isfinite(key->gain) || key->gain < 0.0 ||
-                    key->gain > 2.0) {
+                    key->gain > 2.0 * 5.623414) {
                     set_err(err, err_size, "audio clip %dのgain keyが不正です", index);
                     goto cleanup;
                 }

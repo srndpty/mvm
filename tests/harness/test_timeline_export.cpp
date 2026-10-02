@@ -1070,7 +1070,8 @@ int main(int argc, char** argv) {
                        L"-c:a", L"pcm_s16le", wave.c_str(), static_cast<wchar_t*>(nullptr)) == 0,
               "gain検証用WAVを生成できません");
         auto renderGain = [&](const char* name, double base,
-                              std::vector<mvm::project::ClipKeyframe> keys) {
+                              std::vector<mvm::project::ClipKeyframe> keys, double mixerGain = 0,
+                              double mixerPan = 0, int channels = 1) {
             auto project = mvm::project::createDefaultProject();
             mvm::project::TimelineClip video;
             video.kind = mvm::project::TimelineClipKind::Video;
@@ -1088,6 +1089,8 @@ int main(int argc, char** argv) {
             sound.track = {mvm::project::TrackKind::Audio, 0};
             sound.mediaPath = wave;
             sound.id = "gain-audio";
+            project.audioTracks[0].mixerGainDb = mixerGain;
+            project.audioTracks[0].mixerPan = mixerPan;
             sound.effects.volumePercent = base;
             sound.effects.volumeKeys = std::move(keys);
             project.timelineClips.push_back(sound);
@@ -1103,9 +1106,9 @@ int main(int argc, char** argv) {
             }
             const auto raw = testDirectory / (std::string(name) + ".f32");
             check(_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
-                           L"-i", gainRequest.outputPath.c_str(), L"-map", L"0:a:0", L"-ac", L"1",
-                           L"-c:a", L"pcm_f32le", L"-f", L"f32le", raw.c_str(),
-                           static_cast<wchar_t*>(nullptr)) == 0,
+                           L"-i", gainRequest.outputPath.c_str(), L"-map", L"0:a:0", L"-ac",
+                           channels == 2 ? L"2" : L"1", L"-c:a", L"pcm_f32le", L"-f", L"f32le",
+                           raw.c_str(), static_cast<wchar_t*>(nullptr)) == 0,
                   "gain書き出しのPCMを抽出できません");
             std::ifstream stream(raw, std::ios::binary | std::ios::ate);
             if (!stream)
@@ -1136,6 +1139,48 @@ int main(int argc, char** argv) {
         check(rms(boosted, 20000, 8000) > reference * 1.6, "音量200%が実際のPCMを増幅していません");
         check(rms(ramp, 4000, 4000) < rms(ramp, 38000, 4000) * 0.3,
               "時間変化する音量が実際のPCMへ反映されていません");
+        const auto mixerBoost = renderGain("mixer-boost", 100, {}, 15);
+        const auto mixerSilence = renderGain("mixer-silence", 100, {}, -96);
+        check(std::abs(rms(mixerBoost, 20000, 8000) / reference - 5.6234132519) < 0.15,
+              "+15 dBのトラック音量が実際の書き出しへ反映されません");
+        check(rms(mixerSilence, 20000, 8000) < reference * 0.01,
+              "トラックの無音が実際の書き出しへ反映されません");
+        const auto panLeft = renderGain("mixer-left", 100, {}, 0, -1, 2);
+        const auto panRight = renderGain("mixer-right", 100, {}, 0, 1, 2);
+        const auto channelRms = [](const std::vector<float>& samples, std::size_t channel) {
+            if (samples.size() < 56000)
+                return 0.0;
+            double power = 0;
+            for (std::size_t frame = 10000; frame < 20000; ++frame)
+                power += static_cast<double>(samples[frame * 2 + channel]) *
+                         samples[frame * 2 + channel];
+            return std::sqrt(power / 10000.0);
+        };
+        check(channelRms(panLeft, 0) > 0.01 && channelRms(panLeft, 1) < 0.0001 &&
+                  channelRms(panRight, 0) < 0.0001 && channelRms(panRight, 1) > 0.01,
+              "左右端のパンが実際の書き出しPCMへ反映されません");
+        // C interfaceから不正なパンを渡した負例。別の引数の違反で落ちていないことも確認する。
+        MvmExportClip badPan{};
+        const auto waveUtf8 = toUtf8(wave);
+        badPan.path = waveUtf8.c_str();
+        badPan.source_fps_num = 60;
+        badPan.source_fps_den = 1;
+        badPan.source_frame_count = 60;
+        badPan.source_out_frame = 60;
+        badPan.producer_out_frame = 60;
+        badPan.speed_num = 1;
+        badPan.speed_den = 1;
+        badPan.is_audio = 1;
+        badPan.mixer_pan = 2;
+        badPan.timeline_duration_frames = 60;
+        const MvmExportSpec badSpec{320, 240, 60, 1, 23, 10000, 4, 0, nullptr, nullptr};
+        char badError[512]{};
+        const auto badOutput = testDirectory / L"invalid-mixer-pan.mp4";
+        check(mvm_mlt_export_two_track(&badPan, 1, 60, &badSpec, toUtf8(badOutput).c_str(), nullptr,
+                                       badError, sizeof(badError)) == MVM_EXPORT_FAILED &&
+                  std::string(badError).find("音声パンが範囲外") != std::string::npos &&
+                  !std::filesystem::exists(badOutput),
+              "不正なパンを違反箇所で拒否しません");
     }
 
     // 保持 producer が指定 frame を全区間へ出し、元の右半分へ戻ることを画素で確認する。

@@ -44,6 +44,8 @@ public:
 
     audio::WasapiSnapshot sinkSnapshot() const { return sink_.snapshot(); }
 
+    void clearMeterClip() { sink_.clearMeterClip(); }
+
     std::string error() const;
 
 private:

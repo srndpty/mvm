@@ -1,6 +1,7 @@
 #ifndef MVM_AUDIO_PREVIEW_AUDIO_FRAME_QUEUE_H
 #define MVM_AUDIO_PREVIEW_AUDIO_FRAME_QUEUE_H
 
+#include "media/audio_preview/audio_mixer_bus.h"
 #include "media/audio_preview/audio_types.h"
 
 #include <condition_variable>
@@ -77,6 +78,11 @@ public:
                                std::int64_t samples, SourceGeneration expectedGeneration);
     std::int64_t discardBefore(std::int64_t sample, SourceGeneration expectedGeneration);
     void setGainAtSample(std::function<float(std::int64_t)> gainAtSample);
+
+    void setMixerBus(std::shared_ptr<AudioMixerBus> bus) { mixerBus_ = std::move(bus); }
+
+    const std::shared_ptr<AudioMixerBus>& mixerBus() const { return mixerBus_; }
+
     bool markEndOfStream(SourceGeneration generation, std::int64_t endSampleExclusive);
     bool setGeneration(SourceGeneration generation);
     void noteUnderflow(std::int64_t samples);
@@ -88,6 +94,7 @@ public:
 
 private:
     std::function<float(std::int64_t)> gainAtSample_;
+    std::shared_ptr<AudioMixerBus> mixerBus_;
     SourceId source_{};
     SourceGeneration generation_{};
     std::int64_t hardMaxSamples_ = kQueueHardMaxSamples;

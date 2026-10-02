@@ -828,14 +828,16 @@ ApplicationWindow {
                     // premiere と同じく、同じ領域をタブで切り替える。
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: 14
+                        spacing: 8
 
                         Repeater {
-                            model: ["エフェクトコントロール", "プロジェクト: " + root.projectFileName]
+                            model: ["エフェクトコントロール", "プロジェクト: " + root.projectFileName, "オーディオミキサー"]
                             Label {
                                 required property int index
                                 required property string modelData
-                                Layout.maximumWidth: index === 1 ? leftPanel.availableWidth * 0.55 : -1
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: leftPanel.availableWidth / 3
+                                horizontalAlignment: Text.AlignHCenter
                                 text: modelData
                                 color: root.leftPanelTab === index ? "#e6e8ec" : "#8a919c"
                                 font.bold: root.leftPanelTab === index
@@ -1117,6 +1119,10 @@ ApplicationWindow {
                         ProjectPanel {
                             id: projectPanel
                             objectName: "projectPanel"
+                            mvmController: root.mvmController
+                        }
+                        AudioMixerPanel {
+                            objectName: "audioMixerPanel"
                             mvmController: root.mvmController
                         }
                     }
@@ -1435,32 +1441,16 @@ ApplicationWindow {
                 }
             }
 
-            ColumnLayout {
+            AudioMixerStrip {
+                objectName: "previewMasterMixer"
                 Layout.leftMargin: 8
-                Layout.preferredWidth: 110
-                Layout.minimumWidth: 110
-                Layout.maximumWidth: 110
+                Layout.preferredWidth: 88
+                Layout.minimumWidth: 88
+                Layout.maximumWidth: 88
                 Layout.fillHeight: true
-                spacing: 4
-                AudioMeter {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    dbLeft: root.mvmController.audioMeterDbLeft
-                    dbRight: root.mvmController.audioMeterDbRight
-                }
-                Label {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "音量 " + Math.round(root.mvmController.masterVolume * 100) + "%"
-                    color: "#9aa2ad"
-                    font.pixelSize: 10
-                }
-                Slider {
-                    Layout.fillWidth: true
-                    from: 0
-                    to: 1
-                    value: root.mvmController.masterVolume
-                    onMoved: root.mvmController.masterVolume = value
-                }
+                mvmController: root.mvmController
+                master: true
+                compact: true
             }
         }
 

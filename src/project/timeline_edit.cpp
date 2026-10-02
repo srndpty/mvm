@@ -719,6 +719,12 @@ TimelineValidationResult validateTimeline(const Project& project) {
             return result;
         }
     }
+    for (const auto& track : project.audioTracks) {
+        if (!isValidAudioMix(track.mixerGainDb, track.mixerPan)) {
+            result.error = "トラック音量またはパンが範囲外です";
+            return result;
+        }
+    }
     std::unordered_set<std::string> ids;
 
     struct LinkGroupSummary {

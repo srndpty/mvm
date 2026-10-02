@@ -14,11 +14,11 @@
 #include "image_raster_cache.h"
 #include "media_file_filters.h"
 #include "media_import.h"
+#include "preview_engine/preview_engine_internal.h"
 #include "project/clip_effects.h"
 #include "project/path_identity.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
-#include "preview_engine/preview_engine_internal.h"
 #include "scrub_audio_playback.h"
 #include "shuttle_audio_mix.h"
 #include "shuttle_audio_playback.h"
@@ -26,13 +26,13 @@
 #include "track_model.h"
 #include "util/mvm_reveal_in_explorer.h"
 
-#include <thread>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <set>
 #include <system_error>
+#include <thread>
 #include <tuple>
 #include <utility>
 
@@ -61,7 +61,8 @@ QString fromPath(const std::filesystem::path& path) {
 }
 
 // 同じ source・静止画を同じ順に重ねているか (不透明度や位置などの値は問わない)。
-bool sameLayerSources(const preview::CompositionSnapshot& a, const preview::CompositionSnapshot& b) {
+bool sameLayerSources(const preview::CompositionSnapshot& a,
+                      const preview::CompositionSnapshot& b) {
     return std::equal(a.layers.begin(), a.layers.end(), b.layers.begin(), b.layers.end(),
                       [](const auto& x, const auto& y) {
                           return x.source == y.source && x.stillImage == y.stillImage;
@@ -633,8 +634,22 @@ bool MvmController::initializePreviewEngine(const QString& failurePrefix) {
     return true;
 }
 
+void MvmController::clearMasterAudioClip() {
+    previewEngine_->clearAudioMeterClip();
+    if (shuttleAudio_)
+        shuttleAudio_->clearMeterClip();
+    if (scrubAudio_)
+        scrubAudio_->clearMeterClip();
+    audioMeterClipped_ = false;
+    Q_EMIT meterChanged();
+}
+
 void MvmController::setMasterVolume(double volume) {
-    const double clamped = std::clamp(volume, 0.0, 1.0);
+    if (!std::isfinite(volume)) {
+        setStatus(QStringLiteral("マスター音量が不正です"));
+        return;
+    }
+    const double clamped = std::clamp(volume, 0.0, static_cast<double>(audio::kMaximumMasterGain));
     if (std::abs(masterVolume_ - clamped) < 0.0001)
         return;
     if (shuttleAudio_) {
@@ -866,6 +881,16 @@ void MvmController::refreshTimelineModel() {
     }
     if (videoTrackModel_)
         videoTrackModel_->setProject(project_);
+    audioMixerBuses_.resize(project_.audioTracks.size());
+    audioMixerPeaks_.resize(project_.audioTracks.size());
+    for (std::size_t i = 0; i < audioMixerBuses_.size(); ++i) {
+        if (!audioMixerBuses_[i])
+            audioMixerBuses_[i] = std::make_shared<audio::AudioMixerBus>();
+        const auto gains = project::audioMixGains(project_.audioTracks[i].mixerGainDb,
+                                                  project_.audioTracks[i].mixerPan);
+        audioMixerBuses_[i]->leftGain.store(static_cast<float>(gains.first));
+        audioMixerBuses_[i]->rightGain.store(static_cast<float>(gains.second));
+    }
     if (audioTrackModel_)
         audioTrackModel_->setProject(project_);
     if (mediaBinModel_)
@@ -1209,8 +1234,7 @@ void MvmController::pumpRecoveryQueue() {
                 QMetaObject::invokeMethod(
                     this, [this, job] { completeRecoveryWrite(job); }, Qt::QueuedConnection);
             };
-            job->thread =
-                recoveryThreadFactory_ ? recoveryThreadFactory_(work) : std::thread(work);
+            job->thread = recoveryThreadFactory_ ? recoveryThreadFactory_(work) : std::thread(work);
             recoveryWrite_ = job;
         } catch (const std::system_error& error) {
             // thread を作れない。削除はここで行う (小さく、残すと消したはずの recovery が残る)。
@@ -1218,8 +1242,8 @@ void MvmController::pumpRecoveryQueue() {
             if (job->task->kind == RecoveryTask::Kind::Delete)
                 job->result = runRecoveryTask(*job->task);
             else
-                job->result = {false, std::string("自動復旧の thread を作れません: ") +
-                                          error.what()};
+                job->result = {false,
+                               std::string("自動復旧の thread を作れません: ") + error.what()};
             applyRecoveryWriteResult(*job);
         }
     }
@@ -1566,6 +1590,9 @@ bool MvmController::syncManimTimelineClip(bool addIfMissing) {
 }
 
 void MvmController::pollAudioMeter() {
+    for (std::size_t i = 0; i < audioMixerBuses_.size(); ++i)
+        audioMixerPeaks_[i] = {audioMixerBuses_[i]->peakLeft.exchange(0.0F),
+                               audioMixerBuses_[i]->peakRight.exchange(0.0F)};
     if (!previewEngine_)
         return;
     const auto telemetry = previewEngine_->telemetry();
@@ -1574,12 +1601,18 @@ void MvmController::pollAudioMeter() {
     const auto own = shuttleAudio_ ? shuttleAudio_->sinkSnapshot()
                      : scrubAudio_ ? scrubAudio_->sinkSnapshot()
                                    : audio::WasapiSnapshot{};
-    const double left =
-        linearToDb(ownSink ? own.meterPeakLeft : telemetry.audioMeterPeakLeft, kMeterSilenceDb);
-    const double right =
-        linearToDb(ownSink ? own.meterPeakRight : telemetry.audioMeterPeakRight, kMeterSilenceDb);
-    if (std::abs(left - audioMeterDbLeft_) < 0.05 && std::abs(right - audioMeterDbRight_) < 0.05)
+    const double left = linearToDb((ownSink ? own.meterPeakLeft : telemetry.audioMeterPeakLeft) *
+                                       static_cast<float>(std::min(1.0, masterVolume_)),
+                                   kMeterSilenceDb);
+    const double right = linearToDb((ownSink ? own.meterPeakRight : telemetry.audioMeterPeakRight) *
+                                        static_cast<float>(std::min(1.0, masterVolume_)),
+                                    kMeterSilenceDb);
+    const bool clipped =
+        audioMeterClipped_ || (ownSink ? own.meterClipped : telemetry.audioMeterClipped);
+    if (clipped == audioMeterClipped_ && std::abs(left - audioMeterDbLeft_) < 0.05 &&
+        std::abs(right - audioMeterDbRight_) < 0.05)
         return;
+    audioMeterClipped_ = clipped;
     audioMeterDbLeft_ = left;
     audioMeterDbRight_ = right;
     Q_EMIT meterChanged();
@@ -1630,9 +1663,8 @@ void MvmController::pollPreviewState() {
         const auto frame = *pendingSlotRebuildFrame_;
         pendingSlotRebuildFrame_.reset();
         const auto* selected = topVideoClipAt(project_, frame);
-        const int clipIndex = selected
-                                  ? static_cast<int>(selected - project_.timelineClips.data())
-                                  : -1;
+        const int clipIndex =
+            selected ? static_cast<int>(selected - project_.timelineClips.data()) : -1;
         if (!queuePreparedPlayback(clipIndex, frame))
             stopPlaybackWithError(QStringLiteral("登録枠が空いた後のPreviewを準備できません: ") +
                                   statusText_);
@@ -1642,11 +1674,11 @@ void MvmController::pollPreviewState() {
         const auto frame = *pendingCapacityRebuildFrame_;
         pendingCapacityRebuildFrame_.reset();
         const auto* selected = topVideoClipAt(project_, frame);
-        const int clipIndex = selected
-                                  ? static_cast<int>(selected - project_.timelineClips.data())
-                                  : -1;
+        const int clipIndex =
+            selected ? static_cast<int>(selected - project_.timelineClips.data()) : -1;
         if (!queuePreparedPlayback(clipIndex, frame))
-            stopPlaybackWithError(QStringLiteral("登録上限後のPreviewを準備できません: ") + statusText_);
+            stopPlaybackWithError(QStringLiteral("登録上限後のPreviewを準備できません: ") +
+                                  statusText_);
         return;
     }
     if (status.state == preview::PreviewEngineState::ReadyPaused && pendingVideoPath_) {
@@ -1740,6 +1772,7 @@ bool MvmController::audioDescriptorFor(const TimelinePreviewAudioLayerMapping& l
     descriptor = preview::PreviewSourceDescriptor{};
     descriptor.mediaPath = clip.mediaPath;
     descriptor.audioEnabled = true;
+    descriptor.audioMixerBus = audioMixerBuses_.at(static_cast<std::size_t>(clip.track.index));
     descriptor.audioSampleOffset = offset.sampleOffset;
     descriptor.audioTimelineStartFrame = clip.timelineStartFrame;
     descriptor.speedNum = clip.speedNum;
@@ -1765,10 +1798,11 @@ bool MvmController::audioDescriptorFor(const TimelinePreviewAudioLayerMapping& l
         return false;
     }
     // 音量カーブ・フェード・クロスフェードは書き出しと同じ区間の評価を使う。
+    auto gainSegment = layer.segment;
+    gainSegment.mixerGainDb = 0.0;
     descriptor.audioGainAtMediaSample =
-        [segment = layer.segment, sampleOffset = offset.sampleOffset, timelineFpsNum,
-         timelineFpsDen, segmentStart, segmentEnd,
-         timebase = timebase.value()](std::int64_t mediaSample) -> float {
+        [segment = gainSegment, sampleOffset = offset.sampleOffset, timelineFpsNum, timelineFpsDen,
+         segmentStart, segmentEnd, timebase = timebase.value()](std::int64_t mediaSample) -> float {
         const auto timelineSample = mediaSample - sampleOffset;
         if (timelineSample < 0)
             return 0.0F;
@@ -2866,8 +2900,8 @@ bool MvmController::previewVideoAtPlayhead() const {
     for (std::size_t index = 0; index < active.size(); ++index)
         if (active[index] && active[index]->enabled &&
             !project::isStillClipKind(active[index]->kind) &&
-            project::isTrackOutputEnabled(
-                project_, {project::TrackKind::Video, static_cast<int>(index)}))
+            project::isTrackOutputEnabled(project_,
+                                          {project::TrackKind::Video, static_cast<int>(index)}))
             return true;
     return false;
 }
@@ -3836,8 +3870,8 @@ bool MvmController::setPreviewRegistrationLimitForTest(std::size_t limit) {
     if (!previewEngine_)
         return false;
     return static_cast<bool>(
-        preview::internal::PreviewRenderPort::setRegisteredVideoSourceLimitForTest(
-            *previewEngine_, limit));
+        preview::internal::PreviewRenderPort::setRegisteredVideoSourceLimitForTest(*previewEngine_,
+                                                                                   limit));
 }
 
 void MvmController::cancelSourcePreparations() {
@@ -3873,13 +3907,12 @@ void MvmController::adoptPreparationOutcome(preview::PreviewPreparationId id,
                      [&](const auto& pending) { return pending.id == id; });
     const bool known =
         video != pendingVideoPreparations_.end() || audio != pendingAudioPreparations_.end();
-    const std::uint64_t generation = video != pendingVideoPreparations_.end() ? video->generation
-                                     : audio != pendingAudioPreparations_.end()
-                                         ? audio->generation
-                                         : 0;
-    const std::int64_t boundary = video != pendingVideoPreparations_.end() ? video->boundary
+    const std::uint64_t generation = video != pendingVideoPreparations_.end()   ? video->generation
+                                     : audio != pendingAudioPreparations_.end() ? audio->generation
+                                                                                : 0;
+    const std::int64_t boundary = video != pendingVideoPreparations_.end()   ? video->boundary
                                   : audio != pendingAudioPreparations_.end() ? audio->boundary
-                                                                               : 0;
+                                                                             : 0;
     std::optional<TrackPreviewSource> videoEntry;
     std::optional<AudioPreviewSource> audioEntry;
     if (video != pendingVideoPreparations_.end()) {
@@ -3936,16 +3969,16 @@ void MvmController::waitDueSourcePreparations(std::int64_t frame) {
     const auto began = std::chrono::steady_clock::now();
     for (const auto id : due)
         adoptPreparationOutcome(id, previewEngine_->waitSourcePreparation(id));
-    playbackMaxPreparationMs_ = std::max(
-        playbackMaxPreparationMs_,
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
-            .count());
+    playbackMaxPreparationMs_ =
+        std::max(playbackMaxPreparationMs_,
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
+                     .count());
 }
 
 void MvmController::blockNextSourcePreparationForTest(int milliseconds) {
     if (previewEngine_)
         preview::internal::PreviewRenderPort::blockNextSourcePreparationForTest(*previewEngine_,
-                                                                                 milliseconds);
+                                                                                milliseconds);
 }
 
 void MvmController::holdSourcePreparationsForTest(bool held) {
@@ -4328,8 +4361,8 @@ void MvmController::advanceTimelinePlayback() {
             failedPreparationStart_.reset();
             playbackCapacityFailure_ = false;
         }
-        // 先読みは引き継ぎの後に行う。境界の tick で先に行うと、まだ引き継いでいない境界の source に
-        // 加えてその次の境界まで準備してしまう。旧 source の削除は状態の poll (100ms) を待たず
+        // 先読みは引き継ぎの後に行う。境界の tick で先に行うと、まだ引き継いでいない境界の source
+        // に 加えてその次の境界まで準備してしまう。旧 source の削除は状態の poll (100ms) を待たず
         // ここでも行い、次の境界の準備に登録枠を早く返す。
         removeRetiredSources(previewEngine_->status());
         QString preparationFailure;
@@ -4382,8 +4415,7 @@ void MvmController::advanceTimelinePlayback() {
         playbackTimer_.stop();
         playing_ = false;
         pendingCapacityRebuildFrame_ = frame;
-        statusText_ = QStringLiteral("登録上限でPreviewを組み直しています: ") +
-                      handOffFailure;
+        statusText_ = QStringLiteral("登録上限でPreviewを組み直しています: ") + handOffFailure;
         Q_EMIT stateChanged();
         return;
     }
@@ -5870,28 +5902,27 @@ QVariantMap MvmController::computeSelectedTransition() const {
     if (!outgoingDuration.success || !incomingDuration.success || !limits.success)
         return {};
     const qint64 cut = outgoingClip.timelineStartFrame + outgoingDuration.frame;
-    return {
-        {QStringLiteral("transitionId"), QString::fromStdString(found->id)},
-        {QStringLiteral("trackKind"),
-         QString::fromLatin1(project::trackKindName(outgoingClip.track.kind))},
-        {QStringLiteral("cut"), cut},
-        {QStringLiteral("framesBeforeCut"), static_cast<qint64>(found->framesBeforeCut)},
-        {QStringLiteral("framesAfterCut"), static_cast<qint64>(found->framesAfterCut)},
-        {QStringLiteral("durationText"),
-         QString::fromStdString(core::formatTimecode(found->framesBeforeCut + found->framesAfterCut,
-                                                     project_.timelineFpsNum,
-                                                     project_.timelineFpsDen))},
-        {QStringLiteral("maxBefore"), static_cast<qint64>(limits.maxBefore)},
-        {QStringLiteral("maxAfter"), static_cast<qint64>(limits.maxAfter)},
-        {QStringLiteral("outgoingClipId"), QString::fromStdString(outgoingClip.id)},
-        {QStringLiteral("outgoingName"), QString::fromStdString(outgoingClip.name)},
-        {QStringLiteral("outgoingStart"), static_cast<qint64>(outgoingClip.timelineStartFrame)},
-        {QStringLiteral("outgoingEnd"), cut},
-        {QStringLiteral("incomingClipId"), QString::fromStdString(incomingClip.id)},
-        {QStringLiteral("incomingName"), QString::fromStdString(incomingClip.name)},
-        {QStringLiteral("incomingStart"), static_cast<qint64>(incomingClip.timelineStartFrame)},
-        {QStringLiteral("incomingEnd"),
-         static_cast<qint64>(incomingClip.timelineStartFrame + incomingDuration.frame)}};
+    return {{QStringLiteral("transitionId"), QString::fromStdString(found->id)},
+            {QStringLiteral("trackKind"),
+             QString::fromLatin1(project::trackKindName(outgoingClip.track.kind))},
+            {QStringLiteral("cut"), cut},
+            {QStringLiteral("framesBeforeCut"), static_cast<qint64>(found->framesBeforeCut)},
+            {QStringLiteral("framesAfterCut"), static_cast<qint64>(found->framesAfterCut)},
+            {QStringLiteral("durationText"),
+             QString::fromStdString(
+                 core::formatTimecode(found->framesBeforeCut + found->framesAfterCut,
+                                      project_.timelineFpsNum, project_.timelineFpsDen))},
+            {QStringLiteral("maxBefore"), static_cast<qint64>(limits.maxBefore)},
+            {QStringLiteral("maxAfter"), static_cast<qint64>(limits.maxAfter)},
+            {QStringLiteral("outgoingClipId"), QString::fromStdString(outgoingClip.id)},
+            {QStringLiteral("outgoingName"), QString::fromStdString(outgoingClip.name)},
+            {QStringLiteral("outgoingStart"), static_cast<qint64>(outgoingClip.timelineStartFrame)},
+            {QStringLiteral("outgoingEnd"), cut},
+            {QStringLiteral("incomingClipId"), QString::fromStdString(incomingClip.id)},
+            {QStringLiteral("incomingName"), QString::fromStdString(incomingClip.name)},
+            {QStringLiteral("incomingStart"), static_cast<qint64>(incomingClip.timelineStartFrame)},
+            {QStringLiteral("incomingEnd"),
+             static_cast<qint64>(incomingClip.timelineStartFrame + incomingDuration.frame)}};
 }
 
 bool MvmController::setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfterCut,
@@ -5913,18 +5944,17 @@ bool MvmController::setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfter
     }
     // 吸着した結果が今の値と同じなら編集ではない (上限で止まっただけ)。applyTimelineEdit は
     // 再生を止めるので、何も変わらない操作では入らない。
-    const auto current = std::find_if(
-        project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
-        [&](const auto& transition) { return transition.id == id; });
+    const auto current =
+        std::find_if(project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
+                     [&](const auto& transition) { return transition.id == id; });
     if (current != project_.timelineTransitions.end() &&
         current->framesBeforeCut == fitted.framesBeforeCut &&
         current->framesAfterCut == fitted.framesAfterCut) {
-        const bool requestedSame = framesBeforeCut == fitted.framesBeforeCut &&
-                                   framesAfterCut == fitted.framesAfterCut;
-        setStatus(requestedSame
-                      ? QStringLiteral("トランジションの長さは変わっていません")
-                      : QStringLiteral("トランジションはこれ以上変えられません "
-                                       "(素材の余白・フレーム・不透明度の範囲の端です)"));
+        const bool requestedSame =
+            framesBeforeCut == fitted.framesBeforeCut && framesAfterCut == fitted.framesAfterCut;
+        setStatus(requestedSame ? QStringLiteral("トランジションの長さは変わっていません")
+                                : QStringLiteral("トランジションはこれ以上変えられません "
+                                                 "(素材の余白・フレーム・不透明度の範囲の端です)"));
         return false;
     }
     QString status = QStringLiteral("トランジションを") +
@@ -6221,6 +6251,82 @@ bool MvmController::removeTrack(const QString& trackKind, int trackIndex) {
     return refreshPreviewAfterSavedEdit(selectedId, QStringLiteral("trackを削除しました"));
 }
 
+bool MvmController::setAudioTrackMix(int index, double gainDb, double pan, bool commit) {
+    if (busy_ || !projectLockHeld_ || index < 0 || index >= audioTrackCount() ||
+        !project::isValidAudioMix(gainDb, pan)) {
+        setStatus(QStringLiteral("トラック音量またはパンが不正です"));
+        return false;
+    }
+    if (!pauseForTrackOutputEdit())
+        return false;
+    if (!commit) {
+        const auto gains = project::audioMixGains(gainDb, pan);
+        audioMixerBuses_[static_cast<std::size_t>(index)]->leftGain.store(
+            static_cast<float>(gains.first));
+        audioMixerBuses_[static_cast<std::size_t>(index)]->rightGain.store(
+            static_cast<float>(gains.second));
+        audioTrackModel_->setMixerValues(index, gainDb, pan);
+        return true;
+    }
+    const auto& current = project_.audioTracks[static_cast<std::size_t>(index)];
+    if (current.mixerGainDb == gainDb && current.mixerPan == pan) {
+        cancelAudioTrackMix(index);
+        return true;
+    }
+    auto candidate = project_;
+    auto& track = candidate.audioTracks[static_cast<std::size_t>(index)];
+    track.mixerGainDb = gainDb;
+    track.mixerPan = pan;
+    if (!commitProjectEdit(std::move(candidate),
+                           QStringLiteral("ミキサー設定を保存できません: "))) {
+        cancelAudioTrackMix(index);
+        return false;
+    }
+    setStatus(QStringLiteral("ミキサー設定を保存しました"));
+    return true;
+}
+
+void MvmController::cancelAudioTrackMix(int index) {
+    if (index < 0 || index >= audioTrackCount())
+        return;
+    const auto& track = project_.audioTracks[static_cast<std::size_t>(index)];
+    const auto gains = project::audioMixGains(track.mixerGainDb, track.mixerPan);
+    audioMixerBuses_[static_cast<std::size_t>(index)]->leftGain.store(
+        static_cast<float>(gains.first));
+    audioMixerBuses_[static_cast<std::size_t>(index)]->rightGain.store(
+        static_cast<float>(gains.second));
+    audioTrackModel_->setMixerValues(index, track.mixerGainDb, track.mixerPan);
+}
+
+bool MvmController::setAudioMixerName(int index, const QString& name) {
+    if (busy_ || index < 0 || index >= audioTrackCount() || name.trimmed().isEmpty())
+        return false;
+    if (QString::fromStdString(project_.audioTracks[static_cast<std::size_t>(index)].mixerName) ==
+        name.trimmed())
+        return true;
+    auto candidate = project_;
+    candidate.audioTracks[static_cast<std::size_t>(index)].mixerName = name.trimmed().toStdString();
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("ミキサー名を保存できません: ")))
+        return false;
+    setStatus(QStringLiteral("ミキサー名を保存しました"));
+    return true;
+}
+
+QVariantMap MvmController::audioTrackMeter(int index) {
+    if (index < 0 || index >= static_cast<int>(audioMixerBuses_.size()))
+        return {};
+    const auto& bus = audioMixerBuses_[static_cast<std::size_t>(index)];
+    const auto [left, right] = audioMixerPeaks_[static_cast<std::size_t>(index)];
+    return {{QStringLiteral("left"), playing_ ? linearToDb(left, -96.0) : -96.0},
+            {QStringLiteral("right"), playing_ ? linearToDb(right, -96.0) : -96.0},
+            {QStringLiteral("clipped"), bus->clipped.load()}};
+}
+
+void MvmController::clearAudioTrackClip(int index) {
+    if (index >= 0 && index < static_cast<int>(audioMixerBuses_.size()))
+        audioMixerBuses_[static_cast<std::size_t>(index)]->clipped.store(false);
+}
+
 bool MvmController::setTrackMuted(const QString& trackKind, int trackIndex, bool muted) {
     return setTracksMuted(trackKind, {trackIndex}, muted);
 }
@@ -6251,12 +6357,11 @@ bool MvmController::setTracksMuted(const QString& trackKind, const QVariantList&
     const bool video = first.kind == project::TrackKind::Video;
     if (!pauseForTrackOutputEdit())
         return false;
-    return commitTrackOutputEdit(
-        std::move(candidate),
-        video ? (muted ? QStringLiteral("trackを非表示にしました")
-                       : QStringLiteral("trackを表示しました"))
-              : (muted ? QStringLiteral("trackをミュートしました")
-                       : QStringLiteral("trackのミュートを解除しました")));
+    return commitTrackOutputEdit(std::move(candidate),
+                                 video ? (muted ? QStringLiteral("trackを非表示にしました")
+                                                : QStringLiteral("trackを表示しました"))
+                                       : (muted ? QStringLiteral("trackをミュートしました")
+                                                : QStringLiteral("trackのミュートを解除しました")));
 }
 
 bool MvmController::setTrackSolo(const QString& trackKind, int trackIndex, bool solo) {
@@ -6299,7 +6404,8 @@ bool MvmController::commitTrackOutputEdit(project::Project candidate, const QStr
     }
     QString error;
     if (!syncPreviewSourcesAt(playheadFrame_, error)) {
-        setStatus(QStringLiteral("trackの表示・音声の設定は保存されましたが、Previewの更新に失敗しました: ") +
+        setStatus(QStringLiteral(
+                      "trackの表示・音声の設定は保存されましたが、Previewの更新に失敗しました: ") +
                   error);
         return true;
     }

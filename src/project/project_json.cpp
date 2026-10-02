@@ -652,6 +652,7 @@ private:
         bool hasName = false;
         bool hasMuted = false;
         bool hasSolo = false;
+        bool hasMixerName = false, hasGain = false, hasPan = false;
         if (!consume('{'))
             return false;
         skipWhitespace();
@@ -672,6 +673,18 @@ private:
                     if (hasSolo || !parseBool(track.solo))
                         return fail("track の solo が重複または不正です");
                     hasSolo = true;
+                } else if (key == "mixer_name") {
+                    if (hasMixerName || !parseString(track.mixerName))
+                        return fail("ミキサー名が重複または不正です");
+                    hasMixerName = true;
+                } else if (key == "mixer_gain_db") {
+                    if (hasGain || !parseNumber(track.mixerGainDb))
+                        return fail("トラック音量が重複または不正です");
+                    hasGain = true;
+                } else if (key == "mixer_pan") {
+                    if (hasPan || !parseNumber(track.mixerPan))
+                        return fail("トラックパンが重複または不正です");
+                    hasPan = true;
                 } else if (!skipValue()) {
                     return false;
                 }
@@ -687,6 +700,8 @@ private:
             return fail("track の必須 field がありません");
         if (kind == TrackKind::Video && track.solo)
             return fail("video track は solo を持てません");
+        if (!isValidAudioMix(track.mixerGainDb, track.mixerPan))
+            return fail("トラック音量またはパンが範囲外です");
         if (track.name.empty())
             return fail("track の name が空です");
         return true;
@@ -1463,7 +1478,10 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
             json << (index == 0 ? "\n" : ",\n") << "    { \"name\": \""
                  << escapeJson(tracks[index].name)
                  << "\", \"muted\": " << (tracks[index].muted ? "true" : "false")
-                 << ", \"solo\": " << (tracks[index].solo ? "true" : "false") << " }";
+                 << ", \"solo\": " << (tracks[index].solo ? "true" : "false")
+                 << ", \"mixer_name\": \"" << escapeJson(tracks[index].mixerName)
+                 << "\", \"mixer_gain_db\": " << tracks[index].mixerGainDb
+                 << ", \"mixer_pan\": " << tracks[index].mixerPan << " }";
         }
         if (!tracks.empty())
             json << '\n';

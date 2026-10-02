@@ -143,7 +143,9 @@ bool timelineRenderSegments(const Project& project, TrackKind kind,
         }
         const int clipIndex = static_cast<int>(index);
         if (kind == TrackKind::Audio) {
-            segments.push_back({clipIndex, original, extended, 0, fadeIn, fadeOut});
+            const auto& track = project.audioTracks[static_cast<std::size_t>(original.track.index)];
+            segments.push_back({clipIndex, original, extended, 0, fadeIn, fadeOut,
+                                track.mixerGainDb, track.mixerPan});
             continue;
         }
         if (!fadeIn) {
@@ -210,7 +212,7 @@ std::optional<double> renderSegmentGain(const TimelineRenderSegment& segment,
         gain *= std::sin(transitionProgress(*segment.fadeIn, timelineFrame) * kHalfPi);
     if (segment.fadeOut)
         gain *= std::cos(transitionProgress(*segment.fadeOut, timelineFrame) * kHalfPi);
-    return gain;
+    return gain * audioMixGains(segment.mixerGainDb, 0.0).first;
 }
 
 } // namespace mvm::project

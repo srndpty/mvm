@@ -3,6 +3,7 @@
 
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
+#include "media/audio_preview/audio_mixer_bus.h"
 #include "media_bin_model.h"
 #include "preview_engine/preview_engine.h"
 #include "project/media_bin.h"
@@ -76,8 +77,8 @@ class MvmController : public QObject {
     Q_PROPERTY(QStringList clipNames READ clipNames NOTIFY stateChanged)
     Q_PROPERTY(mvm::app::TimelineClipModel* timelineModel READ timelineModel CONSTANT)
     // timeline の clip delegate 用。表示範囲と固定する clip だけを通す (timelineModel を絞る)。
-    Q_PROPERTY(mvm::app::TimelineClipWindowModel* timelineClipWindow READ timelineClipWindow
-                   CONSTANT)
+    Q_PROPERTY(
+        mvm::app::TimelineClipWindowModel* timelineClipWindow READ timelineClipWindow CONSTANT)
     // preview の文字 layer 用。文字 clip だけを通す。
     Q_PROPERTY(mvm::app::TextClipFilterModel* textClipModel READ textClipModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* videoTrackModel READ videoTrackModel CONSTANT)
@@ -141,6 +142,7 @@ class MvmController : public QObject {
     // audio meter。dBFS。無音時は kMeterSilenceDb を返す。
     Q_PROPERTY(double audioMeterDbLeft READ audioMeterDbLeft NOTIFY meterChanged)
     Q_PROPERTY(double audioMeterDbRight READ audioMeterDbRight NOTIFY meterChanged)
+    Q_PROPERTY(bool audioMeterClipped READ audioMeterClipped NOTIFY meterChanged)
     Q_PROPERTY(double masterVolume READ masterVolume WRITE setMasterVolume NOTIFY stateChanged)
     Q_PROPERTY(int outputWidth READ outputWidth NOTIFY stateChanged)
     Q_PROPERTY(int outputHeight READ outputHeight NOTIFY stateChanged)
@@ -164,7 +166,7 @@ public:
     // 書き出し完了後に出力ファイルをExplorerで表示する。失敗時はfalseとerrorを返す。
     using FileRevealer = std::function<bool(const std::filesystem::path& path, QString& error)>;
     // meter の下限。linear 0 を -inf にすると QML 側で扱いにくいので床を決めておく。
-    static constexpr double kMeterSilenceDb = -60.0;
+    static constexpr double kMeterSilenceDb = -96.0;
 
     MvmController(std::filesystem::path projectPath, std::filesystem::path manimExecutablePath,
                   project::Project project, QObject* parent = nullptr,
@@ -183,65 +185,89 @@ public:
     QString lastPlaybackRebuildReason() const { return lastPlaybackRebuildReason_; }
 
     double playbackMaxPreparationMs() const { return playbackMaxPreparationMs_; }
+
     // 先読みの準備に失敗した回数。同じ境界を何度も準備し直していないことの検査に使う。
     std::uint64_t playbackPreparationFailureCount() const {
         return playbackPreparationFailureCount_;
     }
+
     // 境界の前に準備して、まだ引き継いでいない source の数の最大。先読みが次の境界だけに
     // 留まっていることの検査に使う。
     std::size_t playbackMaxPreparedSourceCount() const { return playbackMaxPreparedSourceCount_; }
+
     // 先読みの準備のうち、要求の後に再生や Project が変わったので取り消した、または完了しても
     // 使わずに外した回数 (controller を通さない engine の pause / seek で捨てたものは含まない)。
     std::uint64_t playbackStalePreparationCount() const { return playbackStalePreparationCount_; }
+
     // clip 境界までに先読みの準備が終わらず、境界で完了を待った回数。
     std::uint64_t playbackPreparationWaitCount() const { return playbackPreparationWaitCount_; }
+
     std::size_t pendingSourcePreparationCount() const {
         return pendingVideoPreparations_.size() + pendingAudioPreparations_.size();
     }
+
     // 準備が済み、まだ引き継いでいない source の数。
     std::size_t preparedPlaybackSourceCountForTest() const {
         return preparedVideoSources_.size() + preparedAudioSources_.size();
     }
+
     // 再生中の composition が使っている source の数。
     std::size_t activePlaybackSourceCountForTest() const {
         return trackSources_.size() + audioSources_.size();
     }
+
     void holdSourcePreparationsForTest(bool held);
     // recovery の書き込み (serialize + atomic write) を差し替える (試験用)。
     using RecoveryWriter = std::function<project::ProjectIoResult(
         const project::Project&, const std::filesystem::path&, const std::filesystem::path&,
         const std::string&, const std::string&, const std::string&)>;
+
     void setRecoveryWriterForTest(RecoveryWriter writer) { recoveryWriter_ = std::move(writer); }
+
     // recovery の worker thread の作り方を差し替える (試験用。作れない場合を試す)。
     using RecoveryThreadFactory = std::function<std::thread(std::function<void()>)>;
+
     void setRecoveryThreadFactoryForTest(RecoveryThreadFactory factory) {
         recoveryThreadFactory_ = std::move(factory);
     }
+
     // debounce を待たずに自動保存を始める (試験用)。書き込みの完了は待たない。
     void writeRecoveryAutosaveForTest() { writeRecoveryAutosave(); }
+
     bool recoveryWriteInFlightForTest() const {
         return recoveryWrite_ != nullptr || !recoveryQueue_.empty();
     }
+
     // 自動保存に失敗した後の再試行の timer が動いている (試験用)。
     bool recoveryRetryScheduledForTest() const { return recoveryMaximumTimer_.isActive(); }
+
     std::uint64_t recoveryRevisionForTest() const { return recoveryRevision_; }
+
     std::uint64_t currentRevisionForTest() const { return currentRevision_; }
+
     std::uint64_t recoveryWriteCompletionCountForTest() const {
         return recoveryWriteCompletionCount_;
     }
+
     // 次に要求する準備を、取り消しの効かない段 (decoder の seek の途中に相当) で止める。
     void blockNextSourcePreparationForTest(int milliseconds);
+
     // controller を通さずに engine の transport を変える負例 (engine 側の古さの判定) に使う。
     std::shared_ptr<preview::PreviewEngine> previewEngineForTest() const { return previewEngine_; }
+
     bool resetPreviewEngineForTest() { return resetPreviewEngine(); }
+
     // engine が公開している source の数と、古くなって捨てた準備の数。
     std::uint64_t publishedPreviewSourceCountForTest() const;
     std::uint64_t engineStaleSourcePreparationCountForTest() const;
+
     // clip 境界で登録枠の不足と判定して Preview engine を作り直した回数。登録枠の不足ではない
     // 失敗 (恒久的に扱えない構成など) で作り直していないことの検査に使う。
     std::uint64_t playbackCapacityResetCount() const { return playbackCapacityResetCount_; }
+
     // 境界で登録枠の一時的な不足に当たり、engine を作り直さずに枠が返るのを待った回数。
     std::uint64_t playbackSlotWaitCount() const { return playbackSlotWaitCount_; }
+
     bool setPreviewRegistrationLimitForTest(std::size_t limit);
     bool disablePreviewAudioSourcesForTest();
     std::vector<std::int64_t> presentedFrameHistoryForTest() const;
@@ -249,6 +275,7 @@ public:
     // 直近に提示した output frame と、そのとき提示した composition の最前面 layer の不透明度。
     // layer が 1 枚以下の frame は負の値にする。
     std::vector<std::pair<std::int64_t, float>> presentedOverlayOpacityHistoryForTest() const;
+
     // 最後に提示した output frame、そのときの composition の layer 数、最背面の decode layer の
     // 素材 frame (無ければ -1)。
     struct PresentedFrameForTest {
@@ -256,6 +283,7 @@ public:
         std::uint32_t layerCount = 0;
         std::int64_t baseSourceFrame = -1;
     };
+
     PresentedFrameForTest lastPresentedFrameForTest() const;
     // 音声の endpoint へ実際に設定した音量 (試験用の倍率を掛けた値)。
     float audioEndpointVolumeForTest() const;
@@ -286,8 +314,11 @@ public:
 
     QStringList clipNames() const;
     TimelineClipModel* timelineModel() const;
+
     TimelineClipWindowModel* timelineClipWindow() const { return timelineClipWindow_.get(); }
+
     TextClipFilterModel* textClipModel() const { return textClipModel_.get(); }
+
     QAbstractItemModel* videoTrackModel() const;
     QAbstractItemModel* audioTrackModel() const;
     MediaBinModel* mediaBinModel() const;
@@ -308,6 +339,7 @@ public:
     QVariantMap selectedEditPoint() const;
 
     QString selectedTransitionId() const { return QString::fromStdString(selectedTransitionId_); }
+
     QVariantMap selectedTransition() const { return shownSelectedTransition_; }
 
     bool canDeleteSelection() const;
@@ -327,11 +359,15 @@ public:
     bool canPlay() const;
 
     bool canUndo() const { return !undoHistory_.empty() && !busy_; }
+
     // 受理されなかった操作が Undo 履歴を積んでいないことの検査に使う。
     std::size_t undoDepthForTest() const { return undoHistory_.size(); }
+
     // Undo / Redo 履歴が持つ Project の複製の概算 byte 数の合計。
     std::size_t editHistoryBytes() const;
+
     std::size_t redoDepthForTest() const { return redoHistory_.size(); }
+
     // 履歴の byte 予算を差し替える (試験用)。次の編集・Undo・Redo から効く。
     void setEditHistoryByteBudgetForTest(std::size_t bytes) { editHistoryByteBudget_ = bytes; }
 
@@ -381,6 +417,10 @@ public:
     int outputHeight() const { return project_.outputHeight; }
 
     void setMasterVolume(double volume);
+
+    bool audioMeterClipped() const { return audioMeterClipped_; }
+
+    Q_INVOKABLE void clearMasterAudioClip();
 
     double effectPositionX() const;
     double effectPositionY() const;
@@ -464,7 +504,8 @@ public:
     Q_INVOKABLE bool selectAllClips();
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
     // scrub。drag 中は最新位置だけを coalesce して seek し、release で確定する。
-    // timeline の frame を timecode (currentTimeText と同じ書式) にする。ルーラーの目盛りの文字に使う。
+    // timeline の frame を timecode (currentTimeText と同じ書式)
+    // にする。ルーラーの目盛りの文字に使う。
     Q_INVOKABLE QString frameTimecode(qint64 frame) const;
     Q_INVOKABLE void beginScrub();
     Q_INVOKABLE void scrubToFrame(qint64 frame);
@@ -638,6 +679,11 @@ public:
     // 目玉のドラッグ塗りで通った track をまとめて確定する。1 回の undo になる。
     Q_INVOKABLE bool setTracksMuted(const QString& trackKind, const QVariantList& trackIndices,
                                     bool muted);
+    Q_INVOKABLE bool setAudioTrackMix(int index, double gainDb, double pan, bool commit = true);
+    Q_INVOKABLE void cancelAudioTrackMix(int index);
+    Q_INVOKABLE bool setAudioMixerName(int index, const QString& name);
+    Q_INVOKABLE QVariantMap audioTrackMeter(int index);
+    Q_INVOKABLE void clearAudioTrackClip(int index);
     Q_INVOKABLE bool setTrackSolo(const QString& trackKind, int trackIndex, bool solo);
 
     // 空白部分の ripple delete。gap が無ければ false を返し status に理由を出す。
@@ -930,6 +976,7 @@ private:
     std::vector<AudioPreviewSource> audioSources_;
     std::vector<TrackPreviewSource> preparedVideoSources_;
     std::vector<AudioPreviewSource> preparedAudioSources_;
+
     // 先読みを要求して engine の準備用の thread が open / seek している source。完了は
     // collectSourcePreparations が受け取り、prepared*Sources_ へ移す。
     struct PendingVideoPreparation {
@@ -1114,8 +1161,11 @@ private:
     std::uint64_t recoveryWriteCompletionCount_ = 0;
     std::int64_t playheadFrame_ = 0;
     std::int64_t totalTimelineFrames_ = 0;
+    bool audioMeterClipped_ = false;
     double audioMeterDbLeft_ = kMeterSilenceDb;
     double audioMeterDbRight_ = kMeterSilenceDb;
+    std::vector<std::shared_ptr<audio::AudioMixerBus>> audioMixerBuses_;
+    std::vector<std::pair<float, float>> audioMixerPeaks_;
     double masterVolume_ = 0.35;
     std::thread exportThread_;
     ExportRunner exportRunner_;
