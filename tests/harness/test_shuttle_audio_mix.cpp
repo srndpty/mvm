@@ -284,6 +284,30 @@ void testAutomationGain() {
               pcm[0] == encodeSample(64000) * 2,
           "シャトル音声の200%が増幅されません");
 }
+
+void testIntermediatePan() {
+    const auto reader = [](std::size_t, std::int64_t, std::int64_t count, std::vector<float>& pcm,
+                           std::string&) {
+        pcm.resize(static_cast<std::size_t>(count) * 2);
+        for (std::size_t i = 0; i < pcm.size(); i += 2) {
+            pcm[i] = 0.4F;
+            pcm[i + 1] = 0.2F;
+        }
+        return true;
+    };
+    for (const double pan : {-0.5, 0.5}) {
+        auto project = singleClipProject();
+        project.audioTracks[0].mixerPan = pan;
+        mvm::app::ShuttleAudioPlan plan;
+        std::string error;
+        std::vector<float> pcm;
+        check(mvm::app::planShuttleAudio(project, 1, 40, plan, error) &&
+                  mvm::app::mixShuttleBlock(plan, 0, 32, reader, pcm, error) && pcm.size() == 64 &&
+                  std::abs(pcm[0] - (pan > 0 ? 0.2F : 0.4F)) < 1e-6F &&
+                  std::abs(pcm[1] - (pan > 0 ? 0.2F : 0.1F)) < 1e-6F,
+              "シャトル・スクラブの中間パンが非対称PCMへ正しく適用されません");
+    }
+}
 } // namespace
 
 // クロスフェード: 2 clip を余白の分だけ延ばして重ね、等パワーの gain で加算する。
@@ -313,6 +337,7 @@ void testCrossfade() {
 int main() {
     testPlan();
     testAutomationGain();
+    testIntermediatePan();
     testForwardMapping();
     testReverseStopsAtClipStart();
     testForwardStopsAtTimelineEnd();

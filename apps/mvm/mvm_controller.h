@@ -4,6 +4,7 @@
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
 #include "media/audio_preview/audio_mixer_bus.h"
+#include "media/audio_preview/wasapi_audio_sink.h"
 #include "media_bin_model.h"
 #include "preview_engine/preview_engine.h"
 #include "project/media_bin.h"
@@ -210,6 +211,12 @@ public:
     std::size_t preparedPlaybackSourceCountForTest() const {
         return preparedVideoSources_.size() + preparedAudioSources_.size();
     }
+
+    std::shared_ptr<audio::AudioMixerBus> audioMixerBusForTest(int index) const {
+        return audioMixerBuses_.at(static_cast<std::size_t>(index));
+    }
+
+    audio::WasapiSnapshot scrubAudioSnapshotForTest() const;
 
     // 再生中の composition が使っている source の数。
     std::size_t activePlaybackSourceCountForTest() const {
@@ -792,7 +799,9 @@ private:
     // Manim asset が確定したら timeline 上の Manim clip を追従させる。
     // timeline と asset の対応を決める箇所はここだけにする。
     bool syncManimTimelineClip(bool addIfMissing);
-    bool commitProjectEdit(project::Project candidate, const QString& failurePrefix);
+    enum class PlaybackInvalidation { Sources, Mixer };
+    bool commitProjectEdit(project::Project candidate, const QString& failurePrefix,
+                           PlaybackInvalidation invalidation = PlaybackInvalidation::Sources);
     // キーフレーム編集の確定。変化が無ければ何もせず、確定後は preview を合わせる。
     bool commitClipKeyCandidate(project::Project candidate);
     // timeline 編集の共通手順。一時停止 -> candidate へ edit -> commit -> preview 更新。
@@ -935,7 +944,9 @@ private:
     // clip から audio source descriptor を組む。offset の換算は mapping 側へ委譲する。
     bool audioDescriptorFor(const TimelinePreviewAudioLayerMapping& layer,
                             preview::PreviewSourceDescriptor& descriptor, QString& error);
-    void refreshTimelineModel();
+    void refreshTimelineModel(PlaybackInvalidation invalidation = PlaybackInvalidation::Sources);
+    void refreshAudioMixerModel();
+    bool refreshScrubAudioMix(int index, double gainDb, double pan);
     // trackKind 文字列を TrackRef へ解決する。失敗時は status を設定して false。
     bool resolveTrackRef(const QString& trackKind, int trackIndex, project::TrackRef& track) const;
     // mute / solo の確定。どちらも preview の layer 構成を変えるので、停止中は現在位置で

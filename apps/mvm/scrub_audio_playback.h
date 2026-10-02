@@ -46,6 +46,10 @@ public:
 
     void clearMeterClip() { sink_.clearMeterClip(); }
 
+    bool setVolume(float volume, std::string& error) {
+        return sink_.setSessionVolume(volume, error);
+    }
+
     std::string error() const;
 
 private:

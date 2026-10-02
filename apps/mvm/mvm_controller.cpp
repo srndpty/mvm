@@ -661,6 +661,15 @@ void MvmController::setMasterVolume(double volume) {
         }
     }
     const auto changed = previewEngine_->setMasterVolume(static_cast<float>(clamped));
+    if (changed && scrubAudio_) {
+        std::string error;
+        if (!scrubAudio_->setVolume(static_cast<float>(clamped), error)) {
+            previewEngine_->setMasterVolume(static_cast<float>(masterVolume_));
+            setStatus(QStringLiteral("スクラブ音声のボリュームを変更できません: ") +
+                      QString::fromStdString(error));
+            return;
+        }
+    }
     if (!changed) {
         if (shuttleAudio_) {
             std::string ignored;
@@ -837,7 +846,10 @@ const TimelinePreviewPlan& MvmController::previewPlan() const {
     return *previewPlan_;
 }
 
-void MvmController::refreshTimelineModel() {
+void MvmController::refreshTimelineModel(PlaybackInvalidation invalidation) {
+    refreshAudioMixerModel();
+    if (invalidation == PlaybackInvalidation::Mixer)
+        return;
     previewPlan_.reset();
     // 先読みの状態 (準備中・準備済みの source、失敗した境界) は変わる前の Project で決めた。
     // 再生中の track の表示・M/S の切り替えは再生を止めないので、ここでまとめて無効にする。
@@ -881,6 +893,24 @@ void MvmController::refreshTimelineModel() {
     }
     if (videoTrackModel_)
         videoTrackModel_->setProject(project_);
+    if (mediaBinModel_)
+        mediaBinModel_->setProject(project_);
+    const auto timeline = project::validateTimeline(project_);
+    totalTimelineFrames_ = timeline.success ? timeline.totalFrames : 0;
+    if (navigationTimelineFrames() == 0)
+        playheadFrame_ = 0;
+    else
+        playheadFrame_ =
+            std::clamp<std::int64_t>(playheadFrame_, 0, navigationTimelineFrames() - 1);
+}
+
+void MvmController::refreshAudioMixerModel() {
+    // 削除で index が移動したら、別トラックのピーク・clip latch を引き継がない。
+    // 末尾への追加では既存 index が変わらないため、再生中の source と同じバスを使い続ける。
+    if (audioMixerBuses_.size() > project_.audioTracks.size()) {
+        audioMixerBuses_.clear();
+        audioMixerPeaks_.clear();
+    }
     audioMixerBuses_.resize(project_.audioTracks.size());
     audioMixerPeaks_.resize(project_.audioTracks.size());
     for (std::size_t i = 0; i < audioMixerBuses_.size(); ++i) {
@@ -893,15 +923,6 @@ void MvmController::refreshTimelineModel() {
     }
     if (audioTrackModel_)
         audioTrackModel_->setProject(project_);
-    if (mediaBinModel_)
-        mediaBinModel_->setProject(project_);
-    const auto timeline = project::validateTimeline(project_);
-    totalTimelineFrames_ = timeline.success ? timeline.totalFrames : 0;
-    if (navigationTimelineFrames() == 0)
-        playheadFrame_ = 0;
-    else
-        playheadFrame_ =
-            std::clamp<std::int64_t>(playheadFrame_, 0, navigationTimelineFrames() - 1);
 }
 
 void MvmController::pushUndoEntry(UndoEntry entry) {
@@ -944,7 +965,8 @@ void MvmController::clearEditHistory() {
     redoHistory_.clear();
 }
 
-bool MvmController::commitProjectEdit(project::Project candidate, const QString& failurePrefix) {
+bool MvmController::commitProjectEdit(project::Project candidate, const QString& failurePrefix,
+                                      PlaybackInvalidation invalidation) {
     if (!projectLockHeld_) {
         setStatus(failurePrefix + QStringLiteral("Projectを排他できません"));
         return false;
@@ -963,7 +985,7 @@ bool MvmController::commitProjectEdit(project::Project candidate, const QString&
     project_ = std::move(candidate);
     pushUndoEntry(std::move(undo));
     currentRevision_ = nextRevision_++;
-    refreshTimelineModel();
+    refreshTimelineModel(invalidation);
     scheduleRecoveryAutosave();
     return true;
 }
@@ -1380,6 +1402,8 @@ bool MvmController::restoreRecovery() {
     if (busy_ || !projectLockHeld_ || !recoveryProject_ || !pauseTimeline())
         return false;
     project_ = *recoveryProject_;
+    audioMixerBuses_.clear();
+    audioMixerPeaks_.clear();
     // 復元した作業状態の基準は、今のdiskではなくrecoveryに記録されたcanonical。
     savedCanonicalSha256_ = recoveryRecordedSha256_;
     canonicalBaseKnown_ = true;
@@ -3643,6 +3667,30 @@ void MvmController::stopScrubAudio() {
         return;
     scrubAudio_->stop();
     scrubAudio_.reset();
+}
+
+audio::WasapiSnapshot MvmController::scrubAudioSnapshotForTest() const {
+    return scrubAudio_ ? scrubAudio_->sinkSnapshot() : audio::WasapiSnapshot{};
+}
+
+bool MvmController::refreshScrubAudioMix(int index, double gainDb, double pan) {
+    if (!scrubAudio_)
+        return true;
+    // grain は mix 済みの PCM を持つため、確定前の値も含めて作り直す。
+    auto mixedProject = project_;
+    mixedProject.audioTracks[static_cast<std::size_t>(index)].mixerGainDb = gainDb;
+    mixedProject.audioTracks[static_cast<std::size_t>(index)].mixerPan = pan;
+    stopScrubAudio();
+    auto scrub = std::make_unique<ScrubAudioPlayback>();
+    std::string error;
+    if (!scrub->start(mixedProject, static_cast<float>(masterVolume_), error)) {
+        setStatus(QStringLiteral("ミキサー変更後のスクラブ音声を開始できません: ") +
+                  QString::fromStdString(error));
+        return false;
+    }
+    scrub->setTarget(playheadFrame_);
+    scrubAudio_ = std::move(scrub);
+    return true;
 }
 
 void MvmController::scrubToFrame(qint64 frame) {
@@ -6257,6 +6305,11 @@ bool MvmController::setAudioTrackMix(int index, double gainDb, double pan, bool 
         setStatus(QStringLiteral("トラック音量またはパンが不正です"));
         return false;
     }
+    const auto& current = project_.audioTracks[static_cast<std::size_t>(index)];
+    if (current.mixerGainDb == gainDb && current.mixerPan == pan) {
+        cancelAudioTrackMix(index);
+        return true;
+    }
     if (!pauseForTrackOutputEdit())
         return false;
     if (!commit) {
@@ -6266,22 +6319,19 @@ bool MvmController::setAudioTrackMix(int index, double gainDb, double pan, bool 
         audioMixerBuses_[static_cast<std::size_t>(index)]->rightGain.store(
             static_cast<float>(gains.second));
         audioTrackModel_->setMixerValues(index, gainDb, pan);
-        return true;
-    }
-    const auto& current = project_.audioTracks[static_cast<std::size_t>(index)];
-    if (current.mixerGainDb == gainDb && current.mixerPan == pan) {
-        cancelAudioTrackMix(index);
-        return true;
+        return refreshScrubAudioMix(index, gainDb, pan);
     }
     auto candidate = project_;
     auto& track = candidate.audioTracks[static_cast<std::size_t>(index)];
     track.mixerGainDb = gainDb;
     track.mixerPan = pan;
-    if (!commitProjectEdit(std::move(candidate),
-                           QStringLiteral("ミキサー設定を保存できません: "))) {
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("ミキサー設定を保存できません: "),
+                           PlaybackInvalidation::Mixer)) {
         cancelAudioTrackMix(index);
         return false;
     }
+    if (!refreshScrubAudioMix(index, gainDb, pan))
+        return true;
     setStatus(QStringLiteral("ミキサー設定を保存しました"));
     return true;
 }
@@ -6291,11 +6341,16 @@ void MvmController::cancelAudioTrackMix(int index) {
         return;
     const auto& track = project_.audioTracks[static_cast<std::size_t>(index)];
     const auto gains = project::audioMixGains(track.mixerGainDb, track.mixerPan);
+    const auto& bus = audioMixerBuses_[static_cast<std::size_t>(index)];
+    const bool changed = bus->leftGain.load() != static_cast<float>(gains.first) ||
+                         bus->rightGain.load() != static_cast<float>(gains.second);
     audioMixerBuses_[static_cast<std::size_t>(index)]->leftGain.store(
         static_cast<float>(gains.first));
     audioMixerBuses_[static_cast<std::size_t>(index)]->rightGain.store(
         static_cast<float>(gains.second));
     audioTrackModel_->setMixerValues(index, track.mixerGainDb, track.mixerPan);
+    if (changed)
+        refreshScrubAudioMix(index, track.mixerGainDb, track.mixerPan);
 }
 
 bool MvmController::setAudioMixerName(int index, const QString& name) {
@@ -6306,7 +6361,8 @@ bool MvmController::setAudioMixerName(int index, const QString& name) {
         return true;
     auto candidate = project_;
     candidate.audioTracks[static_cast<std::size_t>(index)].mixerName = name.trimmed().toStdString();
-    if (!commitProjectEdit(std::move(candidate), QStringLiteral("ミキサー名を保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("ミキサー名を保存できません: "),
+                           PlaybackInvalidation::Mixer))
         return false;
     setStatus(QStringLiteral("ミキサー名を保存しました"));
     return true;
@@ -6461,6 +6517,8 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     if (!pauseTimeline())
         return false;
     project_ = std::move(loaded);
+    audioMixerBuses_.clear();
+    audioMixerPeaks_.clear();
     projectPath_ = std::move(path);
     savedProject_ = project_;
     if (!rememberCanonicalBase())
@@ -6707,6 +6765,8 @@ bool MvmController::discardUnsavedChanges() {
     }
     const std::string selectedId = currentClipId();
     project_ = savedProject_;
+    audioMixerBuses_.clear();
+    audioMixerPeaks_.clear();
     clearEditHistory();
     selectedClipIds_.clear();
     currentRevision_ = savedRevision_;

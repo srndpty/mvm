@@ -391,14 +391,15 @@ static int attach_tractor_clip_filters(mlt_profile profile, mlt_producer cut,
                                        char* err, size_t err_size) {
     if (clip->is_audio) {
         if (clip->mixer_pan != 0.0) {
-            mlt_filter balance = mlt_factory_filter(profile, "panner", NULL);
+            // panner は初期値が無いと split の評価へ入らない。初期化後のパン値は split で指定する。
+            mlt_filter balance = mlt_factory_filter(profile, "panner", "0.5");
             if (!balance) {
                 set_err(err, err_size, "パンフィルターを作成できません");
                 return 1;
             }
             mlt_properties props = MLT_FILTER_PROPERTIES(balance);
             mlt_properties_set_int(props, "channel", -1);
-            mlt_properties_set_double(props, "start", (clip->mixer_pan + 1.0) * 0.5);
+            mlt_properties_set_double(props, "split", (clip->mixer_pan + 1.0) * 0.5);
             mlt_filter_set_in_and_out(
                 balance, (mlt_position)filter_in,
                 (mlt_position)(filter_in + clip->timeline_duration_frames - 1));

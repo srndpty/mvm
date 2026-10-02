@@ -1066,7 +1066,8 @@ int main(int argc, char** argv) {
     {
         const auto wave = testDirectory / L"gain-source.wav";
         check(_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
-                       L"-f", L"lavfi", L"-i", L"sine=frequency=440:duration=1:sample_rate=48000",
+                       L"-f", L"lavfi", L"-i",
+                       L"aevalsrc=0.125*sin(2*PI*440*t)|0.0625*sin(2*PI*880*t):s=48000:d=1",
                        L"-c:a", L"pcm_s16le", wave.c_str(), static_cast<wchar_t*>(nullptr)) == 0,
               "gain検証用WAVを生成できません");
         auto renderGain = [&](const char* name, double base,
@@ -1147,6 +1148,9 @@ int main(int argc, char** argv) {
               "トラックの無音が実際の書き出しへ反映されません");
         const auto panLeft = renderGain("mixer-left", 100, {}, 0, -1, 2);
         const auto panRight = renderGain("mixer-right", 100, {}, 0, 1, 2);
+        const auto panCenter = renderGain("mixer-center", 100, {}, 0, 0, 2);
+        const auto panHalfLeft = renderGain("mixer-half-left", 100, {}, 0, -0.5, 2);
+        const auto panHalfRight = renderGain("mixer-half-right", 100, {}, 0, 0.5, 2);
         const auto channelRms = [](const std::vector<float>& samples, std::size_t channel) {
             if (samples.size() < 56000)
                 return 0.0;
@@ -1159,6 +1163,15 @@ int main(int argc, char** argv) {
         check(channelRms(panLeft, 0) > 0.01 && channelRms(panLeft, 1) < 0.0001 &&
                   channelRms(panRight, 0) < 0.0001 && channelRms(panRight, 1) > 0.01,
               "左右端のパンが実際の書き出しPCMへ反映されません");
+        const double centerLeft = channelRms(panCenter, 0);
+        const double centerRight = channelRms(panCenter, 1);
+        check(centerLeft > 0.05 && centerRight > 0.02 && centerLeft > centerRight * 1.8,
+              "非対称ステレオの対照群を実際に書き出せません");
+        check(std::abs(channelRms(panHalfRight, 0) / centerLeft - 0.5) < 0.04 &&
+                  std::abs(channelRms(panHalfRight, 1) / centerRight - 1.0) < 0.04 &&
+                  std::abs(channelRms(panHalfLeft, 0) / centerLeft - 1.0) < 0.04 &&
+                  std::abs(channelRms(panHalfLeft, 1) / centerRight - 0.5) < 0.04,
+              "中間パンの実PCM振幅がlinear stereo balanceと一致しません");
         // C interfaceから不正なパンを渡した負例。別の引数の違反で落ちていないことも確認する。
         MvmExportClip badPan{};
         const auto waveUtf8 = toUtf8(wave);

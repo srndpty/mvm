@@ -81,6 +81,20 @@ int main() {
               !project::serializeProjectJson(invalid, "mixer.mvm").success,
           "不正な内部データを保存しました");
     project::TimelineRenderSegment segment;
+    for (int field = 0; field < 3; ++field) {
+        auto badVideo = project;
+        auto& video = badVideo.videoTracks[0];
+        if (field == 0)
+            video.mixerPan = 2;
+        if (field == 1)
+            video.mixerGainDb = 6;
+        if (field == 2)
+            video.mixerName = "不正な映像ミキサー";
+        const auto validation = project::validateTimeline(badVideo);
+        check(!validation.success && validation.error.find("ミキサー設定") != std::string::npos &&
+                  !project::serializeProjectJson(badVideo, "mixer.mvm").success,
+              "video track のミキサー設定を中心検証・保存が拒否しません");
+    }
     segment.original.sourceFpsNum = 60;
     segment.original.sourceFrameCount = 60;
     segment.original.sourceOutFrame = 60;
@@ -132,6 +146,17 @@ int main() {
           "無音でピークを残すかクリップ表示を自動解除しました");
     bus->clipped.store(false);
     check(!bus->clipped.load(), "クリップ表示を解除できません");
+    for (const double pan : {-0.5, 0.5}) {
+        audio::AudioFrameQueue intermediate({1}, {1});
+        intermediate.setMixerBus(bus);
+        const auto gains = project::audioMixGains(0, pan);
+        bus->leftGain.store(static_cast<float>(gains.first));
+        bus->rightGain.store(static_cast<float>(gains.second));
+        check(intermediate.push(chunk) == audio::AudioQueuePushResult::Accepted &&
+                  intermediate.consume(output, 0, 1, {1}).audioSamples == 1 &&
+                  near(output[0], pan > 0 ? 0.4 : 0.8) && near(output[1], pan > 0 ? -0.6 : -0.3),
+              "previewの中間パンが非対称PCMへ正しく適用されません");
+    }
     if (failures == 0)
         std::puts("音量・パン、永続化と負例、PCM適用、トラック合算とクリップを確認しました");
     return failures ? 1 : 0;
