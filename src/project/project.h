@@ -116,7 +116,7 @@ struct TimelineClip {
     std::int64_t speedNum = 1;
     std::int64_t speedDen = 1;
     bool preservePitch = false;
-    std::optional<FrameHold> frameHold;
+    std::optional<FrameHold> frameHold{};
     TextClipData text{};
     // 無効にした clip は timeline に残るが、preview・書き出し・音声に出さない (Shift+E)。
     bool enabled = true;

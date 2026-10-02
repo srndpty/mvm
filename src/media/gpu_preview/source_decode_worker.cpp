@@ -548,10 +548,11 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
         outputEnd = outputBegin + 1;
     }
     if (anchorOnly && outputBegin < outputEnd) {
-        pendingRepeat_.reset();
         if (outputBegin + 1 < outputEnd) {
             pendingRepeat_ = frame;
             pendingRepeatNext_ = outputBegin + 1;
+        } else {
+            pendingRepeat_.reset();
         }
         outputEnd = outputBegin + 1;
     }

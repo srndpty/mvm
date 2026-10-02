@@ -78,16 +78,23 @@ add_executable(mvm_test_timeline_export harness/test_timeline_export.cpp)
 target_link_libraries(mvm_test_timeline_export PRIVATE
     mvm::timeline_export mvm::timeline_preview_mapping mvm::mlt mvm::util mvm::warnings)
 target_compile_definitions(mvm_test_timeline_export PRIVATE ${MVM_MLT_PATH_DEFS})
-add_test(NAME m4_timeline_export_focused
-    COMMAND mvm_test_timeline_export
-        "${CMAKE_CURRENT_BINARY_DIR}/m4-timeline-export"
-        "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
-        "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_hevc.mp4"
-        "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
-set_tests_properties(m4_timeline_export_focused PROPERTIES
-    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
-    LABELS extended
-    TIMEOUT 600)
+# 1 process で全区間を回すと、この test だけが CI のテスト時間を律速していた。
+# 区間群ごとに別 test として登録し、並列に回す。`-R m4_timeline_export_focused` で 3 件とも選ばれる。
+# COST は ctest の実測履歴が無い CI でも長い test を先に起動させるための目安 (秒)。
+foreach(_m4_part IN ITEMS sequential tractor audio)
+    add_test(NAME m4_timeline_export_focused_${_m4_part}
+        COMMAND mvm_test_timeline_export
+            "${CMAKE_CURRENT_BINARY_DIR}/m4-timeline-export-${_m4_part}"
+            "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
+            "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_hevc.mp4"
+            "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
+            --part ${_m4_part})
+    set_tests_properties(m4_timeline_export_focused_${_m4_part} PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        LABELS extended
+        COST 60
+        TIMEOUT 600)
+endforeach()
 
 add_executable(mvm_test_timeline_export_mapping harness/test_timeline_export_mapping.cpp)
 target_link_libraries(mvm_test_timeline_export_mapping PRIVATE
@@ -428,6 +435,7 @@ add_test(NAME m7b_4_controller_export_lifecycle
             ${CMAKE_SOURCE_DIR}/tests/assets/smoke)
 set_tests_properties(m7b_4_controller_export_lifecycle PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    COST 40
     TIMEOUT 120)
 
 # シャトル音声の sample 対応 (速度・逆順・clip 範囲・mute・重なり・素材 offset)。
@@ -520,6 +528,7 @@ add_test(NAME m7a_p0_mlt_primitives
 set_tests_properties(m7a_p0_mlt_primitives PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     LABELS m7a-p0
+    COST 70
     TIMEOUT 600)
 
 add_test(NAME m7a_p0_mlt_zero_sample_negative
@@ -576,6 +585,7 @@ add_test(NAME m7b_p0_mlt_overlay_primitives
 set_tests_properties(m7b_p0_mlt_overlay_primitives PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     LABELS m7b-p0
+    COST 90
     TIMEOUT 600)
 
 add_test(NAME m7b_p0_mlt_zero_sample_negative
@@ -2047,18 +2057,17 @@ mvm_add_exit_test(proxy_legacy_require_proxy_diagnostic EXIT 3
          --map "mvm_no_such_source.mp4=_proxy/x.mp4" --require-proxy
     PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}")
 
-# negative: メタデータが違う proxy を成功扱いしない。
-# 1080p 素材を 4K 素材の proxy と称して渡す。frame count も解像度も違う。
-# 4K 素材の probe が長いため、日常用では他の proxy 負例を残して全件へ移す。
-mvm_add_exit_test(proxy_mapping_metadata_mismatch_negative EXIT 3
+# negative: 内容が対応しない proxy を成功扱いしない。
+# fps・frame count・尺は original と同じで、frame marker の無い 720p 素材を proxy と称して渡す。
+# メタデータ検査では弾けないので、frame marker の照合で失敗することを見る。
+# 以前は 4K 素材を渡していたが、照合する約 40 frame の seek だけで 1 分以上かかっていた。
+mvm_add_exit_test(proxy_mapping_marker_mismatch_negative EXIT 3
     ARGS proxy-mapping
          --original "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
-         --proxy "${MVM_SMOKE_DIR}/v4k60_h264.mp4"
-         --random 0
-    PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4")
-set_tests_properties(proxy_mapping_metadata_mismatch_negative PROPERTIES
-    LABELS extended
-    REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4;${MVM_SMOKE_DIR}/v4k60_h264.mp4")
+         --proxy "${MVM_DIAG_DIR}/v1_video_only.mp4"
+         --random 0)
+set_tests_properties(proxy_mapping_marker_mismatch_negative PROPERTIES
+    REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4;${MVM_DIAG_DIR}/v1_video_only.mp4")
 
 # --- performance ラベル ------------------------------------------------------
 # 長時間の性能試験。通常 CTest には混ぜない。

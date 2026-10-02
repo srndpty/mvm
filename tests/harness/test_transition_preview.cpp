@@ -173,12 +173,13 @@ bool dissolvesWhilePlaying(const std::vector<std::pair<std::int64_t, float>>& pr
         maxError = std::max(maxError, std::abs(opacity - expected));
         if (opacity < 0.0F || std::abs(opacity - expected) > 0.15F) {
             std::fprintf(stderr, "  frame %lld: incoming の不透明度 %.3f (期待 %.3f)\n",
-                         static_cast<long long>(frame), opacity, expected);
+                         static_cast<long long>(frame), static_cast<double>(opacity),
+                         static_cast<double>(expected));
             ok = false;
         }
     }
     std::printf("再生中のディゾルブ: 区間の提示 %d frame、不透明度の最大誤差 %.3f\n", inside,
-                maxError);
+                static_cast<double>(maxError));
     // 60fps の再生で区間の 20 frame のうち半分以上は提示しているはず。
     if (inside < 10) {
         std::fprintf(stderr, "  区間の中で提示した frame が %d しかありません\n", inside);
@@ -349,9 +350,10 @@ int main(int argc, char** argv) {
                 const float endpoint = controller.audioEndpointVolumeForTest();
                 const float expected = static_cast<float>(controller.masterVolume()) * scale;
                 std::printf("音量: master %.3f x 倍率 %.3f = endpoint %.4f\n",
-                            controller.masterVolume(), scale, endpoint);
+                            controller.masterVolume(), static_cast<double>(scale),
+                            static_cast<double>(endpoint));
                 check(std::abs(endpoint - expected) < 1e-4F &&
-                          endpoint <= controller.masterVolume() * 0.5,
+                          static_cast<double>(endpoint) <= controller.masterVolume() * 0.5,
                       "試験の音量を既定の半分以下へ下げていません");
             }
             const auto after = controller.previewTelemetry();
@@ -1376,10 +1378,11 @@ int main(int argc, char** argv) {
         const auto makeFixture = [&](const QString& name, const wchar_t* size,
                                      MvmMltProbeResult& probed) {
             const auto path = std::filesystem::path(directory.filePath(name).toStdWString());
-            const std::wstring video = std::wstring(L"testsrc2=s=") + size + L":r=24000/1001:d=12";
+            const std::wstring videoSource =
+                std::wstring(L"testsrc2=s=") + size + L":r=24000/1001:d=12";
             const bool generated =
                 _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
-                         L"-f", L"lavfi", L"-i", video.c_str(), L"-f", L"lavfi", L"-i",
+                         L"-f", L"lavfi", L"-i", videoSource.c_str(), L"-f", L"lavfi", L"-i",
                          L"sine=frequency=440:sample_rate=48000:d=12", L"-c:v", L"libx264",
                          L"-preset", L"ultrafast", L"-pix_fmt", L"yuv420p", L"-c:a", L"aac",
                          L"-shortest", path.c_str(), static_cast<wchar_t*>(nullptr)) == 0;
@@ -1413,8 +1416,8 @@ int main(int argc, char** argv) {
             a.linkGroupId = "ntsc-link-a";
             b.linkGroupId = "ntsc-link-b";
             // 音声 clip は取り込みと同じく timeline fps の単位で素材範囲を持つ。
-            const auto audioOf = [&](const mvm::project::TimelineClip& video, const char* id) {
-                auto audio = video;
+            const auto audioOf = [&](const mvm::project::TimelineClip& source, const char* id) {
+                auto audio = source;
                 audio.id = audio.name = id;
                 audio.kind = mvm::project::TimelineClipKind::Audio;
                 audio.track = {TrackKind::Audio, 0};
@@ -1422,11 +1425,12 @@ int main(int argc, char** argv) {
                 audio.sourceFpsDen = ntscProject.timelineFpsDen;
                 audio.sourceFrameCount = 12 * 60;
                 audio.sourceInFrame = mvm::project::sourceBoundaryToTimelineBoundary(
-                                          video.sourceInFrame, 24000, 1001,
+                                          source.sourceInFrame, 24000, 1001,
                                           ntscProject.timelineFpsNum, ntscProject.timelineFpsDen)
                                           .frame;
-                audio.sourceOutFrame = audio.sourceInFrame +
-                                       mvm::project::timelineClipDuration(ntscProject, video).frame;
+                audio.sourceOutFrame =
+                    audio.sourceInFrame +
+                    mvm::project::timelineClipDuration(ntscProject, source).frame;
                 return audio;
             };
             const auto aAudio = audioOf(a, "ntsc-out-audio");

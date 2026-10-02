@@ -5,6 +5,8 @@
 //   2. 29.97fps 素材の trim が MLT producer 位置と内容の両方で一致する
 //   3. clip が 0 本なら失敗する
 //   4. 素材が存在しなければ失敗する
+// 後から足した tractor 経路と音声の検査も同居している。--part で区間群を選べる
+// (sequential / tractor / audio)。省略すると全区間を実行する。
 //
 // 期待フレーム数は実装の式を再利用せず、入力を probe して独立に足し合わせる。
 
@@ -23,6 +25,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <process.h>
 #include <string>
 #include <vector>
@@ -157,21 +160,48 @@ struct Rgb {
     int b = 0;
 };
 
-Rgb pixelAt(const std::filesystem::path& path, long long frame, int x, int y) {
+// decode は 1 回ごとに素材を開いて seek し直す。同じ frame の画素を何点も読むときは
+// decodeFrame で 1 回だけ decode し、pixelOf で読む。
+struct DecodedFrame {
+    int width = 0;
+    int height = 0;
+    std::vector<unsigned char> rgba;
+};
+
+DecodedFrame decodeFrame(const std::filesystem::path& path, long long frame) {
+    DecodedFrame result;
     MvmMltImage image{};
     char error[512] = {};
     if (mvm_mlt_decode_frame(toUtf8(path).c_str(), frame, &image, error, sizeof(error)) != 0 ||
-        !image.rgba || x < 0 || y < 0 || x >= image.width || y >= image.height) {
+        !image.rgba || image.width <= 0 || image.height <= 0) {
         check(false, "overlay出力frameをdecodeできません");
+        return result;
+    }
+    result.width = image.width;
+    result.height = image.height;
+    result.rgba.assign(image.rgba, image.rgba + static_cast<std::size_t>(image.width) *
+                                                    static_cast<std::size_t>(image.height) * 4);
+    mvm_mlt_image_free(&image);
+    return result;
+}
+
+Rgb pixelOf(const DecodedFrame& image, int x, int y) {
+    // decode の失敗は decodeFrame が数えている。ここで重ねて数えない。
+    if (image.rgba.empty())
+        return {};
+    if (x < 0 || y < 0 || x >= image.width || y >= image.height) {
+        check(false, "overlay出力frameの範囲外を読みました");
         return {};
     }
     const std::size_t offset =
         (static_cast<std::size_t>(y) * static_cast<std::size_t>(image.width) +
          static_cast<std::size_t>(x)) *
         4;
-    const Rgb result{image.rgba[offset], image.rgba[offset + 1], image.rgba[offset + 2]};
-    mvm_mlt_image_free(&image);
-    return result;
+    return {image.rgba[offset], image.rgba[offset + 1], image.rgba[offset + 2]};
+}
+
+Rgb pixelAt(const std::filesystem::path& path, long long frame, int x, int y) {
+    return pixelOf(decodeFrame(path, frame), x, y);
 }
 
 bool blue(const Rgb& value) {
@@ -218,14 +248,36 @@ EffectFrameMetrics effectMetrics(const std::filesystem::path& path, long long fr
     return result;
 }
 
+// ctest は区間群ごとに別 process として並列に回す (tests/CMakeLists.txt)。
+// 1 process で全区間を直列に回すと、この test だけが CI のテスト時間を律速する。
+enum class Part { All, Sequential, Tractor, Audio };
+
+std::optional<Part> parsePart(int argc, char** argv) {
+    if (argc == 5)
+        return Part::All;
+    if (argc != 7 || std::string(argv[5]) != "--part")
+        return std::nullopt;
+    const std::string name = argv[6];
+    if (name == "sequential")
+        return Part::Sequential;
+    if (name == "tractor")
+        return Part::Tractor;
+    if (name == "audio")
+        return Part::Audio;
+    return std::nullopt;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     mvm_enable_utf8_console();
-    if (argc != 5) {
-        std::fprintf(stderr, "使い方: test_timeline_export <test-dir> <clip1> <clip2> <ffmpeg>\n");
+    const auto part = parsePart(argc, argv);
+    if (!part) {
+        std::fprintf(stderr, "使い方: test_timeline_export <test-dir> <clip1> <clip2> <ffmpeg> "
+                             "[--part sequential|tractor|audio]\n");
         return 2;
     }
+    const auto runs = [&](Part selected) { return *part == Part::All || *part == selected; };
 
     const auto testDirectory = std::filesystem::absolute(fromUtf8(argv[1]));
     const auto firstClip = std::filesystem::absolute(fromUtf8(argv[2]));
@@ -242,7 +294,7 @@ int main(int argc, char** argv) {
     }
 
     // cut の範囲は Project の境界 ceil(s R) で決める。期待値は手で計算した値である。
-    {
+    if (runs(Part::Sequential)) {
         mvm::project::TimelineClip ntsc;
         ntsc.sourceFpsNum = 30000;
         ntsc.sourceFpsDen = 1001;
@@ -291,78 +343,82 @@ int main(int argc, char** argv) {
     const long long expectedFrames = firstFrames + secondFrames;
     check(expectedFrames > 0, "入力素材のフレーム数を取得できません");
 
-    mvm::app::TimelineExportRequest invalidQualityRequest;
-    invalidQualityRequest.videoCrf = 52;
-    check(!mvm::app::mapTimelineExportPlan(
-               makeProject(firstClip, secondClip, firstFrames, secondFrames), invalidQualityRequest)
-               .success,
-          "範囲外の映像CRFを拒否しません");
+    if (runs(Part::Sequential)) {
+        mvm::app::TimelineExportRequest invalidQualityRequest;
+        invalidQualityRequest.videoCrf = 52;
+        check(!mvm::app::mapTimelineExportPlan(
+                   makeProject(firstClip, secondClip, firstFrames, secondFrames),
+                   invalidQualityRequest)
+                   .success,
+              "範囲外の映像CRFを拒否しません");
 
-    const auto outputPath = testDirectory / L"m4-export.mp4";
-    mvm::app::TimelineExportRequest request;
-    request.outputPath = outputPath;
-    long long reportedCompleted = -1;
-    long long reportedTotal = -1;
-    request.progress = [&](long long completed, long long total) {
-        reportedCompleted = completed;
-        reportedTotal = total;
-        return false;
-    };
+        const auto outputPath = testDirectory / L"m4-export.mp4";
+        mvm::app::TimelineExportRequest request;
+        request.outputPath = outputPath;
+        long long reportedCompleted = -1;
+        long long reportedTotal = -1;
+        request.progress = [&](long long completed, long long total) {
+            reportedCompleted = completed;
+            reportedTotal = total;
+            return false;
+        };
 
-    auto result = mvm::app::exportTimeline(
-        makeProject(firstClip, secondClip, firstFrames, secondFrames), request);
-    check(result.success, "2 clip の書き出しに失敗しました");
-    if (!result.success)
-        std::fprintf(stderr, "  error: %s\n", result.error.c_str());
-    check(std::filesystem::exists(outputPath), "出力 MP4 がありません");
-    check(!std::filesystem::exists(std::filesystem::path(outputPath).concat(".mvmtmp")),
-          "一時ファイルが残っています");
-    check(result.backend == mvm::app::TimelineExportResult::Backend::Sequential,
-          "contiguous V1-onlyが既存sequential fast pathを外れました");
-    check(reportedTotal == expectedFrames && reportedCompleted == reportedTotal,
-          "書き出し進捗がtotal frameまで通知されません");
+        auto result = mvm::app::exportTimeline(
+            makeProject(firstClip, secondClip, firstFrames, secondFrames), request);
+        check(result.success, "2 clip の書き出しに失敗しました");
+        if (!result.success)
+            std::fprintf(stderr, "  error: %s\n", result.error.c_str());
+        check(std::filesystem::exists(outputPath), "出力 MP4 がありません");
+        check(!std::filesystem::exists(std::filesystem::path(outputPath).concat(".mvmtmp")),
+              "一時ファイルが残っています");
+        check(result.backend == mvm::app::TimelineExportResult::Backend::Sequential,
+              "contiguous V1-onlyが既存sequential fast pathを外れました");
+        check(reportedTotal == expectedFrames && reportedCompleted == reportedTotal,
+              "書き出し進捗がtotal frameまで通知されません");
 
-    // cancellation callbackがconsumerを停止し、一時/最終ファイルを残さないこと。
-    const auto cancelledPath = testDirectory / L"m4-cancelled.mp4";
-    mvm::app::TimelineExportRequest cancelledRequest;
-    cancelledRequest.outputPath = cancelledPath;
-    int cancelCallbackCount = 0;
-    cancelledRequest.progress = [&](long long, long long) {
-        ++cancelCallbackCount;
-        return true;
-    };
-    const auto cancelled = mvm::app::exportTimeline(
-        makeProject(firstClip, secondClip, firstFrames, secondFrames), cancelledRequest);
-    check(!cancelled.success && cancelled.cancelled && cancelCallbackCount > 0,
-          "書き出しキャンセルを失敗として識別できません");
-    check(!std::filesystem::exists(cancelledPath) &&
-              !std::filesystem::exists(std::filesystem::path(cancelledPath).concat(".mvmtmp")),
-          "キャンセルした書き出しファイルが残っています");
+        // cancellation callbackがconsumerを停止し、一時/最終ファイルを残さないこと。
+        const auto cancelledPath = testDirectory / L"m4-cancelled.mp4";
+        mvm::app::TimelineExportRequest cancelledRequest;
+        cancelledRequest.outputPath = cancelledPath;
+        int cancelCallbackCount = 0;
+        cancelledRequest.progress = [&](long long, long long) {
+            ++cancelCallbackCount;
+            return true;
+        };
+        const auto cancelled = mvm::app::exportTimeline(
+            makeProject(firstClip, secondClip, firstFrames, secondFrames), cancelledRequest);
+        check(!cancelled.success && cancelled.cancelled && cancelCallbackCount > 0,
+              "書き出しキャンセルを失敗として識別できません");
+        check(!std::filesystem::exists(cancelledPath) &&
+                  !std::filesystem::exists(std::filesystem::path(cancelledPath).concat(".mvmtmp")),
+              "キャンセルした書き出しファイルが残っています");
 
-    if (result.success) {
-        MvmMltProbeResult probe{};
-        const bool probed = mvm_mlt_probe_file(toUtf8(outputPath).c_str(), &probe) == 0 && probe.ok;
-        check(probed, "出力 MP4 を probe できません");
-        if (probed) {
-            check(probe.has_video == 1, "出力 MP4 に映像がありません");
-            check(probe.width == request.width && probe.height == request.height,
-                  "出力 MP4 の解像度が要求と違います");
-            check(probe.fps_num == request.fpsNum && probe.fps_den == request.fpsDen,
-                  "出力 MP4 の fps が要求と違います");
-            // 連結の境界で 1 フレームずれ得るため許容幅を 2 フレームとする。
-            const long long difference = probe.frame_count - expectedFrames;
-            check(difference <= 2 && difference >= -2,
-                  "出力 MP4 のフレーム数が入力の合計と一致しません");
-            if (difference > 2 || difference < -2) {
-                std::fprintf(stderr, "  期待 %lld / 実際 %lld\n", expectedFrames,
-                             probe.frame_count);
+        if (result.success) {
+            MvmMltProbeResult probe{};
+            const bool probed =
+                mvm_mlt_probe_file(toUtf8(outputPath).c_str(), &probe) == 0 && probe.ok;
+            check(probed, "出力 MP4 を probe できません");
+            if (probed) {
+                check(probe.has_video == 1, "出力 MP4 に映像がありません");
+                check(probe.width == request.width && probe.height == request.height,
+                      "出力 MP4 の解像度が要求と違います");
+                check(probe.fps_num == request.fpsNum && probe.fps_den == request.fpsDen,
+                      "出力 MP4 の fps が要求と違います");
+                // 連結の境界で 1 フレームずれ得るため許容幅を 2 フレームとする。
+                const long long difference = probe.frame_count - expectedFrames;
+                check(difference <= 2 && difference >= -2,
+                      "出力 MP4 のフレーム数が入力の合計と一致しません");
+                if (difference > 2 || difference < -2) {
+                    std::fprintf(stderr, "  期待 %lld / 実際 %lld\n", expectedFrames,
+                                 probe.frame_count);
+                }
             }
         }
     }
 
     // producerの実尺より素材末尾境界だけが1 frame長い場合は、実尺へ限定して書き出す。
     // 2 frame以上の超過まで黙って切り詰めないnegative testも対にする。
-    {
+    if (runs(Part::Sequential)) {
         auto terminalRounding = mvm::project::createDefaultProject();
         terminalRounding.timelineClips.push_back({mvm::project::TimelineClipKind::Video,
                                                   firstClip,
@@ -380,6 +436,9 @@ int main(int argc, char** argv) {
                                                   {}});
         mvm::app::TimelineExportRequest roundingRequest;
         roundingRequest.outputPath = testDirectory / L"terminal-rounding.mp4";
+        // 検査するのは尺の境界だけなので、1080p の encode を避けて小さく書き出す。
+        roundingRequest.width = 320;
+        roundingRequest.height = 180;
         const auto rounded = mvm::app::exportTimeline(terminalRounding, roundingRequest);
         check(rounded.success && std::filesystem::is_regular_file(roundingRequest.outputPath),
               "素材末尾の1 frame丸め差を書き出し実尺へ合わせられません");
@@ -394,7 +453,7 @@ int main(int argc, char** argv) {
     }
 
     // --- 2. 29.97fps: source-native trim -> MLT producer位置の内容検査 ------
-    {
+    if (runs(Part::Sequential)) {
         const auto fractional = testDirectory / L"fractional-source.mp4";
         check(generateFractionalFixture(ffmpeg, fractional), "29.97fps fixtureを生成できません");
         MvmMltProbeResult sourceProbe{};
@@ -433,9 +492,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    // --- 3. 負: clip が 0 本 ----------------------------------------------
     // --- M7b-3: 製品tractor経路の実MP4 overlay -----------------------------
-    {
+    if (runs(Part::Tractor)) {
         const auto bottomPath = testDirectory / L"m7b-bottom.mp4";
         const auto topPath = testDirectory / L"m7b-top.mp4";
         check(generateSolidFixture(ffmpeg, bottomPath, L"blue"), "M7b V1 fixtureを生成できません");
@@ -625,9 +683,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    // --- 3. 負: clip が 0 本 ----------------------------------------------
     // --- M7a-2: 製品exportの固定effect chain -------------------------------
-    {
+    if (runs(Part::Tractor)) {
         const auto source = testDirectory / L"m7a-effects-source.mp4";
         check(generateEffectsFixture(ffmpeg, source), "M7a effect fixtureを生成できません");
         mvm::project::Project effected = mvm::project::createDefaultProject();
@@ -730,7 +787,7 @@ int main(int argc, char** argv) {
     // 素材末尾の+1丸めでproducer実尺がtimeline配置尺より1 frame短くなるclipを作り、
     // 補完frame（出力末尾）が直前の本体frameと同じ変換を受けていることを実画素で確かめる。
     // tailが無変換なら、V1はscale 60%の黒枠が消え、V2はcropした左端の緑帯が戻る。
-    {
+    if (runs(Part::Tractor)) {
         const auto source = testDirectory / L"padding-effects-source.mp4";
         const auto background = testDirectory / L"padding-background.mp4";
         check(generateEffectsFixture(ffmpeg, source), "padding effect fixtureを生成できません");
@@ -809,11 +866,13 @@ int main(int argc, char** argv) {
             }
             check(probeFrameCount(output) == kDuration, "末尾補完後の出力尺がtimeline尺と違います");
             // 本体の最終frame(kDuration-2)と補完frame(kDuration-1)を格子状に比較する。
+            const auto bodyFrame = decodeFrame(output, kDuration - 2);
+            const auto tailFrame = decodeFrame(output, kDuration - 1);
             int mismatches = 0;
             for (int y = 8; y < 240; y += 16) {
                 for (int x = 8; x < 320; x += 16) {
-                    const auto body = pixelAt(output, kDuration - 2, x, y);
-                    const auto tail = pixelAt(output, kDuration - 1, x, y);
+                    const auto body = pixelOf(bodyFrame, x, y);
+                    const auto tail = pixelOf(tailFrame, x, y);
                     if (std::abs(body.r - tail.r) + std::abs(body.g - tail.g) +
                             std::abs(body.b - tail.b) >
                         60)
@@ -837,7 +896,7 @@ int main(int argc, char** argv) {
     //
     // 書き出しは色変換で輝度の絶対値が変わるので、同じ輝度式の 60fps 素材を 1:1 で後ろに置き、
     // 同じ経路を通した「素材 frame -> 画素値」の表と照合する。
-    {
+    if (runs(Part::Tractor)) {
         const auto generateRamp = [&](const std::filesystem::path& output, const wchar_t* rate) {
             const std::wstring lavfi =
                 std::wstring(L"color=c=black:s=320x240:r=") + rate + L":d=0.5";
@@ -944,7 +1003,7 @@ int main(int argc, char** argv) {
 
     // --- 速度を変えた clip の音声は速度に連動する (timewarp warp_pitch=0) --------------
     // 440Hz・1 秒の WAV を 50% で置くと、尺が 2 秒になり 220Hz になる。
-    {
+    if (runs(Part::Audio)) {
         const auto wave = testDirectory / L"speed-source.wav";
         check(_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
                        L"-f", L"lavfi", L"-i", L"sine=frequency=440:duration=1:sample_rate=48000",
@@ -1037,7 +1096,7 @@ int main(int argc, char** argv) {
     }
 
     // --- 3. 負: clip が 0 本 ----------------------------------------------
-    {
+    if (runs(Part::Sequential)) {
         mvm::project::Project empty = mvm::project::createDefaultProject();
         mvm::app::TimelineExportRequest emptyRequest;
         emptyRequest.outputPath = testDirectory / L"m4-empty.mp4";
@@ -1048,7 +1107,7 @@ int main(int argc, char** argv) {
     }
 
     // --- 4. 負: 素材が存在しない ------------------------------------------
-    {
+    if (runs(Part::Sequential)) {
         const auto missing = testDirectory / L"missing.mp4";
         mvm::app::TimelineExportRequest missingRequest;
         missingRequest.outputPath = testDirectory / L"m4-missing.mp4";
@@ -1063,7 +1122,7 @@ int main(int argc, char** argv) {
     }
 
     // 音量filterの実出力。設定の読み戻しだけでは無音・増幅を証明できない。
-    {
+    if (runs(Part::Audio)) {
         const auto wave = testDirectory / L"gain-source.wav";
         check(_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
                        L"-f", L"lavfi", L"-i",
@@ -1155,9 +1214,10 @@ int main(int argc, char** argv) {
             if (samples.size() < 56000)
                 return 0.0;
             double power = 0;
-            for (std::size_t frame = 10000; frame < 20000; ++frame)
-                power += static_cast<double>(samples[frame * 2 + channel]) *
-                         samples[frame * 2 + channel];
+            for (std::size_t frame = 10000; frame < 20000; ++frame) {
+                const auto sample = static_cast<double>(samples[frame * 2 + channel]);
+                power += sample * sample;
+            }
             return std::sqrt(power / 10000.0);
         };
         check(channelRms(panLeft, 0) > 0.01 && channelRms(panLeft, 1) < 0.0001 &&
@@ -1197,7 +1257,7 @@ int main(int argc, char** argv) {
     }
 
     // 保持 producer が指定 frame を全区間へ出し、元の右半分へ戻ることを画素で確認する。
-    {
+    if (runs(Part::Tractor)) {
         const auto source = testDirectory / L"hold-red-blue.mp4";
         check(generateFractionalFixture(ffmpeg, source), "保持検証用の2色素材を生成できません");
         auto project = mvm::project::createDefaultProject();
@@ -1246,7 +1306,7 @@ int main(int argc, char** argv) {
     // 120 fps 素材を 50% にした clip の奇数 frame を保持する。素材 fps のまま (120 -> 60) では
     // 奇数 frame は timeline へ出せないので、保持元と同じ速度の timewarp で保持できることを画素で
     // 確かめる。素材は偶数 frame が赤、奇数 frame が青で、隣の frame を取り違えると色が変わる。
-    {
+    if (runs(Part::Tractor)) {
         const auto source = testDirectory / L"hold-alternate-120.mp4";
         const intptr_t generated =
             _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error", L"-f",
