@@ -368,7 +368,7 @@ int checkLargeTimelineDelegates(const mvm::project::Project& base,
         controller.shutdown();
         return 3;
     }
-    QTest::qWaitForWindowExposed(window);
+    check(QTest::qWaitForWindowExposed(window), "window が表示されません");
     pump(500);
     check(controller.timelineModel()->rowCount() == kClips, "前提: 10,000 clip を読み込めません");
     const int initial = countClipDelegates(window);
@@ -445,7 +445,7 @@ int checkLargeTextOverlayDelegates(const std::filesystem::path& projectPath) {
         controller.shutdown();
         return 3;
     }
-    QTest::qWaitForWindowExposed(window);
+    check(QTest::qWaitForWindowExposed(window), "window が表示されません");
     pump(500);
     check(controller.timelineModel()->rowCount() == kTexts,
           "前提: 10,000 個の文字 clip を読み込めません");
@@ -515,7 +515,7 @@ int checkAudioMixerPanel(const std::filesystem::path& projectPath) {
     auto* surface =
         window->findChild<mvm::app::PreviewEngineRhiItem*>(QStringLiteral("previewSurface"));
     controller.attachPreview(surface);
-    QTest::qWaitForWindowExposed(window);
+    check(QTest::qWaitForWindowExposed(window), "window が表示されません");
     check(pumpUntil([&] { return controller.previewReady(); }, 30000),
           "ミキサー試験のプレビューを準備できません");
     pump(100);
@@ -1592,16 +1592,16 @@ int main(int argc, char** argv) {
                     check(isCursor("inOuter"), "左端の外側を hover しても <-] になりません");
 
                     // 押したまま右端から大きく外へ動かしても、押した側の形を保つ。元の位置で離す。
-                    const QPoint grab = pointAt(-3, true);
+                    const QPoint edgePress = pointAt(-3, true);
                     hover(-3, true);
-                    QTest::mousePress(window, Qt::LeftButton, {}, grab);
+                    QTest::mousePress(window, Qt::LeftButton, {}, edgePress);
                     pump(50);
-                    QTest::mouseMove(window, grab + QPoint(60, 0));
+                    QTest::mouseMove(window, edgePress + QPoint(60, 0));
                     pump(100);
                     check(isCursor("outInner"), "右端を押したまま動かすと <-] が保たれません");
-                    QTest::mouseMove(window, grab);
+                    QTest::mouseMove(window, edgePress);
                     pump(50);
-                    QTest::mouseRelease(window, Qt::LeftButton, {}, grab);
+                    QTest::mouseRelease(window, Qt::LeftButton, {}, edgePress);
                     pump(200);
 
                     hover(clipItem->width() / 2, false);

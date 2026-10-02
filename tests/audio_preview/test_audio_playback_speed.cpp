@@ -171,7 +171,8 @@ int main(int argc, char** argv) {
         std::vector<float> whole;
         const bool read = readFrom(worker, 0, 48000 * 20, whole, error);
         check(read, label + ": 全体を読めません: " + error);
-        const double expectedSamples = 48000.0 * speed.den / speed.num;
+        const double expectedSamples =
+            48000.0 * static_cast<double>(speed.den) / static_cast<double>(speed.num);
         // 末尾の遅延を押し出さないと 2 倍速で約 500 sample 欠けた。等速と同じ桁まで詰める。
         check(std::abs(static_cast<double>(whole.size()) - expectedSamples) <= 256.0,
               label + ": sample数が伸縮後の尺と違います: " + std::to_string(whole.size()));
@@ -193,7 +194,7 @@ int main(int argc, char** argv) {
                 const double d = seeked[i] - whole[static_cast<std::size_t>(target) + i];
                 difference += d * d;
             }
-            const double rms = std::sqrt(difference / seeked.size());
+            const double rms = std::sqrt(difference / static_cast<double>(seeked.size()));
             check(rms < 0.02, label + ": seek波形が連続再生と違います: " + std::to_string(rms));
         }
         worker.stop();
@@ -236,7 +237,7 @@ int main(int argc, char** argv) {
                 const auto windowRms = [](const float* samples) {
                     double sum = 0.0;
                     for (int i = 0; i < 480; ++i)
-                        sum += static_cast<double>(samples[i]) * samples[i];
+                        sum += static_cast<double>(samples[i]) * static_cast<double>(samples[i]);
                     return std::sqrt(sum / 480.0);
                 };
                 double worst = 0.0;

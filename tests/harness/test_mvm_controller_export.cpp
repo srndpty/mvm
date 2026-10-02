@@ -1134,8 +1134,14 @@ void testExplicitSaveContract(const std::filesystem::path& path) {
           "編集直後のcanonicalがinitialのままではありません");
     check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
           "編集後のrecoveryが作成されません");
-    const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
-    check(recovery.success && recovery.project.videoTracks.size() == 3,
+    // file が現れた直後は自動保存の書き込みと読み込みが重なり得る (負荷の高い並列実行で落ちた)。
+    // 読めて編集後の内容になるまで待つ。期限内に揃わなければ失敗にする。
+    check(pumpUntil(
+              [&] {
+                  const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
+                  return recovery.success && recovery.project.videoTracks.size() == 3;
+              },
+              4000),
           "recoveryが編集後のworking stateではありません");
     check(controller.saveProject() && !controller.dirty(), "Ctrl+Sでcleanになりません");
     const auto canonicalAfter = mvm::project::loadProjectJson(path);
