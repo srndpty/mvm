@@ -353,6 +353,22 @@ void testModel() {
     check(model.parentFolderOf("f-sub") == "f-a" && model.parentFolderOf("f-a").isEmpty(),
           "親folderの解決が違います");
 
+    // 検索は閉じた子孫も対象にし、無関係な行を除外する。
+    model.setExpanded("f-a", false);
+    model.setFilterText("  DEEP  ");
+    check(visibleIds(model) == QStringList({"f-a", "f-sub", "deep"}),
+          "検索が閉じた子孫を見つけないか、無関係な行を残しました");
+    model.setFilterText("Assets");
+    check(visibleIds(model) == QStringList({"f-a", "f-sub", "deep", "inner"}),
+          "一致したフォルダの子孫を表示しません");
+    model.setFilterText("存在しない素材");
+    check(model.rowCount() == 0 && model.entryCount() == 7,
+          "一致しない検索で行が残るか、総数を変更しました");
+    model.setFilterText("");
+    check(visibleIds(model) == QStringList({"f-a", "f-z", "a-voice", "b-clip"}),
+          "検索解除で元の折りたたみ状態を復元しません");
+    model.setExpanded("f-a", true);
+
     // 編集で消えた folder の展開状態は持ち越さない。
     project.mediaFolders.erase(project.mediaFolders.begin() + 2);
     project.mediaItems.pop_back();

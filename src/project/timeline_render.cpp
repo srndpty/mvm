@@ -85,11 +85,11 @@ std::optional<OriginalFrame> originalFrameAt(const TimelineClip& original,
 bool hasRenderedTransitions(const Project& project, TrackKind kind) {
     if (project.timelineTransitions.empty())
         return false;
-    const ClipIdIndex clipIndex(project);
+    const ClipIdIndex clipIdIndex(project);
     for (const auto& transition : project.timelineTransitions) {
         int outgoing = -1;
         int incoming = -1;
-        if (transitionIsRendered(project, clipIndex, transition, kind, outgoing, incoming))
+        if (transitionIsRendered(project, clipIdIndex, transition, kind, outgoing, incoming))
             return true;
     }
     return false;
@@ -100,11 +100,11 @@ bool timelineRenderSegments(const Project& project, TrackKind kind,
     segments.clear();
     std::unordered_map<int, ClipTransition> heads; // incoming clip -> トランジション
     std::unordered_map<int, ClipTransition> tails; // outgoing clip -> トランジション
-    const ClipIdIndex clipIndex(project);
+    const ClipIdIndex clipIdIndex(project);
     for (const auto& transition : project.timelineTransitions) {
         int outgoing = -1;
         int incoming = -1;
-        if (!transitionIsRendered(project, clipIndex, transition, kind, outgoing, incoming))
+        if (!transitionIsRendered(project, clipIdIndex, transition, kind, outgoing, incoming))
             continue;
         std::int64_t start = 0;
         std::int64_t cut = 0;

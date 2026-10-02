@@ -148,7 +148,20 @@ void MediaBinModel::setProject(const project::Project& project) {
         Q_EMIT entryCountChanged();
 }
 
-void MediaBinModel::appendChildren(const std::string& parentId, int depth, QList<Row>& rows) const {
+void MediaBinModel::setFilterText(const QString& text) {
+    const auto filter = text.trimmed();
+    if (filterText_ == filter)
+        return;
+    beginResetModel();
+    filterText_ = filter;
+    rows_.clear();
+    appendChildren({}, 0, rows_);
+    endResetModel();
+    Q_EMIT filterTextChanged();
+}
+
+void MediaBinModel::appendChildren(const std::string& parentId, int depth, QList<Row>& rows,
+                                   bool ancestorMatches) const {
     std::vector<const project::MediaFolder*> folders;
     for (const auto& folder : folders_) {
         if (folder.parentId == parentId)
@@ -181,13 +194,22 @@ void MediaBinModel::appendChildren(const std::string& parentId, int depth, QList
         row.name = QString::fromStdString(folder->name);
         row.depth = depth;
         row.parentId = parent;
-        row.expanded = expandedFolders_.contains(id);
+        row.expanded = !filterText_.isEmpty() || expandedFolders_.contains(id);
         row.hasChildren = hasChildren;
-        rows.append(row);
+        const bool matches = ancestorMatches || row.name.contains(filterText_, Qt::CaseInsensitive);
+        QList<Row> children;
         if (row.expanded)
-            appendChildren(folder->id, depth + 1, rows);
+            appendChildren(folder->id, depth + 1, children, matches);
+        // 検索中は一致した子孫への経路を残し、通常の開閉状態は変更しない。
+        if (filterText_.isEmpty() || matches || !children.isEmpty()) {
+            rows.append(row);
+            rows.append(children);
+        }
     }
     for (const auto* item : items) {
+        if (!filterText_.isEmpty() && !ancestorMatches &&
+            !QString::fromStdString(item->name).contains(filterText_, Qt::CaseInsensitive))
+            continue;
         Row row;
         row.id = QString::fromStdString(item->id);
         row.kind = QString::fromLatin1(project::mediaKindName(item->kind));
@@ -205,7 +227,8 @@ void MediaBinModel::appendChildren(const std::string& parentId, int depth, QList
 
 void MediaBinModel::setExpanded(const QString& folderId, bool expanded) {
     const int row = rowOfEntry(folderId);
-    if (row < 0 || rows_[row].kind != QStringLiteral("folder") || rows_[row].expanded == expanded)
+    if (!filterText_.isEmpty() || row < 0 || rows_[row].kind != QStringLiteral("folder") ||
+        rows_[row].expanded == expanded)
         return;
     if (expanded)
         expandedFolders_.insert(folderId);

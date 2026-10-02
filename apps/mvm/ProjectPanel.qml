@@ -23,7 +23,8 @@ Item {
 
     readonly property int rowHeight: 22
     readonly property int indentWidth: 14
-    readonly property int nameColumnWidth: 200
+    readonly property int nameColumnWidth: Math.max(200, binList.width - rateColumnWidth
+                                                   - durationColumnWidth - sizeColumnWidth)
     readonly property int rateColumnWidth: 88
     readonly property int durationColumnWidth: 100
     readonly property int sizeColumnWidth: 96
@@ -174,15 +175,65 @@ Item {
             }
             ToolButton {
                 text: "読み込み…"
+                implicitHeight: 26
+                topPadding: 3
+                bottomPadding: 3
                 font.pixelSize: 11
                 enabled: !panel.mvmController.busy
                 onClicked: importDialog.open()
             }
             ToolButton {
                 text: "新規フォルダ"
+                implicitHeight: 26
+                topPadding: 3
+                bottomPadding: 3
                 font.pixelSize: 11
                 enabled: !panel.mvmController.busy
                 onClicked: panel.createFolder()
+            }
+        }
+
+        ModernDialogField {
+            id: searchField
+            objectName: "mediaBinSearch"
+            Layout.fillWidth: true
+            implicitHeight: 26
+            font.pixelSize: 11
+            leftPadding: 8
+            rightPadding: clearSearch.width + 4
+            placeholderText: "素材・フォルダを検索"
+            selectByMouse: true
+            onTextChanged: panel.binModel.filterText = text
+            Keys.onEscapePressed: clear()
+
+            ToolButton {
+                id: clearSearch
+                objectName: "mediaBinSearchClear"
+                anchors.right: parent.right
+                anchors.rightMargin: 3
+                anchors.verticalCenter: parent.verticalCenter
+                width: 22
+                height: 22
+                padding: 0
+                visible: searchField.text.length > 0
+                focusPolicy: Qt.NoFocus
+                Accessible.name: "検索をクリア"
+                contentItem: Label {
+                    text: "✖"
+                    font.pixelSize: 11
+                    color: clearSearch.hovered ? "#f0f1f3" : "#9aa2ad"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    radius: 3
+                    color: clearSearch.down ? "#343a42"
+                           : clearSearch.hovered ? "#3a4048" : "transparent"
+                }
+                onClicked: {
+                    searchField.clear();
+                    searchField.forceActiveFocus();
+                }
             }
         }
 
@@ -203,10 +254,12 @@ Item {
             Label {
                 anchors.centerIn: parent
                 width: parent.width - 24
-                visible: panel.binModel.entryCount === 0
+                visible: panel.binModel.entryCount === 0 || binList.count === 0
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: "ファイルをここへドロップするか「読み込み…」で素材を追加"
+                text: panel.binModel.entryCount === 0
+                      ? "ファイルをここへドロップするか「読み込み…」で素材を追加"
+                      : "一致する素材・フォルダはありません"
                 color: "#6f7681"
                 font.pixelSize: 11
             }
