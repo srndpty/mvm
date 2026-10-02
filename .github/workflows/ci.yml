@@ -165,6 +165,9 @@ jobs:
           }
           $testArgs = @('-Preset', '${{ matrix.preset }}', '-Group', '${{ matrix.group }}')
           if ('${{ matrix.shard }}') { $testArgs += @('-Shard', '${{ matrix.shard }}') }
+          # runner は 4 vCPU。依存テストは MLT の書き出しが多く CPU を取り合うので、
+          # 既定の 8 並列ではなく vCPU 数に合わせる (試行中。PR #67 の -j 8 は 164.6 秒)。
+          if ('${{ matrix.group }}' -eq 'BuildDependent') { $testArgs += @('-Jobs', '4') }
           pwsh scripts/test.ps1 -Portable @testArgs -Ucrt64 $ucrt64
 
       # ヒット率を毎回ログに残す。0% が続くならキャッシュが効いていない。
