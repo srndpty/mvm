@@ -114,6 +114,9 @@ bool decodeSamples(const std::string& path, const std::set<long long>& targets,
     const AVCodecParameters* parameters = format->streams[stream]->codecpar;
     const AVCodec* decoder = avcodec_find_decoder(parameters->codec_id);
     codec = decoder ? avcodec_alloc_context3(decoder) : nullptr;
+    if (codec)
+        // CTest の並列実行と共存するため、CPU 参照用の worker 数を 2 に限定する。
+        codec->thread_count = 2;
     if (!codec || avcodec_parameters_to_context(codec, parameters) < 0 ||
         avcodec_open2(codec, decoder, nullptr) < 0) {
         err = "CPU reference software decoderを開始できません";

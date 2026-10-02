@@ -27,6 +27,7 @@ class MediaBinModel : public QAbstractListModel {
     // QML からは mvmController.mediaBinModel 経由でだけ触る。型名は公開しない。
     QML_ANONYMOUS
     Q_PROPERTY(int entryCount READ entryCount NOTIFY entryCountChanged)
+    Q_PROPERTY(QString filterText READ filterText WRITE setFilterText NOTIFY filterTextChanged)
 
 public:
     enum Role {
@@ -52,6 +53,10 @@ public:
 
     void setProject(const project::Project& project);
 
+    QString filterText() const { return filterText_; }
+
+    void setFilterText(const QString& text);
+
     // folder / item の総数 (折りたたみに関係しない)。空表示の判定に使う。
     int entryCount() const { return static_cast<int>(folders_.size() + items_.size()); }
 
@@ -66,6 +71,7 @@ public:
 
 Q_SIGNALS:
     void entryCountChanged();
+    void filterTextChanged();
 
 private:
     struct Row {
@@ -83,14 +89,15 @@ private:
         bool inUse = false;
     };
 
-    void rebuild();
-    void appendChildren(const std::string& parentId, int depth, QList<Row>& rows) const;
+    void appendChildren(const std::string& parentId, int depth, QList<Row>& rows,
+                        bool ancestorMatches = false) const;
 
     std::vector<project::MediaFolder> folders_;
     std::vector<project::MediaItem> items_;
     QSet<QString> inUseItems_;
     QSet<QString> expandedFolders_;
     QList<Row> rows_;
+    QString filterText_;
 };
 
 } // namespace mvm::app

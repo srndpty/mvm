@@ -34,6 +34,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -482,6 +483,12 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "FAIL: 一時 directory を作れません\n");
         return 3;
     }
+
+    // 製品の表示設定を変更せず、検査ごとに独立した設定へ保存する。
+    application.setOrganizationName(QStringLiteral("mvm-test"));
+    application.setApplicationName(QStringLiteral("project-panel"));
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
 
     // V1 に映像を置く。文字は映像の上 (V2) に置かれ、engine が合成する経路を通る。
     auto project = mvm::project::createDefaultProject();
@@ -1207,6 +1214,37 @@ int main(int argc, char** argv) {
                 QTest::keyClick(window, Qt::Key_V);
                 window->setProperty("leftPanelTab", 1);
                 pump(300);
+                auto* search = findVisualItem(window, QStringLiteral("mediaBinSearch"));
+                auto* splitter = findVisualItem(window, QStringLiteral("projectPanelSplitter"));
+                check(search && splitter, "検索欄または幅調整ハンドルがありません");
+                if (search && splitter) {
+                    QTest::mouseClick(window, Qt::LeftButton, {}, itemCenter(search));
+                    typeText(window, "mio");
+                    check(controller.mediaBinModel()->filterText() == QStringLiteral("mio") &&
+                              controller.mediaBinModel()->rowCount() == 0,
+                          "検索欄の入力で素材を絞り込めません");
+                    QTest::keyClick(window, Qt::Key_Escape);
+                    check(controller.mediaBinModel()->filterText().isEmpty() &&
+                              controller.mediaBinModel()->rowCount() > 0,
+                          "Esc で検索を解除できません");
+                    check(window->property("leftPanelWidth").toReal() == 560,
+                          "パネル幅の初期値が広がっていません");
+                    const QPoint handle = itemCenter(splitter);
+                    QTest::mousePress(window, Qt::LeftButton, {}, handle);
+                    QTest::mouseMove(window, handle + QPoint(40, 0));
+                    QTest::mouseRelease(window, Qt::LeftButton, {}, handle + QPoint(40, 0));
+                    const auto width = window->property("leftPanelWidth").toReal();
+                    check(width > 560, "ドラッグでパネル幅を広げられません");
+                    check(pumpUntil(
+                              [&] {
+                                  QSettings saved;
+                                  saved.sync();
+                                  return saved.value(QStringLiteral("workspace/leftPanelWidth"))
+                                             .toReal() == width;
+                              },
+                              3000),
+                          "調整したパネル幅が設定ファイルへ保存されません");
+                }
                 const QString mediaId = QStringLiteral("fixture-media-0");
                 const auto center = [](QQuickItem* item) {
                     return item->mapToScene(QPointF(item->width() / 2, item->height() / 2))

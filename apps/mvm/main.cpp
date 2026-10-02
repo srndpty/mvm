@@ -131,6 +131,7 @@ int main(int argc, char** argv) {
 
     QGuiApplication application(argc, argv);
     application.setApplicationName(QStringLiteral("mvm"));
+    application.setOrganizationName(QStringLiteral("mvm"));
     // native (Windows) style は background / contentItem の差し替えを黙って無視する。
     // track の mute 状態などを色で出しているため、customization できる style を選ぶ。
     // QML の読み込みより前に確定させる (AGENTS.md の起動時 configuration 確定順序)。

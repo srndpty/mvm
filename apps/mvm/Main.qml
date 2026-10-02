@@ -4,6 +4,7 @@ import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 import QtQuick.Shapes
+import QtCore
 import "TimelineGestures.js" as Gestures
 import "PreviewTransform.js" as Transform
 import "TrackEyePaint.js" as EyePaint
@@ -421,7 +422,13 @@ ApplicationWindow {
     property bool pendingSaveContinuation: false
     // 左上パネルのタブ。0: エフェクトコントロール / 1: プロジェクト
     property int leftPanelTab: 0
-    property real leftPanelWidth: 340
+    // パネル幅はプロジェクトではなく、この端末の表示設定として保存する。
+    Settings {
+        id: panelSettings
+        category: "workspace"
+        property real leftPanelWidth: 560
+    }
+    property real leftPanelWidth: panelSettings.leftPanelWidth
     // タイムラインの現在のツール。取りうる値は TimelineToolPanel.tools の tool。
     property string timelineTool: "select"
     property string editingTextClipId: ""
@@ -805,7 +812,7 @@ ApplicationWindow {
 
             Frame {
                 id: leftPanel
-                Layout.preferredWidth: root.leftPanelWidth
+                Layout.preferredWidth: Math.max(240, Math.min(root.width * 0.5, root.leftPanelWidth))
                 Layout.fillHeight: true
                 padding: 8
 
@@ -1130,6 +1137,7 @@ ApplicationWindow {
 
                 MouseArea {
                     id: splitterMouse
+                    objectName: "projectPanelSplitter"
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.SplitHCursor
@@ -1139,6 +1147,7 @@ ApplicationWindow {
                         pressX = mapToItem(null, mouse.x, 0).x;
                         pressWidth = root.leftPanelWidth;
                     }
+                    onReleased: panelSettings.leftPanelWidth = root.leftPanelWidth
                     onPositionChanged: mouse => {
                         if (!pressed)
                             return;
