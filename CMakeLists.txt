@@ -120,14 +120,26 @@ set(whisper_DIR "${MVM_WHISPER_ROOT}/lib/cmake/whisper" CACHE PATH "Whisperの�
 set(ggml_DIR "${MVM_WHISPER_ROOT}/lib/cmake/ggml" CACHE PATH "Whisperと同じ導入先のggml" FORCE)
 unset(whisper_LIBRARY CACHE)
 find_library(whisper_LIBRARY NAMES whisper REQUIRED PATHS "${MVM_WHISPER_ROOT}/lib" NO_DEFAULT_PATH)
+# ggml の package 設定は HINTS で探すため、CMAKE_PREFIX_PATH (UCRT64) の ggml package が先に
+# 見つかる。CI では MSYS2 の ggml (ffmpeg の依存、DLL 名 ggml-0.dll) に link され、backend を
+# 別の ggml へ登録して Whisper が CPU device を見失い GGML_ASSERT で落ちた。導入先から先に決める。
+unset(GGML_LIBRARY CACHE)
+unset(GGML_BASE_LIBRARY CACHE)
+find_library(GGML_LIBRARY NAMES ggml REQUIRED PATHS "${MVM_WHISPER_ROOT}/lib" NO_DEFAULT_PATH)
+find_library(GGML_BASE_LIBRARY NAMES ggml-base REQUIRED
+    PATHS "${MVM_WHISPER_ROOT}/lib" NO_DEFAULT_PATH)
 find_package(whisper REQUIRED CONFIG PATHS "${MVM_WHISPER_ROOT}/lib/cmake/whisper" NO_DEFAULT_PATH)
 if(NOT WHISPER_VERSION STREQUAL "1.9.1" OR NOT WHISPER_BUILD_COMMIT STREQUAL "2ca53bb45")
     message(FATAL_ERROR "Whisperのリビジョンが依存ロックと一致しません。scripts/build-whisper.ps1を実行してください")
 endif()
-cmake_path(IS_PREFIX MVM_WHISPER_ROOT "${whisper_LIBRARY}" NORMALIZE MVM_WHISPER_LIBRARY_IN_ROOT)
-if(NOT MVM_WHISPER_LIBRARY_IN_ROOT)
-    message(FATAL_ERROR "Whisperのライブラリが指定した導入先の外を参照しています")
-endif()
+foreach(_mvm_whisper_target whisper ggml::ggml ggml::ggml-base)
+    get_target_property(_mvm_whisper_location ${_mvm_whisper_target} IMPORTED_LOCATION)
+    cmake_path(IS_PREFIX MVM_WHISPER_ROOT "${_mvm_whisper_location}" NORMALIZE _mvm_whisper_in_root)
+    if(NOT _mvm_whisper_in_root)
+        message(FATAL_ERROR "${_mvm_whisper_target} のライブラリが指定した導入先の外を参照しています: "
+            "${_mvm_whisper_location}")
+    endif()
+endforeach()
 
 add_subdirectory(src)
 
