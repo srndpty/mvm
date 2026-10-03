@@ -361,14 +361,19 @@ bool remapLinkedSubtitles(const Project& before, Project& candidate, std::string
                                     static_cast<long double>(candidate.timelineFpsDen);
     // 時間の対応が変わった clip。素材の時間軸を持たない clip (文字・静止画) は対象外。
     std::unordered_map<std::string, std::pair<ClipMapping, ClipMapping>> changed;
+    // clip 数に比例する時間で済ませる (clip ごとに全 clip を探さない)。
+    std::unordered_map<std::string_view, const TimelineClip*> beforeById;
+    beforeById.reserve(before.timelineClips.size());
+    for (const auto& clip : before.timelineClips)
+        beforeById.emplace(clip.id, &clip);
     for (const auto& after : candidate.timelineClips) {
         if (hasSyntheticSourceDomain(after) || after.sourceFpsNum <= 0)
             continue;
-        const auto found =
-            std::find_if(before.timelineClips.begin(), before.timelineClips.end(),
-                         [&](const TimelineClip& clip) { return clip.id == after.id; });
-        if (found == before.timelineClips.end() || found->sourceFpsNum != after.sourceFpsNum ||
-            found->sourceFpsDen != after.sourceFpsDen)
+        const auto entry = beforeById.find(after.id);
+        if (entry == beforeById.end())
+            continue;
+        const auto* found = entry->second;
+        if (found->sourceFpsNum != after.sourceFpsNum || found->sourceFpsDen != after.sourceFpsDen)
             continue;
         const auto old = clipMapping(*found), now = clipMapping(after);
         if (!(old == now))
@@ -402,8 +407,11 @@ bool remapLinkedSubtitles(const Project& before, Project& candidate, std::string
         auto remapped = cue;
         remapped.startFrame = std::max<std::int64_t>(0, toTimeline(startSec));
         remapped.endFrame = toTimeline(endSec);
-        if (remapped.endFrame <= remapped.startFrame)
-            continue;
+        // 音声は残っているのに frame へ丸めると 0 frame になる。黙って消さずに拒否する。
+        if (remapped.endFrame <= remapped.startFrame) {
+            error = "この速度ではリンクした字幕の区間を 1 frame 以上で表せません: " + cue.content;
+            return false;
+        }
         candidate.subtitles->cues.push_back(std::move(remapped));
     }
     sortCues(*candidate.subtitles);

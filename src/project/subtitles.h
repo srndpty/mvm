@@ -73,6 +73,8 @@ void relinkSubtitlesAfterSplit(Project& project, const std::string& leftId,
 // 切り落とした部分) を除き、編集後の clip で timeline の区間へ戻す。素材の範囲から全部
 // 外れた字幕は消す。編集前の位置から作り直すので、リップルで既にずらした字幕も二重には
 // ずらさない。他の字幕と重なる場合は失敗する (編集全体を拒否する)。
+// 素材の範囲が残っているのに frame へ丸めると 0 frame になる字幕 (速度を上げすぎた場合) は
+// 黙って消さず、編集全体を拒否する。
 bool remapLinkedSubtitles(const Project& before, Project& candidate, std::string& error);
 // clipIds にリンクした字幕のリンクを外す。外した件数を返す。
 std::size_t unlinkSubtitles(Project& project, const std::unordered_set<std::string>& clipIds);

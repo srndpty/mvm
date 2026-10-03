@@ -359,6 +359,98 @@ int main(int argc, char** argv) {
         require(slipped != 0 && cue(edited, "a")->startFrame == 20 - slipped &&
                     cue(edited, "b")->startFrame == 70 - slipped,
                 "スリップでは字幕を同じ音声の位置へ動かす");
+        // 速度を上げすぎて、音声はあるのに字幕が 0 frame になる編集は黙って消さずに拒否する。
+        {
+            auto tiny = media;
+            tiny.subtitles->cues.insert(tiny.subtitles->cues.begin() + 1,
+                                        {"tiny", 40, 44, "短い", "voice"});
+            const auto beforeTiny = tiny;
+            ClipSpeedDurationEdit fast;
+            fast.speedNum = 10;
+            fast.speedDen = 1;
+            const auto refused = setClipSpeedDuration(tiny, "voice", fast, LinkMode::Linked);
+            require(!refused.success && refused.error.find("1 frame") != std::string::npos &&
+                        tiny == beforeTiny,
+                    "丸めると 0 frame になるリンク字幕は消さずに編集を拒否する");
+        }
+        // フレーム保持は保持位置への時間の挿入でもある。字幕も clip と同じだけ後ろへ送る。
+        {
+            auto held = media;
+            held.subtitles->cues = {{"cross", 45, 55, "前後", "voice"},
+                                    {"after", 60, 70, "後", "voice"},
+                                    {"free", 100, 110, "手入力", {}}};
+            int holdIds = 0;
+            require(insertFrameHold(held, "voice", 50, 20,
+                                    [&] { return "hold-" + std::to_string(++holdIds); })
+                        .success,
+                    "フレーム保持の挿入");
+            const auto rightClip = std::find_if(
+                held.timelineClips.begin(), held.timelineClips.end(), [](const auto& clip) {
+                    return clip.id != "voice" && !clip.frameHold && clip.timelineStartFrame == 70;
+                });
+            require(rightClip != held.timelineClips.end(), "保持の右側の clip");
+            require(cue(held, "after")->startFrame == 80 && cue(held, "after")->endFrame == 90 &&
+                        cue(held, "after")->linkClipId == rightClip->id &&
+                        cue(held, "free")->startFrame == 120 &&
+                        cue(held, "cross")->startFrame == 45 && cue(held, "cross")->endFrame == 50,
+                    "保持より後の字幕は clip と同じだけ後ろへ送る (未リンクの字幕も)");
+            const auto crossRight =
+                std::find_if(held.subtitles->cues.begin(), held.subtitles->cues.end(),
+                             [](const auto& c) { return c.startFrame == 70; });
+            require(crossRight != held.subtitles->cues.end() && crossRight->endFrame == 75 &&
+                        crossRight->linkClipId == rightClip->id,
+                    "保持位置を跨ぐ字幕の後半は保持の後ろへ送り、右側の clip へリンクする");
+        }
+        // 全トラックの時間編集が他の clip を二分したら、右側の音声の字幕は右側の clip
+        // へ付け替える。
+        {
+            auto rippled = media;
+            rippled.subtitles->cues = {{"left", 20, 30, "左", "voice"},
+                                       {"right", 100, 110, "右", "voice"}};
+            require(editTimelineTime(rippled, 80, 20, 0).success, "全トラックの時間削除");
+            const auto rightPiece = std::find_if(
+                rippled.timelineClips.begin(), rippled.timelineClips.end(), [](const auto& clip) {
+                    return clip.id != "voice" && clip.timelineStartFrame == 80;
+                });
+            require(rightPiece != rippled.timelineClips.end() &&
+                        cue(rippled, "right")->startFrame == 80 &&
+                        cue(rippled, "right")->linkClipId == rightPiece->id &&
+                        cue(rippled, "left")->linkClipId == "voice",
+                    "時間削除で二分した clip の右側の字幕は右側の clip へリンクする");
+            const auto rightId = rightPiece->id;
+            auto withoutLeft = rippled;
+            require(deleteTimelineClip(withoutLeft, 0).success && cue(withoutLeft, "right") &&
+                        !cue(withoutLeft, "left"),
+                    "左側の clip を消しても右側の字幕は残る");
+            auto withoutRight = rippled;
+            const auto rightIndex = static_cast<int>(
+                std::find_if(withoutRight.timelineClips.begin(), withoutRight.timelineClips.end(),
+                             [&](const auto& clip) { return clip.id == rightId; }) -
+                withoutRight.timelineClips.begin());
+            require(deleteTimelineClip(withoutRight, rightIndex).success &&
+                        !cue(withoutRight, "right") && cue(withoutRight, "left"),
+                    "右側の clip を消すと右側の字幕も消える");
+            // 別のトラックの clip のリップルトリムでも、横切られた長い clip
+            // の右側の字幕を落とさない。
+            auto trimmed = media;
+            trimmed.subtitles->cues = {{"right", 100, 110, "右", "voice"}};
+            TimelineClip other;
+            other.kind = TimelineClipKind::Text;
+            other.id = "other";
+            other.name = "別トラック";
+            other.text.content = "別トラック";
+            other.sourceFpsNum = 60;
+            other.sourceFrameCount = other.sourceOutFrame = 100;
+            other.track.index = 1;
+            trimmed.timelineClips.push_back(other);
+            require(validateTimeline(trimmed).success, "リップルトリムの対照群");
+            require(
+                rippleTrimTimelineClip(trimmed, "other", TrimEdge::Right, -20, LinkMode::Linked)
+                        .success &&
+                    cue(trimmed, "right") && cue(trimmed, "right")->startFrame == 80 &&
+                    cue(trimmed, "right")->linkClipId != "voice",
+                "別トラックのリップルトリムで二分した clip の右側の字幕を残し、右側へリンクする");
+        }
         auto crowded = media;
         crowded.subtitles->cues.push_back({"next", 45, 50, "次", {}});
         std::sort(crowded.subtitles->cues.begin(), crowded.subtitles->cues.end(),

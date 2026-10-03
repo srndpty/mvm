@@ -1541,6 +1541,9 @@ TimelineEditResult commitCandidate(Project& project, Project candidate, int sele
 
 // 時間の対応を変える clip の編集の確定。リンクした字幕を音声に合わせて置き直してから確定する
 // (remapLinkedSubtitles)。
+// リップルの全トラック時間編集で二分した clip は、時間編集の中で右側の字幕を右側の clip へ
+// 付け替えてある。ここでは同じ ID の左側だけが対象になり、その字幕は素材の時刻から作り直しても
+// 時間編集と同じ位置になる。
 TimelineEditResult commitMappingEdit(Project& project, Project candidate, int selectedIndex) {
     TimelineEditResult result;
     if (!remapLinkedSubtitles(project, candidate, result.error))
@@ -2733,6 +2736,9 @@ bool timeEditCandidate(Project& candidate, std::int64_t start, std::int64_t remo
         return true;
     std::vector<TimelineClip> output;
     std::unordered_map<std::string, std::string> rightGroups;
+    // 分割した clip の系譜 (元の ID → 右側の新しい ID と、時間編集後の右側の開始位置)。
+    // 字幕は ID ではなくこの系譜で、右側の音声にあたる字幕を右側の clip へ付け替える。
+    std::vector<std::tuple<std::string, std::string, std::int64_t>> lineage;
     for (const auto& original : candidate.timelineClips) {
         std::int64_t a = 0, b = 0;
         if (!clipInterval(candidate, original, a, b, error))
@@ -2791,6 +2797,8 @@ bool timeEditCandidate(Project& candidate, std::int64_t start, std::int64_t remo
                 right.effects.fadeInFrames = 0;
                 clampFadesToLength(right);
             }
+            if (right.id != original.id)
+                lineage.emplace_back(original.id, right.id, right.timelineStartFrame);
             output.push_back(std::move(right));
         }
     }
@@ -2806,7 +2814,16 @@ bool timeEditCandidate(Project& candidate, std::int64_t start, std::int64_t remo
     const auto newId = [&] {
         return timeEditId(candidate, "subtitle-ripple-" + std::to_string(++cueId));
     };
-    return editSubtitleTime(candidate, start, removed, inserted, newId, error);
+    if (!editSubtitleTime(candidate, start, removed, inserted, newId, error))
+        return false;
+    // 時間編集は境界を跨ぐ字幕も境界で分けているので、右側の clip の開始以降に始まる字幕が
+    // 右側の音声にあたる。
+    if (candidate.subtitles)
+        for (const auto& [originalId, rightId, rightStart] : lineage)
+            for (auto& cue : candidate.subtitles->cues)
+                if (cue.linkClipId == originalId && cue.startFrame >= rightStart)
+                    cue.linkClipId = rightId;
+    return true;
 }
 } // namespace
 
@@ -4007,6 +4024,10 @@ TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, 
         if (clip.timelineStartFrame >= frame && !shiftStart(clip, holdFrames, result.error))
             return result;
     }
+    // 保持は保持位置への時間の挿入でもある。字幕も clip と同じだけ後ろへ送る (保持位置を跨ぐ
+    // リンク字幕は上の分割で既に左右へ分けてある)。
+    if (!editSubtitleTime(candidate, frame, 0, holdFrames, newId, result.error))
+        return result;
     TimelineClip hold =
         candidate.timelineClips[static_cast<std::size_t>(indexOfId(candidate, clipId))];
     hold.id = newId();
