@@ -381,10 +381,10 @@ ColumnLayout {
                 Canvas {
                     id: curve
                     anchors.fill: parent
-                    property var data: graph.keys
+                    property var curveKeys: graph.keys
                     property var selection: inspector.selectedFrames
                     onSelectionChanged: requestPaint()
-                    onDataChanged: requestPaint()
+                    onCurveKeysChanged: requestPaint()
                     onWidthChanged: requestPaint()
                     onHeightChanged: requestPaint()
                     onPaint: {
@@ -393,18 +393,18 @@ ColumnLayout {
                         for (let n = 1; n < 4; ++n) {
                             c.beginPath(); c.moveTo(0, height * n / 4); c.lineTo(width, height * n / 4); c.stroke();
                         }
-                        if (!data.length) return;
+                        if (!curveKeys.length) return;
                         c.strokeStyle = "#62b6ff"; c.lineWidth = 1.5; c.beginPath();
-                        c.moveTo(0, graph.valueY(data[0].value));
-                        for (const k of data) {
+                        c.moveTo(0, graph.valueY(curveKeys[0].value));
+                        for (const k of curveKeys) {
                             c.lineTo(k.frame * graph.ppf, graph.valueY(k.value));
                             for (const sample of (k.samples || [])) c.lineTo(sample.frame * graph.ppf, graph.valueY(sample.value));
                         }
-                        c.lineTo(width, graph.valueY(data[data.length - 1].value)); c.stroke();
+                        c.lineTo(width, graph.valueY(curveKeys[curveKeys.length - 1].value)); c.stroke();
                         c.strokeStyle = "#47627c"; c.lineWidth = 1;
                         if (inspector.selectedChannel === row.modelData) {
-                            for (let i = 0; i + 1 < data.length; ++i) {
-                                const k = data[i], next = data[i + 1];
+                            for (let i = 0; i + 1 < curveKeys.length; ++i) {
+                                const k = curveKeys[i], next = curveKeys[i + 1];
                                 if (selection.indexOf(k.frame) < 0) continue;
                                 c.beginPath(); c.moveTo(k.frame * graph.ppf, graph.valueY(k.value));
                                 c.lineTo((k.frame + (next.frame - k.frame) / 3) * graph.ppf, graph.valueY(k.value + (next.value - k.value) * k.control1)); c.stroke();

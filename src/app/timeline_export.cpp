@@ -154,14 +154,14 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
         }
         if (animatedMotion) {
             const auto evaluated = project::evaluateClipEffects(clip.effects, localOffset + frame);
-            const auto geometry = mapExportGeometry(evaluated, request);
-            output.motionFrames.push_back({frame, evaluated.cropLeftPercent * request.width / 100,
-                                           evaluated.cropTopPercent * request.height / 100,
-                                           evaluated.cropRightPercent * request.width / 100,
-                                           evaluated.cropBottomPercent * request.height / 100,
-                                           geometry.rectX, geometry.rectY, geometry.rectWidth,
-                                           geometry.rectHeight, geometry.rotationDegrees,
-                                           geometry.shearDegrees});
+            const auto frameGeometry = mapExportGeometry(evaluated, request);
+            output.motionFrames.push_back(
+                {frame, evaluated.cropLeftPercent * request.width / 100,
+                 evaluated.cropTopPercent * request.height / 100,
+                 evaluated.cropRightPercent * request.width / 100,
+                 evaluated.cropBottomPercent * request.height / 100, frameGeometry.rectX,
+                 frameGeometry.rectY, frameGeometry.rectWidth, frameGeometry.rectHeight,
+                 frameGeometry.rotationDegrees, frameGeometry.shearDegrees});
         }
 
         const auto opacity = opacityAt(frame);
