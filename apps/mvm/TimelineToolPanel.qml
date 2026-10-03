@@ -72,13 +72,13 @@ Rectangle {
     border.color: "#3c424c"
     implicitWidth: 34
 
-    Flickable {
+    BoundedFlickable {
         anchors.fill: parent
         anchors.topMargin: 4
         anchors.bottomMargin: 4
         contentHeight: toolColumn.height
         clip: true
-        boundsBehavior: Flickable.StopAtBounds
+
 
         Column {
             id: toolColumn

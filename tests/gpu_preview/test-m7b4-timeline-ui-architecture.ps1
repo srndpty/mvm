@@ -519,15 +519,18 @@ if ($bodyAreaIndex -lt 0 -or $bodyReleaseIndex -lt 0 -or $bodyMoveIndex -lt 0 -o
     throw 'delegateを破棄し得るmoveTimelineClipより前にdrag状態をresetしていません'
 }
 
-if (-not $main.Contains('class TimelineWheelEventFilter final') -or
+# filter の本体は字幕ダイアログの試験からも使うため timeline_wheel_filter.h へ分けた。
+# 設置 (installEventFilter) は main.cpp に残る。
+$wheelFilter = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\timeline_wheel_filter.h') -Raw
+if (-not $wheelFilter.Contains('class TimelineWheelEventFilter final') -or
     -not $main.Contains('window->installEventFilter(&timelineWheelFilter)') -or
-    -not $main.Contains('testFlag(Qt::AltModifier)') -or
-    -not $main.Contains('testFlag(Qt::ControlModifier)') -or
-    -not $main.Contains('testFlag(Qt::ShiftModifier)') -or
-    -not $main.Contains('method = "handleNativePlainWheel"') -or
-    -not $main.Contains('angleDelta.x()') -or
-    -not $main.Contains('pixelDelta.x()') -or
-    -not $main.Contains('if (delta == 0)') -or
+    -not $wheelFilter.Contains('testFlag(Qt::AltModifier)') -or
+    -not $wheelFilter.Contains('testFlag(Qt::ControlModifier)') -or
+    -not $wheelFilter.Contains('testFlag(Qt::ShiftModifier)') -or
+    -not $wheelFilter.Contains('method = "handleNativePlainWheel"') -or
+    -not $wheelFilter.Contains('angleDelta.x()') -or
+    -not $wheelFilter.Contains('pixelDelta.x()') -or
+    -not $wheelFilter.Contains('if (delta == 0)') -or
     -not $qml.Contains('if (wheelDelta === 0)')) {
     throw 'modifier付きwheelがQQuickWindowのevent filterで先取りされていません'
 }

@@ -108,6 +108,11 @@ $Packages = @(
     'fftw'
     'libsamplerate'
     'rubberband'
+    'whisper.cpp'
+    'vulkan-headers'
+    'vulkan-loader'
+    'shaderc'
+    'spirv-headers'
     'sox'
     'rtaudio'
 

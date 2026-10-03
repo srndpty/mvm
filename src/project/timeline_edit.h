@@ -392,8 +392,8 @@ TransitionEditResult setTimelineTransitionSpan(Project& project, const std::stri
                                                std::int64_t framesBeforeCut,
                                                std::int64_t framesAfterCut, LinkMode linkMode);
 
-// リップルトリム。trim した尺の増減だけ、trim した clip の track で後ろにある clip
-// (とそのリンク相手) をずらす。left 端を trim しても clip の開始位置は動かない。
+// リップルトリム。尺の増減を全トラックと字幕へ波及させる。
+// left 端を trim しても clip の開始位置は動かない。
 // Linked ならリンク相手も同じ量 trim し、相手の track の後ろもずらす。
 TimelineEditResult rippleTrimTimelineClip(Project& project, const std::string& clipId,
                                           TrimEdge edge, std::int64_t projectFrameDelta,
@@ -464,6 +464,9 @@ struct TimelineGap {
 // 終端より後ろの空白は詰める対象が無いので found=false とする。
 TimelineGap gapAt(const Project& project, TrackRef track, std::int64_t timelineFrame);
 // gapAt が返す区間を閉じ、後続 clip を左へ詰める (ripple delete)。
+// 全トラックと字幕に同じ時間挿入・削除を適用する。区間をまたぐ素材は分割する。
+TimelineEditResult editTimelineTime(Project& project, std::int64_t start, std::int64_t removed,
+                                    std::int64_t inserted);
 TimelineEditResult rippleDeleteGap(Project& project, TrackRef track, std::int64_t timelineFrame);
 
 } // namespace mvm::project

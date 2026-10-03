@@ -22,6 +22,7 @@ add_library(mvm_project STATIC
     project/clip_effects.cpp
     project/media_bin.cpp
     project/path_identity.cpp
+    project/subtitles.cpp
     project/project.cpp
     project/project_json.cpp
     project/timeline_edit.cpp
@@ -259,6 +260,7 @@ if(MVM_ENABLE_QT)
         app/preview/preview_rhi_item.cpp
         app/preview/compositor_rhi_item.cpp
         app/preview/preview_engine_rhi_item.cpp
+        app/preview/test_window_mode.cpp
     )
     set_target_properties(mvm_preview_qt PROPERTIES AUTOMOC ON)
     target_include_directories(mvm_preview_qt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -271,3 +273,21 @@ if(MVM_ENABLE_QT)
     qt_extract_metatypes(mvm_preview_qt)
     add_library(mvm::preview_qt ALIAS mvm_preview_qt)
 endif()
+
+# ローカル文字起こし。公開ヘッダにFFmpeg・whisper・Qtの型を出さない。
+add_library(mvm_transcribe STATIC media/transcribe/transcribe.cpp media/transcribe/audio_prepare.cpp)
+target_include_directories(mvm_transcribe PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_transcribe PRIVATE PkgConfig::MVM_FFMPEG whisper mvm::warnings)
+add_library(mvm::transcribe ALIAS mvm_transcribe)
+
+target_compile_definitions(mvm_transcribe PRIVATE MVM_WHISPER_BIN_DIR="${WHISPER_BIN_DIR}")
+# 指定したWhisperとggmlのDLLをexeと同じ場所へ置き、PATH上の別構成を拾わせない。
+file(GLOB MVM_WHISPER_RUNTIME_DLLS "${WHISPER_BIN_DIR}/*whisper*.dll" "${WHISPER_BIN_DIR}/ggml*.dll")
+if(NOT MVM_WHISPER_RUNTIME_DLLS)
+    message(FATAL_ERROR "指定したWhisperの実行時DLLがありません")
+endif()
+add_custom_target(mvm_whisper_runtime
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MVM_WHISPER_RUNTIME_DLLS} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    VERBATIM)
+add_dependencies(mvm_transcribe mvm_whisper_runtime)

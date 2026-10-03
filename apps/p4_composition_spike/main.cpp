@@ -1,4 +1,5 @@
 #include "app/preview/compositor_rhi_item.h"
+#include "app/preview/test_window_mode.h"
 #include "p4_composition_controller.h"
 
 #include <QGuiApplication>
@@ -53,14 +54,22 @@ bool parse(const QStringList& args, P4Config& config) {
 
 int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+    prepareTestFixedWindowEnvironment();
     QGuiApplication app(argc, argv);
     P4Config config;
     if (!parse(app.arguments(), config)) {
         usage();
         return 2;
     }
+    config.testFixedWindow = testFixedWindowRequested();
+    if (config.testFixedWindow && config.workload == mvm::gpu::Phase4ScheduleKind::Formal) {
+        std::fprintf(stderr, "試験用の固定 window (MVM_TEST_FIXED_WINDOW=1) では formal "
+                             "workload を実行できません\n");
+        return 7;
+    }
     P4CompositionController controller(config);
     QQmlApplicationEngine engine;
+    engine.setInitialProperties(testFixedWindowInitialProperties());
     engine.load(QUrl(QStringLiteral("qrc:/mvm/p4_composition_spike/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 5;

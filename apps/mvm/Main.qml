@@ -21,6 +21,17 @@ ApplicationWindow {
     visible: true
     title: "mvm" + (root.mvmController.dirty ? " *" : "") + " — " + root.mvmController.projectPath
     color: "#15171b"
+    property int activeModalDialogs: 0
+    readonly property bool timelineWheelBlocked: activeModalDialogs > 0
+
+    TranscribeDialog {
+        id: clipTranscribeDialog
+        mvmController: root.mvmController
+    }
+    function openClipTranscription(clipId) {
+        root.mvmController.selectTimelineClip(clipId, false);
+        clipTranscribeDialog.openForClip(clipId);
+    }
 
     Action {
         id: openProjectAction
@@ -846,12 +857,12 @@ ApplicationWindow {
                         spacing: 8
 
                         Repeater {
-                            model: ["エフェクトコントロール", "プロジェクト: " + root.projectFileName, "オーディオミキサー"]
+                            model: ["エフェクトコントロール", "プロジェクト: " + root.projectFileName, "オーディオミキサー", "字幕"]
                             Label {
                                 required property int index
                                 required property string modelData
                                 Layout.fillWidth: true
-                                Layout.maximumWidth: leftPanel.availableWidth / 3
+                                Layout.maximumWidth: leftPanel.availableWidth / 4
                                 horizontalAlignment: Text.AlignHCenter
                                 text: modelData
                                 color: root.leftPanelTab === index ? "#e6e8ec" : "#8a919c"
@@ -900,7 +911,7 @@ ApplicationWindow {
 
                             // 項目が増えるとパネルの高さを超え、下の再生時間の表示に重なっていた。
                             // 縦にスクロールさせ、はみ出した分は切り取る。端では跳ね返らずにそのまま止める。
-                            Flickable {
+                            BoundedFlickable {
                                 id: effectControlsScroll
                                 anchors.fill: parent
                                 visible: root.mvmController.selectedTransitionId === ""
@@ -908,8 +919,8 @@ ApplicationWindow {
                                 contentWidth: width
                                 contentHeight: effectControlsColumn.implicitHeight
                                 flickableDirection: Flickable.VerticalFlick
-                                boundsBehavior: Flickable.StopAtBounds
-                                boundsMovement: Flickable.StopAtBounds
+
+
                                 ScrollBar.vertical: ScrollBar {
                                     id: effectControlsScrollBar
                                     policy: ScrollBar.AsNeeded
@@ -1021,6 +1032,13 @@ ApplicationWindow {
                             objectName: "audioMixerPanel"
                             mvmController: root.mvmController
                         }
+                        Loader {
+                            active: root.leftPanelTab === 3
+                            sourceComponent: Component {
+                                SubtitlePanel { mvmController: root.mvmController }
+                            }
+                        }
+
                     }
                 }
             }
@@ -1433,6 +1451,11 @@ ApplicationWindow {
             property string pressedClipId: ""
             property bool activeDragDuplicate: false
             property bool activeDragMoved: false
+            // S1 の字幕を本体でドラッグしている間の移動量 (frame)。選択中の字幕が一緒にずれて描かれ、
+            // subtitleDragCopy (Alt) なら元の位置に残して複製先を示す。
+            property int subtitleDragFrames: 0
+            property bool subtitleDragging: false
+            property bool subtitleDragCopy: false
             property real activeDragOffsetX: 0
             property string activeDragTrackKind: ""
             // clip 移動で吸着した frame (吸着の目印を描く)。吸着していなければ -1。
@@ -1491,7 +1514,8 @@ ApplicationWindow {
             // 最上段の video track (Vn) の上に置く「+V」の行。track と一緒に scroll する。
             readonly property real addVideoRowHeight: 28
             // track 領域の上端 (content 座標)。ruler と「+V」の行の下。
-            readonly property real tracksTop: rulerHeight + addVideoRowHeight
+            readonly property real subtitleRowHeight: root.mvmController.hasSubtitleTrack ? trackHeight : 0
+            readonly property real tracksTop: rulerHeight + addVideoRowHeight + subtitleRowHeight
             readonly property int videoCount: root.mvmController.videoTrackCount
             readonly property int audioCount: root.mvmController.audioTrackCount
             readonly property int rowCount: videoCount + audioCount
@@ -1785,6 +1809,14 @@ ApplicationWindow {
                     ToolTip.text: tip
                 }
 
+                Rectangle {
+                    visible: root.mvmController.hasSubtitleTrack
+                    width: timelinePanel.labelWidth; height: timelinePanel.subtitleRowHeight
+                    y: timelinePanel.rulerHeight + timelinePanel.addVideoRowHeight - timelineFlick.contentY
+                    color: "#30283b"; border.color: "#48404f"
+                    Label { anchors.centerIn: parent; text: "S1 字幕"; color: "#ded0ef" }
+                    MouseArea { anchors.fill: parent; onClicked: root.leftPanelTab = 3 }
+                }
                 component TrackHeader: Rectangle {
                     id: header
                     required property string headerKind
@@ -1989,7 +2021,7 @@ ApplicationWindow {
             }
 
             // --- スクロール領域 ---
-            Flickable {
+            BoundedFlickable {
                 id: timelineFlick
                 objectName: "timelineFlick"
                 x: timelinePanel.toolPanelWidth + timelinePanel.labelWidth
@@ -2000,7 +2032,7 @@ ApplicationWindow {
                 contentWidth: Math.max(width, root.mvmController.navigationTimelineFrames * timelinePanel.pixelsPerFrame + 240)
                 contentHeight: Math.max(height, timelinePanel.tracksTop
                                         + timelinePanel.tracksHeight + 34)
-                boundsBehavior: Flickable.StopAtBounds
+
                 flickableDirection: Flickable.HorizontalAndVerticalFlick
                 interactive: false
 
@@ -2029,6 +2061,196 @@ ApplicationWindow {
                     // sticky rulerを最下部までscrollしてもcontentの内側に保つ。
                     height: timelineFlick.contentHeight
 
+                    Rectangle {
+                        visible: root.mvmController.hasSubtitleTrack
+                        y: timelinePanel.rulerHeight + timelinePanel.addVideoRowHeight
+                        height: timelinePanel.subtitleRowHeight; width: parent.width
+                        color: "#221e29"; border.color: "#48404f"
+                        // S1 の空白から始めた左ドラッグは、触れた字幕をすべて選ぶ (clip の矩形選択と
+                        // 同じ操作)。字幕の delegate は後に宣言するので、字幕の上の press はそちらが受ける。
+                        MouseArea {
+                            id: subtitleSelectionArea
+                            objectName: "subtitleSelectionArea"
+                            anchors.fill: parent
+                            enabled: !root.mvmController.busy && !root.mvmController.playing
+                            acceptedButtons: Qt.LeftButton
+                            preventStealing: true
+                            property real startX: 0
+                            property real currentX: 0
+                            property bool selecting: false
+                            onPressed: mouse => {
+                                startX = mouse.x;
+                                currentX = mouse.x;
+                                selecting = true;
+                            }
+                            onPositionChanged: mouse => currentX = Math.max(0, Math.min(width, mouse.x))
+                            onReleased: {
+                                if (!selecting)
+                                    return;
+                                selecting = false;
+                                const left = Math.min(startX, currentX), right = Math.max(startX, currentX);
+                                root.mvmController.selectTimelineSubtitlesInRange(
+                                    Math.floor(left / timelinePanel.pixelsPerFrame),
+                                    Math.floor(right / timelinePanel.pixelsPerFrame));
+                                root.leftPanelTab = 3;
+                            }
+                            onCanceled: selecting = false
+                        }
+                        Rectangle {
+                            visible: subtitleSelectionArea.selecting
+                            x: Math.min(subtitleSelectionArea.startX, subtitleSelectionArea.currentX)
+                            width: Math.abs(subtitleSelectionArea.currentX - subtitleSelectionArea.startX)
+                            y: 1; height: parent.height - 2
+                            color: "#334f78a8"
+                            border.color: "#9bc8ff"
+                            border.width: 1
+                            z: 90
+                        }
+                        CompactMenu {
+                            id: subtitleMenu
+                            CompactMenuItem {
+                                text: "コピー\tCtrl+C"
+                                onTriggered: root.mvmController.copySelectedClips()
+                            }
+                            CompactMenuItem {
+                                text: "カット\tCtrl+X"
+                                onTriggered: root.mvmController.cutSelectedClips()
+                            }
+                            CompactMenuItem {
+                                text: "複製\tCtrl+D"
+                                onTriggered: root.mvmController.duplicateSelectedClips()
+                            }
+                            CompactMenuSeparator {}
+                            CompactMenuItem {
+                                text: "削除\tDelete"
+                                onTriggered: root.mvmController.deleteSelection()
+                            }
+                        }
+                        Repeater {
+                            id: subtitleCues
+                            model: root.mvmController.subtitleWindow
+                            readonly property real visibleStartFrame:
+                                timelineFlick.contentX / timelinePanel.pixelsPerFrame
+                            readonly property real visibleEndFrame:
+                                (timelineFlick.contentX + timelineFlick.width) / timelinePanel.pixelsPerFrame
+                            onVisibleStartFrameChanged: updateWindow()
+                            onVisibleEndFrameChanged: updateWindow()
+                            Component.onCompleted: updateWindow()
+                            function updateWindow() {
+                                root.mvmController.subtitleWindow.setVisibleRange(visibleStartFrame,
+                                                                                  visibleEndFrame);
+                            }
+                            delegate: Item {
+                                id: subtitleItem
+                                objectName: "timelineSubtitle_" + cueId
+                                required property string cueId
+                                required property var startFrame
+                                required property var endFrame
+                                required property string content
+                                // 文字起こし元の clip にリンクしている (clip の移動に追従する)。
+                                required property bool linked
+                                // 端のドラッグ (トリム) 中だけ使う、確定前の区間。
+                                property real draftStart: startFrame
+                                property real draftEnd: endFrame
+                                property bool cancelled: false
+                                readonly property bool selected: root.mvmController.selectedSubtitleIds.indexOf(cueId) >= 0
+                                // 本体のドラッグは clip と同じく選択中の字幕をまとめて動かす。
+                                // Alt+ドラッグ (複製) では元の位置に残し、複製先を半透明で示す。
+                                readonly property bool groupDragged: selected && timelinePanel.subtitleDragging
+                                readonly property real groupOffset: groupDragged ? timelinePanel.subtitleDragFrames : 0
+                                x: (draftStart + (timelinePanel.subtitleDragCopy ? 0 : groupOffset)) * timelinePanel.pixelsPerFrame
+                                width: Math.max(2, (draftEnd - draftStart) * timelinePanel.pixelsPerFrame)
+                                y: 3; height: timelinePanel.trackHeight - 6
+                                Rectangle {
+                                    anchors.fill: parent
+                                    color: subtitleItem.selected ? "#785497" : "#523966"
+                                    border.color: subtitleItem.selected ? "#e2c9f5" : "#b38bd4"
+                                    clip: true
+                                    Label { anchors.fill: parent; anchors.margins: 4; text: subtitleItem.content; color: "#ffffff"; elide: Text.ElideRight }
+                                    // リンクしている字幕は下端に細い線を引く (clip のリンクと同じく、動かすと一緒に動く印)。
+                                    Rectangle { visible: subtitleItem.linked; x: 1; width: parent.width - 2; height: 2; y: parent.height - 3; color: "#d7b7f0"; opacity: 0.7 }
+                                }
+                                // Alt+ドラッグの複製先。
+                                Rectangle {
+                                    visible: subtitleItem.groupDragged && timelinePanel.subtitleDragCopy
+                                    x: subtitleItem.groupOffset * timelinePanel.pixelsPerFrame
+                                    width: parent.width; height: parent.height
+                                    color: "#785497"; opacity: 0.55
+                                    border.color: "#e2c9f5"; border.width: 1
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    enabled: !root.mvmController.busy && !root.mvmController.playing
+                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                    property real pressGlobalX: 0
+                                    property string mode: "move"
+                                    function resetDrag() {
+                                        timelinePanel.subtitleDragging = false;
+                                        timelinePanel.subtitleDragFrames = 0;
+                                        timelinePanel.subtitleDragCopy = false;
+                                        root.mvmController.subtitleWindow.pinnedClipIds = [];
+                                        subtitleItem.draftStart = Qt.binding(function() { return subtitleItem.startFrame; });
+                                        subtitleItem.draftEnd = Qt.binding(function() { return subtitleItem.endFrame; });
+                                    }
+                                    onPressed: function(mouse) {
+                                        subtitleItem.cancelled = false;
+                                        const additive = (mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier)) !== 0;
+                                        // clip と同じく、選択済みの字幕を押しても複数選択を崩さない (まとめて動かす・メニュー用)。
+                                        if (additive || !subtitleItem.selected)
+                                            root.mvmController.selectTimelineSubtitle(subtitleItem.cueId, additive);
+                                        root.leftPanelTab = 3;
+                                        subtitleItem.forceActiveFocus();
+                                        if (mouse.button === Qt.RightButton) {
+                                            subtitleItem.cancelled = true;
+                                            subtitleMenu.popup();
+                                            mouse.accepted = true;
+                                            return;
+                                        }
+                                        // Ctrl / Shift の押下は選択の足し引きだけにし、ドラッグを始めない。
+                                        if (additive) {
+                                            subtitleItem.cancelled = true;
+                                            return;
+                                        }
+                                        pressGlobalX = mapToItem(timelineContent, mouse.x, mouse.y).x;
+                                        mode = mouse.x < 6 ? "left" : (mouse.x > width - 6 ? "right" : "move");
+                                        // スクロールで表示範囲の外へ出ても、掴んだ字幕の delegate を消さない。
+                                        root.mvmController.subtitleWindow.pinnedClipIds = [subtitleItem.cueId];
+                                        if (mode === "move") {
+                                            timelinePanel.subtitleDragCopy = (mouse.modifiers & Qt.AltModifier) !== 0;
+                                            timelinePanel.subtitleDragFrames = 0;
+                                            timelinePanel.subtitleDragging = true;
+                                        }
+                                    }
+                                    onPositionChanged: function(mouse) {
+                                        if (!pressed || subtitleItem.cancelled) return;
+                                        const delta = Math.round((mapToItem(timelineContent, mouse.x, mouse.y).x - pressGlobalX) / timelinePanel.pixelsPerFrame);
+                                        if (mode === "move") timelinePanel.subtitleDragFrames = Math.max(-subtitleItem.startFrame, delta);
+                                        else if (mode === "left") subtitleItem.draftStart = Math.max(0, Math.min(subtitleItem.endFrame - 1, subtitleItem.startFrame + delta));
+                                        else subtitleItem.draftEnd = Math.max(subtitleItem.startFrame + 1, subtitleItem.endFrame + delta);
+                                    }
+                                    onReleased: {
+                                        const id = subtitleItem.cueId, content = subtitleItem.content;
+                                        const start = subtitleItem.draftStart, end = subtitleItem.draftEnd;
+                                        const frames = timelinePanel.subtitleDragFrames, copy = timelinePanel.subtitleDragCopy;
+                                        const trimmed = !subtitleItem.cancelled && mode !== "move"
+                                                        && (start !== subtitleItem.startFrame || end !== subtitleItem.endFrame);
+                                        const moved = !subtitleItem.cancelled && mode === "move" && frames !== 0;
+                                        const target = subtitleItem.startFrame + frames;
+                                        resetDrag();
+                                        if (trimmed) root.mvmController.updateSubtitle(id, content, start, end);
+                                        else if (moved) root.mvmController.placeTimelineSubtitles(id, target, copy);
+                                    }
+                                    onCanceled: resetDrag()
+                                }
+                                Keys.onEscapePressed: {
+                                    cancelled = true;
+                                    timelinePanel.subtitleDragFrames = 0;
+                                    draftStart = startFrame;
+                                    draftEnd = endFrame;
+                                }
+                            }
+                        }
+                    }
                     Rectangle {
                         visible: root.mvmController.inFrame >= 0 && root.mvmController.outFrame > root.mvmController.inFrame
                         x: root.mvmController.inFrame * timelinePanel.pixelsPerFrame
@@ -2451,6 +2673,7 @@ ApplicationWindow {
                                 required property int trackIndex
                                 required property bool linked
                                 required property string linkGroupId
+                                required property bool subtitleLinked
                                 required property bool selected
                                 required property string mediaPath
                                 required property var automationKeys
@@ -2618,6 +2841,13 @@ ApplicationWindow {
                                 CompactMenu {
                                     id: clipMenu
                                     CompactMenuItem {
+                                        text: "自動字幕を生成..."
+                                        enabled: !root.mvmController.busy && !root.mvmController.playing
+                                                 && !root.mvmController.transcribing
+                                                 && ["audio", "video", "manim"].indexOf(clipItem.clipKind) >= 0
+                                        onTriggered: root.openClipTranscription(clipItem.clipId)
+                                    }
+                                    CompactMenuItem {
                                         text: "速度・デュレーション...\tCtrl+R"
                                         enabled: !root.mvmController.busy
                                         onTriggered: root.openSpeedDurationDialog(clipItem.clipId)
@@ -2652,8 +2882,13 @@ ApplicationWindow {
                                         onTriggered: root.mvmController.deleteTimelineClip(clipItem.clipId)
                                     }
                                     CompactMenuItem {
+                                        text: "リップル削除（全トラック）"
+                                        onTriggered: { root.mvmController.selectTimelineClip(clipItem.clipId, true); root.mvmController.rippleDeleteSelection(); }
+                                    }
+
+                                    CompactMenuItem {
                                         text: "リンクを解除"
-                                        enabled: clipItem.linked
+                                        enabled: clipItem.linked || clipItem.subtitleLinked
                                         onTriggered: root.mvmController.unlinkTimelineClip(clipItem.clipId)
                                     }
                                 }
@@ -3949,6 +4184,11 @@ ApplicationWindow {
             Label {
                 text: "エンコード品質"
                 font.bold: true
+            }
+            CheckBox {
+                text: "字幕を焼き込む"
+                checked: root.mvmController.burnSubtitles
+                onClicked: root.mvmController.burnSubtitles = checked
             }
             ModernDialogComboBox {
                 id: qualityCombo

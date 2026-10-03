@@ -16,6 +16,7 @@
 #include "mvm_controller.h"
 #include "project/timeline_edit.h"
 #include "test_media_fixture.h"
+#include "test_window_focus.h"
 #include "trim_cursor.h"
 #include "waveform_cache.h"
 
@@ -356,7 +357,8 @@ int checkLargeTimelineDelegates(const mvm::project::Project& base,
     QQmlApplicationEngine engine;
     engine.setInitialProperties(
         {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
-         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)},
+         {QStringLiteral("flags"), mvm::test::backgroundWindowFlags()}});
     engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
     auto* window = engine.rootObjects().isEmpty()
                        ? nullptr
@@ -435,7 +437,8 @@ int checkLargeTextOverlayDelegates(const std::filesystem::path& projectPath) {
     QQmlApplicationEngine engine;
     engine.setInitialProperties(
         {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
-         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)},
+         {QStringLiteral("flags"), mvm::test::backgroundWindowFlags()}});
     engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
     auto* window = engine.rootObjects().isEmpty()
                        ? nullptr
@@ -501,7 +504,8 @@ int checkAudioMixerPanel(const std::filesystem::path& projectPath) {
     QQmlApplicationEngine engine;
     engine.setInitialProperties(
         {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
-         {QStringLiteral("waveformCache"), QVariant::fromValue(&cache)}});
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&cache)},
+         {QStringLiteral("flags"), mvm::test::backgroundWindowFlags()}});
     engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
     auto* window = engine.rootObjects().isEmpty()
                        ? nullptr
@@ -754,7 +758,8 @@ int main(int argc, char** argv) {
         QQmlApplicationEngine engine;
         engine.setInitialProperties(
             {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
-             {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
+             {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)},
+             {QStringLiteral("flags"), mvm::test::backgroundWindowFlags()}});
         engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
         auto* window = engine.rootObjects().isEmpty()
                            ? nullptr
@@ -782,18 +787,48 @@ int main(int argc, char** argv) {
                 activationLost = true;
         });
         const auto run = [&]() -> int {
-            window->requestActivate();
-            if (!QTest::qWaitForWindowExposed(window) || !QTest::qWaitForWindowActive(window)) {
+            // OS の前面は奪わず、Qt の中でだけフォーカスを持たせる (test_window_focus.h)。
+            // 利用者が他の window を操作していても試験を続けられる。
+            if (!QTest::qWaitForWindowExposed(window) ||
+                !mvm::test::focusWithoutForeground(window)) {
                 std::fprintf(stderr, "PROTOCOL_INVALID: window が前面になりません。検査中は"
                                      "他の window を操作しないでください\n");
                 return 4;
             }
             activationLost = false;
+            // 背面で動かせているか (OS の前面にならず、実際のマウスも受けない) を毎回確かめる。
+            // 切り離せていなければ、利用者の操作に左右されるので判定しない。
+            {
+                QString reason;
+                if (!mvm::test::isolatedFromUserInput(window, reason)) {
+                    std::fprintf(stderr, "PROTOCOL_INVALID: %s\n", reason.toUtf8().constData());
+                    return 4;
+                }
+            }
             if (!pumpUntil([&] { return controller.previewReady(); }, 30000)) {
                 std::fprintf(stderr, "FAIL: preview が準備できません: %s\n",
                              controller.statusText().toUtf8().constData());
                 return 3;
             }
+            // 右クリックメニューと同じ入口から、名前ではなくIDで対象を指定する。
+            check(QMetaObject::invokeMethod(window, "openClipTranscription",
+                                            Q_ARG(QVariant, QStringLiteral("video"))),
+                  "クリップの文字起こし入口を呼べません");
+            pump(50);
+            auto* transcriptionDialog =
+                window->findChild<QObject*>(QStringLiteral("subtitleTranscribeDialog"));
+            auto* transcriptionSource =
+                window->findChild<QObject*>(QStringLiteral("transcriptionSource"));
+            check(transcriptionDialog && transcriptionSource &&
+                      transcriptionDialog->property("requestedClipId").toString() == "video" &&
+                      transcriptionSource->property("currentIndex").toInt() == 0 &&
+                      window->property("timelineWheelBlocked").toBool(),
+                  "クリップIDの指定またはポップアップ中の背面入力抑止が不正です");
+            if (transcriptionDialog)
+                QMetaObject::invokeMethod(transcriptionDialog, "close");
+            check(
+                pumpUntil([&] { return !window->property("timelineWheelBlocked").toBool(); }, 3000),
+                "ダイアログを閉じてもタイムラインのホイールが無効です");
             // 起動直後は初回 seek の完了待ちで Seeking のことがある。受理されるまで再試行する。
             // seek の要求は毎回 stateChanged を出すので、間隔を空けて再試行する。
             const auto seekAccepted = [&] {
@@ -979,6 +1014,254 @@ int main(int argc, char** argv) {
                     controller.undoLastEdit(); // 移動
                     controller.undoLastEdit(); // 配置
                     pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                }
+
+                // 字幕 400 件での編集の所要時間 (合否には使わない)。MVM_SUBTITLE_PERF=1 で測る。
+                // 実測 (release, 2026-10-03): 移動 370 → 9 ms、カット 389 → 27 ms
+                // (model の作り直しを行の差分通知にした前後)。
+                if (qEnvironmentVariableIsSet("MVM_SUBTITLE_PERF")) {
+                    QString srt;
+                    for (int i = 0; i < 400; ++i)
+                        srt += QStringLiteral("%1\n00:%2:%3,000 --> 00:%2:%3,900\n字幕 %1\n\n")
+                                   .arg(i + 1)
+                                   .arg(i / 60, 2, 10, QChar('0'))
+                                   .arg(i % 60, 2, 10, QChar('0'));
+                    QFile file(directory.filePath(QStringLiteral("perf.srt")));
+                    file.open(QIODevice::WriteOnly);
+                    file.write(srt.toUtf8());
+                    file.close();
+                    QElapsedTimer t;
+                    t.start();
+                    controller.importSubtitles(QUrl::fromLocalFile(file.fileName()), true);
+                    QCoreApplication::processEvents();
+                    std::printf("perf import: %lld ms\n", static_cast<long long>(t.restart()));
+                    auto* subtitles = controller.subtitleModel();
+                    const auto idAt = [&](int row) {
+                        return subtitles->data(subtitles->index(row, 0), Qt::UserRole + 1)
+                            .toString();
+                    };
+                    controller.setSubtitleStyle(
+                        {{QStringLiteral("fontFamily"), QStringLiteral("Yu Gothic UI")}});
+                    QCoreApplication::processEvents();
+                    std::printf("perf font: %lld ms (%s)\n", static_cast<long long>(t.restart()),
+                                controller.subtitleStyle()
+                                    .value("fontFamily")
+                                    .toString()
+                                    .toUtf8()
+                                    .constData());
+                    controller.updateSubtitle(idAt(10), QStringLiteral("字幕 11"), 610, 650);
+                    QCoreApplication::processEvents();
+                    std::printf("perf move: %lld ms\n", static_cast<long long>(t.restart()));
+                    controller.selectTimelineSubtitle(idAt(20), false);
+                    QCoreApplication::processEvents();
+                    std::printf("perf select: %lld ms\n", static_cast<long long>(t.restart()));
+                    controller.cutSelectedClips();
+                    QCoreApplication::processEvents();
+                    std::printf("perf cut: %lld ms\n", static_cast<long long>(t.restart()));
+                    controller.seekTimelineFrame(20 * 60);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    t.restart();
+                    controller.pasteClips();
+                    QCoreApplication::processEvents();
+                    std::printf("perf paste: %lld ms (%s)\n", static_cast<long long>(t.restart()),
+                                controller.statusText().toUtf8().constData());
+                }
+
+                // window の大きさを変えても (最大化・解除) 停止中の preview が黒くならない。
+                // 大きさが変わると preview の描画先が作り直され、次の提示までは黒のままになる。
+                {
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    const auto previewBright = [&] {
+                        const QImage frame = window->grabWindow();
+                        const QRectF area =
+                            host->mapRectToScene(QRectF(0, 0, host->width(), host->height()));
+                        int bright = 0;
+                        for (int i = 1; i < 10; ++i)
+                            for (int j = 1; j < 10; ++j) {
+                                const QPoint p(static_cast<int>(area.x() + area.width() * i / 10),
+                                               static_cast<int>(area.y() + area.height() * j / 10));
+                                if (frame.rect().contains(p) && qGray(frame.pixel(p)) > 24)
+                                    ++bright;
+                            }
+                        return bright;
+                    };
+                    const int before = previewBright();
+                    const QSize original = window->size();
+                    window->resize(original + QSize(160, 90));
+                    pump(500);
+                    const int afterGrow = previewBright();
+                    window->resize(original);
+                    pump(500);
+                    const int afterRestore = previewBright();
+                    std::printf("window の大きさ変更後の preview: 明るい点 %d → %d → %d / 81\n",
+                                before, afterGrow, afterRestore);
+                    check(before > 0, "前提: 停止中の preview に映像が出ていません");
+                    check(afterGrow > 0 && afterRestore > 0,
+                          "window の大きさを変えると停止中の preview が黒くなります");
+                }
+
+                // S1 の字幕も clip と同じく、Alt+ドラッグで複製し、選択をまとめて動かす。
+                {
+                    QFile srt(directory.filePath(QStringLiteral("drag.srt")));
+                    srt.open(QIODevice::WriteOnly);
+                    srt.write(QStringLiteral("1\n00:00:00,000 --> 00:00:00,500\n一つ目\n\n"
+                                             "2\n00:00:01,000 --> 00:00:01,500\n二つ目\n")
+                                  .toUtf8());
+                    srt.close();
+                    // 最後に、この場面の編集をすべて戻す (以降の検査は字幕の無い状態を前提にする)。
+                    // 戻せなかったら後段の検査を汚さないよう、この場面の失敗としてここで止める。
+                    const auto depthBefore = controller.undoDepthForTest();
+                    const auto projectBefore = controller.projectForTest();
+                    const auto playheadBefore = controller.playheadFrame();
+                    const auto selectedClips = [&] {
+                        QStringList ids;
+                        auto* clips = controller.timelineModel();
+                        const int selectedRole = clips->roleNames().key("selected", -1);
+                        for (int row = 0; row < clips->rowCount(); ++row)
+                            if (clips->data(clips->index(row, 0), selectedRole).toBool())
+                                ids.append(clips->clipIdAt(row));
+                        return ids;
+                    };
+                    const auto clipsBefore = selectedClips();
+                    check(controller.importSubtitles(QUrl::fromLocalFile(srt.fileName()), true),
+                          "前提: 字幕を読み込めません");
+                    pump(300);
+                    auto* subtitles = controller.subtitleModel();
+                    const auto cueAt = [&](int row, int role) {
+                        return subtitles->data(subtitles->index(row, 0), role);
+                    };
+                    const QString firstId = cueAt(0, Qt::UserRole + 1).toString();
+                    auto* first =
+                        findVisualItem(window, QStringLiteral("timelineSubtitle_") + firstId);
+                    check(first != nullptr, "前提: S1 の字幕がありません");
+                    if (first) {
+                        const double pixelsPerFrame = first->width() / 30.0;
+                        const auto drag = [&](Qt::KeyboardModifiers modifiers, int frames) {
+                            auto* item = findVisualItem(
+                                window, QStringLiteral("timelineSubtitle_") + firstId);
+                            const QPoint grab =
+                                item->mapToScene(QPointF(item->width() / 2, item->height() / 2))
+                                    .toPoint();
+                            const QPoint delta(
+                                static_cast<int>(std::lround(frames * pixelsPerFrame)), 0);
+                            QTest::mousePress(window, Qt::LeftButton, modifiers, grab);
+                            for (int step = 1; step <= 8; ++step)
+                                QTest::mouseMove(window, grab + delta * step / 8);
+                            QTest::mouseRelease(window, Qt::LeftButton, modifiers, grab + delta);
+                            pump(300);
+                        };
+                        drag(Qt::AltModifier, 150);
+                        std::printf(
+                            "字幕の Alt+ドラッグ: %d 件、3 件目の開始 %lld\n",
+                            subtitles->rowCount(),
+                            static_cast<long long>(cueAt(2, Qt::UserRole + 2).toLongLong()));
+                        check(subtitles->rowCount() == 3 &&
+                                  cueAt(0, Qt::UserRole + 2).toLongLong() == 0 &&
+                                  std::llabs(cueAt(2, Qt::UserRole + 2).toLongLong() - 150) <= 1,
+                              "Alt+ドラッグで字幕を複製できません "
+                              "(元は残し、複製を離した位置へ置く)");
+                        // S1 の空白から始めた矩形選択で、触れた字幕をすべて選ぶ。
+                        // 字幕は [0,30) [60,90) [150,180)。frame 200 から 40 まで引くと後ろの 2
+                        // 件。
+                        if (auto* area = window->findChild<QQuickItem*>(
+                                QStringLiteral("subtitleSelectionArea"))) {
+                            const auto at = [&](double frame) {
+                                return area
+                                    ->mapToScene(
+                                        QPointF(frame * pixelsPerFrame, area->height() / 2))
+                                    .toPoint();
+                            };
+                            QTest::mousePress(window, Qt::LeftButton, {}, at(200));
+                            for (int step = 1; step <= 8; ++step)
+                                QTest::mouseMove(window, at(200 - 160.0 * step / 8));
+                            QTest::mouseRelease(window, Qt::LeftButton, {}, at(40));
+                            pump(200);
+                            const auto ids = controller.selectedSubtitleIds();
+                            check(ids.size() == 2 &&
+                                      ids.contains(cueAt(1, Qt::UserRole + 1).toString()) &&
+                                      ids.contains(cueAt(2, Qt::UserRole + 1).toString()),
+                                  "S1 の矩形選択で触れた字幕を複数選べません");
+                        } else {
+                            check(false, "前提: S1 の矩形選択の領域がありません");
+                        }
+                        // 1 件目と 2 件目を選んで 1 件目を掴むと、2 件とも同じ量だけ動く。
+                        const QString secondId = cueAt(1, Qt::UserRole + 1).toString();
+                        controller.selectTimelineSubtitle(firstId, false);
+                        controller.selectTimelineSubtitle(secondId, true);
+                        drag({}, 6);
+                        check(controller.selectedSubtitleIds().size() == 2 &&
+                                  cueAt(0, Qt::UserRole + 2).toLongLong() > 0 &&
+                                  cueAt(1, Qt::UserRole + 2).toLongLong() -
+                                          cueAt(0, Qt::UserRole + 2).toLongLong() ==
+                                      60,
+                              "選択した字幕をまとめて動かせません");
+                    }
+                    const auto edits = controller.undoDepthForTest() - depthBefore;
+                    std::printf("字幕の場面の編集: %zu 件を戻す\n", edits);
+                    bool restored = true;
+                    while (controller.undoDepthForTest() > depthBefore) {
+                        if (!controller.undoLastEdit()) {
+                            std::fprintf(stderr, "Undo に失敗: %s\n",
+                                         controller.statusText().toUtf8().constData());
+                            restored = false;
+                            break;
+                        }
+                        pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    }
+                    controller.seekTimelineFrame(playheadBefore);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    const bool sameProject = controller.projectForTest() == projectBefore;
+                    const bool sameClips = selectedClips() == clipsBefore;
+                    std::printf("字幕の場面の後始末: Undo %s、Project %s、clip の選択 %s、"
+                                "再生位置 %lld/%lld\n",
+                                restored ? "成功" : "失敗", sameProject ? "一致" : "不一致",
+                                sameClips ? "一致" : "不一致",
+                                static_cast<long long>(controller.playheadFrame()),
+                                static_cast<long long>(playheadBefore));
+                    if (!(restored && controller.undoDepthForTest() == depthBefore && sameProject &&
+                          sameClips && controller.playheadFrame() == playheadBefore &&
+                          controller.selectedSubtitleIds().isEmpty())) {
+                        // 後段の文字ツールなどの検査を汚さないよう、ここで止める。
+                        check(false, "字幕の場面の後で履歴・Project・選択・再生位置を"
+                                     "開始時の状態へ戻せません");
+                        return 1;
+                    }
+                    // 字幕を押すと左のパネルが字幕へ切り替わる。以降の検査はエフェクトコントロールを使う。
+                    window->setProperty("leftPanelTab", 0);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                }
+
+                // Alt+ドラッグの複製: V1 の clip [0, 120) を空いた [300, 420) へ複製する。
+                // 離した直後に debug build の範囲検査で落ちたことがある。
+                {
+                    const int before = controller.clipCount();
+                    auto* model = controller.timelineModel();
+                    auto* source = findVisualItem(window, QStringLiteral("timelineClip_video"));
+                    check(source != nullptr, "前提: 複製元の clip がありません");
+                    if (source) {
+                        const double pixelsPerFrame = source->width() / 120.0;
+                        const QPoint grab =
+                            source->mapToScene(QPointF(30, source->height() / 2)).toPoint();
+                        const QPoint delta(static_cast<int>(std::lround(300 * pixelsPerFrame)), 0);
+                        QTest::mousePress(window, Qt::LeftButton, Qt::AltModifier, grab);
+                        for (int step = 1; step <= 8; ++step)
+                            QTest::mouseMove(window, grab + delta * step / 8);
+                        QTest::mouseRelease(window, Qt::LeftButton, Qt::AltModifier, grab + delta);
+                        pump(300);
+                        pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                        const int startRole = model->roleNames().key("timelineStartFrame", -1);
+                        const auto copiedStart =
+                            controller.clipCount() == before + 1
+                                ? model->data(model->index(before, 0), startRole).toLongLong()
+                                : -1;
+                        std::printf("Alt+ドラッグ複製: clip %d → %d、複製先 start=%lld\n", before,
+                                    controller.clipCount(), static_cast<long long>(copiedStart));
+                        check(controller.clipCount() == before + 1 && copiedStart > 120,
+                              "Alt+ドラッグで clip を複製できません");
+                        if (controller.clipCount() == before + 1)
+                            controller.undoLastEdit(); // 複製
+                        pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    }
                 }
             }
 
@@ -1431,6 +1714,23 @@ int main(int argc, char** argv) {
                     }
                 }
                 check(candidate != nullptr, "前提: hover できる別の書体が一覧にありません");
+                // 一覧の上のホイールは一覧が受ける (背面の timeline へ渡さない)。
+                if (auto* fontList =
+                        window->findChild<QQuickItem*>(QStringLiteral("textFontList"))) {
+                    const auto scrolled = [&] {
+                        return fontList->property("contentY").toReal() -
+                               fontList->property("originY").toReal();
+                    };
+                    const auto before = scrolled();
+                    const QPointF at = fontList->mapToScene(
+                        QPointF(fontList->width() / 2, fontList->height() - 12));
+                    QWheelEvent wheel(at, window->mapToGlobal(at.toPoint()), {}, QPoint(0, -120),
+                                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                    QCoreApplication::sendEvent(window, &wheel);
+                    pumpUntil([&] { return scrolled() > before; }, 3000);
+                    std::printf("フォント一覧のホイール: %.0f → %.0f\n", before, scrolled());
+                    check(scrolled() > before, "フォント一覧の上のホイールで一覧が動きません");
+                }
                 if (candidate) {
                     const int serialBefore = controller.textPreviewSerial();
                     const QPoint over =

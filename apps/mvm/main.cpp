@@ -1,5 +1,6 @@
 #include "app/preview/preview_engine_rhi_item.h"
 #include "focus_release_filter.h"
+#include "timeline_wheel_filter.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
@@ -31,64 +32,6 @@ struct AppArguments {
     std::filesystem::path manimExecutablePath;
 };
 
-class TimelineWheelEventFilter final : public QObject {
-public:
-    TimelineWheelEventFilter(QQuickWindow* window, QQuickItem* timelinePanel)
-        : window_(window), timelinePanel_(timelinePanel) {}
-
-protected:
-    bool eventFilter(QObject* watched, QEvent* event) override {
-        if (watched != window_)
-            return QObject::eventFilter(watched, event);
-        if (event->type() != QEvent::Wheel || !timelinePanel_)
-            return QObject::eventFilter(watched, event);
-        const auto* wheel = static_cast<QWheelEvent*>(event);
-        const QPointF local = timelinePanel_->mapFromScene(wheel->position());
-        if (!timelinePanel_->contains(local))
-            return QObject::eventFilter(watched, event);
-
-        const QPoint angleDelta = wheel->angleDelta();
-        const QPoint pixelDelta = wheel->pixelDelta();
-        // Windowsやmouse driverによってはAlt+縦wheelが横wheelへ変換される。
-        // 縦成分だけを見るとdelta=0をzoom-outと誤認し、最小zoomから戻れなくなる。
-        const int delta = angleDelta.y() != 0   ? angleDelta.y()
-                          : angleDelta.x() != 0 ? angleDelta.x()
-                          : pixelDelta.y() != 0 ? pixelDelta.y()
-                                                : pixelDelta.x();
-        const char* method = nullptr;
-        QVariantList arguments;
-        if (wheel->modifiers().testFlag(Qt::AltModifier)) {
-            method = "handleNativeAltWheel";
-            arguments = {delta, local.x()};
-        } else if (wheel->modifiers().testFlag(Qt::ControlModifier)) {
-            method = "handleNativeCtrlWheel";
-            arguments = {delta};
-        } else if (wheel->modifiers().testFlag(Qt::ShiftModifier)) {
-            method = "handleNativeShiftWheel";
-            arguments = {delta};
-        } else {
-            method = "handleNativePlainWheel";
-            arguments = {delta};
-        }
-
-        if (delta == 0)
-            return true;
-
-        if (arguments.size() == 2) {
-            QMetaObject::invokeMethod(timelinePanel_, method, Qt::DirectConnection,
-                                      Q_ARG(QVariant, arguments[0]), Q_ARG(QVariant, arguments[1]));
-        } else {
-            QMetaObject::invokeMethod(timelinePanel_, method, Qt::DirectConnection,
-                                      Q_ARG(QVariant, arguments[0]));
-        }
-        // modifier付きwheelはFlickableへ流さず、通常scrollへ化ける挙動を止める。
-        return true;
-    }
-
-private:
-    QQuickWindow* window_ = nullptr;
-    QQuickItem* timelinePanel_ = nullptr;
-};
 
 void usage() {
     std::fprintf(stderr, "使い方: mvm --project <project.mvm> "

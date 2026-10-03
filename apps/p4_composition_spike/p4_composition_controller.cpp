@@ -1020,6 +1020,7 @@ bool P4CompositionController::writeMetrics() const {
         {"shutdown_render_teardown_requested", shutdownSequence_.renderTeardownRequested},
         {"shutdown_order_violation_count", shutdownSequence_.orderViolationCount},
         {"display_target_preflight_pass", displayPreflightPassed_},
+        {"test_fixed_window", config_.testFixedWindow},
         {"requested_output_width", 1920},
         {"requested_output_height", 1080},
         {"display_environment_start", displayEnvironmentJson(displayEnvironmentStart_)},

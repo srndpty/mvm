@@ -5,12 +5,15 @@
 #include "app/timeline_preview_mapping.h"
 #include "media/audio_preview/audio_mixer_bus.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
+#include "media/transcribe/transcribe.h"
 #include "media_bin_model.h"
+#include "media_source_identity.h"
 #include "preview_engine/preview_engine.h"
 #include "project/media_bin.h"
 #include "project/project.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
+#include "subtitle_model.h"
 #include "timeline_clip_model.h"
 
 #include <atomic>
@@ -60,6 +63,23 @@ class MvmController : public QObject {
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipName READ currentClipName NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipPath READ currentClipPath NOTIFY stateChanged)
+    Q_PROPERTY(bool transcribing READ transcribing NOTIFY stateChanged)
+    Q_PROPERTY(int transcriptionProgress READ transcriptionProgress NOTIFY stateChanged)
+    Q_PROPERTY(QAbstractItemModel* transcriptionModel READ transcriptionModel CONSTANT)
+    Q_PROPERTY(QString transcriptionError READ transcriptionError NOTIFY stateChanged)
+    Q_PROPERTY(bool canApplyTranscription READ canApplyTranscription NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList transcriptionSources READ transcriptionSources NOTIFY stateChanged)
+    Q_PROPERTY(QAbstractItemModel* subtitleModel READ subtitleModel CONSTANT)
+    // timeline の S1 に描く字幕。表示範囲 (± 余白) の字幕だけを通す (字幕が数千あっても
+    // delegate を表示範囲に比例する数に抑える)。
+    Q_PROPERTY(mvm::app::TimelineClipWindowModel* subtitleWindow READ subtitleWindow CONSTANT)
+    Q_PROPERTY(QString selectedSubtitleId READ selectedSubtitleId NOTIFY stateChanged)
+    Q_PROPERTY(QStringList selectedSubtitleIds READ selectedSubtitleIds NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap selectedSubtitle READ selectedSubtitle NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap subtitleStyle READ subtitleStyle NOTIFY stateChanged)
+    Q_PROPERTY(bool hasSubtitleTrack READ hasSubtitleTrack NOTIFY stateChanged)
+    Q_PROPERTY(bool subtitlesVisible READ subtitlesVisible NOTIFY stateChanged)
+    Q_PROPERTY(bool burnSubtitles MEMBER burnSubtitles_ NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap selectedTextClip READ selectedTextClip NOTIFY stateChanged)
     Q_PROPERTY(bool previewVideoAtPlayhead READ previewVideoAtPlayhead NOTIFY stateChanged)
     Q_PROPERTY(QString textOverlayClip READ textOverlayClip NOTIFY stateChanged)
@@ -370,6 +390,12 @@ public:
     // 受理されなかった操作が Undo 履歴を積んでいないことの検査に使う。
     std::size_t undoDepthForTest() const { return undoHistory_.size(); }
 
+    // 試験の場面の前後で Project が元へ戻ったかを比べるための読み取り。
+    const project::Project& projectForTest() const { return project_; }
+
+    std::shared_ptr<preview::CompositionSnapshot> subtitleCompositionForTest(qint64 frame,
+                                                                             QString& error) const;
+
     // Undo / Redo 履歴が持つ Project の複製の概算 byte 数の合計。
     std::size_t editHistoryBytes() const;
 
@@ -394,7 +420,7 @@ public:
 
     QString recoveryProjectPath() const;
 
-    bool canExport() const { return !project_.timelineClips.empty() && !busy_; }
+    bool canExport() const { return totalTimelineFrames_ > 0 && !busy_; }
 
     bool exporting() const { return exporting_; }
 
@@ -452,6 +478,88 @@ public:
     // 素材の種別を内容で判定し、動画・音声・画像のどれかとして timeline へ置く。
     // メニューのダイアログと timeline への drop はここを通る。拡張子は見ない。
     Q_INVOKABLE bool addMediaFileToTimeline(const QUrl& fileUrl);
+    using TranscriptionRunner =
+        std::function<transcribe::Result(const transcribe::Request&, const std::atomic<bool>*)>;
+
+    // 素材の内容の hash を 1 MiB 読むたびに、読む前に呼ぶ (worker thread から)。
+    // hash の途中でキャンセルが効くことを確かめるための差し込み口。
+    void setTranscriptionHashObserverForTest(std::function<void()> observer) {
+        transcriptionHashObserver_ = std::move(observer);
+    }
+
+    void setTranscriptionRunnerForTest(TranscriptionRunner runner) {
+        transcriptionRunner_ = std::move(runner);
+    }
+
+    bool transcribing() const { return transcribing_; }
+
+    int transcriptionProgress() const { return transcriptionProgress_; }
+
+    QAbstractItemModel* transcriptionModel() { return &transcriptionModel_; }
+
+    QString transcriptionError() const { return transcriptionError_; }
+
+    bool canApplyTranscription() const {
+        return !transcribing_ && !transcriptionCues_.empty() &&
+               transcriptionRevision_ == currentRevision_ &&
+               transcriptionProjectPath_ == projectPath_ &&
+               transcriptionEditSerial_ == nextRevision_ &&
+               transcriptionProjectGeneration_ == projectGeneration_;
+    }
+
+    QVariantList transcriptionSources() const;
+    Q_INVOKABLE bool startTranscription(const QString& sourceId, bool timelineClip,
+                                        const QUrl& modelUrl, const QString& backend,
+                                        const QString& language, qint64 insertionFrame,
+                                        const QString& initialPrompt = {});
+    Q_INVOKABLE void cancelTranscription();
+    Q_INVOKABLE bool updateTranscriptionCue(const QString& id, const QString& content, qint64 start,
+                                            qint64 end);
+    Q_INVOKABLE bool applyTranscription(bool replace);
+
+    QAbstractItemModel* subtitleModel() { return &subtitleModel_; }
+
+    TimelineClipWindowModel* subtitleWindow() const { return subtitleWindow_.get(); }
+
+    QString selectedSubtitleId() const { return selectedSubtitleId_; }
+
+    QVariantMap selectedSubtitle() const;
+    QVariantMap subtitleStyle() const;
+
+    bool hasSubtitleTrack() const { return project_.subtitles.has_value(); }
+
+    bool subtitlesVisible() const { return project_.subtitles && project_.subtitles->visible; }
+
+    // 字幕パネルの一覧から選ぶ。開始位置へシークし、timeline の選択も字幕 1 件にする。
+    Q_INVOKABLE bool selectSubtitle(const QString& id);
+    // timeline 上の字幕のクリック。additive (Ctrl / Shift) なら選択へ足し引きする。
+    // clip の選択は外し、Delete・コピー・カット・ペースト・複製の対象を字幕にする。
+    Q_INVOKABLE bool selectTimelineSubtitle(const QString& id, bool additive);
+    // S1 の矩形選択。frame の区間 [fromFrame, toFrame] に掛かる字幕をすべて選ぶ。
+    Q_INVOKABLE bool selectTimelineSubtitlesInRange(qint64 fromFrame, qint64 toFrame);
+    // timeline のドラッグの確定。anchorId を startFrame へ置く量だけ、選択中の字幕
+    // (anchor が選択外なら anchor だけ) を動かす。duplicate (Alt+ドラッグ) なら元を残して
+    // 複製を置く。複製はリンクを持たない。重なる配置は全体を拒否する。
+    Q_INVOKABLE bool placeTimelineSubtitles(const QString& anchorId, qint64 startFrame,
+                                            bool duplicate);
+    QStringList selectedSubtitleIds() const;
+    Q_INVOKABLE bool addSubtitle(const QString& content, qint64 start, qint64 end);
+    Q_INVOKABLE bool updateSubtitle(const QString& id, const QString& content, qint64 start,
+                                    qint64 end);
+    Q_INVOKABLE bool deleteSelectedSubtitle();
+    // 再生位置で分け、本文も分ける。textCursor は本文欄のカーソル位置 (UTF-16)。0 以下なら
+    // 再生位置の比率に近い句読点で分ける。
+    Q_INVOKABLE bool splitSelectedSubtitle(int textCursor = -1);
+    Q_INVOKABLE bool mergeSelectedSubtitle();
+    Q_INVOKABLE bool setSubtitleStyle(const QVariantMap& values);
+    // 共通書式のドラッグ・フォント一覧の hover 中に、Project を変えずに preview だけを
+    // 描き直す。確定は setSubtitleStyle、取り消しは cancelSubtitleStylePreview。
+    Q_INVOKABLE bool previewSubtitleStyle(const QVariantMap& values);
+    Q_INVOKABLE void cancelSubtitleStylePreview();
+    Q_INVOKABLE bool setSubtitlesVisible(bool visible);
+    Q_INVOKABLE bool importSubtitles(const QUrl& url, bool replace);
+    Q_INVOKABLE bool exportSubtitles(const QUrl& url);
+    Q_INVOKABLE bool rippleDeleteSelection();
     Q_INVOKABLE bool createTextClip(const QString& content, int x, int y);
     Q_INVOKABLE bool updateTextClip(const QString& clipId, const QVariantMap& values);
     // 数値のドラッグ中に、Project を変えずに preview だけを values で描き直す。
@@ -1070,6 +1178,10 @@ private:
     std::shared_ptr<const preview::CompositionSnapshot> submittedComposition_;
     // refreshPreviewAtPlayhead を engine が受けられず保留している。pollPreviewState が行う。
     bool previewRefreshPending_ = false;
+    // preview の大きさ変更による再提示を event loop の 1 周にまとめる。
+    bool previewResizeRefreshQueued_ = false;
+    // preview の描画先の大きさ。最初に決まったときと、大きさの変更を区別する。
+    QSize previewBufferSize_;
     // drag 中だけ生きる effect の上書き。Project へは書かない。
     // これがあるのは currentClipIndex_ の clip に対してだけである。
     std::optional<project::ClipEffects> previewEffectsOverride_;
@@ -1125,6 +1237,46 @@ private:
                           std::int64_t sourceFpsNum, std::int64_t sourceFpsDen,
                           std::int64_t destinationFrame, int videoTrackDelta, int audioTrackDelta,
                           CopyPlacement placement);
+    TranscriptionRunner transcriptionRunner_ = transcribe::transcribe;
+    std::function<void()> transcriptionHashObserver_;
+    SubtitleListModel transcriptionModel_;
+    std::vector<project::SubtitleCue> transcriptionCues_;
+    std::thread transcriptionThread_;
+    std::atomic<bool> transcriptionCancel_{false};
+    bool transcribing_ = false;
+    int transcriptionProgress_ = 0;
+    QString transcriptionError_;
+    std::uint64_t transcriptionRevision_ = 0;
+    std::uint64_t transcriptionEditSerial_ = 0;
+    std::uint64_t transcriptionProjectGeneration_ = 0;
+    std::uint64_t projectGeneration_ = 0;
+    std::filesystem::path transcriptionProjectPath_;
+    SubtitleListModel subtitleModel_;
+    std::unique_ptr<TimelineClipWindowModel> subtitleWindow_;
+    QString selectedSubtitleId_;
+    // timeline 上で選んだ字幕。空でなければ Delete・クリップボード操作の対象は字幕になる。
+    // clip・トランジション・編集点を選ぶと空になる (setTimelineSelection)。
+    std::vector<std::string> selectedSubtitleIds_;
+    // 字幕のクリップボード。開始 frame は先頭の字幕からの相対値で持つ。clip の
+    // クリップボードとは別に持ち、最後にコピーした種類をペーストする。
+    std::vector<project::SubtitleCue> subtitleClipboard_;
+    bool clipboardHoldsSubtitles_ = false;
+    std::optional<project::SubtitleStyle> subtitleStylePreview_;
+    std::string transcriptionLinkClipId_;
+    // 認識した素材と、認識を始めたときの出どころ (実体・size・更新時刻)。適用の直前に照合する。
+    QString transcriptionSourcePath_;
+    MediaSourceProbe transcriptionSource_;
+    bool burnSubtitles_ = true;
+    bool commitSubtitleEdit(project::Project candidate);
+    bool copySelectedSubtitles(bool cut);
+    bool pasteSubtitles(std::int64_t frame);
+    bool deleteSelectedSubtitles();
+    bool splitSelectedSubtitlesAtPlayhead();
+    // 字幕の選択の唯一の入口 (selectedSubtitleIds_ と selectedSubtitleId_ を一緒に決める)。
+    void setSubtitleSelection(std::vector<std::string> ids, const std::string& preferredPrimary);
+    mutable QString subtitleRasterId_;
+    mutable std::shared_ptr<const preview::PreviewStillImage> subtitleRaster_;
+    mutable std::shared_ptr<const preview::PreviewMotion> subtitleMotion_;
     std::unique_ptr<QTemporaryDir> textRasterDirectory_;
     // preview の合成 (const) からも埋めるので mutable。Project を変えるたびに捨てる。
     mutable QHash<QString, QImage> textRasterImages_;
@@ -1149,6 +1301,9 @@ private:
         std::uint64_t revision = 0;
         // project の approximateProjectBytes。履歴へ積むときに埋める。
         std::size_t bytes = 0;
+        QString selectedSubtitleId{};
+        // timeline で選んだ字幕 (複数)。clip の選択と同じく、戻した Project に残るものだけを戻す。
+        std::vector<std::string> selectedSubtitleIds{};
     };
 
     // Undo / Redo 履歴は、両方の合計の件数と Project の複製の概算 byte 数で上限を決める。

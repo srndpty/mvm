@@ -1,4 +1,5 @@
 #include "app/preview/compositor_rhi_item.h"
+#include "app/preview/test_window_mode.h"
 #include "p3_av_sync_controller.h"
 
 #include <QGuiApplication>
@@ -72,14 +73,19 @@ bool parse(const QStringList& args, P3AvConfig& config) {
 
 int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+    prepareTestFixedWindowEnvironment();
     QGuiApplication app(argc, argv);
     P3AvConfig config;
     if (!parse(app.arguments(), config)) {
         usage();
         return 2;
     }
+    // 試験用の固定 window でも --formal-contract-c2 の経路は動かす (失敗時の処理の試験が使う)。
+    // ただし display の正しさは不成立として記録し、正式判定を通さない。
+    config.testFixedWindow = testFixedWindowRequested();
     P3AvSyncController controller(config);
     QQmlApplicationEngine engine;
+    engine.setInitialProperties(testFixedWindowInitialProperties());
     engine.load(QUrl(QStringLiteral("qrc:/mvm/p3_av_sync_spike/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 5;

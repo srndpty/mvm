@@ -37,7 +37,7 @@ function Environment([string]$Orientation = 'landscape') {
 $record | Add-Member -NotePropertyName display_environment_start -NotePropertyValue ([pscustomobject](Environment))
 $record | Add-Member -NotePropertyName display_environment_end -NotePropertyValue ([pscustomobject](Environment))
 $reference = $record | ConvertTo-Json -Depth 100 | ConvertFrom-Json
-$expectPass = $Case -eq 'GoodC2'
+$expectPass = $Case -in @('GoodC2', 'GoodTestFixedWindowFalse')
 $nanToken = $false
 
 switch ($Case) {
@@ -46,6 +46,9 @@ switch ($Case) {
     'NegativePreflightType' {$record.display_target_preflight_pass='false'}
     'NegativeWorkloadFalse' {$record.formal_workload_started=$false}
     'NegativeWorkloadType' {$record.formal_workload_started='false'}
+    'GoodTestFixedWindowFalse' {$record | Add-Member -NotePropertyName test_fixed_window -NotePropertyValue $false}
+    'NegativeTestFixedWindow' {$record | Add-Member -NotePropertyName test_fixed_window -NotePropertyValue $true}
+    'NegativeTestFixedWindowType' {$record | Add-Member -NotePropertyName test_fixed_window -NotePropertyValue 'false'}
     'NegativeMissingDisplayTelemetry' {$record.PSObject.Properties.Remove('display_environment_start')}
     'NegativeRequestedWidth' {$record.requested_output_width=1919}
     'NegativeWindowWidth' {$record.display_environment_start.window_logical_width=1919}

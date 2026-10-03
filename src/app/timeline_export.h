@@ -19,6 +19,7 @@ struct TimelineExportRequest {
     int fpsDen = 1;
     // libx264 の constant rate factor。UI が提示する3段階の実値を明示して渡す。
     int videoCrf = 23;
+    bool burnSubtitles = true;
     int timeoutMs = 600000;
     int renderThreads = 4;
     int encoderThreads = 0;
@@ -61,6 +62,7 @@ struct TimelineExportClipMapping {
     // 書き出す区間に合わせた clip (project::TimelineRenderSegment::clip)。トランジションで
     // 延ばした分の素材範囲を含む。producer に渡す素材範囲・速度はこちらを使う。
     project::TimelineClip renderClip;
+    std::optional<project::SubtitleCue> subtitle;
     double mixerPan = 0.0;
     bool audio = false;
     bool still = false; // 文字・画像。全画面の透過 PNG を stage して qimage で開く

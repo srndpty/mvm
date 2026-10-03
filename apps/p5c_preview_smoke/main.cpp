@@ -1,4 +1,5 @@
 #include "app/preview/preview_engine_rhi_item.h"
+#include "app/preview/test_window_mode.h"
 #include "preview_engine/preview_engine.h"
 #include "preview_engine/preview_engine_internal.h"
 
@@ -91,6 +92,7 @@ constexpr std::uint64_t kBeyondHoldPresented = 40;
 
 int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+    mvm::app::prepareTestFixedWindowEnvironment();
     QGuiApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     const QStringList arguments = app.arguments();
@@ -159,6 +161,7 @@ int main(int argc, char** argv) {
         &window, &QQuickWindow::sceneGraphInvalidated, &app,
         [&] { sceneGraphInvalidationCount.fetch_add(1, std::memory_order_release); },
         Qt::DirectConnection);
+    mvm::app::applyTestFixedWindow(window);
     window.setWidth(1920);
     window.setHeight(1080);
     auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());

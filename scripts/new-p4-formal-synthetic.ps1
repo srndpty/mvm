@@ -102,6 +102,8 @@ switch($Case){
  'WrongAudioSampleRate'{$raw.audio_endpoint_sample_rate=44100}
  'WrongAudioChannels'{$raw.audio_endpoint_channels=1}
  'WrongAudioSampleFormat'{$raw.audio_endpoint_sample_format='float'}
+ 'TestFixedWindow'{$raw.test_fixed_window=$true}
+ 'TestFixedWindowString'{$raw.test_fixed_window='false'}
  default{throw "未知caseです: $Case"}
 }
 $parent=Split-Path -Parent $Output;if($parent){New-Item -ItemType Directory -Force -Path $parent|Out-Null}

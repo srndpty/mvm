@@ -19,6 +19,7 @@
 #include "project/clip_effects.h"
 #include "project/path_identity.h"
 #include "project/project_json.h"
+#include "project/subtitles.h"
 #include "project/timeline_edit.h"
 #include "scrub_audio_playback.h"
 #include "shuttle_audio_mix.h"
@@ -56,6 +57,19 @@
 
 namespace mvm::app {
 namespace {
+class SubtitlePreviewMotion final : public preview::PreviewMotion {
+public:
+    explicit SubtitlePreviewMotion(project::SubtitleCue cue) : cue_(std::move(cue)) {}
+
+    preview::PreviewMotionValue evaluate(std::int64_t frame) const override {
+        preview::PreviewMotionValue value;
+        value.opacity = project::subtitleContainsFrame(cue_, frame) ? 1.0F : 0.0F;
+        return value;
+    }
+
+private:
+    project::SubtitleCue cue_;
+};
 
 QString fromPath(const std::filesystem::path& path) {
     return QString::fromStdWString(path.wstring());
@@ -386,6 +400,10 @@ MvmController::MvmController(std::filesystem::path projectPath,
               : [](std::function<void()> task) { return std::thread(std::move(task)); }),
       fileRevealer_(fileRevealer ? std::move(fileRevealer) : revealFileInExplorer) {
     timelineClipWindow_->setSourceModel(timelineModel_.get());
+    subtitleWindow_ = std::make_unique<TimelineClipWindowModel>();
+    subtitleWindow_->setRoles(SubtitleListModel::CueId, SubtitleListModel::StartFrame,
+                              SubtitleListModel::EndFrame, true);
+    subtitleWindow_->setSourceModel(&subtitleModel_);
     textClipModel_->setSourceModel(timelineModel_.get());
     // preview の文字 layer は再生位置に掛かる文字 clip だけを作る。playheadFrame は
     // stateChanged で通知する。
@@ -488,9 +506,34 @@ MvmController::~MvmController() {
 }
 
 void MvmController::attachPreview(PreviewEngineRhiItem* surface) {
-    previewSurface_ = surface;
     if (previewSurface_)
-        previewSurface_->setEngine(previewEngine_);
+        disconnect(previewSurface_, nullptr, this, nullptr);
+    previewSurface_ = surface;
+    if (!previewSurface_)
+        return;
+    previewSurface_->setEngine(previewEngine_);
+    // 大きさが変わると (window の最大化・解除など) preview の描画先が黒で作り直される。
+    // 停止中は次の提示が来ないので、再生位置の frame を提示し直す。大きさの変更は
+    // ドラッグ中に連続するので、event loop の 1 周にまとめる。再生中は毎 frame 描くので不要。
+    // 最初の大きさが決まったとき (空 → 初期の大きさ) は、初回の seek が提示するので何もしない。
+    // ここで提示し直すと、起動直後に同じ frame を 2 回提示する。
+    previewBufferSize_ = previewSurface_->effectiveColorBufferSize();
+    connect(previewSurface_, &QQuickRhiItem::effectiveColorBufferSizeChanged, this, [this] {
+        const QSize size = previewSurface_->effectiveColorBufferSize();
+        const bool resized = !previewBufferSize_.isEmpty() && size != previewBufferSize_;
+        previewBufferSize_ = size;
+        if (!resized || previewResizeRefreshQueued_)
+            return;
+        previewResizeRefreshQueued_ = true;
+        QTimer::singleShot(0, this, [this] {
+            previewResizeRefreshQueued_ = false;
+            if (playing_)
+                return;
+            QString error;
+            if (!refreshPreviewAtPlayhead(error))
+                setStatus(QStringLiteral("Previewを再描画できません: ") + error);
+        });
+    });
 }
 
 QString MvmController::projectPath() const {
@@ -856,6 +899,22 @@ void MvmController::refreshTimelineModel(PlaybackInvalidation invalidation) {
     }
     notifyTimelineTransitions();
     textPreviewOverride_.reset();
+    subtitleRaster_.reset();
+    subtitleMotion_.reset();
+    subtitleRasterId_.clear();
+    {
+        // 編集・Undo で消えた字幕を選択から外す。主選択もこの規則で揃える。
+        auto kept = selectedSubtitleIds_;
+        std::erase_if(kept, [&](const std::string& id) {
+            return !project_.subtitles ||
+                   std::none_of(project_.subtitles->cues.begin(), project_.subtitles->cues.end(),
+                                [&](const auto& cue) { return cue.id == id; });
+        });
+        setSubtitleSelection(std::move(kept), selectedSubtitleId_.toStdString());
+    }
+    subtitleStylePreview_.reset();
+    subtitleModel_.setCues(project_.subtitles ? project_.subtitles->cues
+                                              : std::vector<project::SubtitleCue>{});
     textRasterImages_.clear();
     textStillImages_.clear();
     // 画像の raster は、現在の画像 clip の素材と現在の出力解像度の組だけを残す。
@@ -913,6 +972,8 @@ void MvmController::refreshAudioMixerModel() {
 }
 
 void MvmController::pushUndoEntry(UndoEntry entry) {
+    entry.selectedSubtitleId = selectedSubtitleId_;
+    entry.selectedSubtitleIds = selectedSubtitleIds_;
     entry.bytes = project::approximateProjectBytes(entry.project);
     undoHistory_.push_back(std::move(entry));
     // 新しい編集をした時点で、やり直し先の未来は無くなる。
@@ -1510,6 +1571,7 @@ void MvmController::setTimelineSelection(const std::vector<std::string>& clipIds
     selectedEditOutgoing_.clear();
     selectedEditIncoming_.clear();
     selectedTransitionId_.clear();
+    setSubtitleSelection({}, {});
     selectedClipIds_ = clipIds;
     std::vector<std::string> selectedLinkGroups;
     for (const auto& id : clipIds) {
@@ -1660,8 +1722,8 @@ void MvmController::pollPreviewState() {
         // engine reset 直後に seek が弾かれて選択だけ残った状態を拾えない。
         const bool showInitialFrame = ready && !busy_ && !pendingVideoPath_ &&
                                       trackSources_.empty() && audioSources_.empty() &&
-                                      !pendingCapacityRebuildFrame_ &&
-                                      !project_.timelineClips.empty();
+                                      !submittedComposition_ && !pendingCapacityRebuildFrame_ &&
+                                      totalTimelineFrames_ > 0;
         Q_EMIT stateChanged();
         if (showInitialFrame) {
             seekTimelineFrame(playheadFrame_);
@@ -2106,6 +2168,36 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
         layer.opaqueBackdrop = layerMapping.dissolveIncoming;
         composition->layers.push_back(layer);
         request.sources.push_back({slot->second.source, layerMapping.sourceFrameNumber});
+    }
+    if (const auto* cue = project::activeSubtitleAt(project_, mappedFrame.outputFrameNumber)) {
+        if (!subtitleRaster_ || subtitleRasterId_ != QString::fromStdString(cue->id)) {
+            const auto image = renderSubtitleRaster(
+                *cue, subtitleStylePreview_.value_or(project_.subtitles->style),
+                project_.outputWidth, project_.outputHeight, error);
+            if (image.isNull())
+                return nullptr;
+            const auto straight = image.convertToFormat(QImage::Format_RGBA8888);
+            auto still = std::make_shared<preview::PreviewStillImage>();
+            still->width = straight.width();
+            still->height = straight.height();
+            const auto rowBytes = static_cast<std::size_t>(straight.width()) * 4U;
+            still->rgba.resize(rowBytes * static_cast<std::size_t>(straight.height()));
+            for (int y = 0; y < straight.height(); ++y)
+                std::memcpy(still->rgba.data() + rowBytes * static_cast<std::size_t>(y),
+                            straight.constScanLine(y), rowBytes);
+            subtitleRaster_ = std::move(still);
+            subtitleMotion_ = std::make_shared<SubtitlePreviewMotion>(*cue);
+            subtitleRasterId_ = QString::fromStdString(cue->id);
+        }
+        if (composition->layers.size() >= kMaxPreviewCompositionLayers) {
+            error = QStringLiteral("字幕を含むプレビューのレイヤー数が上限を超えています");
+            return nullptr;
+        }
+        preview::PreviewCompositionLayer layer;
+        layer.stillImage = subtitleRaster_;
+        // GUIの次の通知を待たず、実際の描画フレームで終了境界を閉じる。
+        layer.motion = subtitleMotion_;
+        composition->layers.push_back(std::move(layer));
     }
     return composition;
 }
@@ -3839,7 +3931,7 @@ bool MvmController::seekTimelineFrame(qint64 frame) {
     const qint64 clamped =
         std::clamp<qint64>(frame, 0, std::max<qint64>(0, navigationTimelineFrames() - 1));
     playheadFrame_ = clamped;
-    if (project_.timelineClips.empty()) {
+    if (totalTimelineFrames_ == 0) {
         currentClipIndex_ = -1;
         currentClipName_.clear();
         currentClipPath_.clear();
@@ -3965,8 +4057,8 @@ bool MvmController::playTimeline() {
     pendingSlotRebuildFrame_.reset();
     // drag 中に再生を始めたら scrub の断片と通常再生が二重に鳴らないようにする。
     stopScrubAudio();
-    if (project_.timelineClips.empty()) {
-        setStatus(QStringLiteral("再生するclipがありません"));
+    if (totalTimelineFrames_ == 0) {
+        setStatus(QStringLiteral("再生するクリップまたは字幕がありません"));
         return false;
     }
     if (!timelinePreviewCompatible(project_)) {
@@ -4677,7 +4769,7 @@ bool MvmController::shuttleRight() {
 }
 
 bool MvmController::changeShuttleRate(int direction) {
-    if (busy_ || project_.timelineClips.empty() || totalTimelineFrames_ <= 0 || direction == 0)
+    if (busy_ || totalTimelineFrames_ <= 0 || direction == 0)
         return false;
     if (shuttleTimer_.isActive())
         advanceTimelineShuttle();
@@ -4786,7 +4878,7 @@ QString MvmController::shuttleStatusText() const {
 }
 
 bool MvmController::stepTimelineFrames(int delta) {
-    if (busy_ || project_.timelineClips.empty() || totalTimelineFrames_ <= 0 || delta == 0)
+    if (busy_ || totalTimelineFrames_ <= 0 || delta == 0)
         return false;
     // 再生・シャトル中は止めてから、止まった位置を基準に動かす。
     if (!pauseTimeline())
@@ -4866,11 +4958,14 @@ void MvmController::storeClipboard(std::vector<project::TimelineClip> clips) {
             clipboardMediaItems_.push_back(*item);
     }
     clipboardClips_ = std::move(clips);
+    clipboardHoldsSubtitles_ = false;
     clipboardFpsNum_ = project_.timelineFpsNum;
     clipboardFpsDen_ = project_.timelineFpsDen;
 }
 
 bool MvmController::copySelectedClips() {
+    if (!selectedSubtitleIds_.empty())
+        return copySelectedSubtitles(false);
     if (busy_ || selectedClipIds_.empty()) {
         setStatus(QStringLiteral("コピーするclipがありません"));
         return false;
@@ -4886,6 +4981,8 @@ bool MvmController::copySelectedClips() {
 }
 
 bool MvmController::cutSelectedClips() {
+    if (!selectedSubtitleIds_.empty())
+        return copySelectedSubtitles(true);
     if (busy_ || !pauseTimeline())
         return false;
     if (selectedClipIds_.empty()) {
@@ -4905,6 +5002,8 @@ bool MvmController::cutSelectedClips() {
                                             clip.id) != selectedClipIds_.end();
                        }),
         candidate.timelineClips.end());
+    // 削除と同じく、カットした clip にリンクした字幕も消す。
+    project::eraseLinkedSubtitles(candidate, {selectedClipIds_.begin(), selectedClipIds_.end()});
     for (auto& clip : candidate.timelineClips) {
         if (clip.linkGroupId.empty())
             continue;
@@ -4921,7 +5020,7 @@ bool MvmController::cutSelectedClips() {
     // cut は bin を変えないので、commit 後の Project から素材を控えてよい。
     storeClipboard(std::move(copied));
     setTimelineSelection({});
-    if (project_.timelineClips.empty()) {
+    if (totalTimelineFrames_ == 0) {
         const bool reset = resetPreviewEngine();
         currentSource_.reset();
         currentClipIndex_ = -1;
@@ -5147,11 +5246,22 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
 }
 
 bool MvmController::pasteClips() {
+    if (clipboardHoldsSubtitles_)
+        return pasteSubtitles(playheadFrame_);
     return placeCopiedClips(clipboardClips_, clipboardMediaItems_, clipboardFpsNum_,
                             clipboardFpsDen_, playheadFrame_, 0, 0, CopyPlacement::FindFreeTrack);
 }
 
 bool MvmController::duplicateSelectedClips() {
+    if (!selectedSubtitleIds_.empty()) {
+        // 複製はクリップボードを変えない (clip の複製と同じ)。
+        const auto clipboard = subtitleClipboard_;
+        const bool holdsSubtitles = clipboardHoldsSubtitles_;
+        const bool duplicated = copySelectedSubtitles(false) && pasteSubtitles(playheadFrame_);
+        subtitleClipboard_ = clipboard;
+        clipboardHoldsSubtitles_ = holdsSubtitles;
+        return duplicated;
+    }
     return placeCopiedClips(selectedTimelineClipsInOrder({}), project_.mediaItems,
                             project_.timelineFpsNum, project_.timelineFpsDen, playheadFrame_, 0, 0,
                             CopyPlacement::FindFreeTrack);
@@ -5781,6 +5891,8 @@ bool MvmController::splitClipAt(const QString& clipId, qint64 frame, bool allTra
 }
 
 bool MvmController::splitSelectionAtPlayhead() {
+    if (!selectedSubtitleIds_.empty())
+        return splitSelectedSubtitlesAtPlayhead();
     const qint64 frame = playheadFrame_;
     std::vector<std::string> clipIds =
         project::clipIdsSpanningFrame(project_, frame, selectedClipIds_);
@@ -6002,7 +6114,7 @@ QVariantMap MvmController::selectedEditPoint() const {
 }
 
 bool MvmController::canDeleteSelection() const {
-    return !busy_ && (!selectedTransitionId_.empty() ||
+    return !busy_ && (!selectedTransitionId_.empty() || !selectedSubtitleIds_.empty() ||
                       (selectedEditOutgoing_.empty() && currentClipIndex_ >= 0));
 }
 
@@ -6144,6 +6256,8 @@ bool MvmController::setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfter
 }
 
 bool MvmController::deleteSelection() {
+    if (!selectedSubtitleIds_.empty())
+        return deleteSelectedSubtitles();
     if (!selectedTransitionId_.empty()) {
         const std::string id = selectedTransitionId_;
         const bool deleted = applyTimelineEdit(
@@ -6314,9 +6428,14 @@ bool MvmController::stepEditHistory(std::vector<UndoEntry>& from, std::vector<Un
     std::string currentId = currentClipId();
     UndoEntry current{std::move(project_), selectedClipIds_, std::move(currentId), playheadFrame_,
                       currentRevision_};
+    current.selectedSubtitleId = selectedSubtitleId_;
+    current.selectedSubtitleIds = selectedSubtitleIds_;
     current.bytes = project::approximateProjectBytes(current.project);
     const std::vector<std::string> previousSelection = entry.selectedClipIds;
     const std::string previousCurrentClipId = entry.currentClipId;
+    selectedSubtitleId_ = entry.selectedSubtitleId;
+    // refreshTimelineModel が、戻した Project に無い字幕を選択から外す。
+    selectedSubtitleIds_ = entry.selectedSubtitleIds;
     project_ = std::move(entry.project);
     playheadFrame_ = entry.playheadFrame;
     currentRevision_ = entry.revision;
@@ -6630,6 +6749,9 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     if (!pauseTimeline())
         return false;
     project_ = std::move(loaded);
+    ++projectGeneration_;
+    selectedSubtitleId_.clear();
+    selectedSubtitleIds_.clear();
     audioMixerBuses_.clear();
     audioMixerPeaks_.clear();
     projectPath_ = std::move(path);
@@ -7153,7 +7275,7 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
         return false;
     }
     // 受理できない要求 (clip が無い・ローカルでない書き出し先) では再生を止めない。
-    if (project_.timelineClips.empty()) {
+    if (totalTimelineFrames_ == 0) {
         reportExportFailure(QStringLiteral("書き出すclipがありません"));
         return false;
     }
@@ -7173,6 +7295,7 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
     request.fpsNum = static_cast<int>(project_.timelineFpsNum);
     request.fpsDen = static_cast<int>(project_.timelineFpsDen);
     request.videoCrf = videoCrf;
+    request.burnSubtitles = burnSubtitles_;
     request.renderThreads = 4;
     request.encoderThreads = 0;
 
@@ -7518,7 +7641,7 @@ bool MvmController::editEffectKey(const QString& name, qint64 from, qint64 to, d
     } else {
         auto candidate = project_;
         candidate.timelineClips[static_cast<std::size_t>(currentClipIndex_)].effects = effects;
-        if (!commitProjectEdit(std::move(candidate), QStringLiteral("キーを移動できません: "))) 
+        if (!commitProjectEdit(std::move(candidate), QStringLiteral("キーを移動できません: ")))
             return failEffectEdit(true);
         previewEffectsOverride_.reset();
         previewEffectsClipIndex_ = -1;
@@ -7591,7 +7714,7 @@ bool MvmController::setEffectSpline(const QString& name, qint64 frame, double co
     if (commit) {
         auto candidate = project_;
         candidate.timelineClips[static_cast<std::size_t>(currentClipIndex_)].effects = effects;
-        if (!commitProjectEdit(std::move(candidate), QStringLiteral("曲線を更新できません: "))) 
+        if (!commitProjectEdit(std::move(candidate), QStringLiteral("曲線を更新できません: ")))
             return failEffectEdit(true);
         previewEffectsOverride_.reset();
         previewEffectsClipIndex_ = -1;
@@ -7792,7 +7915,7 @@ bool MvmController::setClipEffectValues(const QString& clipId, const QVariantMap
         setStatus(QString::fromStdString(valid.error));
         return failEffectEdit(commit);
     }
-    if (!commitProjectEdit(std::move(candidate), QStringLiteral("effectを更新できません: "))) 
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("effectを更新できません: ")))
         return failEffectEdit(true);
     previewEffectsOverride_.reset();
     previewEffectsClipIndex_ = -1;
@@ -7839,6 +7962,10 @@ bool MvmController::failEffectEdit(bool commit) {
 }
 
 void MvmController::shutdown() {
+    transcriptionCancel_.store(true);
+    if (transcriptionThread_.joinable())
+        transcriptionThread_.join();
+
     if (shutdownStarted_)
         return;
     shutdownStarted_ = true;

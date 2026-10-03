@@ -232,6 +232,8 @@ try {
     $order=@('DisableSchedulers','StopAudioSink','StopAudioDecodeWorker','StopVideoWorkerA','StopVideoWorkerB','DetachSharedWorkerRefs','RequestRenderTeardown')
     $actualOrder=Arr $raw 'shutdown_sequence'; if(($actualOrder -join '|')-ne($order -join '|')){Fail 'shutdown順が違います'}
     Zero $raw 'shutdown_order_violation_count'
+    # 試験用の固定 window (MVM_TEST_FIXED_WINDOW) は物理画面を測っていない。旧い raw には無い。
+    if($raw.PSObject.Properties.Name -contains 'test_fixed_window'){Bool $raw 'test_fixed_window' $false}
     if((Int $raw 'requested_output_width')-ne1920 -or (Int $raw 'requested_output_height')-ne1080){Fail 'requested display sizeが1920x1080ではありません'}
     $start=Prop $raw 'display_environment_start';$end=Prop $raw 'display_environment_end'
     foreach($env in @($start,$end)){if((Int $env 'window_logical_width')-ne1920 -or (Int $env 'window_logical_height')-ne1080 -or

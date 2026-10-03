@@ -12,6 +12,14 @@ namespace mvm::app {
 // Project の文字データから preview と書き出しに共通の RGBA 画像を作る。
 QImage renderTextRaster(const project::TextClipData& data, int width, int height, QString& error);
 
+QImage renderSubtitleRaster(const project::SubtitleCue& cue, const project::SubtitleStyle& style,
+                            int width, int height, QString& error);
+
+// renderSubtitleRaster が描けるか (フォント・余白・画面の高さに収まるか) だけを、描かずに調べる。
+// 書式を変えたときに全字幕を検査するために使う (全画面の画像を字幕の数だけ作らない)。
+bool checkSubtitleLayout(const project::SubtitleCue& cue, const project::SubtitleStyle& style,
+                         int width, int height, QString& error);
+
 // 文字の描画範囲 (背景矩形) の大きさ。(x, y) はこの矩形の左上である。
 // renderTextRaster と同じ計算で求める。フォントが無ければ空の大きさと error。
 QSizeF textBlockSize(const project::TextClipData& data, QString& error);

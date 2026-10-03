@@ -432,6 +432,11 @@ int main(int argc, char** argv) {
             const bool started =
                 sought && limited &&
                 retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            if (!started)
+                std::fprintf(stderr,
+                             "  %s: 準備 %d、seek の提示 %d、登録枠 %d、再生 %d、status: %s\n",
+                             label, ready, sought, limited, started,
+                             controller.statusText().toUtf8().constData());
             check(started, "cut の前から再生を開始できません");
             if (started) {
                 const auto before = controller.previewTelemetry();
@@ -634,6 +639,16 @@ int main(int argc, char** argv) {
                 pumpUntil(
                     [&] { return controller.pendingSourcePreparationCount() == boundarySources; },
                     5000);
+            if (!requested)
+                std::fprintf(
+                    stderr,
+                    "  %s: 準備 %d、seek の提示 %d、再生 %d、準備中 %zu/%zu、再生位置 %lld、"
+                    "再生中 %d、組み直し %llu、status: %s\n",
+                    label, ready, sought, started, controller.pendingSourcePreparationCount(),
+                    boundarySources, static_cast<long long>(controller.playheadFrame()),
+                    controller.playing(),
+                    static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                    controller.statusText().toUtf8().constData());
             check(requested,
                   (std::string(label) + ": 前提: 境界の source の準備を要求しません").c_str());
             if (!requested) {
@@ -958,6 +973,14 @@ int main(int argc, char** argv) {
             const bool requested =
                 started &&
                 pumpUntil([&] { return controller.pendingSourcePreparationCount() == 1; }, 5000);
+            if (!(requested && controller.playheadFrame() < 60))
+                std::fprintf(stderr,
+                             "  %s: 準備 %d、seek の提示 %d、登録枠 %d、再生 %d、準備中 %zu、"
+                             "再生位置 %lld、再生中 %d、status: %s\n",
+                             label, ready, sought, limited, started,
+                             controller.pendingSourcePreparationCount(),
+                             static_cast<long long>(controller.playheadFrame()),
+                             controller.playing(), controller.statusText().toUtf8().constData());
             check(requested && controller.playheadFrame() < 60,
                   (std::string(label) + ": 前提: 境界の source の準備を要求しません").c_str());
             if (requested) {

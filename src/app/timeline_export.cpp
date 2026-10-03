@@ -334,10 +334,44 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         mapped.opaqueBackdrop = segment->fadeIn.has_value();
         plan.clips.push_back(std::move(mapped));
     }
-    if (plan.clips.empty()) {
+    if (plan.clips.empty() && (!project.subtitles || project.subtitles->cues.empty())) {
         plan.error = "書き出す有効なclipがありません";
         return plan;
     }
+    if (request.burnSubtitles && project.subtitles && project.subtitles->visible) {
+        int topLayer = 0;
+        for (const auto& mapped : plan.clips)
+            if (!mapped.audio)
+                topLayer = std::max(topLayer, mapped.videoTrackIndex + 1);
+        for (const auto& cue : project.subtitles->cues) {
+            TimelineExportClipMapping mapped;
+            mapped.subtitle = cue;
+            mapped.still = true;
+            mapped.videoTrackIndex = topLayer;
+            mapped.timelineStartFrame = cue.startFrame;
+            mapped.timelineDurationFrames = cue.endFrame - cue.startFrame;
+            mapped.producerOutFrame = mapped.timelineDurationFrames;
+            auto& clip = mapped.renderClip;
+            clip.kind = project::TimelineClipKind::Text;
+            clip.id = cue.id;
+            clip.name = "字幕";
+            clip.sourceFpsNum = project.timelineFpsNum;
+            clip.sourceFpsDen = project.timelineFpsDen;
+            clip.sourceFrameCount = clip.sourceOutFrame = mapped.timelineDurationFrames;
+            clip.timelineStartFrame = cue.startFrame;
+            clip.text.content = cue.content;
+            if (!mapExportEffects(
+                    clip, request, mapped.timelineDurationFrames, 0, topLayer > 0,
+                    [](std::int64_t) { return std::optional<double>{1.0}; }, mapped, plan.error,
+                    plan.cancelled))
+                return plan;
+            plan.clips.push_back(std::move(mapped));
+        }
+        if (!project.subtitles->cues.empty())
+            plan.backend = TimelineExportResult::Backend::Tractor;
+    }
+    if (plan.clips.empty() && plan.totalDurationFrames > 0)
+        plan.backend = TimelineExportResult::Backend::Tractor;
     if (anyOverlay || anyAudio)
         plan.backend = TimelineExportResult::Backend::Tractor;
     plan.success = true;
@@ -352,8 +386,8 @@ TimelineExportResult exportTimeline(const project::Project& project,
         result.error = "書き出し先が指定されていません";
         return result;
     }
-    if (project.timelineClips.empty()) {
-        result.error = "timeline に clip がありません";
+    if (project.timelineClips.empty() && (!project.subtitles || project.subtitles->cues.empty())) {
+        result.error = "timeline に clip または字幕がありません";
         return result;
     }
     auto plan = mapTimelineExportPlan(project, request);
@@ -404,6 +438,8 @@ TimelineExportResult exportTimeline(const project::Project& project,
         return true;
     };
     for (const auto& planned : plan.clips) {
+        if (planned.subtitle)
+            continue;
         const auto index = static_cast<std::size_t>(planned.projectClipIndex);
         if (index >= project.timelineClips.size()) {
             result.error = "書き出し計画の clip 番号が範囲外です";
@@ -461,6 +497,22 @@ TimelineExportResult exportTimeline(const project::Project& project,
         clipPaths.emplace(index, pathToUtf8(clip.mediaPath));
     }
 
+    std::unordered_map<std::string, std::string> subtitlePaths;
+    for (const auto& planned : plan.clips) {
+        if (!planned.subtitle)
+            continue;
+        QString error;
+        const auto image = renderSubtitleRaster(*planned.subtitle, project.subtitles->style,
+                                                request.width, request.height, error);
+        if (image.isNull()) {
+            result.error = error.toStdString();
+            return result;
+        }
+        std::string path;
+        if (!stagePng(image, "subtitle-" + QString::number(subtitlePaths.size()) + ".png", path))
+            return result;
+        subtitlePaths.emplace(planned.subtitle->id, std::move(path));
+    }
     std::vector<MvmExportClip> clips;
     clips.reserve(plan.clips.size());
     std::vector<std::vector<MvmExportOpacityKeyframe>> opacityStorage;
@@ -473,7 +525,8 @@ TimelineExportResult exportTimeline(const project::Project& project,
         const auto index = static_cast<std::size_t>(planned.projectClipIndex);
         const auto& clip = planned.renderClip;
         MvmExportClip mapped{};
-        mapped.path = clipPaths.at(index).c_str();
+        mapped.path = planned.subtitle ? subtitlePaths.at(planned.subtitle->id).c_str()
+                                       : clipPaths.at(index).c_str();
         mapped.source_fps_num = clip.sourceFpsNum;
         mapped.source_fps_den = clip.sourceFpsDen;
         mapped.source_frame_count = clip.sourceFrameCount;

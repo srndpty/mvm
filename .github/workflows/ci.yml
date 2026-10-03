@@ -83,6 +83,10 @@ jobs:
             mingw-w64-ucrt-x86_64-gtest
             mingw-w64-ucrt-x86_64-libpng
             mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-vulkan-loader
+            mingw-w64-ucrt-x86_64-spirv-headers
+            mingw-w64-ucrt-x86_64-shaderc
             ${{ matrix.lint && 'mingw-w64-ucrt-x86_64-clang' || '' }}
 
       - name: MLT ランタイムの健全性を確認
@@ -92,6 +96,39 @@ jobs:
           # 先にここで落とす。
           ls -la /ucrt64/lib/mlt/ | head -30
           pkgconf --modversion mlt-framework-7
+
+      # Whisper は固定リビジョン (CMakeLists.txt で版と commit を検査) を使う。MSYS2 の
+      # whisper.cpp package は更新で版が変わり configure が止まるので、CI は入れずに
+      # scripts/build-whisper.ps1 で構築する (Vulkan の shader 生成を含み数分かかる)。
+      # configure だけの scripts job も find_library で必要になるので全 job で用意する。
+      # 構築 script と gcc の版が同じ間は前回の導入先を使う。
+      - name: Whisper のキャッシュ鍵を決める
+        id: whisper
+        shell: pwsh
+        run: |
+          $gcc = & '${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\gcc.exe' -dumpfullversion
+          if ($LASTEXITCODE -ne 0 -or -not $gcc) { throw 'gcc の版を読めません' }
+          "gcc=$($gcc.Trim())" >> $env:GITHUB_OUTPUT
+
+      - name: Whisper を復元
+        id: whisper-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: build/whisper-install
+          key: whisper-${{ steps.whisper.outputs.gcc }}-${{ hashFiles('scripts/build-whisper.ps1') }}
+
+      - name: Whisper を構築
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: pwsh scripts/build-whisper.ps1 -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64' -Jobs 4
+
+      # 同じ鍵で同時に保存すると警告になるので、release だけが保存する。
+      - name: Whisper を保存
+        if: matrix.name == 'release' && steps.whisper-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: build/whisper-install
+          key: ${{ steps.whisper-cache.outputs.cache-primary-key }}
 
       - name: 整形とアーキテクチャ検査
         if: matrix.lint
@@ -168,7 +205,8 @@ jobs:
           # runner は 4 vCPU。依存テストは MLT の書き出しが多く CPU を取り合うので、
           # 既定の 8 並列ではなく vCPU 数に合わせる (試行中。PR #67 の -j 8 は 164.6 秒)。
           if ('${{ matrix.group }}' -eq 'BuildDependent') { $testArgs += @('-Jobs', '4') }
-          pwsh scripts/test.ps1 -Portable @testArgs -Ucrt64 $ucrt64
+          pwsh scripts/test.ps1 -Portable @testArgs -Ucrt64 $ucrt64 `
+            -WhisperRoot '${{ github.workspace }}\build\whisper-install'
 
       # ヒット率を毎回ログに残す。0% が続くならキャッシュが効いていない。
       - name: ccache の統計
@@ -184,6 +222,17 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-${{ matrix.preset }}-${{ github.sha }}
+
+      # Whisper の負の試験が CI でだけ GGML_ASSERT で落ちる (開発機では再現しない)。
+      # 落ちた場所を特定するため、失敗時に gdb で再実行して backtrace を残す。
+      - name: 文字起こし試験の backtrace (失敗時)
+        if: failure() && matrix.group == 'BuildDependent'
+        run: |
+          pacman -S --noconfirm --needed mingw-w64-ucrt-x86_64-gdb
+          cd "build/${{ matrix.preset }}"
+          test -x bin/mvm_test_transcribe.exe || exit 0
+          gdb -batch -ex run -ex bt -ex "info sharedlibrary" --args bin/mvm_test_transcribe.exe \
+            ../../tests/assets/smoke/wav_48k.wav transcribe-negative || true
 
       - name: 失敗時の診断情報
         if: failure()

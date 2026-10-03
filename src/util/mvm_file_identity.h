@@ -51,6 +51,18 @@ int mvm_file_content_fingerprint(const wchar_t* path, unsigned long long* out);
  * 用途には向かない。成功で 0。 */
 int mvm_file_content_hash(const wchar_t* path, unsigned long long* out);
 
+/* mvm_file_content_hash の途中で止められる版。数十 GB の素材を読み切るまで待たせない。
+ * should_stop は 1 MiB を読むたびに、読む前に呼ぶ (NULL なら止めない)。非 0 を返したら
+ * 読むのをやめて CANCELLED を返す。止めたことと読めなかったことを区別する。 */
+typedef enum MvmFileHashStatus {
+    MVM_FILE_HASH_OK = 0,
+    MVM_FILE_HASH_CANCELLED = 1,
+    MVM_FILE_HASH_IO_ERROR = 2
+} MvmFileHashStatus;
+
+MvmFileHashStatus mvm_file_content_hash_cancellable(const wchar_t* path, unsigned long long* out,
+                                                    int (*should_stop)(void* opaque), void* opaque);
+
 #ifdef __cplusplus
 }
 #endif

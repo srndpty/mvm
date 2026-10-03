@@ -61,14 +61,20 @@ static int read_at(HANDLE file, long long offset, unsigned char* buffer, DWORD s
 }
 
 int mvm_file_content_hash(const wchar_t* path, unsigned long long* out) {
+    return mvm_file_content_hash_cancellable(path, out, NULL, NULL) == MVM_FILE_HASH_OK ? 0 : 1;
+}
+
+MvmFileHashStatus mvm_file_content_hash_cancellable(const wchar_t* path, unsigned long long* out,
+                                                    int (*should_stop)(void* opaque),
+                                                    void* opaque) {
     if (!out)
-        return 1;
+        return MVM_FILE_HASH_IO_ERROR;
     *out = 0;
     if (!path || !path[0])
-        return 1;
+        return MVM_FILE_HASH_IO_ERROR;
     HANDLE file = open_shared(path, GENERIC_READ);
     if (file == INVALID_HANDLE_VALUE)
-        return 1;
+        return MVM_FILE_HASH_IO_ERROR;
 
     enum { CHUNK = 1024 * 1024 };
 
@@ -80,7 +86,12 @@ int mvm_file_content_hash(const wchar_t* path, unsigned long long* out) {
     if (!failed)
         hash = fnv1a(hash, (const unsigned char*)&size.QuadPart, sizeof(size.QuadPart));
     long long total = 0;
+    int cancelled = 0;
     while (!failed) {
+        if (should_stop && should_stop(opaque)) {
+            cancelled = 1;
+            break;
+        }
         DWORD read = 0;
         if (!ReadFile(file, chunk, CHUNK, &read, NULL)) {
             failed = 1;
@@ -92,15 +103,17 @@ int mvm_file_content_hash(const wchar_t* path, unsigned long long* out) {
         total += read;
     }
     /* 読んでいる間に伸び縮みした file は、読んだ範囲が size と合わない。 */
-    if (!failed && total != size.QuadPart)
+    if (!failed && !cancelled && total != size.QuadPart)
         failed = 1;
     if (chunk)
         HeapFree(GetProcessHeap(), 0, chunk);
     CloseHandle(file);
+    if (cancelled)
+        return MVM_FILE_HASH_CANCELLED;
     if (failed)
-        return 1;
+        return MVM_FILE_HASH_IO_ERROR;
     *out = hash;
-    return 0;
+    return MVM_FILE_HASH_OK;
 }
 
 int mvm_file_content_fingerprint(const wchar_t* path, unsigned long long* out) {

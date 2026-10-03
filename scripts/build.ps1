@@ -40,6 +40,7 @@ param(
     [switch]$ConfigureOnly,
     [switch]$ReuseConfigure,
     [string]$Target,
+    [string]$WhisperRoot = 'C:\msys64\ucrt64',
     [string]$Ucrt64 = 'C:\msys64\ucrt64'
 )
 
@@ -57,7 +58,7 @@ if (-not (Test-Path $CMake)) {
 
 # UCRT64 を最優先にする。ホストの pip 版 cmake や MSVC 版 Qt を拾わせない。
 Set-MvmUcrt64Environment -Ucrt64 $Ucrt64
-$toolchainArguments = @(Get-MvmCMakeToolchainArguments -Ucrt64 $Ucrt64)
+$toolchainArguments = @(Get-MvmCMakeToolchainArguments -Ucrt64 $Ucrt64) + @("-DMVM_WHISPER_ROOT=$WhisperRoot")
 
 # 他プロジェクトの設定が漏れてこないようにする
 $env:QTDIR = ''
