@@ -8,6 +8,7 @@
 #include <sstream>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace mvm::project {
@@ -328,6 +329,91 @@ void relinkSubtitlesAfterSplit(Project& project, const std::string& leftId,
     }
     project.subtitles->cues.insert(project.subtitles->cues.end(), rights.begin(), rights.end());
     sortCues(*project.subtitles);
+}
+
+namespace {
+// clip の時間の対応。timeline の frame t と素材の秒 s の関係:
+//   s = in + (t - start) / timelineFps * speed
+struct ClipMapping {
+    long double start = 0;  // timeline frame
+    long double inSec = 0;  // 素材の秒
+    long double outSec = 0; // 素材の秒
+    long double speed = 1;
+    bool operator==(const ClipMapping&) const = default;
+};
+
+ClipMapping clipMapping(const TimelineClip& clip) {
+    const long double sourceFps =
+        static_cast<long double>(clip.sourceFpsNum) /
+        static_cast<long double>(std::max<std::int64_t>(1, clip.sourceFpsDen));
+    return {static_cast<long double>(clip.timelineStartFrame),
+            static_cast<long double>(clip.sourceInFrame) / sourceFps,
+            static_cast<long double>(clip.sourceOutFrame) / sourceFps,
+            static_cast<long double>(clip.speedNum) /
+                static_cast<long double>(std::max<std::int64_t>(1, clip.speedDen))};
+}
+} // namespace
+
+bool remapLinkedSubtitles(const Project& before, Project& candidate, std::string& error) {
+    if (!before.subtitles || !candidate.subtitles)
+        return true;
+    const long double timelineFps = static_cast<long double>(candidate.timelineFpsNum) /
+                                    static_cast<long double>(candidate.timelineFpsDen);
+    // 時間の対応が変わった clip。素材の時間軸を持たない clip (文字・静止画) は対象外。
+    std::unordered_map<std::string, std::pair<ClipMapping, ClipMapping>> changed;
+    for (const auto& after : candidate.timelineClips) {
+        if (hasSyntheticSourceDomain(after) || after.sourceFpsNum <= 0)
+            continue;
+        const auto found =
+            std::find_if(before.timelineClips.begin(), before.timelineClips.end(),
+                         [&](const TimelineClip& clip) { return clip.id == after.id; });
+        if (found == before.timelineClips.end() || found->sourceFpsNum != after.sourceFpsNum ||
+            found->sourceFpsDen != after.sourceFpsDen)
+            continue;
+        const auto old = clipMapping(*found), now = clipMapping(after);
+        if (!(old == now))
+            changed.emplace(after.id, std::pair{old, now});
+    }
+    if (changed.empty())
+        return true;
+    // 対象の clip にリンクした字幕は、編集前の位置から作り直す。
+    std::erase_if(candidate.subtitles->cues,
+                  [&](const SubtitleCue& cue) { return changed.contains(cue.linkClipId); });
+    for (const auto& cue : before.subtitles->cues) {
+        const auto found = changed.find(cue.linkClipId);
+        if (found == changed.end())
+            continue;
+        const auto& [old, now] = found->second;
+        const auto toSource = [&](long double frame) {
+            return old.inSec + (frame - old.start) / timelineFps * old.speed;
+        };
+        auto startSec = toSource(static_cast<long double>(cue.startFrame));
+        auto endSec = toSource(static_cast<long double>(cue.endFrame));
+        // trim で素材の範囲から外した部分を除く。元から clip の外にはみ出していた部分は残す。
+        if (now.inSec > old.inSec && startSec < now.inSec && endSec > old.inSec)
+            startSec = std::max(startSec, now.inSec);
+        if (now.outSec < old.outSec && endSec > now.outSec && startSec < old.outSec)
+            endSec = std::min(endSec, now.outSec);
+        if (endSec <= startSec)
+            continue;
+        const auto toTimeline = [&](long double seconds) {
+            return std::llround(now.start + (seconds - now.inSec) / now.speed * timelineFps);
+        };
+        auto remapped = cue;
+        remapped.startFrame = std::max<std::int64_t>(0, toTimeline(startSec));
+        remapped.endFrame = toTimeline(endSec);
+        if (remapped.endFrame <= remapped.startFrame)
+            continue;
+        candidate.subtitles->cues.push_back(std::move(remapped));
+    }
+    sortCues(*candidate.subtitles);
+    const auto& cues = candidate.subtitles->cues;
+    for (std::size_t i = 1; i < cues.size(); ++i)
+        if (cues[i].startFrame < cues[i - 1].endFrame) {
+            error = "リンクした字幕が他の字幕と重なるため、この編集はできません";
+            return false;
+        }
+    return true;
 }
 
 std::size_t unlinkSubtitles(Project& project, const std::unordered_set<std::string>& clipIds) {

@@ -1539,6 +1539,15 @@ TimelineEditResult commitCandidate(Project& project, Project candidate, int sele
     return result;
 }
 
+// 時間の対応を変える clip の編集の確定。リンクした字幕を音声に合わせて置き直してから確定する
+// (remapLinkedSubtitles)。
+TimelineEditResult commitMappingEdit(Project& project, Project candidate, int selectedIndex) {
+    TimelineEditResult result;
+    if (!remapLinkedSubtitles(project, candidate, result.error))
+        return result;
+    return commitCandidate(project, std::move(candidate), selectedIndex);
+}
+
 // outgoing (edge=Right なら clip 自身) と incoming の境界を動かす。
 // 接している clip が無ければ neighborFound=false で何もしない。
 bool rollEditPoint(Project& candidate, int index, TrimEdge edge, std::int64_t projectFrameDelta,
@@ -1780,7 +1789,7 @@ TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId,
                               edge, projectFrameDelta, result.error))
             return result;
     }
-    return commitCandidate(project, std::move(candidate), index);
+    return commitMappingEdit(project, std::move(candidate), index);
 }
 
 std::optional<TimelineClip> clipWithEdgeAt(const Project& project, const TimelineClip& clip,
@@ -2871,7 +2880,7 @@ TimelineEditResult rippleTrimTimelineClip(Project& project, const std::string& c
     if (!shiftFollowingClips(candidate, sources, targets, index, shift, result.error))
         return result;
     const int selected = indexOfId(candidate, clipId);
-    return commitCandidate(project, std::move(candidate), selected);
+    return commitMappingEdit(project, std::move(candidate), selected);
 }
 
 TimelineEditResult rollTimelineEdit(Project& project, const std::string& clipId, TrimEdge edge,
@@ -2899,7 +2908,7 @@ TimelineEditResult rollTimelineEdit(Project& project, const std::string& clipId,
             return result;
         }
     }
-    return commitCandidate(project, std::move(candidate), index);
+    return commitMappingEdit(project, std::move(candidate), index);
 }
 
 TimelineEditResult slipTimelineClip(Project& project, const std::string& clipId,
@@ -2941,7 +2950,7 @@ TimelineEditResult slipTimelineClip(Project& project, const std::string& clipId,
         result.error = "素材の端に達しているためスリップできません";
         return result;
     }
-    return commitCandidate(project, std::move(candidate), index);
+    return commitMappingEdit(project, std::move(candidate), index);
 }
 
 TimelineFrameResult clampSlideEdit(const Project& project, const std::string& clipId,
@@ -3073,7 +3082,7 @@ TimelineEditResult slideTimelineClip(Project& project, const std::string& clipId
                               TrimEdge::Left, projectFrameDelta, result.error))
             return result;
     }
-    return commitCandidate(project, std::move(candidate), index);
+    return commitMappingEdit(project, std::move(candidate), index);
 }
 
 std::vector<std::string> clipIdsFromFrame(const Project& project, std::int64_t frame,
@@ -3716,7 +3725,7 @@ TimelineEditResult rateStretchTimelineClip(Project& project, const std::string& 
                        "%) または隣の clip に達しているため、これ以上伸縮できません";
         return result;
     }
-    return commitCandidate(project, std::move(candidate), index);
+    return commitMappingEdit(project, std::move(candidate), index);
 }
 
 namespace {
@@ -3931,7 +3940,7 @@ TimelineEditResult setClipSpeedDuration(Project& project, const std::string& cli
     if (!speedDurationCandidate(project, clipId, edit, linkMode, candidate, index,
                                 overlapsFollowing, result.error))
         return result;
-    return commitCandidate(project, std::move(candidate), index);
+    return commitMappingEdit(project, std::move(candidate), index);
 }
 
 TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, std::int64_t frame,

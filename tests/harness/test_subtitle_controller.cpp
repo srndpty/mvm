@@ -239,6 +239,25 @@ int main(int argc, char** argv) {
                 controller.selectTimelineClips({}) && controller.selectedSubtitleIds().isEmpty() &&
                 !controller.canDeleteSelection(),
             "clip 側の選択操作で字幕の選択を外す");
+    // 選択が空になったら、パネルの編集対象 (主選択) も外す。timeline とパネルで別の字幕を
+    // 指さない。
+    const auto selectionCleared = [&] {
+        return controller.selectedSubtitleIds().isEmpty() &&
+               controller.selectedSubtitleId().isEmpty() && controller.selectedSubtitle().isEmpty();
+    };
+    require(controller.selectTimelineSubtitle(cueIdAt(0), false) &&
+                controller.selectedSubtitleId() == cueIdAt(0) &&
+                controller.selectTimelineSubtitlesInRange(100000, 100010) && selectionCleared(),
+            "空白の矩形選択で主選択も外す");
+    require(controller.selectTimelineSubtitle(cueIdAt(0), false) &&
+                controller.selectTimelineSubtitle(cueIdAt(0), true) && selectionCleared(),
+            "Ctrl+クリックで最後の字幕の選択を外すと主選択も外す");
+    require(controller.selectTimelineSubtitle(cueIdAt(0), false) &&
+                controller.selectTimelineSubtitle(cueIdAt(1), true) &&
+                controller.selectedSubtitleId() == cueIdAt(1) &&
+                controller.selectTimelineSubtitle(cueIdAt(1), true) &&
+                controller.selectedSubtitleId() == cueIdAt(0),
+            "主選択を選択から外すと、残った字幕が主選択になる");
     std::atomic<bool> release{false};
     controller.setTranscriptionRunnerForTest([&](const auto&, const std::atomic<bool>* cancel) {
         while (!release.load() && !cancel->load())
@@ -484,7 +503,53 @@ int main(int argc, char** argv) {
             std::filesystem::path(temp.filePath("provenance.mvm").toStdWString());
         require(mvm::project::saveProjectJson(provenanceProject, provenancePath).success,
                 "出どころ試験のProject保存");
+        // 内容の hash を何回にも分けて読む大きさ (1 MiB ごと) にする。
+        {
+            QFile file(copyPath);
+            require(file.open(QIODevice::Append) &&
+                        file.write(QByteArray(8 * 1024 * 1024, '\0')) == 8 * 1024 * 1024,
+                    "出どころ試験の素材を大きくする");
+        }
         MvmController provenance(provenancePath, {}, provenanceProject);
+        {
+            // 素材の hash の途中でキャンセルすると、残りを読まずに終わり、認識もしない。
+            std::atomic<int> chunks{0};
+            std::atomic<int> chunksAfterCancel{0};
+            std::atomic<bool> ran{false};
+            std::atomic<bool> cancelRequested{false};
+            provenance.setTranscriptionHashObserverForTest([&] {
+                ++chunks;
+                if (cancelRequested.load())
+                    ++chunksAfterCancel;
+                if (!cancelRequested.exchange(true))
+                    provenance.cancelTranscription();
+            });
+            provenance.setTranscriptionRunnerForTest([&](const auto&, const auto*) {
+                ran = true;
+                return mvm::transcribe::Result{};
+            });
+            require(provenance.startTranscription("audio", false, modelUrl, "cpu", "ja", 0) &&
+                        pump([&] { return !provenance.transcribing(); }),
+                    "hash の途中のキャンセル試験");
+            require(!ran.load() && chunksAfterCancel.load() <= 1 &&
+                        !provenance.canApplyTranscription() &&
+                        provenance.transcriptionError().contains(QStringLiteral("キャンセル")),
+                    "素材の hash の途中でキャンセルすると、残りを読まずに終わる");
+            // 対照群: キャンセルしなければ hash は何回にも分けて全部読む。
+            chunks = 0;
+            provenance.setTranscriptionHashObserverForTest([&] { ++chunks; });
+            provenance.setTranscriptionRunnerForTest([](const auto&, const auto*) {
+                mvm::transcribe::Result result;
+                result.success = true;
+                result.segments = {{0, 1000, "本文"}};
+                return result;
+            });
+            require(provenance.startTranscription("audio", false, modelUrl, "cpu", "ja", 0) &&
+                        pump([&] { return !provenance.transcribing(); }) &&
+                        provenance.canApplyTranscription() && chunks.load() >= 2 * 9,
+                    "対照群: 認識の前後で素材の hash を全部読む");
+            provenance.setTranscriptionHashObserverForTest({});
+        }
         std::atomic<bool> hold{true};
         provenance.setTranscriptionRunnerForTest([&](const auto&, const std::atomic<bool>* stop) {
             while (hold.load() && !stop->load())

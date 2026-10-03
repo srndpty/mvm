@@ -390,6 +390,9 @@ public:
     // 受理されなかった操作が Undo 履歴を積んでいないことの検査に使う。
     std::size_t undoDepthForTest() const { return undoHistory_.size(); }
 
+    // 試験の場面の前後で Project が元へ戻ったかを比べるための読み取り。
+    const project::Project& projectForTest() const { return project_; }
+
     std::shared_ptr<preview::CompositionSnapshot> subtitleCompositionForTest(qint64 frame,
                                                                              QString& error) const;
 
@@ -477,6 +480,12 @@ public:
     Q_INVOKABLE bool addMediaFileToTimeline(const QUrl& fileUrl);
     using TranscriptionRunner =
         std::function<transcribe::Result(const transcribe::Request&, const std::atomic<bool>*)>;
+
+    // 素材の内容の hash を 1 MiB 読むたびに、読む前に呼ぶ (worker thread から)。
+    // hash の途中でキャンセルが効くことを確かめるための差し込み口。
+    void setTranscriptionHashObserverForTest(std::function<void()> observer) {
+        transcriptionHashObserver_ = std::move(observer);
+    }
 
     void setTranscriptionRunnerForTest(TranscriptionRunner runner) {
         transcriptionRunner_ = std::move(runner);
@@ -1229,6 +1238,7 @@ private:
                           std::int64_t destinationFrame, int videoTrackDelta, int audioTrackDelta,
                           CopyPlacement placement);
     TranscriptionRunner transcriptionRunner_ = transcribe::transcribe;
+    std::function<void()> transcriptionHashObserver_;
     SubtitleListModel transcriptionModel_;
     std::vector<project::SubtitleCue> transcriptionCues_;
     std::thread transcriptionThread_;
@@ -1262,6 +1272,8 @@ private:
     bool pasteSubtitles(std::int64_t frame);
     bool deleteSelectedSubtitles();
     bool splitSelectedSubtitlesAtPlayhead();
+    // 字幕の選択の唯一の入口 (selectedSubtitleIds_ と selectedSubtitleId_ を一緒に決める)。
+    void setSubtitleSelection(std::vector<std::string> ids, const std::string& preferredPrimary);
     mutable QString subtitleRasterId_;
     mutable std::shared_ptr<const preview::PreviewStillImage> subtitleRaster_;
     mutable std::shared_ptr<const preview::PreviewMotion> subtitleMotion_;

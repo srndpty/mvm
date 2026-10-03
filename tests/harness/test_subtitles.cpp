@@ -299,6 +299,76 @@ int main(int argc, char** argv) {
                             [](const auto& cue) { return cue.linkClipId.empty(); }),
             "リンク解除で字幕のリンクも外す");
     require(!unlinkTimelineClip(moved, "speech").success, "リンクの無い clip の解除は拒否");
+    // 時間の対応を変える clip の編集では、リンクした字幕が素材の時刻 (音声) に合わせて動く。
+    {
+        auto media = createDefaultProject();
+        TimelineClip speechClip;
+        speechClip.id = "voice";
+        speechClip.name = "音声";
+        speechClip.mediaPath = "素材.mp4";
+        speechClip.sourceFpsNum = 60;
+        speechClip.sourceFrameCount = 300;
+        speechClip.sourceInFrame = 20;
+        speechClip.sourceOutFrame = 140; // timeline [0, 120)
+        media.timelineClips = {speechClip};
+        mvm::test::attachFixtureMedia(media);
+        media.subtitles.emplace();
+        media.subtitles->cues = {{"a", 20, 30, "前", "voice"},
+                                 {"b", 70, 90, "後", "voice"},
+                                 {"free", 300, 330, "手入力", {}}};
+        require(validateTimeline(media).success, "音声に合わせる字幕の対照群");
+        const auto cue = [](const Project& project, const char* id) -> const SubtitleCue* {
+            for (const auto& c : project.subtitles->cues)
+                if (c.id == id)
+                    return &c;
+            return nullptr;
+        };
+        auto edited = media;
+        ClipSpeedDurationEdit half;
+        half.speedNum = 1;
+        half.speedDen = 2;
+        require(setClipSpeedDuration(edited, "voice", half, LinkMode::Linked).success &&
+                    cue(edited, "a")->startFrame == 40 && cue(edited, "a")->endFrame == 60 &&
+                    cue(edited, "b")->startFrame == 140 && cue(edited, "b")->endFrame == 180 &&
+                    cue(edited, "free")->startFrame == 300,
+                "速度を 50% にすると、リンクした字幕も音声に合わせて 2 倍の位置・長さになる");
+        // clip は timeline [0, 120)。字幕 b は [70, 90)。
+        edited = media;
+        require(trimTimelineClip(edited, "voice", TrimEdge::Right, -55, LinkMode::Linked).success &&
+                    cue(edited, "b") == nullptr && cue(edited, "a")->startFrame == 20 &&
+                    cue(edited, "a")->endFrame == 30,
+                "右端の trim で切り落とした音声の字幕は消し、残った音声の字幕は変えない");
+        edited = media;
+        require(trimTimelineClip(edited, "voice", TrimEdge::Right, -45, LinkMode::Linked).success &&
+                    cue(edited, "b")->startFrame == 70 && cue(edited, "b")->endFrame == 75,
+                "trim 位置を跨ぐ字幕は残った音声の範囲まで縮める");
+        edited = media;
+        require(
+            trimTimelineClip(edited, "voice", TrimEdge::Left, 25, LinkMode::Linked).success &&
+                edited.timelineClips[0].timelineStartFrame == 25 &&
+                cue(edited, "a")->startFrame == 25 && cue(edited, "a")->endFrame == 30 &&
+                cue(edited, "b")->startFrame == 70 && cue(edited, "b")->endFrame == 90,
+            "左端の trim では、切り落とした音声に掛かる字幕を残った範囲まで縮め、他は動かさない");
+        edited = media;
+        require(trimTimelineClip(edited, "voice", TrimEdge::Left, 35, LinkMode::Linked).success &&
+                    cue(edited, "a") == nullptr,
+                "左端の trim で切り落とした音声だけの字幕は消す");
+        edited = media;
+        require(slipTimelineClip(edited, "voice", 10, LinkMode::Linked).success, "スリップ");
+        const auto slipped = edited.timelineClips[0].sourceInFrame - 20;
+        require(slipped != 0 && cue(edited, "a")->startFrame == 20 - slipped &&
+                    cue(edited, "b")->startFrame == 70 - slipped,
+                "スリップでは字幕を同じ音声の位置へ動かす");
+        auto crowded = media;
+        crowded.subtitles->cues.push_back({"next", 45, 50, "次", {}});
+        std::sort(crowded.subtitles->cues.begin(), crowded.subtitles->cues.end(),
+                  [](const auto& l, const auto& r) { return l.startFrame < r.startFrame; });
+        const auto beforeCrowded = crowded;
+        const auto rejected = setClipSpeedDuration(crowded, "voice", half, LinkMode::Linked);
+        require(!rejected.success && rejected.error.find("重なる") != std::string::npos &&
+                    crowded == beforeCrowded,
+                "置き直した字幕が他の字幕と重なる編集は全体を拒否する");
+    }
     auto linkedJson = serializeProjectJson(source, "linked.mvm");
     require(linkedJson.success &&
                 linkedJson.json.find("\"link_clip_id\": \"speech\"") != std::string::npos,

@@ -902,13 +902,16 @@ void MvmController::refreshTimelineModel(PlaybackInvalidation invalidation) {
     subtitleRaster_.reset();
     subtitleMotion_.reset();
     subtitleRasterId_.clear();
-    if (!selectedSubtitleId_.isEmpty() && selectedSubtitle().isEmpty())
-        selectedSubtitleId_.clear();
-    std::erase_if(selectedSubtitleIds_, [&](const std::string& id) {
-        return !project_.subtitles ||
-               std::none_of(project_.subtitles->cues.begin(), project_.subtitles->cues.end(),
-                            [&](const auto& cue) { return cue.id == id; });
-    });
+    {
+        // 編集・Undo で消えた字幕を選択から外す。主選択もこの規則で揃える。
+        auto kept = selectedSubtitleIds_;
+        std::erase_if(kept, [&](const std::string& id) {
+            return !project_.subtitles ||
+                   std::none_of(project_.subtitles->cues.begin(), project_.subtitles->cues.end(),
+                                [&](const auto& cue) { return cue.id == id; });
+        });
+        setSubtitleSelection(std::move(kept), selectedSubtitleId_.toStdString());
+    }
     subtitleStylePreview_.reset();
     subtitleModel_.setCues(project_.subtitles ? project_.subtitles->cues
                                               : std::vector<project::SubtitleCue>{});
@@ -1568,7 +1571,7 @@ void MvmController::setTimelineSelection(const std::vector<std::string>& clipIds
     selectedEditOutgoing_.clear();
     selectedEditIncoming_.clear();
     selectedTransitionId_.clear();
-    selectedSubtitleIds_.clear();
+    setSubtitleSelection({}, {});
     selectedClipIds_ = clipIds;
     std::vector<std::string> selectedLinkGroups;
     for (const auto& id : clipIds) {

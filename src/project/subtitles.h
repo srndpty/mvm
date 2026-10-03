@@ -67,6 +67,13 @@ void eraseLinkedSubtitles(Project& project, const std::unordered_set<std::string
 void relinkSubtitlesAfterSplit(Project& project, const std::string& leftId,
                                const std::string& rightId, std::int64_t frame,
                                const std::function<std::string()>& newId);
+// 時間の対応を変える clip の編集 (trim・ロール・スリップ・スライド・レート調整・速度変更・
+// リップルトリム) の後で、リンクした字幕を音声に合わせて置き直す。字幕は素材の時刻を保つ:
+// 編集前の clip で字幕の区間を素材の時刻へ直し、編集で素材の範囲から外れた部分 (trim で
+// 切り落とした部分) を除き、編集後の clip で timeline の区間へ戻す。素材の範囲から全部
+// 外れた字幕は消す。編集前の位置から作り直すので、リップルで既にずらした字幕も二重には
+// ずらさない。他の字幕と重なる場合は失敗する (編集全体を拒否する)。
+bool remapLinkedSubtitles(const Project& before, Project& candidate, std::string& error);
 // clipIds にリンクした字幕のリンクを外す。外した件数を返す。
 std::size_t unlinkSubtitles(Project& project, const std::unordered_set<std::string>& clipIds);
 // 素材の削除・上書きなどで消えた clip へのリンクを外す (字幕自体は残す)。

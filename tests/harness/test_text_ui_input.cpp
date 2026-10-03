@@ -1093,7 +1093,20 @@ int main(int argc, char** argv) {
                                   .toUtf8());
                     srt.close();
                     // 最後に、この場面の編集をすべて戻す (以降の検査は字幕の無い状態を前提にする)。
+                    // 戻せなかったら後段の検査を汚さないよう、この場面の失敗としてここで止める。
                     const auto depthBefore = controller.undoDepthForTest();
+                    const auto projectBefore = controller.projectForTest();
+                    const auto playheadBefore = controller.playheadFrame();
+                    const auto selectedClips = [&] {
+                        QStringList ids;
+                        auto* clips = controller.timelineModel();
+                        const int selectedRole = clips->roleNames().key("selected", -1);
+                        for (int row = 0; row < clips->rowCount(); ++row)
+                            if (clips->data(clips->index(row, 0), selectedRole).toBool())
+                                ids.append(clips->clipIdAt(row));
+                        return ids;
+                    };
+                    const auto clipsBefore = selectedClips();
                     check(controller.importSubtitles(QUrl::fromLocalFile(srt.fileName()), true),
                           "前提: 字幕を読み込めません");
                     pump(300);
@@ -1169,8 +1182,33 @@ int main(int argc, char** argv) {
                     }
                     const auto edits = controller.undoDepthForTest() - depthBefore;
                     std::printf("字幕の場面の編集: %zu 件を戻す\n", edits);
-                    while (controller.undoDepthForTest() > depthBefore &&
-                           controller.undoLastEdit()) {
+                    bool restored = true;
+                    while (controller.undoDepthForTest() > depthBefore) {
+                        if (!controller.undoLastEdit()) {
+                            std::fprintf(stderr, "Undo に失敗: %s\n",
+                                         controller.statusText().toUtf8().constData());
+                            restored = false;
+                            break;
+                        }
+                        pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    }
+                    controller.seekTimelineFrame(playheadBefore);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    const bool sameProject = controller.projectForTest() == projectBefore;
+                    const bool sameClips = selectedClips() == clipsBefore;
+                    std::printf("字幕の場面の後始末: Undo %s、Project %s、clip の選択 %s、"
+                                "再生位置 %lld/%lld\n",
+                                restored ? "成功" : "失敗", sameProject ? "一致" : "不一致",
+                                sameClips ? "一致" : "不一致",
+                                static_cast<long long>(controller.playheadFrame()),
+                                static_cast<long long>(playheadBefore));
+                    if (!(restored && controller.undoDepthForTest() == depthBefore && sameProject &&
+                          sameClips && controller.playheadFrame() == playheadBefore &&
+                          controller.selectedSubtitleIds().isEmpty())) {
+                        // 後段の文字ツールなどの検査を汚さないよう、ここで止める。
+                        check(false, "字幕の場面の後で履歴・Project・選択・再生位置を"
+                                     "開始時の状態へ戻せません");
+                        return 1;
                     }
                     // 字幕を押すと左のパネルが字幕へ切り替わる。以降の検査はエフェクトコントロールを使う。
                     window->setProperty("leftPanelTab", 0);

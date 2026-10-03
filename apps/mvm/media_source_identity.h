@@ -3,14 +3,15 @@
 
 #include "util/mvm_file_identity.h"
 
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+
 #include <QByteArray>
 #include <QDir>
 #include <QFileInfo>
 #include <QString>
-
-#include <cstdint>
-#include <optional>
-#include <string>
 
 namespace mvm::app {
 
@@ -70,6 +71,33 @@ inline std::optional<std::uint64_t> mediaContentHash(const QString& mediaPath) {
     if (mvm_file_content_hash(widePath.c_str(), &hash) != 0)
         return std::nullopt;
     return hash;
+}
+
+// 途中で止められる内容全体の hash。shouldStop は 1 MiB を読むたびに、読む前に呼ぶ。
+// 止めたこと (Cancelled) と読めなかったこと (Unavailable) を区別する。
+struct MediaContentHashResult {
+    enum class Status { Ok, Cancelled, Unavailable } status = Status::Unavailable;
+    std::uint64_t hash = 0;
+};
+
+inline MediaContentHashResult mediaContentHash(const QString& mediaPath,
+                                               const std::function<bool()>& shouldStop) {
+    MediaContentHashResult result;
+    unsigned long long hash = 0;
+    const std::wstring widePath = mediaPath.toStdWString();
+    const auto status = mvm_file_content_hash_cancellable(
+        widePath.c_str(), &hash,
+        [](void* opaque) -> int {
+            const auto& stop = *static_cast<const std::function<bool()>*>(opaque);
+            return stop && stop() ? 1 : 0;
+        },
+        const_cast<std::function<bool()>*>(&shouldStop));
+    result.status = status == MVM_FILE_HASH_OK ? MediaContentHashResult::Status::Ok
+                    : status == MVM_FILE_HASH_CANCELLED
+                        ? MediaContentHashResult::Status::Cancelled
+                        : MediaContentHashResult::Status::Unavailable;
+    result.hash = hash;
+    return result;
 }
 
 } // namespace mvm::app
