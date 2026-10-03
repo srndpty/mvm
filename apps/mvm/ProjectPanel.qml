@@ -264,7 +264,7 @@ Item {
                 font.pixelSize: 11
             }
 
-            ListView {
+            BoundedListView {
                 id: binList
                 objectName: "mediaBinList"
                 anchors.fill: parent
@@ -274,7 +274,7 @@ Item {
                 model: panel.binModel
                 contentWidth: Math.max(width, panel.columnsWidth)
                 flickableDirection: Flickable.AutoFlickIfNeeded
-                boundsBehavior: Flickable.StopAtBounds
+
                 headerPositioning: ListView.OverlayHeader
                 ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                 ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
@@ -396,15 +396,15 @@ Item {
                             clip: true
 
                             // 開閉の三角。子を持たない folder にも場所だけ確保して揃える。
-                            Label {
+                            ChevronIcon {
                                 id: disclosure
-                                x: 4 + rowItem.depth * panel.indentWidth
-                                width: 12
+                                x: 5 + rowItem.depth * panel.indentWidth
+                                width: 9
+                                height: 9
                                 anchors.verticalCenter: parent.verticalCenter
                                 visible: rowItem.isFolder
-                                text: rowItem.expanded ? "▾" : "▸"
+                                direction: rowItem.expanded ? "down" : "right"
                                 color: rowItem.hasChildren ? "#c3c8d0" : "#4a505a"
-                                font.pixelSize: 11
 
                                 MouseArea {
                                     anchors.fill: parent

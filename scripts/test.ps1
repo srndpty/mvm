@@ -175,7 +175,7 @@ function Invoke-CTestGroup {
     # Tee-Object -Variable は 2 回目以降の呼び出しで空になることがあった。
     # 各行を表示しながら要約照合用にも保持する。長い検査でも進捗が見える。
     $outLines = [System.Collections.Generic.List[string]]::new()
-    & $script:CTest --output-on-failure -j $script:CTestJobs @CTestArgs 2>&1 | ForEach-Object {
+    & $script:CTest --output-on-failure --timeout 120 -j $script:CTestJobs @CTestArgs 2>&1 | ForEach-Object {
         $line = "$_"
         Write-Host $line
         [void]$outLines.Add($line)

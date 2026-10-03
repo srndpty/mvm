@@ -3,12 +3,12 @@
 
 #include "project/project.h"
 
+#include <cstdint>
+#include <limits>
+
 #include <QAbstractListModel>
 #include <QSet>
 #include <QSortFilterProxyModel>
-
-#include <cstdint>
-#include <limits>
 #include <QStringList>
 #include <QVariantList>
 #include <QtQml/qqmlregistration.h>
@@ -52,6 +52,8 @@ public:
         // この model での行番号。絞り込んだ proxy の delegate が、controller へ全 clip の
         // 行番号を渡すために使う (proxy の index は絞り込んだ後の番号)。
         ClipRowRole,
+        // 文字起こしで作った字幕がこの clip にリンクしているか (リンク解除の対象になる)。
+        SubtitleLinkedRole,
     };
 
     explicit TimelineClipModel(QObject* parent = nullptr);
@@ -100,6 +102,7 @@ private:
         bool frameHold = false;
         bool preservePitch = false;
         bool enabled = true;
+        bool subtitleLinked = false;
     };
 
     // 値が変わった role。
@@ -125,13 +128,21 @@ class TimelineClipWindowModel : public QSortFilterProxyModel {
 public:
     explicit TimelineClipWindowModel(QObject* parent = nullptr);
 
+    // 行の ID・開始・長さを読む role。既定は TimelineClipModel の role。字幕の一覧
+    // (SubtitleListModel) も同じ絞り込みを使うので、終了 frame を持つ model は lengthIsEnd にする。
+    void setRoles(int idRole, int startRole, int lengthRole, bool lengthIsEnd);
+
     // 表示している frame の範囲 [startFrame, endFrame)。
     Q_INVOKABLE void setVisibleRange(double startFrame, double endFrame);
+
     bool hasWindow() const { return windowValid_; }
+
     double windowStartFrame() const { return windowStart_; }
+
     double windowEndFrame() const { return windowEnd_; }
 
     QStringList pinnedClipIds() const { return pinnedClipIds_; }
+
     void setPinnedClipIds(const QStringList& clipIds);
 
 signals:
@@ -146,6 +157,10 @@ private:
     double windowEnd_ = 0.0;
     QStringList pinnedClipIds_;
     QSet<QString> pinned_;
+    int idRole_ = TimelineClipModel::ClipIdRole;
+    int startRole_ = TimelineClipModel::TimelineStartFrameRole;
+    int lengthRole_ = TimelineClipModel::TimelineDurationFramesRole;
+    bool lengthIsEnd_ = false;
 };
 
 // 再生位置に掛かる文字 clip と、固定する文字 clip (preview 上でドラッグしている) だけを通す。
@@ -164,11 +179,14 @@ public:
     explicit TextClipFilterModel(QObject* parent = nullptr);
 
     void setPlayheadFrame(qint64 frame);
+
     qint64 playheadFrame() const { return playhead_; }
+
     // 再生位置の移動で全行を判定し直した回数 (試験用)。
     std::uint64_t playheadRefilterCountForTest() const { return playheadRefilterCount_; }
 
     QStringList pinnedClipIds() const { return pinnedClipIds_; }
+
     void setPinnedClipIds(const QStringList& clipIds);
 
 signals:

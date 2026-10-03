@@ -1016,8 +1016,8 @@ void testRippleDelete() {
               project.timelineClips[1].timelineStartFrame == 300 &&
               project.timelineClips[2].timelineStartFrame == 700,
           "ripple削除で後続clipが詰められません");
-    check(project.timelineClips[3].timelineStartFrame == 400,
-          "ripple削除が他trackのclipまで動かしました");
+    check(project.timelineClips[3].timelineStartFrame == 300,
+          "全トラック時間削除で他trackの区間を切り詰められません");
 
     const auto beforeReject = project;
     check(!mvm::project::rippleDeleteGap(project, kV1, 100).success,
@@ -1043,27 +1043,28 @@ void testRippleDeleteWithLinkedClips() {
               project.timelineClips[1].timelineStartFrame == 0,
           "ripple削除でlinked counterpartが同期しません");
 
-    // counterpart 側が衝突するなら ripple 全体を失敗させる (fail-closed)。
+    // 他trackの削除区間にある素材も除去する。
     mvm::project::Project blocked = mvm::project::createDefaultProject();
     auto blocker = clip("audio-blocker", mvm::project::TimelineClipKind::Audio, kA1);
     blocker.sourceOutFrame = 60;
     blocker.timelineStartFrame = 0;
     blocked.timelineClips = {video, audio, blocker};
     check(mvm::project::validateTimeline(blocked).success, "衝突テスト用のtimelineが不正です");
-    const auto beforeBlocked = blocked.timelineClips;
-    check(!mvm::project::rippleDeleteGap(blocked, kV1, 50).success &&
-              blocked.timelineClips == beforeBlocked,
-          "counterpartが衝突するripple削除で片側だけを動かしました");
+    check(mvm::project::rippleDeleteGap(blocked, kV1, 50).success &&
+              blocked.timelineClips.size() == 2 &&
+              blocked.timelineClips[0].timelineStartFrame == 0 &&
+              blocked.timelineClips[1].timelineStartFrame == 0,
+          "全トラック時間削除で削除区間の音声を除去できません");
 
-    // unlink 後は対象 track だけを詰める。
+    // unlink 後も全トラックを同じだけ詰める。
     mvm::project::Project unlinked = mvm::project::createDefaultProject();
     unlinked.timelineClips = {video, audio};
     check(mvm::project::unlinkTimelineClip(unlinked, video.id).success,
           "ripple前のリンク解除に失敗しました");
     check(mvm::project::rippleDeleteGap(unlinked, kV1, 50).success &&
               unlinked.timelineClips[0].timelineStartFrame == 0 &&
-              unlinked.timelineClips[1].timelineStartFrame == 100,
-          "unlink後のripple削除が他trackのclipまで動かしました");
+              unlinked.timelineClips[1].timelineStartFrame == 0,
+          "unlink後も全トラックへripple削除が波及する");
 }
 
 std::int64_t clipEnd(const mvm::project::Project& project,
@@ -2407,8 +2408,8 @@ void testRippleTrim() {
               findClip(project, second.id)->timelineStartFrame == 200 &&
               findClip(project, secondAudio.id)->timelineStartFrame == 200 &&
               findClip(project, third.id)->timelineStartFrame == 600 &&
-              findClip(project, other.id)->timelineStartFrame == 350,
-          "ripple trimで後続clipとリンク相手だけを詰められません");
+              findClip(project, other.id)->timelineStartFrame == 250,
+          "ripple trimで全トラックを詰められません");
 
     check(mvm::project::rippleTrimTimelineClip(project, second.id, mvm::project::TrimEdge::Left, 50,
                                                mvm::project::LinkMode::Single)
@@ -2571,10 +2572,10 @@ void testLinkedToolEditing() {
     check(mvm::project::rippleTrimTimelineClip(project, "id-pair-video", TrimEdge::Right, -50,
                                                LinkMode::Single)
                   .success &&
-              at(project, "pair-audio").sourceOutFrame == 400 &&
+              at(project, "pair-audio").sourceOutFrame == 350 &&
               at(project, "after-video").timelineStartFrame == 550 &&
-              at(project, "after-audio").timelineStartFrame == 600,
-          "Singleのripple trimがリンク相手のtrackまで動かしました");
+              at(project, "after-audio").timelineStartFrame == 550,
+          "Singleでも全トラックの時間を削除する");
 
     project = base;
     check(mvm::project::rollTimelineEdit(project, "id-pair-video", TrimEdge::Right, 20,
@@ -3121,10 +3122,10 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
             }
         }
         auto oldSchema = serialized.json;
-        const auto schema = oldSchema.find("\"schema_version\": 15");
+        const auto schema = oldSchema.find("\"schema_version\": 16");
         check(schema != std::string::npos, "schema 14 が出力されません");
         if (schema != std::string::npos) {
-            oldSchema.replace(schema, std::string("\"schema_version\": 15").size(),
+            oldSchema.replace(schema, std::string("\"schema_version\": 16").size(),
                               "\"schema_version\": 13");
             check(!mvm::project::parseProjectJsonText(oldSchema, projectFile).success,
                   "schema 13 を受理しました");

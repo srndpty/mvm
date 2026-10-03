@@ -953,11 +953,11 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
 
     if (out)
         memset(out, 0, sizeof(*out));
-    if (!mvm_mlt_runtime_is_ready() || !clips || !spec || !out_path || !*out_path ||
-        clip_count <= 0 || total_duration <= 0 || spec->width <= 0 || spec->height <= 0 ||
-        spec->fps_num <= 0 || spec->fps_den <= 0 || spec->video_crf < 0 || spec->video_crf > 51 ||
-        spec->timeout_ms <= 0 || spec->render_threads <= 0 || spec->render_threads > 16 ||
-        spec->encoder_threads < 0 || spec->encoder_threads > 16) {
+    if (!mvm_mlt_runtime_is_ready() || (clip_count > 0 && !clips) || !spec || !out_path ||
+        !*out_path || clip_count < 0 || total_duration <= 0 || spec->width <= 0 ||
+        spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0 || spec->video_crf < 0 ||
+        spec->video_crf > 51 || spec->timeout_ms <= 0 || spec->render_threads <= 0 ||
+        spec->render_threads > 16 || spec->encoder_threads < 0 || spec->encoder_threads > 16) {
         set_err(err, err_size, "M7b tractor export引数が不正です");
         return 1;
     }
@@ -980,7 +980,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     playlists = (mlt_playlist*)calloc((size_t)track_capacity, sizeof(*playlists));
     audio_tracks = (int*)calloc((size_t)track_capacity, sizeof(*audio_tracks));
     cursors = (long long*)calloc((size_t)track_capacity, sizeof(*cursors));
-    producers = (mlt_producer*)calloc((size_t)clip_count, sizeof(*producers));
+    producers =
+        (mlt_producer*)calloc((size_t)(clip_count > 0 ? clip_count : 1), sizeof(*producers));
     if (!playlists || !audio_tracks || !cursors || !producers) {
         set_err(err, err_size, "track 配列を確保できません");
         goto cleanup;
@@ -1064,7 +1065,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             goto cleanup;
         }
     }
-    cuts = (mlt_producer*)calloc((size_t)cut_capacity, sizeof(*cuts));
+    cuts = (mlt_producer*)calloc((size_t)(cut_capacity > 0 ? cut_capacity : 1), sizeof(*cuts));
     if (!cuts) {
         set_err(err, err_size, "cut 配列を確保できません");
         goto cleanup;

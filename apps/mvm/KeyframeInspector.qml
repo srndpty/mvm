@@ -155,7 +155,14 @@ ColumnLayout {
                     Layout.preferredWidth: 18
                     Layout.preferredHeight: 24
                     padding: 0
-                    text: row.graphOpen ? "▾" : "▸"
+                    contentItem: Item {
+                        ChevronIcon {
+                            anchors.centerIn: parent
+                            width: 9
+                            height: 9
+                            direction: row.graphOpen ? "down" : "right"
+                        }
+                    }
                     ToolTip.visible: hovered
                     ToolTip.text: "カーブを表示・編集"
                     onClicked: { inspector.selectedChannel = row.modelData; row.graphOpen = !row.graphOpen; }
@@ -202,7 +209,15 @@ ColumnLayout {
                     Layout.preferredWidth: 24
                     Layout.preferredHeight: 24
                     padding: 0
-                    text: "‹"
+                    contentItem: Item {
+                        ChevronIcon {
+                            anchors.centerIn: parent
+                            width: 8
+                            height: 10
+                            direction: "left"
+                            color: parent.parent.enabled ? "#c8cbd1" : "#5b616b"
+                        }
+                    }
                     enabled: row.channel && row.channel.animated
                     ToolTip.visible: hovered
                     ToolTip.text: "前のキーへ移動"
@@ -224,7 +239,15 @@ ColumnLayout {
                     Layout.preferredWidth: 24
                     Layout.preferredHeight: 24
                     padding: 0
-                    text: "›"
+                    contentItem: Item {
+                        ChevronIcon {
+                            anchors.centerIn: parent
+                            width: 8
+                            height: 10
+                            direction: "right"
+                            color: parent.parent.enabled ? "#c8cbd1" : "#5b616b"
+                        }
+                    }
                     enabled: row.channel && row.channel.animated
                     ToolTip.visible: hovered
                     ToolTip.text: "次のキーへ移動"

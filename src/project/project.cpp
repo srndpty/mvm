@@ -242,6 +242,15 @@ std::size_t approximateProjectBytes(const Project& project) {
     for (const auto& item : project.mediaItems)
         bytes += heapBytes(item.id) + heapBytes(item.mediaPath) + heapBytes(item.name) +
                  heapBytes(item.folderId);
+    if (project.subtitles) {
+        bytes += sizeof(SubtitleTrack) + project.subtitles->cues.size() * sizeof(SubtitleCue);
+        const auto& style = project.subtitles->style;
+        bytes += heapBytes(style.fontFamily) + heapBytes(style.color) +
+                 heapBytes(style.outlineColor) + heapBytes(style.backgroundColor) +
+                 heapBytes(style.alignment);
+        for (const auto& cue : project.subtitles->cues)
+            bytes += heapBytes(cue.id) + heapBytes(cue.content);
+    }
     return bytes;
 }
 

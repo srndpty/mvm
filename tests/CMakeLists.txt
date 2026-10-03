@@ -326,6 +326,7 @@ qt_add_executable(mvm_test_controller_export
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/subtitle_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
@@ -336,7 +337,7 @@ qt_add_executable(mvm_test_controller_export
     ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
 target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_controller_export PRIVATE
-    mvm::core mvm::project mvm::util mvm::manim_clip_workflow
+    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
@@ -348,6 +349,7 @@ qt_add_executable(mvm_test_sourceless_timeline_playback
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/subtitle_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
@@ -359,7 +361,7 @@ qt_add_executable(mvm_test_sourceless_timeline_playback
 target_include_directories(mvm_test_sourceless_timeline_playback PRIVATE
     ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_sourceless_timeline_playback PRIVATE
-    mvm::core mvm::project mvm::util mvm::manim_clip_workflow
+    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
@@ -380,6 +382,7 @@ qt_add_executable(mvm_test_transition_preview
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/subtitle_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
@@ -391,7 +394,7 @@ qt_add_executable(mvm_test_transition_preview
 target_include_directories(mvm_test_transition_preview PRIVATE
     ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_transition_preview PRIVATE
-    mvm::core mvm::project mvm::util mvm::manim_clip_workflow
+    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
@@ -639,7 +642,7 @@ target_compile_definitions(mvm_manim_project_smoke PRIVATE ${MVM_MLT_PATH_DEFS})
 
 add_executable(mvm_test_manim_clip_workflow harness/test_manim_clip_workflow.cpp)
 target_link_libraries(mvm_test_manim_clip_workflow PRIVATE
-    mvm::manim_clip_workflow mvm::util mvm::warnings)
+    mvm::transcribe mvm::manim_clip_workflow mvm::util mvm::warnings)
 add_dependencies(mvm_test_manim_clip_workflow mvm_fake_manim_cli)
 add_test(NAME m2_manim_clip_workflow_focused
     COMMAND mvm_test_manim_clip_workflow
@@ -3885,6 +3888,69 @@ set_tests_properties(audio_mixer_product_ui PROPERTIES
     TIMEOUT 60)
 
 # --- workstation テストの排他制御 -------------------------------------------
+# モーションの変更を最小の関連ターゲットで検証する入口。
+add_custom_target(mvm_keyframe_validation DEPENDS
+    mvm mvm_test_clip_effects mvm_test_timeline_edit mvm_test_controller_export
+    mvm_test_timeline_export mvm_test_timeline_export_mapping mvm_test_timeline_preview_mapping
+    mvm_test_timeline_clip_model mvm_test_text_clip mvm_test_preview_engine mvm_test_text_preview_parity mvm_test_image_preview_parity)
+
+find_package(Qt6 REQUIRED COMPONENTS Test)
+qt_add_executable(mvm_test_keyframe_ui harness/test_keyframe_ui.cpp)
+target_link_libraries(mvm_test_keyframe_ui PRIVATE Qt6::Test Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
+target_compile_definitions(mvm_test_keyframe_ui PRIVATE MVM_KEYFRAME_QML="${CMAKE_SOURCE_DIR}/apps/mvm/KeyframeInspector.qml")
+add_test(NAME keyframe_ui_controls COMMAND mvm_test_keyframe_ui)
+set_tests_properties(keyframe_ui_controls PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
+add_dependencies(mvm_keyframe_validation mvm_test_keyframe_ui mvm_test_p5c_native_attach mvm_test_text_ui_input)
+
+add_executable(mvm_test_subtitles harness/test_subtitles.cpp)
+target_link_libraries(mvm_test_subtitles PRIVATE mvm::project mvm::text_raster mvm::timeline_export Qt6::Gui mvm::warnings)
+add_test(NAME subtitles_contract COMMAND mvm_test_subtitles)
+set_tests_properties(subtitles_contract PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
+set_tests_properties(subtitles_contract PROPERTIES LABELS workstation)
+
+add_custom_target(mvm_subtitle_validation DEPENDS
+    mvm mvm_test_subtitles mvm_test_timeline_edit mvm_test_controller_export
+    mvm_test_timeline_export mvm_test_timeline_export_mapping mvm_test_timeline_preview_mapping
+    mvm_test_clip_effects mvm_test_project_manim mvm_test_media_bin mvm_test_two_track_project
+    mvm_test_text_clip mvm_test_text_ui_input mvm_test_transition_preview mvm_p5c_preview_smoke)
+
+add_executable(mvm_test_transcribe harness/test_transcribe.cpp)
+target_link_libraries(mvm_test_transcribe PRIVATE mvm::transcribe mvm::warnings)
+target_compile_definitions(mvm_test_transcribe PRIVATE MVM_TRANSCRIBE_NO_AUDIO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/png_alpha.png")
+add_executable(mvm_test_transcribe_model_reader transcribe/test_model_reader.cpp)
+target_include_directories(mvm_test_transcribe_model_reader PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(mvm_test_transcribe_model_reader PRIVATE mvm::warnings)
+add_test(NAME transcribe_model_reader_contract COMMAND mvm_test_transcribe_model_reader)
+set_tests_properties(transcribe_model_reader_contract PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 20)
+add_test(NAME transcribe_negative_contract COMMAND mvm_test_transcribe
+    "${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav" "${CMAKE_BINARY_DIR}/transcribe-negative")
+set_tests_properties(transcribe_negative_contract PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
+add_dependencies(mvm_subtitle_validation mvm_test_transcribe mvm_test_transcribe_model_reader)
+
+get_target_property(_subtitle_controller_sources mvm_test_controller_export SOURCES)
+list(FILTER _subtitle_controller_sources EXCLUDE REGEX "test_mvm_controller_export.cpp$|autogen")
+qt_add_executable(mvm_test_subtitle_controller harness/test_subtitle_controller.cpp ${_subtitle_controller_sources})
+target_include_directories(mvm_test_subtitle_controller PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+get_target_property(_subtitle_controller_libraries mvm_test_controller_export LINK_LIBRARIES)
+target_link_libraries(mvm_test_subtitle_controller PRIVATE ${_subtitle_controller_libraries})
+target_compile_definitions(mvm_test_subtitle_controller PRIVATE ${MVM_MLT_PATH_DEFS}
+    MVM_SUBTITLE_PANEL_QML="${CMAKE_SOURCE_DIR}/apps/mvm/SubtitlePanel.qml"
+    MVM_SUBTITLE_TEST_AUDIO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav")
+add_test(NAME subtitle_controller_contract COMMAND mvm_test_subtitle_controller)
+add_test(NAME subtitle_native_preview COMMAND mvm_test_subtitle_controller --native)
+set_tests_properties(subtitle_native_preview PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+set_tests_properties(subtitle_controller_contract PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120 WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+add_dependencies(mvm_subtitle_validation mvm_test_subtitle_controller)
+set_tests_properties(subtitle_controller_contract PROPERTIES LABELS workstation)
+
+add_executable(mvm_test_subtitle_export harness/test_subtitle_export.cpp)
+target_link_libraries(mvm_test_subtitle_export PRIVATE mvm::project mvm::text_raster mvm::timeline_export mvm::mlt mvm::gpu_preview Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_test_subtitle_export PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME subtitle_export_pixels COMMAND mvm_test_subtitle_export)
+set_tests_properties(subtitle_export_pixels PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120 LABELS workstation)
+add_dependencies(mvm_subtitle_validation mvm_test_subtitle_export)
+
 # workstation ラベルは「この開発機の実 GPU / audio endpoint / display を使う」
 # という意味である。並列実行 (ctest -j) では、これらが同時に走ると
 # device を奪い合って偽の失敗になる。実測で -j8 のとき 3 回に 1 回落ちた。
@@ -3925,17 +3991,3 @@ foreach(_mvm_test IN LISTS _mvm_all_tests)
     set_property(TEST ${_mvm_test} APPEND PROPERTY ENVIRONMENT_MODIFICATION
         "MVM_TEST_AUDIO_VOLUME_SCALE=set:${MVM_TEST_AUDIO_VOLUME_SCALE}")
 endforeach()
-
-# モーションの変更を最小の関連ターゲットで検証する入口。
-add_custom_target(mvm_keyframe_validation DEPENDS
-    mvm mvm_test_clip_effects mvm_test_timeline_edit mvm_test_controller_export
-    mvm_test_timeline_export mvm_test_timeline_export_mapping mvm_test_timeline_preview_mapping
-    mvm_test_timeline_clip_model mvm_test_text_clip mvm_test_preview_engine mvm_test_text_preview_parity mvm_test_image_preview_parity)
-
-find_package(Qt6 REQUIRED COMPONENTS Test)
-qt_add_executable(mvm_test_keyframe_ui harness/test_keyframe_ui.cpp)
-target_link_libraries(mvm_test_keyframe_ui PRIVATE Qt6::Test Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
-target_compile_definitions(mvm_test_keyframe_ui PRIVATE MVM_KEYFRAME_QML="${CMAKE_SOURCE_DIR}/apps/mvm/KeyframeInspector.qml")
-add_test(NAME keyframe_ui_controls COMMAND mvm_test_keyframe_ui)
-set_tests_properties(keyframe_ui_controls PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
-add_dependencies(mvm_keyframe_validation mvm_test_keyframe_ui mvm_test_p5c_native_attach mvm_test_text_ui_input)

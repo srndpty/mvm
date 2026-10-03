@@ -180,6 +180,7 @@ public:
         bool hasOut = false;
         bool hasMediaFolders = false;
         bool hasMediaItems = false;
+        bool hasSubtitles = false;
         std::string format;
         if (!consume('{'))
             return finish(error);
@@ -258,6 +259,10 @@ public:
                     if (hasMediaItems || !parseMediaItems(project.mediaItems))
                         return failAndFinish("media_items が重複または不正です", error);
                     hasMediaItems = true;
+                } else if (key == "subtitles") {
+                    if (hasSubtitles || !parseSubtitles(project.subtitles))
+                        return failAndFinish("字幕データが重複または不正です", error);
+                    hasSubtitles = true;
                 } else if (!skipValue()) {
                     return finish(error);
                 }
@@ -1025,6 +1030,136 @@ private:
         return true;
     }
 
+    bool parseSubtitleStyle(SubtitleStyle& style) {
+        std::unordered_map<std::string, bool> seen;
+        if (!consume('{'))
+            return false;
+        while (!peek('}')) {
+            std::string key;
+            if (!parseString(key) || !consume(':'))
+                return false;
+            if (seen[key])
+                return fail("字幕書式の項目が重複しています");
+            seen[key] = true;
+            if (key == "font_family") {
+                if (!parseString(style.fontFamily))
+                    return false;
+            } else if (key == "font_size") {
+                if (!parseInteger(style.fontSize))
+                    return false;
+            } else if (key == "bold") {
+                if (!parseBool(style.bold))
+                    return false;
+            } else if (key == "color") {
+                if (!parseString(style.color))
+                    return false;
+            } else if (key == "outline_color") {
+                if (!parseString(style.outlineColor))
+                    return false;
+            } else if (key == "outline_width") {
+                if (!parseInteger(style.outlineWidth))
+                    return false;
+            } else if (key == "background_color") {
+                if (!parseString(style.backgroundColor))
+                    return false;
+            } else if (key == "alignment") {
+                if (!parseString(style.alignment))
+                    return false;
+            } else if (key == "side_margin") {
+                if (!parseNumber(style.sideMargin))
+                    return false;
+            } else if (key == "bottom_margin") {
+                if (!parseNumber(style.bottomMargin))
+                    return false;
+            } else
+                return fail("字幕書式に未知の項目があります");
+            if (!consumeIf(','))
+                break;
+        }
+        if (seen.size() != 10)
+            return fail("字幕書式の必須項目がありません");
+        return consume('}');
+    }
+
+    bool parseSubtitles(std::optional<SubtitleTrack>& output) {
+        skipWhitespace();
+        if (text_.compare(position_, 4, "null") == 0) {
+            position_ += 4;
+            output.reset();
+            return true;
+        }
+        SubtitleTrack track;
+        std::unordered_map<std::string, bool> seen;
+        if (!consume('{'))
+            return false;
+        while (!peek('}')) {
+            std::string key;
+            if (!parseString(key) || !consume(':'))
+                return false;
+            if (seen[key])
+                return fail("字幕トラックの項目が重複しています");
+            seen[key] = true;
+            if (key == "visible") {
+                if (!parseBool(track.visible))
+                    return false;
+            } else if (key == "style") {
+                if (!parseSubtitleStyle(track.style))
+                    return false;
+            } else if (key == "cues") {
+                if (!consume('['))
+                    return false;
+                while (!peek(']')) {
+                    SubtitleCue cue;
+                    std::unordered_map<std::string, bool> cueSeen;
+                    if (!consume('{'))
+                        return false;
+                    while (!peek('}')) {
+                        std::string field;
+                        if (!parseString(field) || !consume(':'))
+                            return false;
+                        if (cueSeen[field])
+                            return fail("字幕行の項目が重複しています");
+                        cueSeen[field] = true;
+                        if (field == "id") {
+                            if (!parseString(cue.id))
+                                return false;
+                        } else if (field == "start_frame") {
+                            if (!parseInteger64(cue.startFrame))
+                                return false;
+                        } else if (field == "end_frame") {
+                            if (!parseInteger64(cue.endFrame))
+                                return false;
+                        } else if (field == "content") {
+                            if (!parseString(cue.content))
+                                return false;
+                        } else if (field == "link_clip_id") {
+                            // 未リンクの字幕は項目自体を書かない。空文字列は受け付けない。
+                            if (!parseString(cue.linkClipId) || cue.linkClipId.empty())
+                                return fail("字幕行のリンク先が不正です");
+                        } else
+                            return fail("字幕行に未知の項目があります");
+                        if (!consumeIf(','))
+                            break;
+                    }
+                    if (cueSeen.size() != (cue.linkClipId.empty() ? 4U : 5U) || !consume('}'))
+                        return fail("字幕行の必須項目がありません");
+                    track.cues.push_back(std::move(cue));
+                    if (!consumeIf(','))
+                        break;
+                }
+                if (!consume(']'))
+                    return false;
+            } else
+                return fail("字幕トラックに未知の項目があります");
+            if (!consumeIf(','))
+                break;
+        }
+        if (seen.size() != 3 || !consume('}'))
+            return fail("字幕トラックの必須項目がありません");
+        output = std::move(track);
+        return true;
+    }
+
     bool parseTimelineClip(TimelineClip& clip) {
         bool hasKind = false;
         bool hasMedia = false;
@@ -1587,6 +1722,36 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
         json << *project.outFrame;
     else
         json << "null";
+    json << ",\n";
+    json << "  \"subtitles\": ";
+    if (!project.subtitles)
+        json << "null";
+    else {
+        const auto& track = *project.subtitles;
+        const auto& style = track.style;
+        json << "{ \"visible\": " << (track.visible ? "true" : "false") << ", \"style\": {";
+        json << "\"font_family\": " << "\"" << escapeJson(style.fontFamily) << "\"";
+        json << ", \"font_size\": " << style.fontSize;
+        json << ", \"bold\": " << (style.bold ? "true" : "false");
+        json << ", \"color\": " << "\"" << escapeJson(style.color) << "\"";
+        json << ", \"outline_color\": " << "\"" << escapeJson(style.outlineColor) << "\"";
+        json << ", \"outline_width\": " << style.outlineWidth;
+        json << ", \"background_color\": " << "\"" << escapeJson(style.backgroundColor) << "\"";
+        json << ", \"alignment\": " << "\"" << escapeJson(style.alignment) << "\"";
+        json << ", \"side_margin\": " << style.sideMargin;
+        json << ", \"bottom_margin\": " << style.bottomMargin;
+        json << "}, \"cues\": [";
+        for (std::size_t i = 0; i < track.cues.size(); ++i) {
+            const auto& cue = track.cues[i];
+            json << (i ? "," : "") << "{\"id\": \"" << escapeJson(cue.id)
+                 << "\", \"start_frame\": " << cue.startFrame << ", \"end_frame\": " << cue.endFrame
+                 << ", \"content\": \"" << escapeJson(cue.content) << "\"";
+            if (!cue.linkClipId.empty())
+                json << ", \"link_clip_id\": \"" << escapeJson(cue.linkClipId) << "\"";
+            json << "}";
+        }
+        json << "]}";
+    }
     json << ",\n";
     writeTracks("video_tracks", project.videoTracks);
     writeTracks("audio_tracks", project.audioTracks);

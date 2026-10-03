@@ -22,12 +22,13 @@ ComboBox {
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
     }
-    indicator: Label {
-        x: combo.width - width - 12
+    indicator: ChevronIcon {
+        x: combo.width - width - 11
         y: (combo.height - height) / 2
-        text: "⌄"
-        color: "#c8cbd1"
-        font.pixelSize: 17
+        direction: "updown"
+        width: 8
+        height: 12
+        color: combo.enabled ? "#c8cbd1" : "#6b7079"
     }
     background: Rectangle {
         color: combo.pressed ? "#353b43" : "#1d2127"
@@ -40,7 +41,7 @@ ComboBox {
         width: combo.width
         implicitHeight: Math.min(options.contentHeight + 8, 240)
         padding: 4
-        contentItem: ListView {
+        contentItem: BoundedListView {
             id: options
             clip: true
             implicitHeight: contentHeight

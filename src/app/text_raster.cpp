@@ -9,6 +9,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QStringList>
+#include <QTextLayout>
 
 namespace mvm::app {
 namespace {
@@ -97,6 +98,87 @@ QImage renderTextRaster(const project::TextClipData& data, int width, int height
     }
     painter.end();
     return image;
+}
+
+namespace {
+// 字幕を折り返して画面の下へ置いた文字データを作る。描画 (renderSubtitleRaster) と、
+// 描画せずに収まるかだけを見る検査 (checkSubtitleLayout) が同じ計算を使う。
+bool placeSubtitle(const project::SubtitleCue& cue, const project::SubtitleStyle& style, int width,
+                   int height, project::TextClipData& data, QString& error) {
+    data.fontFamily = style.fontFamily;
+    data.fontSize = style.fontSize;
+    data.bold = style.bold;
+    data.color = style.color;
+    data.outlineColor = style.outlineColor;
+    data.outlineWidth = style.outlineWidth;
+    data.backgroundColor = style.backgroundColor;
+    data.alignment = style.alignment;
+    data.content = cue.content;
+    TextLayout checked;
+    if (!layoutText(data, checked, error))
+        return false;
+    const auto available = width * (1.0 - 2 * style.sideMargin) - 2 * checked.padding;
+    if (available <= 0) {
+        error = QStringLiteral("字幕の余白が描画幅を超えています");
+        return false;
+    }
+    QStringList wrapped;
+    for (const auto& paragraph : QString::fromStdString(cue.content).split(u'\n')) {
+        if (paragraph.isEmpty()) {
+            wrapped.append(QString());
+            continue;
+        }
+        QTextLayout layout(paragraph, checked.font);
+        QTextOption option;
+        option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        layout.setTextOption(option);
+        layout.beginLayout();
+        while (true) {
+            auto line = layout.createLine();
+            if (!line.isValid())
+                break;
+            line.setLineWidth(available);
+            wrapped.append(paragraph.mid(line.textStart(), line.textLength()));
+        }
+        layout.endLayout();
+    }
+    data.content = wrapped.join(u'\n').toStdString();
+    const auto block = textBlockSize(data, error);
+    if (!error.isEmpty())
+        return false;
+    if (block.height() > height * (1.0 - style.bottomMargin)) {
+        error =
+            QStringLiteral("字幕が画面の高さを超えています。本文・サイズ・余白を調整してください");
+        return false;
+    }
+    double x = width * style.sideMargin;
+    if (style.alignment == "center")
+        x = (width - block.width()) / 2;
+    else if (style.alignment == "right")
+        x = width * (1.0 - style.sideMargin) - block.width();
+    data.x = std::max(0, static_cast<int>(std::lround(x)));
+    data.y = std::max(
+        0, static_cast<int>(std::lround(height * (1.0 - style.bottomMargin) - block.height())));
+    return true;
+}
+} // namespace
+
+QImage renderSubtitleRaster(const project::SubtitleCue& cue, const project::SubtitleStyle& style,
+                            int width, int height, QString& error) {
+    project::TextClipData data;
+    if (!placeSubtitle(cue, style, width, height, data, error))
+        return {};
+    return renderTextRaster(data, width, height, error);
+}
+
+bool checkSubtitleLayout(const project::SubtitleCue& cue, const project::SubtitleStyle& style,
+                         int width, int height, QString& error) {
+    project::TextClipData data;
+    if (width <= 0 || height <= 0) {
+        error = QStringLiteral("文字画像の寸法または本文が不正です");
+        return false;
+    }
+    return placeSubtitle(cue, style, width, height, data, error);
 }
 
 QSizeF textBlockSize(const project::TextClipData& data, QString& error) {

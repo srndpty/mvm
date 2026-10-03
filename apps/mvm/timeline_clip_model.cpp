@@ -75,6 +75,8 @@ QVariant TimelineClipModel::data(const QModelIndex& index, int role) const {
         return item.enabled;
     case ClipRowRole:
         return index.row();
+    case SubtitleLinkedRole:
+        return item.subtitleLinked;
     default:
         return {};
     }
@@ -104,7 +106,8 @@ QHash<int, QByteArray> TimelineClipModel::roleNames() const {
             {FrameHoldRole, "frameHold"},
             {PreservePitchRole, "preservePitch"},
             {ClipEnabledRole, "clipEnabled"},
-            {ClipRowRole, "clipRow"}};
+            {ClipRowRole, "clipRow"},
+            {SubtitleLinkedRole, "subtitleLinked"}};
 }
 
 QList<int> TimelineClipModel::changedRoles(const Item& before, const Item& after) {
@@ -136,12 +139,18 @@ QList<int> TimelineClipModel::changedRoles(const Item& before, const Item& after
     add(before.frameHold != after.frameHold, FrameHoldRole);
     add(before.preservePitch != after.preservePitch, PreservePitchRole);
     add(before.enabled != after.enabled, ClipEnabledRole);
+    add(before.subtitleLinked != after.subtitleLinked, SubtitleLinkedRole);
     return roles;
 }
 
 void TimelineClipModel::setProject(const project::Project& project) {
     QList<Item> next;
     next.reserve(static_cast<qsizetype>(project.timelineClips.size()));
+    QSet<QString> subtitleLinkedClips;
+    if (project.subtitles)
+        for (const auto& cue : project.subtitles->cues)
+            if (!cue.linkClipId.empty())
+                subtitleLinkedClips.insert(QString::fromStdString(cue.linkClipId));
     for (const auto& clip : project.timelineClips) {
         const auto duration = project::timelineClipDuration(project, clip);
         const bool audio = clip.kind == project::TimelineClipKind::Audio;
@@ -168,7 +177,8 @@ void TimelineClipModel::setProject(const project::Project& project) {
                      static_cast<double>(clip.speedNum) / static_cast<double>(clip.speedDen),
                      clip.frameHold.has_value(),
                      clip.preservePitch,
-                     clip.enabled});
+                     clip.enabled,
+                     subtitleLinkedClips.contains(QString::fromStdString(clip.id))});
     }
     // 選択は setSelectedClipIds が持つ。同じ clip の選択は引き継ぎ、作り直した後に選択が
     // 一瞬外れて見えないようにする。
@@ -254,6 +264,16 @@ void TimelineClipModel::setSelectedClipIds(const QSet<QString>& clipIds) {
 // (dynamicSortFilter。test_timeline_clip_model が編集で出入りする clip で確かめている)。
 TimelineClipWindowModel::TimelineClipWindowModel(QObject* parent) : QSortFilterProxyModel(parent) {}
 
+void TimelineClipWindowModel::setRoles(int idRole, int startRole, int lengthRole,
+                                       bool lengthIsEnd) {
+    beginFilterChange();
+    idRole_ = idRole;
+    startRole_ = startRole;
+    lengthRole_ = lengthRole;
+    lengthIsEnd_ = lengthIsEnd;
+    endFilterChange(Direction::Rows);
+}
+
 void TimelineClipWindowModel::setVisibleRange(double startFrame, double endFrame) {
     if (!(endFrame >= startFrame))
         return;
@@ -285,14 +305,14 @@ void TimelineClipWindowModel::setPinnedClipIds(const QStringList& clipIds) {
 bool TimelineClipWindowModel::filterAcceptsRow(int sourceRow,
                                                const QModelIndex& sourceParent) const {
     const auto row = sourceModel()->index(sourceRow, 0, sourceParent);
-    if (pinned_.contains(row.data(TimelineClipModel::ClipIdRole).toString()))
+    if (pinned_.contains(row.data(idRole_).toString()))
         return true;
     if (!windowValid_)
         return false;
-    const auto start =
-        static_cast<double>(row.data(TimelineClipModel::TimelineStartFrameRole).toLongLong());
+    const auto start = static_cast<double>(row.data(startRole_).toLongLong());
+    const auto length = row.data(lengthRole_).toLongLong();
     const auto duration = static_cast<double>(
-        std::max<qint64>(1, row.data(TimelineClipModel::TimelineDurationFramesRole).toLongLong()));
+        std::max<qint64>(1, lengthIsEnd_ ? length - row.data(startRole_).toLongLong() : length));
     return start < windowEnd_ && start + duration > windowStart_;
 }
 

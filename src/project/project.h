@@ -143,7 +143,39 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 15;
+inline constexpr int kProjectSchemaVersion = 16;
+
+struct SubtitleCue {
+    std::string id;
+    std::int64_t startFrame = 0;
+    std::int64_t endFrame = 0;
+    std::string content;
+    // 文字起こし元の timeline clip。空は未リンク。clip を横へ動かすと同じ量だけ追従し、
+    // clip を削除・カットすると一緒に消える。字幕だけを動かしてもリンクは保つ。
+    std::string linkClipId;
+    bool operator==(const SubtitleCue&) const = default;
+};
+
+struct SubtitleStyle {
+    std::string fontFamily = "Meiryo";
+    int fontSize = 64;
+    bool bold = false;
+    std::string color = "#FFFFFFFF";
+    std::string outlineColor = "#FF000000";
+    int outlineWidth = 3;
+    std::string backgroundColor = "#00000000";
+    std::string alignment = "center";
+    double sideMargin = 0.05;
+    double bottomMargin = 0.15;
+    bool operator==(const SubtitleStyle&) const = default;
+};
+
+struct SubtitleTrack {
+    bool visible = true;
+    SubtitleStyle style;
+    std::vector<SubtitleCue> cues;
+    bool operator==(const SubtitleTrack&) const = default;
+};
 
 bool hasSyntheticSourceDomain(const TimelineClip& clip);
 
@@ -196,6 +228,7 @@ struct Project {
     std::optional<std::int64_t> outFrame;
     std::vector<MediaFolder> mediaFolders;
     std::vector<MediaItem> mediaItems;
+    std::optional<SubtitleTrack> subtitles;
     bool operator==(const Project&) const = default;
 };
 

@@ -211,7 +211,7 @@ bool timelinePreviewCompatible(const project::Project& project) {
 
 bool timelineCanPlay(const project::Project& project, bool busy, bool playing,
                      std::int64_t playheadFrame, std::int64_t totalTimelineFrames) {
-    return !busy && !playing && !project.timelineClips.empty() && playheadFrame >= 0 &&
+    return !busy && !playing && totalTimelineFrames > 0 && playheadFrame >= 0 &&
            playheadFrame < totalTimelineFrames && timelinePreviewCompatible(project);
 }
 

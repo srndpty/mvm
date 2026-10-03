@@ -8,6 +8,27 @@ Dialog {
     topPadding: 16
     bottomPadding: 18
     font.pixelSize: 12
+    // Windowのnative filterが前面のモーダル入力を横取りしないための共通契約。
+    readonly property var hostWindow: parent ? parent.Window.window : null
+    property var registeredWindow: null
+    function updateWheelBlock() {
+        const candidate = visible && modal && hostWindow
+                          && typeof hostWindow.activeModalDialogs === "number" ? hostWindow : null;
+        if (candidate === registeredWindow)
+            return;
+        if (registeredWindow)
+            registeredWindow.activeModalDialogs--;
+        registeredWindow = candidate;
+        if (registeredWindow)
+            registeredWindow.activeModalDialogs++;
+    }
+    onVisibleChanged: updateWheelBlock()
+    onModalChanged: updateWheelBlock()
+    onHostWindowChanged: updateWheelBlock()
+    Component.onDestruction: {
+        if (registeredWindow)
+            registeredWindow.activeModalDialogs--;
+    }
 
     Overlay.modal: Rectangle {
         color: "#a8000000"
