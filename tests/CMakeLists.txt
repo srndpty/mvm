@@ -1145,7 +1145,9 @@ mvm_add_test(p2_d5_2_w2d_authority_mixing
         -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-d-formal-v2-shadow.ps1"
         -SourceRoot "${CMAKE_SOURCE_DIR}"
         -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2d-authority-mixing"
-    PROPERTIES LABELS "gpu_preview")
+    # 開発機の単独実行で 37 秒だが、CI (4 vCPU に 8 並列) では 227〜295 秒かかる。
+    # scripts/test.ps1 の既定の上限 (--timeout 120) では足りないので個別に与える。
+    PROPERTIES LABELS "gpu_preview" TIMEOUT 900)
 
 # P2-D5-2-W2-E: canonical presentation authority を formal-v2 exact chain へ切り替え、
 # legacy frameSwapped / DWM path を diagnostic へ降格する。performance verdict は W3。
