@@ -18,39 +18,239 @@ bool inRange(double value, double minimum, double maximum) {
 
 } // namespace
 
+const std::vector<EffectChannel>& effectChannels() {
+    static const std::vector<EffectChannel> channels = {
+        {ClipKeyKind::Opacity, "opacity", &ClipEffects::opacityPercent, &ClipEffects::opacityKeys,
+         0, 100},
+        {ClipKeyKind::Volume, "volume", &ClipEffects::volumePercent, &ClipEffects::volumeKeys, 0,
+         200},
+        {ClipKeyKind::PositionX, "positionX", &ClipEffects::positionXPercent,
+         &ClipEffects::positionXKeys, -1000, 1000},
+        {ClipKeyKind::PositionY, "positionY", &ClipEffects::positionYPercent,
+         &ClipEffects::positionYKeys, -1000, 1000},
+        {ClipKeyKind::ScaleX, "scaleX", &ClipEffects::scaleXPercent, &ClipEffects::scaleXKeys, 1,
+         1000},
+        {ClipKeyKind::ScaleY, "scaleY", &ClipEffects::scaleYPercent, &ClipEffects::scaleYKeys, 1,
+         1000},
+        {ClipKeyKind::Rotation, "rotation", &ClipEffects::rotationDegrees,
+         &ClipEffects::rotationKeys, -360, 360},
+        {ClipKeyKind::CropLeft, "cropLeft", &ClipEffects::cropLeftPercent,
+         &ClipEffects::cropLeftKeys, 0, 100},
+        {ClipKeyKind::CropTop, "cropTop", &ClipEffects::cropTopPercent, &ClipEffects::cropTopKeys,
+         0, 100},
+        {ClipKeyKind::CropRight, "cropRight", &ClipEffects::cropRightPercent,
+         &ClipEffects::cropRightKeys, 0, 100},
+        {ClipKeyKind::CropBottom, "cropBottom", &ClipEffects::cropBottomPercent,
+         &ClipEffects::cropBottomKeys, 0, 100}};
+    return channels;
+}
+
+const EffectChannel* effectChannel(ClipKeyKind kind) {
+    for (const auto& channel : effectChannels())
+        if (channel.kind == kind)
+            return &channel;
+    return nullptr;
+}
+
+const EffectChannel* effectChannel(const std::string& name) {
+    for (const auto& channel : effectChannels())
+        if (channel.name == name)
+            return &channel;
+    return nullptr;
+}
+
+namespace {
+bool validChannelValue(const EffectChannel& channel, double value) {
+    return inRange(value, channel.minimum, channel.maximum) &&
+           (channel.kind < ClipKeyKind::CropLeft || value < channel.maximum);
+}
+
+double ease(KeyInterpolation interpolation, double t, double c1 = 1.0 / 3, double c2 = 2.0 / 3) {
+    switch (interpolation) {
+    case KeyInterpolation::Linear:
+        return t;
+    case KeyInterpolation::EaseIn:
+        return t * t;
+    case KeyInterpolation::EaseOut:
+        return t * (2 - t);
+    case KeyInterpolation::EaseInOut:
+        return t * t * (3 - 2 * t);
+    case KeyInterpolation::Spline:
+        return 3 * (1 - t) * (1 - t) * t * c1 + 3 * (1 - t) * t * t * c2 + t * t * t;
+    }
+    return t;
+}
+
+double evaluateKeysAt(const std::vector<ClipKeyframe>& keys, double base, double frame) {
+    if (keys.empty())
+        return base;
+    const auto next =
+        std::lower_bound(keys.begin(), keys.end(), frame, [](const ClipKeyframe& key, double at) {
+            return static_cast<double>(key.frame) < at;
+        });
+    if (next == keys.begin())
+        return next->value;
+    if (next == keys.end())
+        return keys.back().value;
+    if (static_cast<double>(next->frame) == frame)
+        return next->value;
+    const auto& previous = *(next - 1);
+    const double t = (frame - static_cast<double>(previous.frame)) /
+                     static_cast<double>(next->frame - previous.frame);
+    const double start =
+        ease(previous.interpolation, previous.curveStart, previous.control1, previous.control2);
+    const double end =
+        ease(previous.interpolation, previous.curveEnd, previous.control1, previous.control2);
+    const double progress = ease(
+        previous.interpolation, previous.curveStart + (previous.curveEnd - previous.curveStart) * t,
+        previous.control1, previous.control2);
+    return previous.value + (next->value - previous.value) * (progress - start) / (end - start);
+}
+} // namespace
+
+ClipEffects evaluateClipEffects(const ClipEffects& effects, std::int64_t localFrame) {
+    ClipEffects result;
+    result.fadeInFrames = effects.fadeInFrames;
+    result.fadeOutFrames = effects.fadeOutFrames;
+    for (const auto& channel : effectChannels()) {
+        result.*channel.base =
+            evaluateClipKeys(effects.*channel.keys, effects.*channel.base, localFrame);
+        (result.*channel.keys).clear();
+    }
+    return result;
+}
+
+void insertClipKey(std::vector<ClipKeyframe>& keys, std::int64_t frame, double value) {
+    auto next =
+        std::lower_bound(keys.begin(), keys.end(), frame,
+                         [](const ClipKeyframe& key, std::int64_t at) { return key.frame < at; });
+    if (next != keys.end() && next->frame == frame) {
+        next->value = value;
+        return;
+    }
+    ClipKeyframe inserted{frame, value};
+    if (next != keys.begin() && next != keys.end()) {
+        auto& previous = *(next - 1);
+        const double t = static_cast<double>(frame - previous.frame) /
+                         static_cast<double>(next->frame - previous.frame);
+        const double split = previous.curveStart + (previous.curveEnd - previous.curveStart) * t;
+        inserted.interpolation = previous.interpolation;
+        inserted.control1 = previous.control1;
+        inserted.control2 = previous.control2;
+        inserted.curveStart = split;
+        inserted.curveEnd = previous.curveEnd;
+        previous.curveEnd = split;
+    }
+    keys.insert(next, inserted);
+}
+
+std::size_t removeClipKeys(std::vector<ClipKeyframe>& keys,
+                           const std::vector<std::int64_t>& frames) {
+    std::vector<ClipKeyframe> kept;
+    kept.reserve(keys.size());
+    for (const auto& key : keys) {
+        if (std::find(frames.begin(), frames.end(), key.frame) == frames.end()) {
+            kept.push_back(key);
+            continue;
+        }
+        if (kept.empty())
+            continue;
+        // insertClipKey が分けた境界は同じ値で書き込まれるので、完全一致で判定できる。
+        auto& previous = kept.back();
+        if (previous.curveEnd == key.curveStart && previous.interpolation == key.interpolation &&
+            previous.control1 == key.control1 && previous.control2 == key.control2)
+            previous.curveEnd = key.curveEnd;
+    }
+    const auto removed = keys.size() - kept.size();
+    keys = std::move(kept);
+    return removed;
+}
+
+bool validateEffectKeys(const ClipEffects& effects, std::int64_t duration, bool audio,
+                        std::string& error) {
+    for (const auto& channel : effectChannels()) {
+        std::int64_t previous = -1;
+        const auto& keys = effects.*channel.keys;
+        if (!keys.empty() && ((channel.kind == ClipKeyKind::Volume) != audio)) {
+            error = "素材種別に適用できないキーフレームです";
+            return false;
+        }
+        for (const auto& key : keys) {
+            if (key.frame <= previous || key.frame < 0 || key.frame >= duration ||
+                !validChannelValue(channel, key.value) ||
+                key.interpolation < KeyInterpolation::Linear ||
+                key.interpolation > KeyInterpolation::Spline || !inRange(key.curveStart, 0, 1) ||
+                !inRange(key.curveEnd, 0, 1) || key.curveStart >= key.curveEnd ||
+                !inRange(key.control1, 0, 1) || !inRange(key.control2, 0, 1) ||
+                ease(key.interpolation, key.curveEnd, key.control1, key.control2) <=
+                    ease(key.interpolation, key.curveStart, key.control1, key.control2)) {
+                error = "キーフレームの位置・値・補間が不正です";
+                return false;
+            }
+            previous = key.frame;
+        }
+    }
+    // 区間ごとの三次多項式の極値まで調べる。異なる補間のクロップ合計も見落とさない。
+    for (const auto& pair : {std::pair{ClipKeyKind::CropLeft, ClipKeyKind::CropRight},
+                             std::pair{ClipKeyKind::CropTop, ClipKeyKind::CropBottom}}) {
+        const auto& a = *effectChannel(pair.first);
+        const auto& b = *effectChannel(pair.second);
+        std::vector<std::int64_t> boundaries{0, std::max<std::int64_t>(0, duration - 1)};
+        for (const auto* channel : {&a, &b})
+            for (const auto& key : effects.*channel->keys)
+                boundaries.push_back(key.frame);
+        std::sort(boundaries.begin(), boundaries.end());
+        boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+        const auto sum = [&](double frame) {
+            return evaluateKeysAt(effects.*a.keys, effects.*a.base, frame) +
+                   evaluateKeysAt(effects.*b.keys, effects.*b.base, frame);
+        };
+        for (std::size_t i = 0; i < boundaries.size(); ++i) {
+            if (sum(static_cast<double>(boundaries[i])) >= 100) {
+                error = "クロップ合計は全区間で100%未満である必要があります";
+                return false;
+            }
+            if (i + 1 == boundaries.size())
+                break;
+            const double start = static_cast<double>(boundaries[i]);
+            const double span = static_cast<double>(boundaries[i + 1] - boundaries[i]);
+            const double d = sum(start), y1 = sum(start + span / 3) - d,
+                         y2 = sum(start + span * 2 / 3) - d, y3 = sum(start + span) - d;
+            const double c3 = 4.5 * y3 - 13.5 * y2 + 13.5 * y1;
+            const double c2 = -4.5 * y3 + 18 * y2 - 22.5 * y1;
+            const double c1 = y3 - c3 - c2;
+            const auto invalidAt = [&](double t) {
+                return t > 0 && t < 1 && sum(start + span * t) >= 100;
+            };
+            if (std::abs(c3) < 1e-10) {
+                if (std::abs(c2) > 1e-10 && invalidAt(-c1 / (2 * c2))) {
+                    error = "キー間でクロップ合計が100%以上になります";
+                    return false;
+                }
+            } else {
+                const double discriminant = 4 * c2 * c2 - 12 * c3 * c1;
+                if (discriminant >= 0 &&
+                    (invalidAt((-2 * c2 + std::sqrt(discriminant)) / (6 * c3)) ||
+                     invalidAt((-2 * c2 - std::sqrt(discriminant)) / (6 * c3)))) {
+                    error = "キー間でクロップ合計が100%以上になります";
+                    return false;
+                }
+            }
+        }
+    }
+    error.clear();
+    return true;
+}
+
 bool clipEffectsAreDefault(const ClipEffects& effects) {
     return effects == ClipEffects{};
 }
 
 bool validateClipEffects(const ClipEffects& effects, std::int64_t sourceNativeDuration,
                          std::string& error) {
-    if (!inRange(effects.positionXPercent, -1000.0, 1000.0) ||
-        !inRange(effects.positionYPercent, -1000.0, 1000.0)) {
-        error = "位置 X/Y は -1000% 以上 1000% 以下である必要があります";
-        return false;
-    }
-    if (!inRange(effects.scaleXPercent, 1.0, 1000.0) ||
-        !inRange(effects.scaleYPercent, 1.0, 1000.0)) {
-        error = "拡大率 X/Y は 1% 以上 1000% 以下である必要があります";
-        return false;
-    }
-    if (!inRange(effects.rotationDegrees, -360.0, 360.0)) {
-        error = "回転は -360° 以上 360° 以下である必要があります";
-        return false;
-    }
-    if (!inRange(effects.opacityPercent, 0.0, 100.0)) {
-        error = "不透明度は 0% 以上 100% 以下である必要があります";
-        return false;
-    }
-    if (!inRange(effects.volumePercent, 0.0, 200.0)) {
-        error = "音量は 0% 以上 200% 以下である必要があります";
-        return false;
-    }
-    const double crops[] = {effects.cropLeftPercent, effects.cropTopPercent,
-                            effects.cropRightPercent, effects.cropBottomPercent};
-    for (double crop : crops) {
-        if (!std::isfinite(crop) || crop < 0.0 || crop >= 100.0) {
-            error = "Crop は 0% 以上 100% 未満である必要があります";
+    for (const auto& channel : effectChannels()) {
+        if (!validChannelValue(channel, effects.*channel.base)) {
+            error = std::string("エフェクトの固定値が範囲外です: ") + channel.name;
             return false;
         }
     }
@@ -72,36 +272,39 @@ bool validateClipEffects(const ClipEffects& effects, std::int64_t sourceNativeDu
 
 bool validateClipKeyframes(const std::vector<ClipKeyframe>& keys, std::int64_t timelineDuration,
                            double maximumPercent, std::string& error) {
-    std::int64_t previous = -1;
-    for (const auto& key : keys) {
-        if (key.frame <= previous || key.frame < 0 || key.frame >= timelineDuration ||
-            !inRange(key.valuePercent, 0.0, maximumPercent)) {
-            error = "キーフレームの位置・順序・値が不正です";
+    ClipEffects effects;
+    const bool audio = maximumPercent > 100;
+    if (audio)
+        effects.volumeKeys = keys;
+    else
+        effects.opacityKeys = keys;
+    if (!validateEffectKeys(effects, timelineDuration, audio, error))
+        return false;
+    for (const auto& key : keys)
+        if (key.value > maximumPercent) {
+            error = "キーフレームの値が上限を超えています";
             return false;
         }
-        previous = key.frame;
-    }
-    error.clear();
     return true;
+}
+
+std::pair<double, double> clipKeySplineControls(const ClipKeyframe& key) {
+    const double start = ease(key.interpolation, key.curveStart, key.control1, key.control2);
+    const double end = ease(key.interpolation, key.curveEnd, key.control1, key.control2);
+    const auto value = [&](double t) {
+        return (ease(key.interpolation, key.curveStart + (key.curveEnd - key.curveStart) * t,
+                     key.control1, key.control2) -
+                start) /
+               (end - start);
+    };
+    const double a = 27 * value(1.0 / 3) - 1;
+    const double b = 27 * value(2.0 / 3) - 8;
+    return {(2 * a - b) / 18, (2 * b - a) / 18};
 }
 
 double evaluateClipKeys(const std::vector<ClipKeyframe>& keys, double basePercent,
                         std::int64_t localFrame) {
-    if (keys.empty())
-        return basePercent;
-    const auto next = std::lower_bound(
-        keys.begin(), keys.end(), localFrame,
-        [](const ClipKeyframe& key, std::int64_t frame) { return key.frame < frame; });
-    if (next == keys.begin())
-        return next->valuePercent;
-    if (next == keys.end())
-        return keys.back().valuePercent;
-    if (next->frame == localFrame)
-        return next->valuePercent;
-    const auto& previous = *(next - 1);
-    const double ratio = static_cast<double>(localFrame - previous.frame) /
-                         static_cast<double>(next->frame - previous.frame);
-    return previous.valuePercent + (next->valuePercent - previous.valuePercent) * ratio;
+    return evaluateKeysAt(keys, basePercent, static_cast<double>(localFrame));
 }
 
 double evaluateClipOpacity(const ClipEffects& effects, std::int64_t timelineLocalFrame,
@@ -133,8 +336,11 @@ void rescaleClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t oldDuration,
                                    (static_cast<WideInteger>(key.frame) * (newDuration - 1) * 2 +
                                     (oldDuration - 1)) /
                                    (static_cast<WideInteger>(oldDuration - 1) * 2));
-        if (keys.empty() || keys.back().frame != frame)
-            keys.push_back({frame, key.valuePercent});
+        if (keys.empty() || keys.back().frame != frame) {
+            auto moved = key;
+            moved.frame = frame;
+            keys.push_back(moved);
+        }
     }
 }
 
@@ -144,19 +350,37 @@ void reframeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t oldDuration,
         return;
     const auto old = keys;
     keys.clear();
-    const auto append = [&](std::int64_t frame, double value) {
-        if (keys.empty() || keys.back().frame != frame)
-            keys.push_back({frame, value});
-    };
-    append(0, evaluateClipKeys(old, old.front().valuePercent, newStartInOldFrames));
-    for (const auto& key : old) {
-        const auto frame = key.frame - newStartInOldFrames;
-        if (frame > 0 && frame < newDuration - 1)
-            append(frame, key.valuePercent);
-    }
+    std::vector<std::int64_t> points{newStartInOldFrames};
+    for (const auto& key : old)
+        if (key.frame > newStartInOldFrames && key.frame < newStartInOldFrames + newDuration - 1)
+            points.push_back(key.frame);
     if (newDuration > 1)
-        append(newDuration - 1, evaluateClipKeys(old, old.back().valuePercent,
-                                                 newStartInOldFrames + newDuration - 1));
+        points.push_back(newStartInOldFrames + newDuration - 1);
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        ClipKeyframe key{points[i] - newStartInOldFrames,
+                         evaluateClipKeys(old, old.front().value, points[i])};
+        if (i + 1 < points.size()) {
+            const auto next =
+                std::upper_bound(old.begin(), old.end(), points[i],
+                                 [](std::int64_t frame, const ClipKeyframe& candidate) {
+                                     return frame < candidate.frame;
+                                 });
+            if (next != old.begin() && next != old.end()) {
+                const auto& previous = *(next - 1);
+                const double span = static_cast<double>(next->frame - previous.frame);
+                key.interpolation = previous.interpolation;
+                key.control1 = previous.control1;
+                key.control2 = previous.control2;
+                key.curveStart = previous.curveStart +
+                                 (previous.curveEnd - previous.curveStart) *
+                                     static_cast<double>(points[i] - previous.frame) / span;
+                key.curveEnd = previous.curveStart +
+                               (previous.curveEnd - previous.curveStart) *
+                                   static_cast<double>(points[i + 1] - previous.frame) / span;
+            }
+        }
+        keys.push_back(key);
+    }
 }
 
 bool retimeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t fromFpsNum,
@@ -173,8 +397,11 @@ bool retimeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t fromFpsNum,
         if (!frame)
             return false;
         const auto clamped = std::min(*frame, newDuration - 1);
-        if (retimed.empty() || retimed.back().frame != clamped)
-            retimed.push_back({clamped, key.valuePercent});
+        if (retimed.empty() || retimed.back().frame != clamped) {
+            auto moved = key;
+            moved.frame = clamped;
+            retimed.push_back(moved);
+        }
     }
     keys = std::move(retimed);
     return true;

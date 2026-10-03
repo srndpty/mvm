@@ -45,6 +45,11 @@ bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs = 3000) {
     return predicate();
 }
 
+// recovery は編集から debounce (2 秒) の後に worker が書く。待つ上限は debounce に
+// 書き込み (serialize と fsync) の時間を足したものより十分長くする。CI の並列実行では
+// 4 秒で足りずに失敗したことがある。条件を満たした時点で抜けるので、通常は待たない。
+constexpr int kRecoveryWaitMs = 20000;
+
 mvm::project::Project videoProject() {
     auto project = mvm::project::createDefaultProject();
     mvm::project::TimelineClip video;
@@ -662,7 +667,10 @@ void testMultipleClipClipboard(const std::filesystem::path& path) {
               controller.copySelectedClips() && controller.pasteClips() &&
               controller.clipCount() == 4 && controller.videoTrackCount() == 4,
           "複数clipを相対位置ごと空きtrackへ配置できません");
-    check(controller.saveProject(), "複数clipの貼り付け結果を保存できません");
+    const bool saved = controller.saveProject();
+    check(saved, (std::string("複数clipの貼り付け結果を保存できません: ") +
+                  controller.statusText().toStdString())
+                     .c_str());
     const auto placed = mvm::project::loadProjectJson(path);
     check(placed.success && placed.project.timelineClips[2].timelineStartFrame == 0 &&
               placed.project.timelineClips[3].timelineStartFrame == 40,
@@ -716,7 +724,7 @@ void testPenKeyUndoRedo(const std::filesystem::path& path) {
     check(controller.saveProject(), "ペンのキーを保存できません");
     const auto loaded = mvm::project::loadProjectJson(path);
     check(loaded.success && loaded.project.timelineClips[0].effects.opacityKeys.size() == 1 &&
-              loaded.project.timelineClips[0].effects.opacityKeys[0].valuePercent == 75.0,
+              loaded.project.timelineClips[0].effects.opacityKeys[0].value == 75.0,
           "ペンのキーを再読込できません");
 }
 
@@ -976,7 +984,8 @@ void testRecoveryAutosaveOffControlThread(const std::filesystem::path& path) {
     check(controller.addTrack("video"), "書き込み中の編集ができません");
     controller.writeRecoveryAutosaveForTest();
     release(1);
-    check(pumpUntil([&] { return controller.recoveryWriteCompletionCountForTest() >= 1; }, 4000),
+    check(pumpUntil([&] { return controller.recoveryWriteCompletionCountForTest() >= 1; },
+                    kRecoveryWaitMs),
           "1 番目の自動保存が完了しません");
     check(controller.recoveryRevisionForTest() == firstRevision &&
               controller.recoveryRevisionForTest() != controller.currentRevisionForTest() &&
@@ -1088,7 +1097,7 @@ void testRecoveryAutosave(const std::filesystem::path& path) {
     {
         mvm::app::MvmController controller(path, {}, initial);
         check(controller.addTrack("video"), "復旧対象の編集を作成できません");
-        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
               "編集後に自動復旧データが作成されません");
         const auto canonical = mvm::project::loadProjectJson(path);
         const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
@@ -1132,7 +1141,7 @@ void testExplicitSaveContract(const std::filesystem::path& path) {
     const auto canonicalBefore = mvm::project::loadProjectJson(path);
     check(canonicalBefore.success && canonicalBefore.project.videoTracks.size() == 2,
           "編集直後のcanonicalがinitialのままではありません");
-    check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+    check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
           "編集後のrecoveryが作成されません");
     // file が現れた直後は自動保存の書き込みと読み込みが重なり得る (負荷の高い並列実行で落ちた)。
     // 読めて編集後の内容になるまで待つ。期限内に揃わなければ失敗にする。
@@ -1162,11 +1171,11 @@ void testUndoRemovesRecovery(const std::filesystem::path& path) {
     recoveryPath += L".recovery";
     mvm::app::MvmController controller(path, {}, initial);
     check(controller.addTrack("audio") && controller.dirty(), "recovery削除対象の編集ができません");
-    check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+    check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
           "Undo前のrecoveryが作成されません");
     // recovery は worker が消す (Undo は削除を待たない)。
     check(controller.undoLastEdit() && !controller.dirty() &&
-              pumpUntil([&] { return !std::filesystem::exists(recoveryPath); }, 4000),
+              pumpUntil([&] { return !std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
           "保存済みrevisionまでUndoしてもrecoveryが残ります");
 }
 
@@ -1184,7 +1193,7 @@ void testUndoRedoRewritesRecovery(const std::filesystem::path& path) {
                 return recovery.success && recovery.project.videoTracks.size() == video &&
                        recovery.project.audioTracks.size() == audio;
             },
-            4000);
+            kRecoveryWaitMs);
     };
     mvm::app::MvmController controller(path, {}, initial);
     check(controller.addTrack("video") && controller.addTrack("audio"),
@@ -1238,7 +1247,7 @@ void testCanonicalChangedRecovery(const std::filesystem::path& path) {
     {
         mvm::app::MvmController controller(path, {}, initial);
         check(controller.addTrack("video"), "外部変更と比較する編集を作成できません");
-        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
               "外部変更試験のrecoveryが作成されません");
     }
     auto changed = initial;
@@ -1347,7 +1356,7 @@ void testRecoveryRecordsOpenedCanonicalHash(const std::filesystem::path& path) {
               "開いたあとのcanonicalを外部変更できません");
         check(fileSha256(path) != openedHash, "外部変更がcanonicalのhashを変えていません");
         check(controller.addTrack("video"), "基準hash試験の編集を作成できません");
-        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
               "外部変更後の自動復旧データが作成されません");
         const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
         check(recovery.success && !recovery.foreignProject && !recovery.legacy &&
@@ -1428,7 +1437,7 @@ void testForeignRecoveryIsNotRebased(const std::filesystem::path& path) {
     {
         mvm::app::MvmController controller(path, {}, initial);
         check(controller.addTrack("video"), "別Project試験の編集を作成できません");
-        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
               "別Project試験のrecoveryが作成されません");
     }
     const auto home = mvm::project::loadProjectRecovery(recoveryPath, path);
@@ -2313,6 +2322,210 @@ void testMediaFilePlacement(const std::filesystem::path& path, const std::filesy
 
 // プレビュー上の枠 (移動・拡縮) の controller 側。素材の寸法はプロジェクトパネルから取り、
 // ドラッグ中は preview だけ、確定は 1 つの undo にする。
+void testMotionKeyframes(const std::filesystem::path& path) {
+    auto initial = videoProject();
+    auto later = initial.timelineClips.front();
+    later.id = "later-motion";
+    later.timelineStartFrame = 200;
+    initial.timelineClips.push_back(later);
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "モーション試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.selectTimelineClips({QStringLiteral("video")}),
+          "モーション対象を選択できません");
+    int notifications = 0;
+    QObject::connect(&controller, &mvm::app::MvmController::stateChanged, [&] { ++notifications; });
+    check(controller.setEffectAnimation(QStringLiteral("positionX"), true),
+          "ストップウォッチをオンにできません");
+    check(notifications > 0, "時計の確定直後に表示変更を通知しません");
+    controller.moveEffectKey(QStringLiteral("positionX"), 0, 0, true);
+    check(controller.undoLastEdit(), "キー選択後にアニメーション開始をUndoできません");
+    bool stillAnimated = false;
+    for (const auto& entry : controller.keyframeChannels()) {
+        const auto channel = entry.toMap();
+        if (channel.value(QStringLiteral("name")) == QStringLiteral("positionX"))
+            stillAnimated = channel.value(QStringLiteral("animated")).toBool();
+    }
+    check(!stillAnimated, "キーを選択しただけで余分なUndoを追加しました");
+    check(controller.redoLastEdit(), "アニメーション開始をRedoできません");
+    check(controller.setEffectValue(QStringLiteral("positionX"), -20, true),
+          "最初のキーの値を変更できません");
+    controller.seekTimelineFrame(100);
+    check(controller.setEffectValue(QStringLiteral("positionX"), 20, true),
+          "現在位置へキーを追加できません");
+    check(controller.setEffectInterpolation(QStringLiteral("positionX"), 0, 1),
+          "イーズインを設定できません");
+    controller.seekTimelineFrame(50);
+    check(std::abs(controller.effectPositionX() + 10) < 1e-9,
+          "現在フレームのイーズ評価値を表示しません");
+    check(controller.toggleEffectKey(QStringLiteral("positionX")), "曲線上へキーを追加できません");
+    check(!controller.moveEffectKey(QStringLiteral("positionX"), 50, 100, true),
+          "既存キーへの衝突を拒否しません");
+    const auto before = controller.effectPositionX();
+    check(controller.setEffectValue(QStringLiteral("positionX"), 10, false) &&
+              controller.cancelEffectPreview() &&
+              std::abs(controller.effectPositionX() - before) < 1e-9,
+          "キーの一時編集を取り消せません");
+    check(controller.setEffectAnimation(QStringLiteral("positionX"), false) &&
+              std::abs(controller.effectPositionX() + 10) < 1e-9,
+          "オフで現在値を保持しません");
+    check(controller.undoLastEdit(), "ストップウォッチのオフをUndoできません");
+    // 描画デバイスを付けていない試験では、表示のseekは失敗する。移動先は別に検査する。
+    controller.seekEffectKey(QStringLiteral("positionX"), 1);
+    check(controller.playheadFrame() == 100, "次のキーへ移動できません");
+    controller.seekEffectKey(QStringLiteral("positionX"), -1);
+    check(controller.playheadFrame() == 50, "前のキーへ移動できません");
+    check(!controller.setEffectInterpolation(QStringLiteral("positionX"), 0, 99),
+          "未知の補間を受理しました");
+    check(controller.copyEffectKeys(QStringLiteral("positionX"), {0, 50}, false),
+          "キーをコピーできません");
+    controller.seekTimelineFrame(10);
+    check(controller.pasteEffectKeys(QStringLiteral("positionY")),
+          "XのキーをYへ貼り付けられません");
+    check(controller.undoLastEdit() && controller.redoLastEdit(),
+          "キー貼り付けのUndo/Redoが失敗しました");
+    check(controller.copyEffectKeys(QStringLiteral("positionY"), {10, 60}, true),
+          "キーをカットできません");
+    check(std::abs(controller.effectPositionY() + 20) < 1e-9,
+          "最後のキーのカットで現在値を保ちません");
+    check(controller.undoLastEdit(), "キーのカットをUndoできません");
+    controller.seekTimelineFrame(100);
+    check(!controller.pasteEffectKeys(QStringLiteral("positionY")),
+          "尺外へのキー貼り付けを拒否しません");
+    controller.seekTimelineFrame(0);
+    check(controller.setEffectSpline(QStringLiteral("positionX"), 0, 0.2, 0.8, false) &&
+              controller.cancelEffectPreview(),
+          "曲線ハンドルの一時編集を取り消せません");
+    check(controller.setEffectSpline(QStringLiteral("positionX"), 0, 0.2, 0.8, true),
+          "曲線ハンドルを確定できません");
+    check(!controller.setEffectSpline(QStringLiteral("positionX"), 0, -1, 0.8, true),
+          "不正な曲線ハンドルを拒否しません");
+    controller.seekTimelineFrame(150);
+    check(controller.editEffectKey(QStringLiteral("positionX"), 0, 1, -20, true),
+          "区間外で既存キーを移動できません");
+    check(controller.undoLastEdit(), "区間外のキー移動をUndoできません");
+    check(controller.setEffectSpline(QStringLiteral("positionX"), 0, 0.4, 0.6, true),
+          "区間外でスプラインを編集できません");
+    check(controller.undoLastEdit(), "区間外の曲線編集をUndoできません");
+    check(controller.deleteEffectKeys(QStringLiteral("positionX"), {0, 50}),
+          "区間外で複数キーを削除できません");
+    check(controller.undoLastEdit(), "複数キー削除を一回のUndoで戻せません");
+    check(!controller.deleteEffectKeys(QStringLiteral("positionX"), {999}),
+          "存在しないキー削除を受理しました");
+    check(controller.copyEffectKeys(QStringLiteral("positionX"), {0, 50}, true),
+          "区間外で複数キーをカットできません");
+    check(controller.undoLastEdit(), "区間外のカットをUndoできません");
+    const int beforePaste = notifications;
+    check(controller.pasteEffectKeys(QStringLiteral("rotation")) && notifications > beforePaste,
+          "区間外のペースト直後に表示を更新しません");
+    check(controller.undoLastEdit(), "区間外のペーストをUndoできません");
+    check(controller.saveProject(), "モーション付きProjectを保存できません");
+    const auto loaded = mvm::project::loadProjectJson(path);
+    check(loaded.success && loaded.project.timelineClips.front().effects.positionXKeys.size() == 3,
+          "キー列の保存復元に失敗しました");
+    controller.shutdown();
+}
+
+// キー編集の可逆性と、確定に失敗したときの一時表示の後始末。
+void testMotionKeyframeCommitSafety(const std::filesystem::path& path) {
+    using mvm::project::KeyInterpolation;
+    const QString positionX = QStringLiteral("positionX");
+    auto initial = videoProject();
+    // トリムで残った部分曲線 (EaseOut の 0.25..0.7) を持つキー。
+    initial.timelineClips[0].effects.positionXKeys = {{0, 0, KeyInterpolation::EaseOut, 0.25, 0.7},
+                                                      {100, 100}};
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "キー確定試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.holdsProjectLock() &&
+              controller.selectTimelineClips({QStringLiteral("video")}),
+          "キー確定試験の対象を選択できません");
+    {
+        const auto before = controller.keyframeChannels();
+        const auto depth = controller.undoDepthForTest();
+        check(controller.setEffectInterpolation(positionX, 0,
+                                                static_cast<int>(KeyInterpolation::EaseOut)) &&
+                  controller.undoDepthForTest() == depth && controller.keyframeChannels() == before,
+              "同じ補間の再選択で部分曲線が変わりました");
+        // 対照: 別の補間を選べば曲線が変わり、Undo が 1 つ増える。
+        check(controller.setEffectInterpolation(positionX, 0,
+                                                static_cast<int>(KeyInterpolation::EaseIn)) &&
+                  controller.undoDepthForTest() == depth + 1 &&
+                  controller.keyframeChannels() != before,
+              "補間の変更が反映されません");
+        check(controller.undoLastEdit() && controller.keyframeChannels() == before,
+              "補間の変更をUndoできません");
+    }
+    {
+        // 曲線上へのキー追加 -> 削除 (菱形ボタン・一括削除) で元の曲線へ戻る。
+        controller.seekTimelineFrame(25);
+        const auto before = controller.keyframeChannels();
+        check(controller.toggleEffectKey(positionX) && controller.keyframeChannels() != before &&
+                  controller.toggleEffectKey(positionX) && controller.keyframeChannels() == before,
+              "菱形ボタンでのキー追加・削除で曲線が戻りません");
+        check(controller.toggleEffectKey(positionX) &&
+                  controller.deleteEffectKeys(positionX, {25}) &&
+                  controller.keyframeChannels() == before,
+              "キーの一括削除で曲線が戻りません");
+    }
+    {
+        // 確定時の検証に失敗したときも、drag 中の一時表示を残さない (保存失敗と同じ扱い)。
+        controller.seekTimelineFrame(50);
+        check(controller.setEffectValue(QStringLiteral("cropRight"), 50, true),
+              "検証失敗試験の前提: 右クロップを確定できません");
+        const auto before = controller.keyframeChannels();
+        const auto depth = controller.undoDepthForTest();
+        check(controller.setEffectValue(QStringLiteral("cropLeft"), 40, false) &&
+                  controller.keyframeChannels() != before,
+              "検証失敗試験の前提: 左クロップの一時表示が変わりません");
+        check(!controller.setEffectValue(QStringLiteral("cropLeft"), 55, true) &&
+                  controller.keyframeChannels() == before && controller.undoDepthForTest() == depth,
+              "クロップ合計の検証に失敗した確定で一時表示が残りました");
+        check(controller.setEffectSpline(positionX, 0, 0.3, 0.7, false) &&
+                  controller.keyframeChannels() != before,
+              "検証失敗試験の前提: 曲線ハンドルの一時表示が変わりません");
+        check(!controller.setEffectSpline(positionX, 0, -1, 0.7, true) &&
+                  controller.keyframeChannels() == before && controller.undoDepthForTest() == depth,
+              "不正な曲線ハンドルの確定で一時表示が残りました");
+        check(controller.editEffectKey(positionX, 100, 90, 80, false) &&
+                  controller.keyframeChannels() != before,
+              "検証失敗試験の前提: キー移動の一時表示が変わりません");
+        check(!controller.editEffectKey(positionX, 100, 90, 5000, true) &&
+                  controller.keyframeChannels() == before && controller.undoDepthForTest() == depth,
+              "範囲外の値へのキー移動の確定で一時表示が残りました");
+    }
+    {
+        // lock を持たない側では確定が失敗する。drag 中の一時表示を残してはいけない。
+        mvm::app::MvmController second(path, {}, initial);
+        check(!second.holdsProjectLock() && second.selectTimelineClips({QStringLiteral("video")}),
+              "lock を持たない controller を用意できません");
+        second.seekTimelineFrame(50);
+        const auto before = second.keyframeChannels();
+        const auto depth = second.undoDepthForTest();
+        const double value = second.effectPositionX();
+        check(second.setEffectSpline(positionX, 0, 0.1, 0.9, false) &&
+                  second.keyframeChannels() != before,
+              "失敗試験の前提: 曲線ハンドルの一時表示が変わりません");
+        check(!second.setEffectSpline(positionX, 0, 0.1, 0.9, true) &&
+                  second.keyframeChannels() == before && second.undoDepthForTest() == depth &&
+                  second.effectPositionX() == value,
+              "曲線ハンドルの確定に失敗したのに一時表示が残りました");
+        check(second.editEffectKey(positionX, 100, 90, 80, false) &&
+                  second.keyframeChannels() != before,
+              "失敗試験の前提: キー移動の一時表示が変わりません");
+        check(!second.editEffectKey(positionX, 100, 90, 80, true) &&
+                  second.keyframeChannels() == before && second.undoDepthForTest() == depth,
+              "キー移動の確定に失敗したのに一時表示が残りました");
+        check(second.setEffectValue(positionX, 70, false) && second.keyframeChannels() != before,
+              "失敗試験の前提: 数値の一時表示が変わりません");
+        check(!second.setEffectValue(positionX, 70, true) && second.keyframeChannels() == before &&
+                  second.undoDepthForTest() == depth && second.effectPositionX() == value,
+              "数値の確定に失敗したのに一時表示が残りました");
+        second.shutdown();
+    }
+    controller.shutdown();
+}
+
 void testPreviewTransform(const std::filesystem::path& path) {
     const auto near = [](const QVariant& value, double expected) {
         return std::abs(value.toDouble() - expected) < 1e-6;
@@ -2464,6 +2677,8 @@ int main(int argc, char** argv) {
     testMoveOverwritesAndDragBounds(directory / L"move-overwrite.mvm");
     testPreviewPlanFollowsEdits(directory / L"preview-plan.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
+    testMotionKeyframes(directory / L"motion.mvm");
+    testMotionKeyframeCommitSafety(directory / L"motion-commit.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。
     // 初期化は 1 回だけにする。1 プロセスで init / shutdown を繰り返すと、2 回目の init で

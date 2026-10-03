@@ -480,6 +480,7 @@ public:
     QString transformClipId() const;
     // 画像・動画の見えている矩形 {x, y, width, height, pivotX, pivotY, rotation, visible}。
     // drag 中の override を含む。素材の寸法が分からない・何も見えていないときは空。
+    Q_INVOKABLE bool textClipHasMotion(const QString& clipId) const;
     Q_INVOKABLE QVariantMap clipVisualGeometry(const QString& clipId) const;
     // 再生位置で (x, y) に見えている最も上の素材 (文字・画像・動画)。無ければ空。
     Q_INVOKABLE QString visualClipAt(double x, double y);
@@ -614,9 +615,9 @@ public:
     // クロスフェードを 置く (リンク相手も同じ cut なら一緒に)。
     Q_INVOKABLE bool applyDefaultTransition();
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
-                                           qint64 requestedFrame, double valuePercent) const;
+                                           qint64 requestedFrame, double value) const;
     Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,
-                                   qint64 requestedFrame, double valuePercent);
+                                   qint64 requestedFrame, double value);
     Q_INVOKABLE bool deleteClipKey(const QString& clipId, qint64 frame);
     // direction は "forward" / "backward"。trackKind が空なら全 track。
     Q_INVOKABLE bool selectClipsFromFrame(qint64 frame, const QString& direction,
@@ -646,6 +647,22 @@ public:
     //   commit=false : Project を書き換えず、preview だけを ephemeral な override で
     //                  追従させる (drag 中)。
     //   commit=true  : override を確定して Project transaction にする。
+    Q_PROPERTY(QVariantList keyframeChannels READ keyframeChannels NOTIFY stateChanged)
+    QVariantList keyframeChannels() const;
+    Q_INVOKABLE bool editEffectKey(const QString& name, qint64 from, qint64 to, double value,
+                                   bool commit);
+    Q_INVOKABLE bool setEffectSpline(const QString& name, qint64 frame, double control1,
+                                     double control2, bool commit);
+    Q_INVOKABLE bool copyEffectKeys(const QString& name, const QVariantList& frames, bool cut);
+    Q_INVOKABLE bool pasteEffectKeys(const QString& name);
+    Q_INVOKABLE bool deleteEffectKeys(const QString& name, const QVariantList& frames);
+
+    Q_INVOKABLE bool setEffectAnimation(const QString& name, bool enabled);
+    Q_INVOKABLE bool toggleEffectKey(const QString& name);
+    Q_INVOKABLE bool moveEffectKey(const QString& name, qint64 from, qint64 to, bool commit);
+    Q_INVOKABLE bool setEffectInterpolation(const QString& name, qint64 frame, int interpolation);
+    Q_INVOKABLE bool seekEffectKey(const QString& name, int direction);
+    Q_INVOKABLE bool seekEffectFrame(qint64 localFrame, bool scrub = false);
     Q_INVOKABLE bool setEffectValue(const QString& key, double value, bool commit);
     // 複数の項目 ({"positionX": 10, "scaleX": 120} など) を 1 つの変更として適用する。
     // commit なら 1 つの undo、そうでなければ preview だけを更新する。
@@ -803,7 +820,14 @@ private:
     bool commitProjectEdit(project::Project candidate, const QString& failurePrefix,
                            PlaybackInvalidation invalidation = PlaybackInvalidation::Sources);
     // キーフレーム編集の確定。変化が無ければ何もせず、確定後は preview を合わせる。
+    qint64 effectEditFrame(const project::TimelineClip& clip) const;
+    bool removeEffectKeys(const QString& name, const QVariantList& frames);
     bool commitClipKeyCandidate(project::Project candidate);
+    // drag 中の effect の一時表示を捨てて Project の値へ戻す。Preview の更新に失敗したら false。
+    bool discardEffectPreview(QString& previewError);
+    // effect 編集の失敗。commit なら一時表示も捨てる (保存されていない値を表示に残さない)。
+    // 常に false を返すので、失敗の return にそのまま使う。
+    bool failEffectEdit(bool commit);
     // timeline 編集の共通手順。一時停止 -> candidate へ edit -> commit -> preview 更新。
     bool
     applyTimelineEdit(const std::function<project::TimelineEditResult(project::Project&)>& edit,
@@ -886,7 +910,7 @@ private:
                                       const QString& successStatus);
     std::string currentClipId() const;
     bool toggleClipsEnabled(const std::vector<std::string>& clipIds);
-    const project::ClipEffects& currentEffects() const;
+    project::ClipEffects currentEffects() const;
     // preview override を適用した effects を返す。composition はこれを使う。
     project::ClipEffects effectsForPreview(int clipIndex) const;
     bool applyEffectKey(project::ClipEffects& effects, const QString& key, double value);
@@ -1192,6 +1216,10 @@ private:
     QString exportProgressText_;
     bool busy_ = false;
     bool previewReady_ = false;
+    std::vector<project::ClipKeyframe> effectKeyClipboard_;
+    mutable project::ClipEffects keyframeDisplayEffects_;
+    mutable int keyframeDisplayClip_ = -1;
+    mutable std::map<std::string, QVariantList> keyframeDisplayKeys_;
     bool shutdownStarted_ = false;
     bool playing_ = false;
     int shuttleRate_ = 0;

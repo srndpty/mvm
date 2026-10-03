@@ -71,7 +71,7 @@ std::string readText(const std::filesystem::path& path) {
 // 欠けたファイルを暗黙の既定値で読まないことを確認する。
 void testSchemaIsFailClosed(const std::filesystem::path& root) {
     const std::string header =
-        R"JSON({"schema_version":14,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":100,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,)JSON"
+        R"JSON({"schema_version":15,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":100,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,)JSON"
         R"JSON("video_tracks":[{"name":"V1","muted":false,"solo":false}],"audio_tracks":[],"manim_assets":[],)JSON";
     const std::string clipHead =
         R"JSON("timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"A","id":"a",)JSON"
@@ -93,7 +93,7 @@ void testSchemaIsFailClosed(const std::filesystem::path& root) {
     const auto missingTracks = root / "missing-tracks.mvm";
     writeText(
         missingTracks,
-        R"JSON({"schema_version":14,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,)JSON"
+        R"JSON({"schema_version":15,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,)JSON"
         R"JSON("timeline_fps_den":1,"manim_assets":[],"timeline_clips":[]})JSON");
     check(!mvm::project::loadProjectJson(missingTracks).success,
           "track配列が無いProjectを受理しました");

@@ -46,6 +46,215 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(directory);
 
     using namespace mvm::project;
+    {
+        for (const auto& expected :
+             {std::pair{KeyInterpolation::Linear, 25.0}, std::pair{KeyInterpolation::EaseIn, 6.25},
+              std::pair{KeyInterpolation::EaseOut, 43.75},
+              std::pair{KeyInterpolation::EaseInOut, 15.625}}) {
+            std::vector<ClipKeyframe> keys{{0, 0, expected.first}, {100, 100}};
+            check(std::abs(evaluateClipKeys(keys, 0, 25) - expected.second) < 1e-9,
+                  "補間の独立した期待値");
+            const auto original = keys;
+            reframeClipKeys(keys, 101, 51, 25);
+            for (int frame = 0; frame < 51; ++frame)
+                check(std::abs(evaluateClipKeys(keys, 0, frame) -
+                               evaluateClipKeys(original, 0, frame + 25)) < 1e-9,
+                      "トリムでイーズの動きを保つ");
+            keys = original;
+            insertClipKey(keys, 25, expected.second);
+            for (int frame = 0; frame <= 100; ++frame)
+                check(std::abs(evaluateClipKeys(keys, 0, frame) -
+                               evaluateClipKeys(original, 0, frame)) < 1e-9,
+                      "キー追加で曲線を保つ");
+        }
+        {
+            std::vector<ClipKeyframe> spline{{0, 0, KeyInterpolation::Spline, 0, 1, 0.2, 0.8},
+                                             {100, 100}};
+            check(std::abs(evaluateClipKeys(spline, 0, 25) - 21.25) < 1e-9,
+                  "スプラインの独立した期待値を満たしません");
+            const auto original = spline;
+            insertClipKey(spline, 25, 21.25);
+            for (int frame = 0; frame <= 100; ++frame)
+                check(std::abs(evaluateClipKeys(spline, 0, frame) -
+                               evaluateClipKeys(original, 0, frame)) < 1e-9,
+                      "スプラインへのキー追加で曲線が変わりました");
+            spline = original;
+            reframeClipKeys(spline, 101, 51, 25);
+            for (int frame = 0; frame < 51; ++frame)
+                check(std::abs(evaluateClipKeys(spline, 0, frame) -
+                               evaluateClipKeys(original, 0, frame + 25)) < 1e-9,
+                      "スプラインのトリムで曲線が変わりました");
+            const auto controls = clipKeySplineControls(spline.front());
+            auto restricted = spline;
+            restricted.front().control1 = controls.first;
+            restricted.front().control2 = controls.second;
+            restricted.front().curveStart = 0;
+            restricted.front().curveEnd = 1;
+            for (int frame = 0; frame < 51; ++frame)
+                check(std::abs(evaluateClipKeys(restricted, 0, frame) -
+                               evaluateClipKeys(spline, 0, frame)) < 1e-9,
+                      "切り出した区間のハンドルが表示曲線と一致しません");
+            auto project = projectWithClip();
+            project.timelineClips[0].effects.positionXKeys = {
+                {0, -20, KeyInterpolation::Spline, 0, 1, 0.2, 0.8}, {99, 20}};
+            const auto path = directory / "spline.mvm";
+            check(saveProjectJson(project, path).success, "スプラインを保存できません");
+            const auto loaded = loadProjectJson(path);
+            check(loaded.success &&
+                      loaded.project.timelineClips[0].effects == project.timelineClips[0].effects,
+                  "スプラインの保存復元が一致しません");
+            std::ifstream file(path);
+            const std::string json((std::istreambuf_iterator<char>(file)), {});
+            auto bad = json;
+            const auto pos = bad.find(",\"control1\":0.2");
+            check(pos != std::string::npos, "スプライン負例の対照に制御値がありません");
+            if (pos != std::string::npos) {
+                bad.erase(pos, std::string(",\"control1\":0.2").size());
+                const auto badPath = directory / "spline-missing-control.mvm";
+                std::ofstream output(badPath);
+                output << bad;
+                output.close();
+                check(!loadProjectJson(badPath).success, "スプラインの制御値欠落を拒否しません");
+            }
+            std::string error;
+            auto invalid = project.timelineClips[0].effects;
+            invalid.positionXKeys.front().control1 = -0.1;
+            check(!validateEffectKeys(invalid, 100, false, error),
+                  "範囲外のスプライン制御値を拒否しません");
+            invalid.positionXKeys.front().control1 = std::numeric_limits<double>::quiet_NaN();
+            check(!validateEffectKeys(invalid, 100, false, error),
+                  "非数のスプライン制御値を拒否しません");
+            invalid = {};
+            invalid.cropLeftKeys = {{0, 0, KeyInterpolation::Spline, 0, 1, 1, 1}, {99, 80}};
+            invalid.cropRightKeys = {{0, 80, KeyInterpolation::Spline, 0, 1, 0, 0}, {99, 0}};
+            check(!validateEffectKeys(invalid, 100, false, error),
+                  "スプラインのキー間で不正になるクロップを拒否しません");
+        }
+        {
+            // 曲線上へのキー追加と、同じキーの削除を続けると元の曲線へ戻る (追加の逆)。
+            // トリム後の部分曲線 (curveStart/End が 0/1 でない) も同じ。
+            const auto sameCurve = [](const std::vector<ClipKeyframe>& actual,
+                                      const std::vector<ClipKeyframe>& expected) {
+                for (int frame = 0; frame <= 100; ++frame)
+                    if (std::abs(evaluateClipKeys(actual, 0, frame) -
+                                 evaluateClipKeys(expected, 0, frame)) >= 1e-9)
+                        return false;
+                return true;
+            };
+            for (const auto interpolation :
+                 {KeyInterpolation::Linear, KeyInterpolation::EaseIn, KeyInterpolation::EaseOut,
+                  KeyInterpolation::EaseInOut, KeyInterpolation::Spline}) {
+                for (const auto range : {std::pair{0.0, 1.0}, std::pair{0.25, 0.7}}) {
+                    const std::vector<ClipKeyframe> original{
+                        {0, 0, interpolation, range.first, range.second, 0.2, 0.8}, {100, 100}};
+                    auto keys = original;
+                    insertClipKey(keys, 25, evaluateClipKeys(original, 0, 25));
+                    check(keys.size() == 3 && sameCurve(keys, original),
+                          "削除試験の前提: キー追加で曲線を保つ");
+                    check(removeClipKeys(keys, {25}) == 1 && keys == original,
+                          "追加したキーの削除で元の曲線へ戻りません");
+                    // 連続する複数キーの一括削除も、順に結合して元へ戻る。
+                    insertClipKey(keys, 25, evaluateClipKeys(original, 0, 25));
+                    insertClipKey(keys, 60, evaluateClipKeys(original, 0, 60));
+                    check(keys.size() == 4 && sameCurve(keys, original),
+                          "削除試験の前提: 2 つのキー追加で曲線を保つ");
+                    auto one = keys;
+                    check(removeClipKeys(one, {25}) == 1 && one.size() == 3 &&
+                              sameCurve(one, original),
+                          "片方のキー削除で残りの曲線が変わりました");
+                    check(removeClipKeys(keys, {60, 25}) == 2 && keys == original,
+                          "連続キーの一括削除で元の曲線へ戻りません");
+                }
+            }
+            // 独立した期待値: EaseInOut 0 -> 100 の f50 は 50。f25 の追加・削除後も 50。
+            std::vector<ClipKeyframe> easeInOut{{0, 0, KeyInterpolation::EaseInOut}, {100, 100}};
+            insertClipKey(easeInOut, 25, 15.625);
+            removeClipKeys(easeInOut, {25});
+            check(std::abs(evaluateClipKeys(easeInOut, 0, 50) - 50) < 1e-9,
+                  "EaseInOut のキー追加・削除後に f50 が 50 になりません");
+            // 対照: 別々に作った区間 (連続部分でない) は結合しない。
+            std::vector<ClipKeyframe> separate{
+                {0, 0, KeyInterpolation::EaseIn}, {50, 50, KeyInterpolation::EaseOut}, {100, 100}};
+            check(removeClipKeys(separate, {50}) == 1 && separate.size() == 2 &&
+                      separate.front().curveStart == 0 && separate.front().curveEnd == 1,
+                  "連続部分でない区間を結合しました");
+            check(removeClipKeys(separate, {42}) == 0 && separate.size() == 2,
+                  "存在しないキーの削除で個数を返しました");
+        }
+        std::string error;
+        ClipEffects motion;
+        motion.positionXKeys = {{0, -100}, {100, 100}};
+        motion.rotationKeys = {{0, -180}, {100, 180}};
+        check(validateEffectKeys(motion, 101, false, error), "負の位置と回転の対照群");
+        check(evaluateClipEffects(motion, 25).positionXPercent == -50 &&
+                  evaluateClipEffects(motion, 25).rotationDegrees == -90,
+              "モーションを共通評価する");
+        check(!validateEffectKeys(motion, 101, true, error), "音声へモーションを適用しない");
+        motion.positionXKeys.push_back({100, 1});
+        check(!validateEffectKeys(motion, 101, false, error), "重複キーを拒否する");
+        motion.positionXKeys.pop_back();
+        motion.positionXKeys[0].interpolation = static_cast<KeyInterpolation>(99);
+        check(!validateEffectKeys(motion, 101, false, error), "未知の補間を拒否する");
+        motion = {};
+        motion.cropLeftKeys = {{0, 0, KeyInterpolation::EaseOut}, {100, 80}};
+        motion.cropRightKeys = {{0, 80, KeyInterpolation::EaseIn}, {100, 0}};
+        check(!validateEffectKeys(motion, 101, false, error),
+              "端は80%でも途中が120%になるクロップを拒否する");
+        motion.cropLeftKeys.back().value = 40;
+        motion.cropRightKeys.front().value = 40;
+        check(validateEffectKeys(motion, 101, false, error), "異なる補間のクロップ対照群");
+    }
+    {
+        auto original = projectWithClip();
+        for (const auto& channel : effectChannels()) {
+            if (channel.kind == ClipKeyKind::Volume)
+                continue;
+            const double from = channel.kind >= ClipKeyKind::CropLeft ? 2 : 10;
+            const double to = channel.kind >= ClipKeyKind::CropLeft ? 12 : 80;
+            original.timelineClips[0].effects.*
+                channel.keys = {{0, from, KeyInterpolation::EaseInOut}, {99, to}};
+        }
+        const auto checkRemaining = [&](const Project& edited) {
+            for (const auto& clip : edited.timelineClips) {
+                const auto duration = timelineClipDuration(edited, clip);
+                check(duration.success, "編集後のモーション尺を取得できない");
+                for (std::int64_t frame = 0; frame < duration.frame; ++frame) {
+                    const auto before = evaluateClipEffects(original.timelineClips[0].effects,
+                                                            clip.timelineStartFrame + frame);
+                    const auto after = evaluateClipEffects(clip.effects, frame);
+                    for (const auto& channel : effectChannels())
+                        check(std::abs(before.*channel.base - after.*channel.base) < 1e-8,
+                              "分割・トリム後の全フレームでモーションを保つ");
+                }
+            }
+        };
+        auto edited = original;
+        check(splitTimelineClips(
+                  edited, {"clip-1"}, 37, [] { return "split-motion"; }, LinkMode::Single)
+                  .success,
+              "イーズ途中でモーションを分割できない");
+        checkRemaining(edited);
+        edited = original;
+        check(trimTimelineClip(edited, "clip-1", TrimEdge::Left, 23, LinkMode::Single).success,
+              "モーションを左トリムできない");
+        checkRemaining(edited);
+        edited = original;
+        check(trimTimelineClip(edited, "clip-1", TrimEdge::Right, -29, LinkMode::Single).success,
+              "モーションを右トリムできない");
+        checkRemaining(edited);
+        edited = original;
+        check(rateStretchTimelineClip(edited, "clip-1", TrimEdge::Right, 100, LinkMode::Single)
+                  .success,
+              "モーションをレートストレッチできない");
+        for (const auto& channel : effectChannels()) {
+            if (channel.kind == ClipKeyKind::Volume)
+                continue;
+            const auto& keys = edited.timelineClips[0].effects.*channel.keys;
+            check(keys.size() == 2 && keys.back().frame == 199 &&
+                      keys.front().interpolation == KeyInterpolation::EaseInOut,
+                  "全モーション項目を端から端へ伸縮する");
+        }
+    }
     ClipEffects effects;
     check(clipEffectsAreDefault(effects), "既定effectをdefaultと判定する");
     {
@@ -197,7 +406,10 @@ int main(int argc, char** argv) {
 
     Project project = projectWithClip();
     effects.scaleYPercent = 45; // X と違う値でも round-trip すること
-    effects.opacityKeys = {{20, 80.0}, {80, 20.123456789123}};
+    effects.opacityKeys = {{20, 80.0, KeyInterpolation::EaseInOut, 0.1, 0.9},
+                           {80, 20.123456789123}};
+    effects.positionXKeys = {{0, -20, KeyInterpolation::EaseOut}, {90, 30}};
+    effects.rotationKeys = {{0, -45}, {90, 90}};
     project.timelineClips.front().effects = effects;
     const auto path = directory / "effects.mvm";
     check(saveProjectJson(project, path).success, "effects付きProjectを保存する");
@@ -220,12 +432,12 @@ int main(int argc, char** argv) {
               "拡大率の負例の対照群を読み込めません");
         // 旧 schema (10) と、縦横共通の拡大率 (scale_percent) は読み替えずに拒否する。
         auto oldSchema = originalJson;
-        const auto versionAt = oldSchema.find("\"schema_version\": 14");
+        const auto versionAt = oldSchema.find("\"schema_version\": 15");
         check(versionAt != std::string::npos, "負例のschema_version位置が保存されていません");
         if (versionAt != std::string::npos) {
-            oldSchema.replace(versionAt, std::string("\"schema_version\": 14").size(),
-                              "\"schema_version\": 13");
-            check(!loadVariant("scale-schema12.mvm", oldSchema).success, "schema 13を拒否する");
+            oldSchema.replace(versionAt, std::string("\"schema_version\": 15").size(),
+                              "\"schema_version\": 14");
+            check(!loadVariant("scale-schema12.mvm", oldSchema).success, "schema 14を拒否する");
         }
         auto uniformScale = originalJson;
         const auto scaleXAt = uniformScale.find("\"scale_x_percent\"");
@@ -260,7 +472,7 @@ int main(int argc, char** argv) {
     const auto partial = directory / "partial.mvm";
     std::ofstream partialFile(partial);
     partialFile
-        << R"({"schema_version":14,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":10,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false,"solo":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"speed_num":1,"speed_den":1,"preserve_pitch":false,"enabled":true,"frame_hold":null,"track_kind":"video","track_index":0,"effects":{"scale_x_percent":60}}]})";
+        << R"({"schema_version":15,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":10,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false,"solo":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"speed_num":1,"speed_den":1,"preserve_pitch":false,"enabled":true,"frame_hold":null,"track_kind":"video","track_index":0,"effects":{"scale_x_percent":60}}]})";
     partialFile.close();
     check(!loadProjectJson(partial).success, "部分effects objectをfail-closedで拒否する");
 
@@ -280,7 +492,7 @@ int main(int argc, char** argv) {
         return loadProjectJson(projectPath);
     };
     const auto halfSpeed =
-        loadText("speed-half.mvm", speedProject("14", R"("speed_num":1,"speed_den":2,)"));
+        loadText("speed-half.mvm", speedProject("15", R"("speed_num":1,"speed_den":2,)"));
     check(halfSpeed.success && halfSpeed.project.timelineClips.size() == 1 &&
               halfSpeed.project.timelineClips[0].speedNum == 1 &&
               halfSpeed.project.timelineClips[0].speedDen == 2,
@@ -296,21 +508,21 @@ int main(int argc, char** argv) {
               legacyClip.error.find("対応していない schema_version です: 5") != std::string::npos,
           (std::string("schema 5の旧ファイルを版の違いとして報告しない: ") + legacyClip.error)
               .c_str());
-    check(!loadText("speed-missing.mvm", speedProject("14", "")).success,
+    check(!loadText("speed-missing.mvm", speedProject("15", "")).success,
           "速度の無いclipを既定値で受理しない");
     check(
-        !loadText("speed-slow.mvm", speedProject("14", R"("speed_num":1,"speed_den":11,)")).success,
+        !loadText("speed-slow.mvm", speedProject("15", R"("speed_num":1,"speed_den":11,)")).success,
         "10%未満の速度を拒否する");
     check(
-        !loadText("speed-fast.mvm", speedProject("14", R"("speed_num":11,"speed_den":1,)")).success,
+        !loadText("speed-fast.mvm", speedProject("15", R"("speed_num":11,"speed_den":1,)")).success,
         "1000%を超える速度を拒否する");
     check(
-        loadText("speed-edge.mvm", speedProject("14", R"("speed_num":10,"speed_den":1,)"))
+        loadText("speed-edge.mvm", speedProject("15", R"("speed_num":10,"speed_den":1,)"))
                 .success &&
-            loadText("speed-edge-slow.mvm", speedProject("14", R"("speed_num":1,"speed_den":10,)"))
+            loadText("speed-edge-slow.mvm", speedProject("15", R"("speed_num":1,"speed_den":10,)"))
                 .success,
         "10%と1000%ちょうどを受理する");
-    check(!loadText("speed-unreduced.mvm", speedProject("14", R"("speed_num":2,"speed_den":4,)"))
+    check(!loadText("speed-unreduced.mvm", speedProject("15", R"("speed_num":2,"speed_den":4,)"))
                .success,
           "約分されていない速度を拒否する");
 

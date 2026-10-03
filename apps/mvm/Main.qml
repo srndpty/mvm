@@ -76,21 +76,21 @@ ApplicationWindow {
         text: "クリップをコピー"
         shortcut: "Ctrl+C"
         enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
-        onTriggered: root.mvmController.copySelectedClips()
+        onTriggered: root.keyframeFocus ? keyframeInspector.copyKeys(false) : root.mvmController.copySelectedClips()
     }
     Action {
         id: cutClipsAction
         text: "クリップをカット"
         shortcut: "Ctrl+X"
         enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
-        onTriggered: root.mvmController.cutSelectedClips()
+        onTriggered: root.keyframeFocus ? keyframeInspector.copyKeys(true) : root.mvmController.cutSelectedClips()
     }
     Action {
         id: pasteClipsAction
         text: "クリップをペースト"
         shortcut: "Ctrl+V"
         enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
-        onTriggered: root.mvmController.pasteClips()
+        onTriggered: root.keyframeFocus ? keyframeInspector.pasteKeys() : root.mvmController.pasteClips()
     }
     Action {
         id: duplicateClipsAction
@@ -466,6 +466,21 @@ ApplicationWindow {
     // 文字入力・選択肢・popup (dialog / menu) に focus がある間は、window 全体の
     // 単一キーと矢印の shortcut にキーを奪わせない。個々の編集状態 (名前変更中など) を
     // 並べず、focus を持つ control の種類だけで決める。
+    readonly property bool keyframeFocus: {
+        for (let item = root.activeFocusItem; item; item = item.parent)
+            if (item === keyframeInspector) return true;
+        return false;
+    }
+    Shortcut {
+        sequence: "Ctrl+Left"
+        enabled: !root.keyboardFocusTakesKeys && !root.mvmController.busy && !root.mvmController.playing
+        onActivated: keyframeInspector.navigateKey(-1)
+    }
+    Shortcut {
+        sequence: "Ctrl+Right"
+        enabled: !root.keyboardFocusTakesKeys && !root.mvmController.busy && !root.mvmController.playing
+        onActivated: keyframeInspector.navigateKey(1)
+    }
     readonly property bool keyboardFocusTakesKeys: {
         const item = root.activeFocusItem;
         if (item instanceof TextInput || item instanceof TextEdit || item instanceof ComboBox
@@ -703,8 +718,8 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Delete"
-        enabled: root.mvmController.canDeleteSelection && !root.keyboardFocusTakesKeys
-        onActivated: root.mvmController.deleteSelection()
+        enabled: (root.keyframeFocus || root.mvmController.canDeleteSelection) && !root.keyboardFocusTakesKeys
+        onActivated: root.keyframeFocus ? keyframeInspector.deleteKeys() : root.mvmController.deleteSelection()
     }
     Shortcut {
         sequence: "Space"
@@ -925,135 +940,16 @@ ApplicationWindow {
                                         mvmController: root.mvmController
                                     }
 
+                                    KeyframeInspector {
+                                        id: keyframeInspector
+                                        Layout.fillWidth: true
+                                        mvmController: root.mvmController
+                                    }
                                     GridLayout {
                                         id: inspectorGrid
                                         Layout.fillWidth: true
-                                        visible: root.mvmController.selectedTextClip.clipId === undefined
                                         columns: 2
-                                        columnSpacing: 6
-                                        rowSpacing: 4
-                                        enabled: root.mvmController.currentClipIndex >= 0 && !root.mvmController.busy
-                                                 && !root.mvmController.playing
-
-                                        DragNumberField {
-                                            Layout.fillWidth: true
-                                            labelText: "位置 X"
-                                            suffix: " %"
-                                            value: root.mvmController.effectPositionX
-                                            minimumValue: -1000
-                                            maximumValue: 1000
-                                            stepPerPixel: 0.5
-                                            onEditCanceled: root.mvmController.cancelEffectPreview()
-                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("positionX", newValue, commit)
-                                        }
-                                        DragNumberField {
-                                            Layout.fillWidth: true
-                                            labelText: "位置 Y"
-                                            suffix: " %"
-                                            value: root.mvmController.effectPositionY
-                                            minimumValue: -1000
-                                            maximumValue: 1000
-                                            stepPerPixel: 0.5
-                                            onEditCanceled: root.mvmController.cancelEffectPreview()
-                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("positionY", newValue, commit)
-                                        }
-                                        DragNumberField {
-                                            Layout.fillWidth: true
-                                            labelText: "拡大率 X"
-                                            suffix: " %"
-                                            value: root.mvmController.effectScaleX
-                                            minimumValue: 1
-                                            maximumValue: 1000
-                                            stepPerPixel: 0.5
-                                            onEditCanceled: root.mvmController.cancelEffectPreview()
-                                            onValueEdited: (newValue, commit) => root.setEffectScale("scaleX", newValue, commit)
-                                        }
-                                        DragNumberField {
-                                            Layout.fillWidth: true
-                                            labelText: "拡大率 Y"
-                                            suffix: " %"
-                                            value: root.mvmController.effectScaleY
-                                            minimumValue: 1
-                                            maximumValue: 1000
-                                            stepPerPixel: 0.5
-                                            onEditCanceled: root.mvmController.cancelEffectPreview()
-                                            onValueEdited: (newValue, commit) => root.setEffectScale("scaleY", newValue, commit)
-                                        }
-                                        CheckBox {
-                                            Layout.columnSpan: 2
-                                            text: "縦横比を固定"
-                                            checked: root.lockEffectScaleAspect
-                                            font.pixelSize: 11
-                                            onToggled: root.lockEffectScaleAspect = checked
-                                        }
-                                        DragNumberField {
-                                            Layout.fillWidth: true
-                                            labelText: "回転"
-                                            suffix: " °"
-                                            value: root.mvmController.effectRotation
-                                            minimumValue: -360
-                                            maximumValue: 360
-                                            stepPerPixel: 0.5
-                                            onEditCanceled: root.mvmController.cancelEffectPreview()
-                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("rotation", newValue, commit)
-                                        }
-                                        DragNumberField {
-                                            Layout.fillWidth: true
-                                            labelText: "不透明度"
-                                            suffix: " %"
-                                            value: root.mvmController.effectOpacity
-                                            minimumValue: 0
-                                            maximumValue: 100
-                                            stepPerPixel: 0.3
-                                            onEditCanceled: root.mvmController.cancelEffectPreview()
-                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("opacity", newValue, commit)
-                                        }
-                                        Item { Layout.fillWidth: true; implicitHeight: 1 }
-
-                                        DragNumberField {
-                                            Layout.fillWidth: true
-                                            labelText: "Crop 左"
-                                            suffix: " %"
-                                            value: root.mvmController.effectCropLeft
-                                            minimumValue: 0
-                                            maximumValue: 99
-                                            stepPerPixel: 0.2
-                                            onEditCanceled: root.mvmController.cancelEffectPreview()
-                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropLeft", newValue, commit)
-                                        }
-                                        DragNumberField {
-                                            Layout.fillWidth: true
-                                            labelText: "Crop 右"
-                                            suffix: " %"
-                                            value: root.mvmController.effectCropRight
-                                            minimumValue: 0
-                                            maximumValue: 99
-                                            stepPerPixel: 0.2
-                                            onEditCanceled: root.mvmController.cancelEffectPreview()
-                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropRight", newValue, commit)
-                                        }
-                                        DragNumberField {
-                                            Layout.fillWidth: true
-                                            labelText: "Crop 上"
-                                            suffix: " %"
-                                            value: root.mvmController.effectCropTop
-                                            minimumValue: 0
-                                            maximumValue: 99
-                                            stepPerPixel: 0.2
-                                            onEditCanceled: root.mvmController.cancelEffectPreview()
-                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropTop", newValue, commit)
-                                        }
-                                        DragNumberField {
-                                            Layout.fillWidth: true
-                                            labelText: "Crop 下"
-                                            suffix: " %"
-                                            value: root.mvmController.effectCropBottom
-                                            minimumValue: 0
-                                            maximumValue: 99
-                                            stepPerPixel: 0.2
-                                            onEditCanceled: root.mvmController.cancelEffectPreview()
-                                            onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropBottom", newValue, commit)
-                                        }
+                                        enabled: root.mvmController.currentClipIndex >= 0 && !root.mvmController.busy && !root.mvmController.playing
                                         DragNumberField {
                                             Layout.fillWidth: true
                                             labelText: "フェードイン (素材f)"
@@ -1263,6 +1159,7 @@ ApplicationWindow {
                                 // 選択中の文字の範囲 (Premiere の選択枠に相当)。掴める範囲と同じ。
                                 Rectangle {
                                     visible: textLayer.selectedText && root.timelineTool === "select"
+                                             && !(root.mvmController.keyframeChannels, root.mvmController.textClipHasMotion(textLayer.clipId))
                                              && textLayer.bounds.width > 0
                                     x: textLayer.hostBounds.x - 1
                                     y: textLayer.hostBounds.y - 1
@@ -1279,7 +1176,7 @@ ApplicationWindow {
                                     y: textLayer.hostBounds.y
                                     width: textLayer.hostBounds.width
                                     height: textLayer.hostBounds.height
-                                    enabled: root.timelineTool === "select" && textLayer.visible
+                                    enabled: !(root.mvmController.keyframeChannels, root.mvmController.textClipHasMotion(textLayer.clipId)) && root.timelineTool === "select" && textLayer.visible
                                     // 選択ツールで動かしていることが分かるよう、通常の矢印のままにする。
                                     cursorShape: Qt.ArrowCursor
                                     property bool draggingText: false
@@ -1373,7 +1270,7 @@ ApplicationWindow {
                             anchors.fill: parent
                             z: 50
                             mvmController: root.mvmController
-                            active: root.timelineTool === "select" && !root.mvmController.busy
+                            active: root.timelineTool === "select" && !root.mvmController.busy && !root.mvmController.playing
                                     && !root.textEditing
                         }
 
@@ -2132,6 +2029,15 @@ ApplicationWindow {
                     // sticky rulerを最下部までscrollしてもcontentの内側に保つ。
                     height: timelineFlick.contentHeight
 
+                    Rectangle {
+                        visible: root.mvmController.inFrame >= 0 && root.mvmController.outFrame > root.mvmController.inFrame
+                        x: root.mvmController.inFrame * timelinePanel.pixelsPerFrame
+                        width: (root.mvmController.outFrame - root.mvmController.inFrame) * timelinePanel.pixelsPerFrame
+                        height: parent.height
+                        color: "#ffffff"
+                        opacity: 0.07
+                        z: 60
+                    }
                     // --- ルーラー ---
                     Rectangle {
                         id: ruler
@@ -2193,29 +2099,31 @@ ApplicationWindow {
                         }
                         Repeater {
                             model: root.mvmController.timelineMarkers
-                            Rectangle {
+                            Canvas {
                                 required property var modelData
-                                x: modelData * timelinePanel.pixelsPerFrame - 3
+                                x: modelData * timelinePanel.pixelsPerFrame - 4
                                 y: 2
-                                width: 7
-                                height: 12
-                                color: "#f3bd54"
-                                radius: 2
+                                width: 8; height: 13
+                                onPaint: {
+                                    const c = getContext("2d"); c.reset(); c.fillStyle = "#f3bd54";
+                                    c.beginPath(); c.moveTo(0, 0); c.lineTo(8, 0); c.lineTo(8, 8);
+                                    c.lineTo(4, 13); c.lineTo(0, 8); c.closePath(); c.fill();
+                                }
                             }
                         }
                         Rectangle {
                             visible: root.mvmController.inFrame >= 0
-                            x: root.mvmController.inFrame * timelinePanel.pixelsPerFrame - 2
+                            x: root.mvmController.inFrame * timelinePanel.pixelsPerFrame
                             y: 0
-                            width: 4
+                            width: 1
                             height: parent.height
                             color: "#56a5e8"
                         }
                         Rectangle {
                             visible: root.mvmController.outFrame >= 0
-                            x: root.mvmController.outFrame * timelinePanel.pixelsPerFrame - 2
+                            x: root.mvmController.outFrame * timelinePanel.pixelsPerFrame
                             y: 0
-                            width: 4
+                            width: 1
                             height: parent.height
                             color: "#56a5e8"
                         }
@@ -2223,6 +2131,7 @@ ApplicationWindow {
                         // ルーラー上はクリックでもドラッグでもスクラブできる。
                         MouseArea {
                             id: rulerArea
+                            objectName: "timelineRulerArea"
                             anchors.fill: parent
                             enabled: !root.mvmController.busy
                                      && root.mvmController.navigationTimelineFrames > 0
@@ -2230,6 +2139,8 @@ ApplicationWindow {
                             cursorShape: Qt.SizeHorCursor
                             preventStealing: true
                             property var menuMarkerFrame: -1
+                            property real pressX: 0
+                            property bool dragging: false
                             onPressed: mouse => {
                                 if (mouse.button === Qt.RightButton) {
                                     menuMarkerFrame = Gestures.markerNearRulerX(
@@ -2238,18 +2149,23 @@ ApplicationWindow {
                                     rulerMarkMenu.popup();
                                     return;
                                 }
-                                root.mvmController.beginScrub();
-                                root.mvmController.scrubToFrame(timelinePanel.frameAtContentX(mouse.x));
+                                pressX = mouse.x;
+                                dragging = false;
+                                root.mvmController.seekTimelineFrame(timelinePanel.frameAtContentX(mouse.x));
                             }
                             onPositionChanged: mouse => {
-                                if (pressedButtons & Qt.LeftButton)
-                                    root.mvmController.scrubToFrame(timelinePanel.frameAtContentX(mouse.x));
+                                if (!(pressedButtons & Qt.LeftButton)) return;
+                                if (!dragging && Math.abs(mouse.x - pressX) >= 3) {
+                                    dragging = true;
+                                    root.mvmController.beginScrub();
+                                }
+                                if (dragging) root.mvmController.scrubToFrame(timelinePanel.frameAtContentX(mouse.x));
                             }
                             onReleased: mouse => {
-                                if (mouse.button === Qt.LeftButton)
-                                    root.mvmController.endScrub();
+                                if (mouse.button === Qt.LeftButton && dragging) root.mvmController.endScrub();
+                                dragging = false;
                             }
-                            onCanceled: root.mvmController.endScrub()
+                            onCanceled: { if (dragging) root.mvmController.endScrub(); dragging = false; }
 
                             CompactMenu {
                                 id: rulerMarkMenu

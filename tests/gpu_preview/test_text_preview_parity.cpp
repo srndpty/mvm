@@ -243,6 +243,24 @@ std::vector<unsigned char> composePreview(Preview& preview, const project::Proje
         // 文字の不透明度は製品と同じく対応づけの評価値 (値・key・fade) を使う。
         if (entry.still && !ignoreOpacity)
             layer.opacity = static_cast<float>(mapped.stillLayers[entry.index].opacity);
+        const int clipIndex = entry.still ? mapped.stillLayers[entry.index].clipIndex
+                                          : mapped.layers[entry.index].clipIndex;
+        const auto& clip = project.timelineClips[static_cast<std::size_t>(clipIndex)];
+        const auto effects =
+            project::evaluateClipEffects(clip.effects, outputFrame - clip.timelineStartFrame);
+        if (!entry.still)
+            layer.opacity = static_cast<float>(project::evaluateClipOpacity(
+                clip.effects, outputFrame - clip.timelineStartFrame,
+                outputFrame - clip.timelineStartFrame, clip.sourceOutFrame - clip.sourceInFrame));
+        preview::PreviewCompositionLayer mappedLayer;
+        app::applyPreviewLayerEffects(mappedLayer, effects, layer.opacity, 0,
+                                      clip.sourceOutFrame - clip.sourceInFrame);
+        layer.destination = {mappedLayer.destination.x, mappedLayer.destination.y,
+                             mappedLayer.destination.width, mappedLayer.destination.height};
+        layer.sourceUv = {mappedLayer.sourceRect.x, mappedLayer.sourceRect.y,
+                          mappedLayer.sourceRect.width, mappedLayer.sourceRect.height};
+        layer.rotationDegrees = mappedLayer.rotationDegrees;
+        layer.effectsEnabled = true;
         layer.zOrder = z++;
         frame.layers.push_back(layer);
     }
@@ -439,6 +457,93 @@ int main(int argc, char** argv) {
                 require(ignored.agreed * 2 <= ignored.compared,
                         "対照: 不透明度を無視しても一致しました。比較が不透明度を判別していません");
             }
+        }
+        preview.compositor.retireLayerTexture(still.texture);
+    }
+
+    for (const bool animateText : {true, false}) {
+        auto project = makeProject(2);
+        // 背景との境界で幾何を検査する。色変換の差をモーションの差と混ぜない。
+        project.timelineClips[1].effects.opacityPercent = 0;
+        project.timelineClips[animateText ? 2 : 0].effects.opacityPercent = 0;
+        auto& animated = project.timelineClips[animateText ? 0 : 2];
+        using Interpolation = project::KeyInterpolation;
+        animated.effects.positionXKeys = {{0, -10, Interpolation::EaseIn}, {29, 15}};
+        animated.effects.positionYKeys = {{0, 5, Interpolation::EaseOut}, {29, -10}};
+        animated.effects.scaleXKeys = {{0, 80}, {29, 110}};
+        animated.effects.scaleYKeys = {{0, 90}, {29, 100}};
+        animated.effects.rotationKeys = {{0, -10, Interpolation::EaseInOut}, {29, 15}};
+        animated.effects.cropLeftKeys = {{0, 0}, {29, 5}};
+        QString rasterError;
+        const QImage raster =
+            app::renderTextRaster(project.timelineClips[0].text, kW, kH, rasterError)
+                .convertToFormat(QImage::Format_RGBA8888);
+        require(!raster.isNull(), "モーションの文字を描画できません");
+        std::vector<unsigned char> pixels(static_cast<std::size_t>(kW) * kH * 4);
+        for (int y = 0; y < kH; ++y)
+            std::memcpy(pixels.data() + static_cast<std::size_t>(y) * kW * 4,
+                        raster.constScanLine(y), static_cast<std::size_t>(kW) * 4);
+        gpu::DecodedGpuFrame still;
+        std::string error;
+        require(gpu::makeStillImageFrame(preview.device.shared, kW, kH, pixels.data(),
+                                         pixels.size(), gpu::SourceId{}, still, error),
+                error);
+        const auto video =
+            exportTo(project, directory,
+                     animateText ? QStringLiteral("motion-text") : QStringLiteral("motion-video"));
+        for (const int frameIndex : {0, 7, 15, 29}) {
+            decodeVideo(preview, frameIndex);
+            const auto composed = composePreview(preview, project, still, false, frameIndex);
+            const auto exported = extractFrame(
+                video, directory, QStringLiteral("motion-%1").arg(animateText), frameIndex);
+            int compared = 0, agreed = 0;
+            const auto previewForegroundAt = [&](int x, int y) {
+                if (x < 0 || y < 0 || x >= kW || y >= kH)
+                    return false;
+                const auto offset =
+                    (static_cast<std::size_t>(y) * kW + static_cast<std::size_t>(x)) * 4;
+                return std::max({composed[offset], composed[offset + 1], composed[offset + 2]}) >
+                       60;
+            };
+            const auto exportForegroundAt = [&](int x, int y) {
+                if (x < 0 || y < 0 || x >= kW || y >= kH)
+                    return false;
+                const auto color = exported.pixelColor(x, y);
+                return std::max({color.red(), color.green(), color.blue()}) > 60;
+            };
+            // GPU と MLT の補間・アンチエイリアスの違いは輪郭の 1 画素まで許容する。
+            for (int y = 0; y < kH; ++y)
+                for (int x = 0; x < kW; ++x) {
+                    const bool previewForeground = previewForegroundAt(x, y);
+                    const bool exportForeground = exportForegroundAt(x, y);
+                    if (!previewForeground && !exportForeground)
+                        continue;
+                    ++compared;
+                    bool matched = previewForeground == exportForeground;
+                    for (int dy = -1; !matched && dy <= 1; ++dy)
+                        for (int dx = -1; !matched && dx <= 1; ++dx)
+                            matched = previewForeground ? exportForegroundAt(x + dx, y + dy)
+                                                        : previewForegroundAt(x + dx, y + dy);
+                    agreed += matched ? 1 : 0;
+                }
+            std::printf("モーション %s frame %d: 境界比較 %d / 一致 %d\n",
+                        animateText ? "文字" : "映像", frameIndex, compared, agreed);
+            require(compared > 200 && agreed * 100 >= compared * 95,
+                    "モーションのGPU previewと書き出しの形状が一致しません: frame " +
+                        std::to_string(frameIndex));
+            auto ignoredProject = project;
+            ignoredProject.timelineClips[animateText ? 0 : 2].effects = {};
+            const auto ignored = composePreview(preview, ignoredProject, still, false, frameIndex);
+            int different = 0;
+            for (std::size_t offset = 0; offset < composed.size(); offset += 4) {
+                const bool moved =
+                    std::max({composed[offset], composed[offset + 1], composed[offset + 2]}) > 60;
+                const bool fixed =
+                    std::max({ignored[offset], ignored[offset + 1], ignored[offset + 2]}) > 60;
+                different += moved != fixed ? 1 : 0;
+            }
+            require(different > 200,
+                    "モーションを無視した対照群と差がありません。形状比較が空振りです");
         }
         preview.compositor.retireLayerTexture(still.texture);
     }

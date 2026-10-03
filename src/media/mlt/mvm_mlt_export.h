@@ -35,6 +35,13 @@ typedef struct {
 } MvmExportGainKeyframe;
 
 typedef struct {
+    long long local_frame;
+    double crop_left, crop_top, crop_right, crop_bottom;
+    double rect_x, rect_y, rect_width, rect_height;
+    double rotation_degrees, shear_degrees;
+} MvmExportMotionFrame;
+
+typedef struct {
     const char* path; /* UTF-8。実在する動画ファイル */
     long long source_fps_num;
     long long source_fps_den;
@@ -63,6 +70,8 @@ typedef struct {
     int is_audio;       /* 非0なら映像を隠して独立audio trackとしてmixする */
     int is_still_image; /* 非0なら明示した qimage producer で透過 PNG を開く (文字・画像) */
     int effects_enabled;
+    const MvmExportMotionFrame* motion_frames;
+    int motion_frame_count;
     int crop_left;
     int crop_top;
     int crop_right;

@@ -12,7 +12,7 @@ Windows 向けノンリニア動画編集ソフト。YouTube 向けの技術・�
 
 | 領域 | 実装 | 主な場所 |
 | --- | --- | --- |
-| Project Model | `.mvm` (JSON) の schema 14。track・clip・素材 (プロジェクトパネル)・トランジション・Undo/Redo・自動復旧 | `src/project/`, `apps/mvm/mvm_controller.*` |
+| Project Model | `.mvm` (JSON) の schema 15。track・clip・素材 (プロジェクトパネル)・トランジション・Undo/Redo・自動復旧 | `src/project/`, `apps/mvm/mvm_controller.*` |
 | タイムライン UI | 複数 video / audio track、trim・ripple・rate stretch・分割・フレーム保持、track の表示・mute・solo、トランジション編集 | `apps/mvm/Main.qml` ほか |
 | Preview | 内製の GPU preview engine (FFmpeg D3D11VA + D3D11 compositor + WASAPI)。MLT は使わない | `src/preview_engine/`, `src/media/gpu_preview/`, `src/app/preview/` |
 | 書き出し | Project から書き出し計画を作り、MLT C API で mp4 へ書き出す | `src/app/timeline_export.*`, `src/media/mlt/` |

@@ -335,6 +335,56 @@ void testSpeedDurationAndFrameHold() {
               clipSourceFrameAt(held.timelineClips[2], 60, 1, 119).frame == 120,
           "フレーム保持の分割・配置・素材 frame が正しくありません");
     {
+        // 保持中も動きは timeline の時間で進み、保持後の右側 clip もその続きから再開する。
+        // 300 frame の clip の 120 へ 120 frame の保持を入れると、timeline の frame t の値は
+        // 元の動きの min(t, 299) になる (Linear 0 -> 299 なら t そのもの)。
+        using mvm::project::ClipKeyframe;
+        using mvm::project::KeyInterpolation;
+        for (const auto& keys : std::vector<std::vector<ClipKeyframe>>{
+                 {{0, 0}, {299, 299}},
+                 {{0, 0, KeyInterpolation::EaseOut}, {299, 299}},
+                 {{0, 0, KeyInterpolation::EaseInOut}, {150, 100}, {299, 299}},
+                 {{0, 0, KeyInterpolation::Spline, 0, 1, 0.2, 0.8}, {299, 299}}}) {
+            Project motion = createDefaultProject();
+            motion.timelineClips = {clip("motion-hold")};
+            motion.timelineClips[0].effects.positionXKeys = keys;
+            int motionId = 0;
+            const bool insertedHold = insertFrameHold(motion, "id-motion-hold", 120, 120, [&] {
+                                          return "motion-" + std::to_string(++motionId);
+                                      }).success;
+            check(insertedHold && motion.timelineClips.size() == 3,
+                  "モーション付き clip へフレーム保持を入れられません");
+            if (!insertedHold || motion.timelineClips.size() != 3)
+                continue;
+            const auto valueAt = [&](std::int64_t frame) {
+                for (const auto& piece : motion.timelineClips) {
+                    const auto duration = timelineClipDuration(motion, piece);
+                    if (duration.success && frame >= piece.timelineStartFrame &&
+                        frame < piece.timelineStartFrame + duration.frame)
+                        return mvm::project::evaluateClipKeys(piece.effects.positionXKeys,
+                                                              piece.effects.positionXPercent,
+                                                              frame - piece.timelineStartFrame);
+                }
+                return std::numeric_limits<double>::quiet_NaN();
+            };
+            int compared = 0;
+            for (std::int64_t frame = 0; frame < 420; ++frame) {
+                const double expected =
+                    keys.size() == 2 && keys[0].interpolation == KeyInterpolation::Linear
+                        ? static_cast<double>(std::min<std::int64_t>(frame, 299))
+                        : mvm::project::evaluateClipKeys(keys, 0,
+                                                         std::min<std::int64_t>(frame, 299));
+                check(std::abs(valueAt(frame) - expected) < 1e-8,
+                      ("保持の前後・途中で動きが連続しません: frame " + std::to_string(frame))
+                          .c_str());
+                ++compared;
+            }
+            check(compared == 420 && std::abs(valueAt(240) - valueAt(239)) < 2.0 &&
+                      validateTimeline(motion).success,
+                  "保持の終わりから右側の先頭で動きが戻りました");
+        }
+    }
+    {
         // 保持は挿入位置の見た目 (不透明度) で止める。fade-in 240 frame の中央 (120) なら約 50%、
         // key 0:100% -> 200:0% の 120 なら 40%。automation は捨て、この値を基本値へ焼き込む。
         const auto heldOpacity = [&](const std::function<void(TimelineClip&)>& setup) {
@@ -1135,8 +1185,8 @@ void testRateStretch() {
               .success,
           "key付きclipのレート調整に失敗しました");
     const auto& keys = keyProject.timelineClips[0].effects.opacityKeys;
-    check(keys.size() == 3 && keys[0].frame == 0 && keys[1].frame == 301 &&
-              keys[1].valuePercent == 50.0 && keys[2].frame == 599,
+    check(keys.size() == 3 && keys[0].frame == 0 && keys[1].frame == 301 && keys[1].value == 50.0 &&
+              keys[2].frame == 599,
           "keyが尺に合わせて伸縮しません");
 
     // 50% の clip の trim: timeline 100 frame = 素材 50 frame。
@@ -1413,9 +1463,8 @@ void testStepClipVolume() {
     check(mvm::project::stepClipVolume(project, {keyed.id}, 1.0).success,
           "音量keyのあるaudio clipを+1dBできません");
     const auto& keys = findClip(project, keyed.id)->effects.volumeKeys;
-    check(keys.size() == 3 && keys[0].valuePercent == 0.0 &&
-              std::abs(keys[1].valuePercent - 112.20184543019634) < 1e-9 &&
-              keys[2].valuePercent == 200.0 &&
+    check(keys.size() == 3 && keys[0].value == 0.0 &&
+              std::abs(keys[1].value - 112.20184543019634) < 1e-9 && keys[2].value == 200.0 &&
               std::abs(volumeOf(keyed.id) - 112.20184543019634) < 1e-9,
           "音量keyを0%を保ったまま同じ規則で変えません");
 
@@ -3072,10 +3121,10 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
             }
         }
         auto oldSchema = serialized.json;
-        const auto schema = oldSchema.find("\"schema_version\": 14");
+        const auto schema = oldSchema.find("\"schema_version\": 15");
         check(schema != std::string::npos, "schema 14 が出力されません");
         if (schema != std::string::npos) {
-            oldSchema.replace(schema, std::string("\"schema_version\": 14").size(),
+            oldSchema.replace(schema, std::string("\"schema_version\": 15").size(),
                               "\"schema_version\": 13");
             check(!mvm::project::parseProjectJsonText(oldSchema, projectFile).success,
                   "schema 13 を受理しました");
@@ -3137,8 +3186,7 @@ void testClipKeyEditing() {
               evaluateClipKeys(keys, 100, 0) == 80 && evaluateClipKeys(keys, 100, 99) == 20,
           "線形補間と端の保持を評価する");
     const auto clamped = previewClipKeyEdit(project, video.id, ClipKeyKind::Opacity, 20, 99, 150);
-    check(clamped.success && clamped.frame == 79 &&
-              clamped.effects.opacityKeys[0].valuePercent == 100,
+    check(clamped.success && clamped.frame == 79 && clamped.effects.opacityKeys[0].value == 100,
           "キーの位置と値を隣接キー・値域で止める");
     {
         auto removed = project;
@@ -3161,8 +3209,7 @@ void testClipKeyEditing() {
     check(trimTimelineClip(project, video.id, TrimEdge::Left, 10, LinkMode::Single).success,
           "キー付きclipをtrimする");
     check(project.timelineClips[0].effects.opacityKeys.front().frame == 0 &&
-              std::abs(project.timelineClips[0].effects.opacityKeys.front().valuePercent - 80) <
-                  1e-9 &&
+              std::abs(project.timelineClips[0].effects.opacityKeys.front().value - 80) < 1e-9 &&
               project.timelineClips[0].effects.opacityKeys[2].frame == 70 &&
               project.timelineClips[0].effects.opacityKeys.back().frame == 89,
           "trim後の可視カーブと端を保持する");
@@ -3200,7 +3247,7 @@ void testClipKeyEditing() {
     malformed.timelineClips[0].effects.opacityKeys.push_back({20, 30});
     check(!validateTimeline(malformed).success, "重複キーを拒否する");
     malformed = original;
-    malformed.timelineClips[0].effects.opacityKeys[0].valuePercent =
+    malformed.timelineClips[0].effects.opacityKeys[0].value =
         std::numeric_limits<double>::quiet_NaN();
     check(!validateTimeline(malformed).success, "非有限キーを拒否する");
     malformed = original;

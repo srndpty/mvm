@@ -1,11 +1,12 @@
 #include "timeline_clip_model.h"
 
-#include <QHash>
-#include <QVariantMap>
-
+#include "clip_keyframe_values.h"
 #include "project/timeline_edit.h"
 
 #include <algorithm>
+
+#include <QHash>
+#include <QVariantMap>
 
 namespace mvm::app {
 
@@ -59,11 +60,7 @@ QVariant TimelineClipModel::data(const QModelIndex& index, int role) const {
     case MediaPathRole:
         return item.mediaPath;
     case AutomationKeysRole: {
-        QVariantList keys;
-        keys.reserve(static_cast<qsizetype>(item.automationKeys.size()));
-        for (const auto& key : item.automationKeys)
-            keys.append(QVariantMap{{QStringLiteral("frame"), key.frame},
-                                    {QStringLiteral("value"), key.valuePercent}});
+        const auto keys = clipKeyframeValues(item.automationKeys);
         return keys;
     }
     case AutomationBaseRole:
@@ -149,19 +146,29 @@ void TimelineClipModel::setProject(const project::Project& project) {
         const auto duration = project::timelineClipDuration(project, clip);
         const bool audio = clip.kind == project::TimelineClipKind::Audio;
         const auto& automationKeys = audio ? clip.effects.volumeKeys : clip.effects.opacityKeys;
-        next.append({QString::fromStdString(clip.id), QString::fromStdString(clip.name),
-                       QString::fromLatin1(project::timelineClipKindName(clip.kind)),
-                       clip.timelineStartFrame, duration.success ? duration.frame : 0,
-                       clip.sourceInFrame, clip.sourceOutFrame, clip.sourceFrameCount,
-                       clip.sourceFpsNum, clip.sourceFpsDen,
-                       duration.success,
-                       QString::fromLatin1(project::trackKindName(clip.track.kind)),
-                       clip.track.index, !clip.linkGroupId.empty(),
-                       QString::fromStdString(clip.linkGroupId), false,
-                       QString::fromStdWString(clip.mediaPath.wstring()), automationKeys,
-                       audio ? clip.effects.volumePercent : clip.effects.opacityPercent,
-                       static_cast<double>(clip.speedNum) / static_cast<double>(clip.speedDen),
-                       clip.frameHold.has_value(), clip.preservePitch, clip.enabled});
+        next.append({QString::fromStdString(clip.id),
+                     QString::fromStdString(clip.name),
+                     QString::fromLatin1(project::timelineClipKindName(clip.kind)),
+                     clip.timelineStartFrame,
+                     duration.success ? duration.frame : 0,
+                     clip.sourceInFrame,
+                     clip.sourceOutFrame,
+                     clip.sourceFrameCount,
+                     clip.sourceFpsNum,
+                     clip.sourceFpsDen,
+                     duration.success,
+                     QString::fromLatin1(project::trackKindName(clip.track.kind)),
+                     clip.track.index,
+                     !clip.linkGroupId.empty(),
+                     QString::fromStdString(clip.linkGroupId),
+                     false,
+                     QString::fromStdWString(clip.mediaPath.wstring()),
+                     automationKeys,
+                     audio ? clip.effects.volumePercent : clip.effects.opacityPercent,
+                     static_cast<double>(clip.speedNum) / static_cast<double>(clip.speedDen),
+                     clip.frameHold.has_value(),
+                     clip.preservePitch,
+                     clip.enabled});
     }
     // 選択は setSelectedClipIds が持つ。同じ clip の選択は引き継ぎ、作り直した後に選択が
     // 一瞬外れて見えないようにする。
@@ -218,13 +225,13 @@ QVariantList TimelineClipModel::clipSpans() const {
     QVariantList spans;
     spans.reserve(items_.size());
     for (const auto& item : items_) {
-        spans.append(QVariantMap{{QStringLiteral("clipId"), item.id},
-                                 {QStringLiteral("trackKind"), item.trackKind},
-                                 {QStringLiteral("trackIndex"), item.trackIndex},
-                                 {QStringLiteral("start"), item.timelineStartFrame},
-                                 {QStringLiteral("end"),
-                                  item.timelineStartFrame + item.timelineDurationFrames},
-                                 {QStringLiteral("linkGroupId"), item.linkGroupId}});
+        spans.append(QVariantMap{
+            {QStringLiteral("clipId"), item.id},
+            {QStringLiteral("trackKind"), item.trackKind},
+            {QStringLiteral("trackIndex"), item.trackIndex},
+            {QStringLiteral("start"), item.timelineStartFrame},
+            {QStringLiteral("end"), item.timelineStartFrame + item.timelineDurationFrames},
+            {QStringLiteral("linkGroupId"), item.linkGroupId}});
     }
     return spans;
 }
@@ -245,8 +252,7 @@ void TimelineClipModel::setSelectedClipIds(const QSet<QString>& clipIds) {
 
 // 位置・尺が変わった行は、QSortFilterProxyModel が dataChanged で絞り直す
 // (dynamicSortFilter。test_timeline_clip_model が編集で出入りする clip で確かめている)。
-TimelineClipWindowModel::TimelineClipWindowModel(QObject* parent)
-    : QSortFilterProxyModel(parent) {}
+TimelineClipWindowModel::TimelineClipWindowModel(QObject* parent) : QSortFilterProxyModel(parent) {}
 
 void TimelineClipWindowModel::setVisibleRange(double startFrame, double endFrame) {
     if (!(endFrame >= startFrame))

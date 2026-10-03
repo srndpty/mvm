@@ -3925,3 +3925,17 @@ foreach(_mvm_test IN LISTS _mvm_all_tests)
     set_property(TEST ${_mvm_test} APPEND PROPERTY ENVIRONMENT_MODIFICATION
         "MVM_TEST_AUDIO_VOLUME_SCALE=set:${MVM_TEST_AUDIO_VOLUME_SCALE}")
 endforeach()
+
+# モーションの変更を最小の関連ターゲットで検証する入口。
+add_custom_target(mvm_keyframe_validation DEPENDS
+    mvm mvm_test_clip_effects mvm_test_timeline_edit mvm_test_controller_export
+    mvm_test_timeline_export mvm_test_timeline_export_mapping mvm_test_timeline_preview_mapping
+    mvm_test_timeline_clip_model mvm_test_text_clip mvm_test_preview_engine mvm_test_text_preview_parity mvm_test_image_preview_parity)
+
+find_package(Qt6 REQUIRED COMPONENTS Test)
+qt_add_executable(mvm_test_keyframe_ui harness/test_keyframe_ui.cpp)
+target_link_libraries(mvm_test_keyframe_ui PRIVATE Qt6::Test Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
+target_compile_definitions(mvm_test_keyframe_ui PRIVATE MVM_KEYFRAME_QML="${CMAKE_SOURCE_DIR}/apps/mvm/KeyframeInspector.qml")
+add_test(NAME keyframe_ui_controls COMMAND mvm_test_keyframe_ui)
+set_tests_properties(keyframe_ui_controls PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
+add_dependencies(mvm_keyframe_validation mvm_test_keyframe_ui mvm_test_p5c_native_attach mvm_test_text_ui_input)

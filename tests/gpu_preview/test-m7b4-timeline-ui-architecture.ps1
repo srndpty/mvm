@@ -548,8 +548,7 @@ if ($controller.Contains('recomputeTimelineStarts(candidate)')) {
 if (-not $controller.Contains('QString::number(selectedClipIds_.size())')) {
     throw 'linked clip展開後の実選択数をstatusへ表示していません'
 }
-foreach ($needle in @('project::timelineClipIndexAt(project_, current.track, clamped)',
-                      'setTimelineSelection({clipId.toStdString()});',
+foreach ($needle in @('setTimelineSelection({clipId.toStdString()});',
                       'UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_, currentRevision_};',
                       'std::vector<std::string> deletedIds = selectedClipIds_;',
                       'for (const auto& id : deletedIds)',
@@ -564,6 +563,24 @@ foreach ($needle in @('project::timelineClipIndexAt(project_, current.track, cla
         throw "audio/video選択同期またはUndoの契約がありません: $needle"
     }
 }
+# エフェクト対象は再生位置ではなく選択から決める。描画対象との一致を要求しない。
+# 実動作は test_text_ui_input.cpp で文字の区間外へシークして検査する。
+function Test-SelectedEffectTarget([string]$source) {
+    $seekBody = [regex]::Match($source,
+        '(?s)bool MvmController::seekTimelineFrame.*?(?=bool MvmController::prepareTimelineFrameForPlayback)').Value
+    return $seekBody.Contains('if (!selectedClipIds_.empty()) {') -and
+           $seekBody -match 'std::find\(selectedClipIds_\.begin\(\),\s*selectedClipIds_\.end\(\),\s*current\)'  -and
+           $seekBody.Contains('selectedClipIds_.front()') -and
+           -not $seekBody.Contains('project::timelineClipIndexAt(project_, current.track, clamped)')
+}
+if (-not (Test-SelectedEffectTarget $controller) -or
+    (Test-SelectedEffectTarget $controller.Replace('if (!selectedClipIds_.empty()) {', 'if (false) {')) -or
+    (Test-SelectedEffectTarget $controller.Replace('selectedClipIds_.front()', 'removedSelection')) -or
+    (Test-SelectedEffectTarget $controller.Replace('bool MvmController::seekTimelineFrame(qint64 frame) {',
+        'bool MvmController::seekTimelineFrame(qint64 frame) { project::timelineClipIndexAt(project_, current.track, clamped);'))) {
+    throw '選択中のクリップをエフェクト対象に維持する契約がありません'
+}
+
 foreach ($needle in @('FILE_FLAG_DELETE_ON_CLOSE',
                       'ERROR_SHARING_VIOLATION',
                       'RecoveryWriter(project::saveProjectRecovery)',

@@ -173,9 +173,12 @@ function penLinePoints(keys, baseValue, geometry) {
         return [{ "x": 0, "y": y }, { "x": geometry.width, "y": y }];
     }
     const points = [{ "x": 0, "y": penY(geometry, keys[0].value) }];
-    for (let index = 0; index < keys.length; ++index)
+    for (let index = 0; index < keys.length; ++index) {
         points.push({ "x": keys[index].frame * geometry.pixelsPerFrame,
                       "y": penY(geometry, keys[index].value) });
+        for (const sample of (keys[index].samples || []))
+            points.push({ "x": sample.frame * geometry.pixelsPerFrame, "y": penY(geometry, sample.value) });
+    }
     points.push({ "x": geometry.width, "y": penY(geometry, keys[keys.length - 1].value) });
     return points;
 }

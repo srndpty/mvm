@@ -1,16 +1,40 @@
 #ifndef MVM_PROJECT_CLIP_EFFECTS_H
 #define MVM_PROJECT_CLIP_EFFECTS_H
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mvm::project {
 
+enum class KeyInterpolation { Linear, EaseIn, EaseOut, EaseInOut, Spline };
+enum class ClipKeyKind {
+    Opacity,
+    Volume,
+    PositionX,
+    PositionY,
+    ScaleX,
+    ScaleY,
+    Rotation,
+    CropLeft,
+    CropTop,
+    CropRight,
+    CropBottom
+};
+
 struct ClipKeyframe {
     std::int64_t frame = 0;
-    double valuePercent = 100.0;
+    double value = 100.0;
+    KeyInterpolation interpolation = KeyInterpolation::Linear;
+    // 元の曲線の部分区間。トリム・分割後も動きを保つ。
+    double curveStart = 0.0;
+    double curveEnd = 1.0;
+    // 三次曲線の制御値。時間位置は区間の1/3と2/3、値は端点間の0..1。
+    double control1 = 1.0 / 3.0;
+    double control2 = 2.0 / 3.0;
     bool operator==(const ClipKeyframe&) const = default;
 };
 
@@ -25,6 +49,16 @@ struct ClipEffects {
     double volumePercent = 100.0;
     std::vector<ClipKeyframe> opacityKeys;
     std::vector<ClipKeyframe> volumeKeys;
+    std::vector<ClipKeyframe> positionXKeys;
+    std::vector<ClipKeyframe> positionYKeys;
+    std::vector<ClipKeyframe> scaleXKeys;
+    std::vector<ClipKeyframe> scaleYKeys;
+    std::vector<ClipKeyframe> rotationKeys;
+    std::vector<ClipKeyframe> cropLeftKeys;
+    std::vector<ClipKeyframe> cropTopKeys;
+    std::vector<ClipKeyframe> cropRightKeys;
+    std::vector<ClipKeyframe> cropBottomKeys;
+
     double cropLeftPercent = 0.0;
     double cropTopPercent = 0.0;
     double cropRightPercent = 0.0;
@@ -51,11 +85,35 @@ struct ClipEffectMapping {
     std::int64_t fadeOutFrames = 0;
 };
 
+struct EffectChannel {
+    ClipKeyKind kind;
+    const char* name;
+    double ClipEffects::* base;
+    std::vector<ClipKeyframe> ClipEffects::* keys;
+    double minimum;
+    double maximum;
+};
+
+const std::vector<EffectChannel>& effectChannels();
+const EffectChannel* effectChannel(ClipKeyKind kind);
+const EffectChannel* effectChannel(const std::string& name);
+ClipEffects evaluateClipEffects(const ClipEffects& effects, std::int64_t localFrame);
+bool validateEffectKeys(const ClipEffects& effects, std::int64_t duration, bool audio,
+                        std::string& error);
+void insertClipKey(std::vector<ClipKeyframe>& keys, std::int64_t frame, double value);
+// frames に一致する key を削除し、削除した個数を返す。insertClipKey の逆で、削除した key の区間が
+// 直前に残る key の区間と同じ元曲線の連続部分なら、直前の区間を削除した区間の終端まで延ばす。
+// したがって曲線上への追加と、その key の削除を続けても元の曲線へ戻る。
+std::size_t removeClipKeys(std::vector<ClipKeyframe>& keys,
+                           const std::vector<std::int64_t>& frames);
+
 bool clipEffectsAreDefault(const ClipEffects& effects);
 bool validateClipEffects(const ClipEffects& effects, std::int64_t sourceNativeDuration,
                          std::string& error);
 bool validateClipKeyframes(const std::vector<ClipKeyframe>& keys, std::int64_t timelineDuration,
                            double maximumPercent, std::string& error);
+// 切り出された区間も含め、表示・編集用の三次曲線ハンドルへ換算する。
+std::pair<double, double> clipKeySplineControls(const ClipKeyframe& key);
 double evaluateClipKeys(const std::vector<ClipKeyframe>& keys, double basePercent,
                         std::int64_t localFrame);
 double evaluateClipOpacity(const ClipEffects& effects, std::int64_t timelineLocalFrame,
