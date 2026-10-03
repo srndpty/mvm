@@ -45,6 +45,11 @@ bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs = 3000) {
     return predicate();
 }
 
+// recovery は編集から debounce (2 秒) の後に worker が書く。待つ上限は debounce に
+// 書き込み (serialize と fsync) の時間を足したものより十分長くする。CI の並列実行では
+// 4 秒で足りずに失敗したことがある。条件を満たした時点で抜けるので、通常は待たない。
+constexpr int kRecoveryWaitMs = 20000;
+
 mvm::project::Project videoProject() {
     auto project = mvm::project::createDefaultProject();
     mvm::project::TimelineClip video;
@@ -979,7 +984,8 @@ void testRecoveryAutosaveOffControlThread(const std::filesystem::path& path) {
     check(controller.addTrack("video"), "書き込み中の編集ができません");
     controller.writeRecoveryAutosaveForTest();
     release(1);
-    check(pumpUntil([&] { return controller.recoveryWriteCompletionCountForTest() >= 1; }, 4000),
+    check(pumpUntil([&] { return controller.recoveryWriteCompletionCountForTest() >= 1; },
+                    kRecoveryWaitMs),
           "1 番目の自動保存が完了しません");
     check(controller.recoveryRevisionForTest() == firstRevision &&
               controller.recoveryRevisionForTest() != controller.currentRevisionForTest() &&
@@ -1091,7 +1097,7 @@ void testRecoveryAutosave(const std::filesystem::path& path) {
     {
         mvm::app::MvmController controller(path, {}, initial);
         check(controller.addTrack("video"), "復旧対象の編集を作成できません");
-        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
               "編集後に自動復旧データが作成されません");
         const auto canonical = mvm::project::loadProjectJson(path);
         const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
@@ -1135,7 +1141,7 @@ void testExplicitSaveContract(const std::filesystem::path& path) {
     const auto canonicalBefore = mvm::project::loadProjectJson(path);
     check(canonicalBefore.success && canonicalBefore.project.videoTracks.size() == 2,
           "編集直後のcanonicalがinitialのままではありません");
-    check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+    check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
           "編集後のrecoveryが作成されません");
     // file が現れた直後は自動保存の書き込みと読み込みが重なり得る (負荷の高い並列実行で落ちた)。
     // 読めて編集後の内容になるまで待つ。期限内に揃わなければ失敗にする。
@@ -1165,11 +1171,11 @@ void testUndoRemovesRecovery(const std::filesystem::path& path) {
     recoveryPath += L".recovery";
     mvm::app::MvmController controller(path, {}, initial);
     check(controller.addTrack("audio") && controller.dirty(), "recovery削除対象の編集ができません");
-    check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+    check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
           "Undo前のrecoveryが作成されません");
     // recovery は worker が消す (Undo は削除を待たない)。
     check(controller.undoLastEdit() && !controller.dirty() &&
-              pumpUntil([&] { return !std::filesystem::exists(recoveryPath); }, 4000),
+              pumpUntil([&] { return !std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
           "保存済みrevisionまでUndoしてもrecoveryが残ります");
 }
 
@@ -1187,7 +1193,7 @@ void testUndoRedoRewritesRecovery(const std::filesystem::path& path) {
                 return recovery.success && recovery.project.videoTracks.size() == video &&
                        recovery.project.audioTracks.size() == audio;
             },
-            4000);
+            kRecoveryWaitMs);
     };
     mvm::app::MvmController controller(path, {}, initial);
     check(controller.addTrack("video") && controller.addTrack("audio"),
@@ -1241,7 +1247,7 @@ void testCanonicalChangedRecovery(const std::filesystem::path& path) {
     {
         mvm::app::MvmController controller(path, {}, initial);
         check(controller.addTrack("video"), "外部変更と比較する編集を作成できません");
-        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
               "外部変更試験のrecoveryが作成されません");
     }
     auto changed = initial;
@@ -1350,7 +1356,7 @@ void testRecoveryRecordsOpenedCanonicalHash(const std::filesystem::path& path) {
               "開いたあとのcanonicalを外部変更できません");
         check(fileSha256(path) != openedHash, "外部変更がcanonicalのhashを変えていません");
         check(controller.addTrack("video"), "基準hash試験の編集を作成できません");
-        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
               "外部変更後の自動復旧データが作成されません");
         const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
         check(recovery.success && !recovery.foreignProject && !recovery.legacy &&
@@ -1431,7 +1437,7 @@ void testForeignRecoveryIsNotRebased(const std::filesystem::path& path) {
     {
         mvm::app::MvmController controller(path, {}, initial);
         check(controller.addTrack("video"), "別Project試験の編集を作成できません");
-        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, kRecoveryWaitMs),
               "別Project試験のrecoveryが作成されません");
     }
     const auto home = mvm::project::loadProjectRecovery(recoveryPath, path);
