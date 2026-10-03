@@ -2463,6 +2463,32 @@ void testMotionKeyframeCommitSafety(const std::filesystem::path& path) {
               "キーの一括削除で曲線が戻りません");
     }
     {
+        // 確定時の検証に失敗したときも、drag 中の一時表示を残さない (保存失敗と同じ扱い)。
+        controller.seekTimelineFrame(50);
+        check(controller.setEffectValue(QStringLiteral("cropRight"), 50, true),
+              "検証失敗試験の前提: 右クロップを確定できません");
+        const auto before = controller.keyframeChannels();
+        const auto depth = controller.undoDepthForTest();
+        check(controller.setEffectValue(QStringLiteral("cropLeft"), 40, false) &&
+                  controller.keyframeChannels() != before,
+              "検証失敗試験の前提: 左クロップの一時表示が変わりません");
+        check(!controller.setEffectValue(QStringLiteral("cropLeft"), 55, true) &&
+                  controller.keyframeChannels() == before && controller.undoDepthForTest() == depth,
+              "クロップ合計の検証に失敗した確定で一時表示が残りました");
+        check(controller.setEffectSpline(positionX, 0, 0.3, 0.7, false) &&
+                  controller.keyframeChannels() != before,
+              "検証失敗試験の前提: 曲線ハンドルの一時表示が変わりません");
+        check(!controller.setEffectSpline(positionX, 0, -1, 0.7, true) &&
+                  controller.keyframeChannels() == before && controller.undoDepthForTest() == depth,
+              "不正な曲線ハンドルの確定で一時表示が残りました");
+        check(controller.editEffectKey(positionX, 100, 90, 80, false) &&
+                  controller.keyframeChannels() != before,
+              "検証失敗試験の前提: キー移動の一時表示が変わりません");
+        check(!controller.editEffectKey(positionX, 100, 90, 5000, true) &&
+                  controller.keyframeChannels() == before && controller.undoDepthForTest() == depth,
+              "範囲外の値へのキー移動の確定で一時表示が残りました");
+    }
+    {
         // lock を持たない側では確定が失敗する。drag 中の一時表示を残してはいけない。
         mvm::app::MvmController second(path, {}, initial);
         check(!second.holdsProjectLock() && second.selectTimelineClips({QStringLiteral("video")}),

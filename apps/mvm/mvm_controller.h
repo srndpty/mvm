@@ -823,10 +823,11 @@ private:
     qint64 effectEditFrame(const project::TimelineClip& clip) const;
     bool removeEffectKeys(const QString& name, const QVariantList& frames);
     bool commitClipKeyCandidate(project::Project candidate);
-    // drag 中の effect の一時表示を捨てて Project の値へ戻す。確定に失敗したときも呼び、
-    // 保存されていない値を表示に残さない。Preview の更新に失敗したら false。
+    // drag 中の effect の一時表示を捨てて Project の値へ戻す。Preview の更新に失敗したら false。
     bool discardEffectPreview(QString& previewError);
-    void discardEffectPreview();
+    // effect 編集の失敗。commit なら一時表示も捨てる (保存されていない値を表示に残さない)。
+    // 常に false を返すので、失敗の return にそのまま使う。
+    bool failEffectEdit(bool commit);
     // timeline 編集の共通手順。一時停止 -> candidate へ edit -> commit -> preview 更新。
     bool
     applyTimelineEdit(const std::function<project::TimelineEditResult(project::Project&)>& edit,
