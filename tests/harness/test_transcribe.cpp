@@ -124,6 +124,8 @@ int main(int argc, char** argv) {
     int reads = 0;
     request.modelReadObserver = [&] { ++reads; };
     const auto empty = mvm::transcribe::transcribe(request);
+    if (empty.error != "認識モデルに重みがありません。検査用の空モデルは使用できません")
+        std::fprintf(stderr, "空モデルの結果: %s\n", empty.error.c_str());
     require(!empty.success &&
                 empty.error == "認識モデルに重みがありません。検査用の空モデルは使用できません",
             "正常なEOFでも重みのないモデルを成功にしない");

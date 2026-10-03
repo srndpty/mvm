@@ -65,10 +65,25 @@ int mvm_atomic_write_file(const wchar_t* target_path, const void* data, size_t s
     // 同一directory内のrenameで置換する。REPLACEFILE_WRITE_THROUGH はWin32で
     // 未サポートであり、ReplaceFileWは一部の開発directory ACLでERROR_ACCESS_DENIEDに
     // なるため使わない。一時fileは既にFlushFileBuffers済みである。
-    const BOOL replaced =
-        MoveFileExW(temporary, target_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    //
+    // 置換先を他の process・thread が FILE_SHARE_DELETE なしで開いている間 (読み込み、
+    // ウイルス対策ソフト、検索の索引) は ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION で
+    // 失敗する (実測: std::ifstream で開いているだけで error 5)。短い間の競合なので待って
+    // 置換し直す。開かれ続けている、または本当に権限が無い場合は約 2 秒で失敗を返す。
+    BOOL replaced = FALSE;
+    DWORD code = ERROR_SUCCESS;
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        replaced =
+            MoveFileExW(temporary, target_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        if (replaced)
+            break;
+        code = GetLastError();
+        if (code != ERROR_ACCESS_DENIED && code != ERROR_SHARING_VIOLATION &&
+            code != ERROR_LOCK_VIOLATION)
+            break;
+        Sleep(50);
+    }
     if (!replaced) {
-        const DWORD code = GetLastError();
         DeleteFileW(temporary);
         set_error(error, error_size, "Project fileのatomic置換", code);
         return 1;

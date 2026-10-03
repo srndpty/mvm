@@ -744,6 +744,12 @@ endfunction()
 
 mvm_add_test(timecode_contract COMMAND mvm_test_timecode PROPERTIES TIMEOUT 30)
 
+add_executable(mvm_test_atomic_write core/test_atomic_write.cpp)
+target_link_libraries(mvm_test_atomic_write PRIVATE mvm::util mvm::warnings)
+mvm_add_test(atomic_write_retries_shared_target
+    COMMAND mvm_test_atomic_write "${CMAKE_CURRENT_BINARY_DIR}/atomic-write"
+    PROPERTIES TIMEOUT 60)
+
 # --- negative test は終了コードを厳密に照合する -----------------------------
 #
 # CTest の WILL_FAIL は使わない。**「0 以外なら合格」でしかない。**

@@ -95,6 +95,20 @@ Result transcribe(const Request& request, const std::atomic<bool>* cancel) {
         result.error = "文字起こしをキャンセルしました";
         return result;
     }
+    // Whisper は CPU の device を前提に GGML_ASSERT で process ごと止める。読み込めなかった
+    // 環境でアプリを落とさず、読み込めた device を添えて失敗として返す。
+    if (!ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) {
+        std::string devices;
+        for (std::size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            auto dev = ggml_backend_dev_get(i);
+            devices += (devices.empty() ? "" : ", ") + std::string(ggml_backend_dev_name(dev)) +
+                       " (type " + std::to_string(static_cast<int>(ggml_backend_dev_type(dev))) +
+                       ")";
+        }
+        result.error = "CPU の認識 backend を読み込めません (読み込めた device: " +
+                       (devices.empty() ? std::string("なし") : devices) + ")";
+        return result;
+    }
     auto contextParams = whisper_context_default_params();
     contextParams.use_gpu = request.backend == Backend::Vulkan;
     contextParams.flash_attn = false;
