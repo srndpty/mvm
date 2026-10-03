@@ -1,9 +1,12 @@
 #include "media/transcribe/transcribe.h"
 
+#include <windows.h>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <tlhelp32.h>
 #include <vector>
 
 void require(bool ok, const char* message) {
@@ -11,6 +14,24 @@ void require(bool ok, const char* message) {
         std::fprintf(stderr, "失敗: %s\n", message);
         std::exit(1);
     }
+}
+
+// process に読み込まれた ggml / whisper の DLL を出す。CI でだけ Whisper が CPU device を
+// 見失って GGML_ASSERT で落ちた。同じ名前の DLL が別の場所から二重に読み込まれていないかを、
+// 落ちる前の時点で log に残す。
+void printWhisperModules() {
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return;
+    MODULEENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    for (BOOL ok = Module32FirstW(snapshot, &entry); ok; ok = Module32NextW(snapshot, &entry)) {
+        const std::wstring name = entry.szModule;
+        if (name.find(L"ggml") == std::wstring::npos && name.find(L"whisper") == std::wstring::npos)
+            continue;
+        std::fprintf(stderr, "読み込み済み: %ls\n", entry.szExePath);
+    }
+    CloseHandle(snapshot);
 }
 
 int main(int argc, char** argv) {
@@ -123,6 +144,8 @@ int main(int argc, char** argv) {
     // 対照群: キャンセルしなければ、読み込みは何度も読んで最後まで進む。
     int reads = 0;
     request.modelReadObserver = [&] { ++reads; };
+    printWhisperModules();
+    std::fflush(stderr);
     const auto empty = mvm::transcribe::transcribe(request);
     if (empty.error != "認識モデルに重みがありません。検査用の空モデルは使用できません")
         std::fprintf(stderr, "空モデルの結果: %s\n", empty.error.c_str());

@@ -223,6 +223,17 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ccache-${{ matrix.preset }}-${{ github.sha }}
 
+      # Whisper の負の試験が CI でだけ GGML_ASSERT で落ちる (開発機では再現しない)。
+      # 落ちた場所を特定するため、失敗時に gdb で再実行して backtrace を残す。
+      - name: 文字起こし試験の backtrace (失敗時)
+        if: failure() && matrix.group == 'BuildDependent'
+        run: |
+          pacman -S --noconfirm --needed mingw-w64-ucrt-x86_64-gdb
+          cd "build/${{ matrix.preset }}"
+          test -x bin/mvm_test_transcribe.exe || exit 0
+          gdb -batch -ex run -ex bt -ex "info sharedlibrary" --args bin/mvm_test_transcribe.exe \
+            ../../tests/assets/smoke/wav_48k.wav transcribe-negative || true
+
       - name: 失敗時の診断情報
         if: failure()
         shell: pwsh
