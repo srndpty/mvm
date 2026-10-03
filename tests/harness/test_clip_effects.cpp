@@ -130,6 +130,57 @@ int main(int argc, char** argv) {
             check(!validateEffectKeys(invalid, 100, false, error),
                   "スプラインのキー間で不正になるクロップを拒否しません");
         }
+        {
+            // 曲線上へのキー追加と、同じキーの削除を続けると元の曲線へ戻る (追加の逆)。
+            // トリム後の部分曲線 (curveStart/End が 0/1 でない) も同じ。
+            const auto sameCurve = [](const std::vector<ClipKeyframe>& actual,
+                                      const std::vector<ClipKeyframe>& expected) {
+                for (int frame = 0; frame <= 100; ++frame)
+                    if (std::abs(evaluateClipKeys(actual, 0, frame) -
+                                 evaluateClipKeys(expected, 0, frame)) >= 1e-9)
+                        return false;
+                return true;
+            };
+            for (const auto interpolation :
+                 {KeyInterpolation::Linear, KeyInterpolation::EaseIn, KeyInterpolation::EaseOut,
+                  KeyInterpolation::EaseInOut, KeyInterpolation::Spline}) {
+                for (const auto range : {std::pair{0.0, 1.0}, std::pair{0.25, 0.7}}) {
+                    const std::vector<ClipKeyframe> original{
+                        {0, 0, interpolation, range.first, range.second, 0.2, 0.8}, {100, 100}};
+                    auto keys = original;
+                    insertClipKey(keys, 25, evaluateClipKeys(original, 0, 25));
+                    check(keys.size() == 3 && sameCurve(keys, original),
+                          "削除試験の前提: キー追加で曲線を保つ");
+                    check(removeClipKeys(keys, {25}) == 1 && keys == original,
+                          "追加したキーの削除で元の曲線へ戻りません");
+                    // 連続する複数キーの一括削除も、順に結合して元へ戻る。
+                    insertClipKey(keys, 25, evaluateClipKeys(original, 0, 25));
+                    insertClipKey(keys, 60, evaluateClipKeys(original, 0, 60));
+                    check(keys.size() == 4 && sameCurve(keys, original),
+                          "削除試験の前提: 2 つのキー追加で曲線を保つ");
+                    auto one = keys;
+                    check(removeClipKeys(one, {25}) == 1 && one.size() == 3 &&
+                              sameCurve(one, original),
+                          "片方のキー削除で残りの曲線が変わりました");
+                    check(removeClipKeys(keys, {60, 25}) == 2 && keys == original,
+                          "連続キーの一括削除で元の曲線へ戻りません");
+                }
+            }
+            // 独立した期待値: EaseInOut 0 -> 100 の f50 は 50。f25 の追加・削除後も 50。
+            std::vector<ClipKeyframe> easeInOut{{0, 0, KeyInterpolation::EaseInOut}, {100, 100}};
+            insertClipKey(easeInOut, 25, 15.625);
+            removeClipKeys(easeInOut, {25});
+            check(std::abs(evaluateClipKeys(easeInOut, 0, 50) - 50) < 1e-9,
+                  "EaseInOut のキー追加・削除後に f50 が 50 になりません");
+            // 対照: 別々に作った区間 (連続部分でない) は結合しない。
+            std::vector<ClipKeyframe> separate{
+                {0, 0, KeyInterpolation::EaseIn}, {50, 50, KeyInterpolation::EaseOut}, {100, 100}};
+            check(removeClipKeys(separate, {50}) == 1 && separate.size() == 2 &&
+                      separate.front().curveStart == 0 && separate.front().curveEnd == 1,
+                  "連続部分でない区間を結合しました");
+            check(removeClipKeys(separate, {42}) == 0 && separate.size() == 2,
+                  "存在しないキーの削除で個数を返しました");
+        }
         std::string error;
         ClipEffects motion;
         motion.positionXKeys = {{0, -100}, {100, 100}};

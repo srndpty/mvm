@@ -144,6 +144,28 @@ void insertClipKey(std::vector<ClipKeyframe>& keys, std::int64_t frame, double v
     keys.insert(next, inserted);
 }
 
+std::size_t removeClipKeys(std::vector<ClipKeyframe>& keys,
+                           const std::vector<std::int64_t>& frames) {
+    std::vector<ClipKeyframe> kept;
+    kept.reserve(keys.size());
+    for (const auto& key : keys) {
+        if (std::find(frames.begin(), frames.end(), key.frame) == frames.end()) {
+            kept.push_back(key);
+            continue;
+        }
+        if (kept.empty())
+            continue;
+        // insertClipKey が分けた境界は同じ値で書き込まれるので、完全一致で判定できる。
+        auto& previous = kept.back();
+        if (previous.curveEnd == key.curveStart && previous.interpolation == key.interpolation &&
+            previous.control1 == key.control1 && previous.control2 == key.control2)
+            previous.curveEnd = key.curveEnd;
+    }
+    const auto removed = keys.size() - kept.size();
+    keys = std::move(kept);
+    return removed;
+}
+
 bool validateEffectKeys(const ClipEffects& effects, std::int64_t duration, bool audio,
                         std::string& error) {
     for (const auto& channel : effectChannels()) {

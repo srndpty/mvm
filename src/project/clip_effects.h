@@ -1,6 +1,7 @@
 #ifndef MVM_PROJECT_CLIP_EFFECTS_H
 #define MVM_PROJECT_CLIP_EFFECTS_H
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -100,6 +101,11 @@ ClipEffects evaluateClipEffects(const ClipEffects& effects, std::int64_t localFr
 bool validateEffectKeys(const ClipEffects& effects, std::int64_t duration, bool audio,
                         std::string& error);
 void insertClipKey(std::vector<ClipKeyframe>& keys, std::int64_t frame, double value);
+// frames に一致する key を削除し、削除した個数を返す。insertClipKey の逆で、削除した key の区間が
+// 直前に残る key の区間と同じ元曲線の連続部分なら、直前の区間を削除した区間の終端まで延ばす。
+// したがって曲線上への追加と、その key の削除を続けても元の曲線へ戻る。
+std::size_t removeClipKeys(std::vector<ClipKeyframe>& keys,
+                           const std::vector<std::int64_t>& frames);
 
 bool clipEffectsAreDefault(const ClipEffects& effects);
 bool validateClipEffects(const ClipEffects& effects, std::int64_t sourceNativeDuration,

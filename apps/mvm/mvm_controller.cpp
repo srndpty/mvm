@@ -7469,7 +7469,7 @@ bool MvmController::toggleEffectKey(const QString& name) {
     if (found == keys.end())
         project::insertClipKey(keys, local, value);
     else {
-        keys.erase(found);
+        project::removeClipKeys(keys, {local});
         if (keys.empty())
             clip.effects.*channel->base = value;
     }
@@ -7510,6 +7510,8 @@ bool MvmController::editEffectKey(const QString& name, qint64 from, qint64 to, d
     if (!project::validateEffectKeys(effects, duration.frame,
                                      channel->kind == project::ClipKeyKind::Volume, error)) {
         setStatus(QString::fromStdString(error));
+        if (commit)
+            discardEffectPreview();
         return false;
     }
     if (!commit) {
@@ -7518,8 +7520,10 @@ bool MvmController::editEffectKey(const QString& name, qint64 from, qint64 to, d
     } else {
         auto candidate = project_;
         candidate.timelineClips[static_cast<std::size_t>(currentClipIndex_)].effects = effects;
-        if (!commitProjectEdit(std::move(candidate), QStringLiteral("キーを移動できません: ")))
+        if (!commitProjectEdit(std::move(candidate), QStringLiteral("キーを移動できません: "))) {
+            discardEffectPreview();
             return false;
+        }
         previewEffectsOverride_.reset();
         previewEffectsClipIndex_ = -1;
     }
@@ -7545,6 +7549,10 @@ bool MvmController::setEffectInterpolation(const QString& name, qint64 frame, in
                                     [frame](const auto& key) { return key.frame == frame; });
     if (found == keys.end())
         return false;
+    // 同じ補間の再選択は何もしない。trim・分割で残した部分曲線 (curveStart/End) を
+    // 0..1 へ戻すと、補間を変えていないのに動きが変わる。
+    if (found->interpolation == static_cast<project::KeyInterpolation>(interpolation))
+        return true;
     if (interpolation == static_cast<int>(project::KeyInterpolation::Spline)) {
         const auto controls = project::clipKeySplineControls(*found);
         found->control1 = std::clamp(controls.first, 0.0, 1.0);
@@ -7582,13 +7590,17 @@ bool MvmController::setEffectSpline(const QString& name, qint64 frame, double co
     if (!project::validateEffectKeys(effects, duration.frame,
                                      clip.kind == project::TimelineClipKind::Audio, error)) {
         setStatus(QString::fromStdString(error));
+        if (commit)
+            discardEffectPreview();
         return false;
     }
     if (commit) {
         auto candidate = project_;
         candidate.timelineClips[static_cast<std::size_t>(currentClipIndex_)].effects = effects;
-        if (!commitProjectEdit(std::move(candidate), QStringLiteral("曲線を更新できません: ")))
+        if (!commitProjectEdit(std::move(candidate), QStringLiteral("曲線を更新できません: "))) {
+            discardEffectPreview();
             return false;
+        }
         previewEffectsOverride_.reset();
         previewEffectsClipIndex_ = -1;
     } else {
@@ -7660,12 +7672,10 @@ bool MvmController::removeEffectKeys(const QString& name, const QVariantList& fr
     auto& keys = clip.effects.*channel->keys;
     const double value =
         project::evaluateClipKeys(keys, clip.effects.*channel->base, effectEditFrame(clip));
-    const auto before = keys.size();
-    std::erase_if(keys, [&](const auto& key) {
-        return std::any_of(frames.begin(), frames.end(),
-                           [&](const auto& frame) { return frame.toLongLong() == key.frame; });
-    });
-    if (keys.size() == before)
+    std::vector<std::int64_t> removed;
+    for (const auto& frame : frames)
+        removed.push_back(frame.toLongLong());
+    if (project::removeClipKeys(keys, removed) == 0)
         return false;
     if (keys.empty())
         clip.effects.*channel->base = value;
@@ -7790,8 +7800,10 @@ bool MvmController::setClipEffectValues(const QString& clipId, const QVariantMap
         setStatus(QString::fromStdString(valid.error));
         return false;
     }
-    if (!commitProjectEdit(std::move(candidate), QStringLiteral("effectを更新できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("effectを更新できません: "))) {
+        discardEffectPreview();
         return false;
+    }
     previewEffectsOverride_.reset();
     previewEffectsClipIndex_ = -1;
     Q_EMIT stateChanged();
@@ -7808,16 +7820,28 @@ bool MvmController::setClipEffectValues(const QString& clipId, const QVariantMap
 bool MvmController::cancelEffectPreview() {
     if (!previewEffectsOverride_)
         return true;
-    previewEffectsOverride_.reset();
-    previewEffectsClipIndex_ = -1;
-    Q_EMIT stateChanged();
     QString previewError;
-    if (!refreshPreviewAtPlayhead(previewError)) {
+    if (!discardEffectPreview(previewError)) {
         setStatus(QStringLiteral("effectのPreview更新に失敗しました: ") + previewError);
         return true;
     }
     setStatus(QStringLiteral("effectの編集を取り消しました"));
     return true;
+}
+
+bool MvmController::discardEffectPreview(QString& previewError) {
+    if (!previewEffectsOverride_)
+        return true;
+    previewEffectsOverride_.reset();
+    previewEffectsClipIndex_ = -1;
+    Q_EMIT stateChanged();
+    return refreshPreviewAtPlayhead(previewError);
+}
+
+void MvmController::discardEffectPreview() {
+    // 確定の失敗理由を status に残すため、Preview 更新の失敗では上書きしない。
+    QString ignored;
+    discardEffectPreview(ignored);
 }
 
 void MvmController::shutdown() {

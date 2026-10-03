@@ -2420,6 +2420,80 @@ void testMotionKeyframes(const std::filesystem::path& path) {
     controller.shutdown();
 }
 
+// キー編集の可逆性と、確定に失敗したときの一時表示の後始末。
+void testMotionKeyframeCommitSafety(const std::filesystem::path& path) {
+    using mvm::project::KeyInterpolation;
+    const QString positionX = QStringLiteral("positionX");
+    auto initial = videoProject();
+    // トリムで残った部分曲線 (EaseOut の 0.25..0.7) を持つキー。
+    initial.timelineClips[0].effects.positionXKeys = {{0, 0, KeyInterpolation::EaseOut, 0.25, 0.7},
+                                                      {100, 100}};
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "キー確定試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.holdsProjectLock() &&
+              controller.selectTimelineClips({QStringLiteral("video")}),
+          "キー確定試験の対象を選択できません");
+    {
+        const auto before = controller.keyframeChannels();
+        const auto depth = controller.undoDepthForTest();
+        check(controller.setEffectInterpolation(positionX, 0,
+                                                static_cast<int>(KeyInterpolation::EaseOut)) &&
+                  controller.undoDepthForTest() == depth && controller.keyframeChannels() == before,
+              "同じ補間の再選択で部分曲線が変わりました");
+        // 対照: 別の補間を選べば曲線が変わり、Undo が 1 つ増える。
+        check(controller.setEffectInterpolation(positionX, 0,
+                                                static_cast<int>(KeyInterpolation::EaseIn)) &&
+                  controller.undoDepthForTest() == depth + 1 &&
+                  controller.keyframeChannels() != before,
+              "補間の変更が反映されません");
+        check(controller.undoLastEdit() && controller.keyframeChannels() == before,
+              "補間の変更をUndoできません");
+    }
+    {
+        // 曲線上へのキー追加 -> 削除 (菱形ボタン・一括削除) で元の曲線へ戻る。
+        controller.seekTimelineFrame(25);
+        const auto before = controller.keyframeChannels();
+        check(controller.toggleEffectKey(positionX) && controller.keyframeChannels() != before &&
+                  controller.toggleEffectKey(positionX) && controller.keyframeChannels() == before,
+              "菱形ボタンでのキー追加・削除で曲線が戻りません");
+        check(controller.toggleEffectKey(positionX) &&
+                  controller.deleteEffectKeys(positionX, {25}) &&
+                  controller.keyframeChannels() == before,
+              "キーの一括削除で曲線が戻りません");
+    }
+    {
+        // lock を持たない側では確定が失敗する。drag 中の一時表示を残してはいけない。
+        mvm::app::MvmController second(path, {}, initial);
+        check(!second.holdsProjectLock() && second.selectTimelineClips({QStringLiteral("video")}),
+              "lock を持たない controller を用意できません");
+        second.seekTimelineFrame(50);
+        const auto before = second.keyframeChannels();
+        const auto depth = second.undoDepthForTest();
+        const double value = second.effectPositionX();
+        check(second.setEffectSpline(positionX, 0, 0.1, 0.9, false) &&
+                  second.keyframeChannels() != before,
+              "失敗試験の前提: 曲線ハンドルの一時表示が変わりません");
+        check(!second.setEffectSpline(positionX, 0, 0.1, 0.9, true) &&
+                  second.keyframeChannels() == before && second.undoDepthForTest() == depth &&
+                  second.effectPositionX() == value,
+              "曲線ハンドルの確定に失敗したのに一時表示が残りました");
+        check(second.editEffectKey(positionX, 100, 90, 80, false) &&
+                  second.keyframeChannels() != before,
+              "失敗試験の前提: キー移動の一時表示が変わりません");
+        check(!second.editEffectKey(positionX, 100, 90, 80, true) &&
+                  second.keyframeChannels() == before && second.undoDepthForTest() == depth,
+              "キー移動の確定に失敗したのに一時表示が残りました");
+        check(second.setEffectValue(positionX, 70, false) && second.keyframeChannels() != before,
+              "失敗試験の前提: 数値の一時表示が変わりません");
+        check(!second.setEffectValue(positionX, 70, true) && second.keyframeChannels() == before &&
+                  second.undoDepthForTest() == depth && second.effectPositionX() == value,
+              "数値の確定に失敗したのに一時表示が残りました");
+        second.shutdown();
+    }
+    controller.shutdown();
+}
+
 void testPreviewTransform(const std::filesystem::path& path) {
     const auto near = [](const QVariant& value, double expected) {
         return std::abs(value.toDouble() - expected) < 1e-6;
@@ -2572,6 +2646,7 @@ int main(int argc, char** argv) {
     testPreviewPlanFollowsEdits(directory / L"preview-plan.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     testMotionKeyframes(directory / L"motion.mvm");
+    testMotionKeyframeCommitSafety(directory / L"motion-commit.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。
     // 初期化は 1 回だけにする。1 プロセスで init / shutdown を繰り返すと、2 回目の init で

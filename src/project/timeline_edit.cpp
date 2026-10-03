@@ -3364,7 +3364,7 @@ TimelineEditResult deleteClipKey(Project& project, const std::string& clipId, Cl
         return {false, -1, "削除するキーフレームがありません"};
     if (keys.size() == 1)
         clip.effects.*effectChannel(kind)->base = found->value;
-    keys.erase(found);
+    removeClipKeys(keys, {frame});
     return commitCandidate(project, std::move(candidate), index);
 }
 
@@ -3835,7 +3835,8 @@ TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, 
         result.error = sourceFrame.error;
         return result;
     }
-    // 保持中もモーションは継続する。不透明度は挿入位置の値 (key と fade 込み) を
+    // 保持中もモーションは継続し、保持後の右側 clip は保持尺だけ進んだ位置から再開する。
+    // 動きは timeline の時間に付き、映像だけが止まる。不透明度は挿入位置の値 (key と fade 込み) を
     // 保持 clip の基本値へ焼き込む。automation を捨てるだけだと、fade の途中などで保持へ
     // 入った瞬間に基本値へ跳び、右側の clip へ戻るとまた元の値へ跳ぶ。
     const auto fadeFrame = clipFadeSourceFrameAt(original, project.timelineFpsNum,
@@ -3852,6 +3853,24 @@ TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, 
     const auto split = splitTimelineClips(candidate, spanning, frame, newId, LinkMode::Linked);
     if (!split.success)
         return split;
+    // 右側は分割で元の動きを切り出してある。その続きを保持が消費するので、右側は元の
+    // 動きを保持尺だけ先へ進めて取り直す。そうしないと保持の終わりから右側の先頭へ戻る。
+    const auto right = std::find_if(candidate.timelineClips.begin(), candidate.timelineClips.end(),
+                                    [&](const auto& clip) {
+                                        return clip.id != clipId && clip.track == original.track &&
+                                               clip.timelineStartFrame == frame;
+                                    });
+    if (right == candidate.timelineClips.end()) {
+        result.error = "保持位置の右側の clip がありません";
+        return result;
+    }
+    for (const auto& channel : effectChannels()) {
+        if (channel.kind == ClipKeyKind::Opacity || channel.kind == ClipKeyKind::Volume)
+            continue;
+        right->effects.*channel.keys = original.effects.*channel.keys;
+        reframeClipKeys(right->effects.*channel.keys, end - start, end - frame,
+                        frame - start + holdFrames);
+    }
     for (auto& clip : candidate.timelineClips) {
         if (clip.timelineStartFrame >= frame && !shiftStart(clip, holdFrames, result.error))
             return result;

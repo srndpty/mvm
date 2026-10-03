@@ -335,6 +335,56 @@ void testSpeedDurationAndFrameHold() {
               clipSourceFrameAt(held.timelineClips[2], 60, 1, 119).frame == 120,
           "フレーム保持の分割・配置・素材 frame が正しくありません");
     {
+        // 保持中も動きは timeline の時間で進み、保持後の右側 clip もその続きから再開する。
+        // 300 frame の clip の 120 へ 120 frame の保持を入れると、timeline の frame t の値は
+        // 元の動きの min(t, 299) になる (Linear 0 -> 299 なら t そのもの)。
+        using mvm::project::ClipKeyframe;
+        using mvm::project::KeyInterpolation;
+        for (const auto& keys : std::vector<std::vector<ClipKeyframe>>{
+                 {{0, 0}, {299, 299}},
+                 {{0, 0, KeyInterpolation::EaseOut}, {299, 299}},
+                 {{0, 0, KeyInterpolation::EaseInOut}, {150, 100}, {299, 299}},
+                 {{0, 0, KeyInterpolation::Spline, 0, 1, 0.2, 0.8}, {299, 299}}}) {
+            Project motion = createDefaultProject();
+            motion.timelineClips = {clip("motion-hold")};
+            motion.timelineClips[0].effects.positionXKeys = keys;
+            int motionId = 0;
+            const bool insertedHold = insertFrameHold(motion, "id-motion-hold", 120, 120, [&] {
+                                          return "motion-" + std::to_string(++motionId);
+                                      }).success;
+            check(insertedHold && motion.timelineClips.size() == 3,
+                  "モーション付き clip へフレーム保持を入れられません");
+            if (!insertedHold || motion.timelineClips.size() != 3)
+                continue;
+            const auto valueAt = [&](std::int64_t frame) {
+                for (const auto& piece : motion.timelineClips) {
+                    const auto duration = timelineClipDuration(motion, piece);
+                    if (duration.success && frame >= piece.timelineStartFrame &&
+                        frame < piece.timelineStartFrame + duration.frame)
+                        return mvm::project::evaluateClipKeys(piece.effects.positionXKeys,
+                                                              piece.effects.positionXPercent,
+                                                              frame - piece.timelineStartFrame);
+                }
+                return std::numeric_limits<double>::quiet_NaN();
+            };
+            int compared = 0;
+            for (std::int64_t frame = 0; frame < 420; ++frame) {
+                const double expected =
+                    keys.size() == 2 && keys[0].interpolation == KeyInterpolation::Linear
+                        ? static_cast<double>(std::min<std::int64_t>(frame, 299))
+                        : mvm::project::evaluateClipKeys(keys, 0,
+                                                         std::min<std::int64_t>(frame, 299));
+                check(std::abs(valueAt(frame) - expected) < 1e-8,
+                      ("保持の前後・途中で動きが連続しません: frame " + std::to_string(frame))
+                          .c_str());
+                ++compared;
+            }
+            check(compared == 420 && std::abs(valueAt(240) - valueAt(239)) < 2.0 &&
+                      validateTimeline(motion).success,
+                  "保持の終わりから右側の先頭で動きが戻りました");
+        }
+    }
+    {
         // 保持は挿入位置の見た目 (不透明度) で止める。fade-in 240 frame の中央 (120) なら約 50%、
         // key 0:100% -> 200:0% の 120 なら 40%。automation は捨て、この値を基本値へ焼き込む。
         const auto heldOpacity = [&](const std::function<void(TimelineClip&)>& setup) {
