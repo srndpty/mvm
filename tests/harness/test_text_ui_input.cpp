@@ -16,6 +16,7 @@
 #include "mvm_controller.h"
 #include "project/timeline_edit.h"
 #include "test_media_fixture.h"
+#include "test_window_focus.h"
 #include "trim_cursor.h"
 #include "waveform_cache.h"
 
@@ -356,7 +357,8 @@ int checkLargeTimelineDelegates(const mvm::project::Project& base,
     QQmlApplicationEngine engine;
     engine.setInitialProperties(
         {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
-         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)},
+         {QStringLiteral("flags"), mvm::test::backgroundWindowFlags()}});
     engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
     auto* window = engine.rootObjects().isEmpty()
                        ? nullptr
@@ -435,7 +437,8 @@ int checkLargeTextOverlayDelegates(const std::filesystem::path& projectPath) {
     QQmlApplicationEngine engine;
     engine.setInitialProperties(
         {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
-         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)},
+         {QStringLiteral("flags"), mvm::test::backgroundWindowFlags()}});
     engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
     auto* window = engine.rootObjects().isEmpty()
                        ? nullptr
@@ -501,7 +504,8 @@ int checkAudioMixerPanel(const std::filesystem::path& projectPath) {
     QQmlApplicationEngine engine;
     engine.setInitialProperties(
         {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
-         {QStringLiteral("waveformCache"), QVariant::fromValue(&cache)}});
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&cache)},
+         {QStringLiteral("flags"), mvm::test::backgroundWindowFlags()}});
     engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
     auto* window = engine.rootObjects().isEmpty()
                        ? nullptr
@@ -754,7 +758,8 @@ int main(int argc, char** argv) {
         QQmlApplicationEngine engine;
         engine.setInitialProperties(
             {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
-             {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
+             {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)},
+             {QStringLiteral("flags"), mvm::test::backgroundWindowFlags()}});
         engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
         auto* window = engine.rootObjects().isEmpty()
                            ? nullptr
@@ -782,13 +787,24 @@ int main(int argc, char** argv) {
                 activationLost = true;
         });
         const auto run = [&]() -> int {
-            window->requestActivate();
-            if (!QTest::qWaitForWindowExposed(window) || !QTest::qWaitForWindowActive(window)) {
+            // OS の前面は奪わず、Qt の中でだけフォーカスを持たせる (test_window_focus.h)。
+            // 利用者が他の window を操作していても試験を続けられる。
+            if (!QTest::qWaitForWindowExposed(window) ||
+                !mvm::test::focusWithoutForeground(window)) {
                 std::fprintf(stderr, "PROTOCOL_INVALID: window が前面になりません。検査中は"
                                      "他の window を操作しないでください\n");
                 return 4;
             }
             activationLost = false;
+            // 背面で動かせているか (OS の前面にならず、実際のマウスも受けない) を毎回確かめる。
+            // 切り離せていなければ、利用者の操作に左右されるので判定しない。
+            {
+                QString reason;
+                if (!mvm::test::isolatedFromUserInput(window, reason)) {
+                    std::fprintf(stderr, "PROTOCOL_INVALID: %s\n", reason.toUtf8().constData());
+                    return 4;
+                }
+            }
             if (!pumpUntil([&] { return controller.previewReady(); }, 30000)) {
                 std::fprintf(stderr, "FAIL: preview が準備できません: %s\n",
                              controller.statusText().toUtf8().constData());

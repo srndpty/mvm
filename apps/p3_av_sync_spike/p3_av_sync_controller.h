@@ -30,6 +30,8 @@ struct P3AvConfig {
     bool injectRenderFaultAfterPlaying = false;
     long long diagnosticFixedSeekTarget = -1;
     int diagnosticPostDisplayHoldMs = 0;
+    // 試験用の固定 window (app/preview/test_window_mode.h)。正式の display 判定を通さない。
+    bool testFixedWindow = false;
 };
 
 class P3AvSyncController final : public QObject {

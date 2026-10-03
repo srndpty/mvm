@@ -1141,7 +1141,7 @@ bool P3AvSyncController::writeMetrics() const {
                   measurementBaseline_.audioClockQueryFailure);
         const bool displayCorrectness =
             !config_.formalContractC2 ||
-            (displayPreflightPassed_ && formalWorkloadStarted_ &&
+            (!config_.testFixedWindow && displayPreflightPassed_ && formalWorkloadStarted_ &&
              sameDisplayEnvironment(displayEnvironmentStart_, displayEnvironmentEnd_));
         const bool correctness =
             exitCode_ == 0 && playbackAccounting && modeCount && seekIdentity && underflow == 0 &&
@@ -1279,6 +1279,7 @@ bool P3AvSyncController::writeMetrics() const {
             root.insert("requested_output_height", 1080);
             root.insert("display_target_preflight_pass", displayPreflightPassed_);
             root.insert("formal_workload_started", formalWorkloadStarted_);
+            root.insert("test_fixed_window", config_.testFixedWindow);
             root.insert("display_environment_start",
                         displayEnvironmentJson(displayEnvironmentStart_));
             root.insert("display_environment_end", displayEnvironmentJson(displayEnvironmentEnd_));

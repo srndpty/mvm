@@ -2803,6 +2803,10 @@ bool timeEditCandidate(Project& candidate, std::int64_t start, std::int64_t remo
         }
     }
     candidate.timelineClips = std::move(output);
+    // 削除区間に丸ごと入って消えた clip へのリンクを外す (字幕は残す)。字幕の時間編集は
+    // 検証まで行うので、その前に外さないと、区間の外へはみ出した字幕が 1 つあるだけで
+    // 時間編集全体が失敗する。二分した clip は左側が元の ID のまま残るので外れない。
+    reconcileSubtitleLinks(candidate);
     std::unordered_map<std::string, int> counts;
     for (const auto& clip : candidate.timelineClips)
         if (!clip.linkGroupId.empty())

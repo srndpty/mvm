@@ -192,5 +192,9 @@ target_link_libraries(mvm_test_text_ui_input PRIVATE
     mvm::audio_preview
     mvm::preview_qt Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Test
     mvm::warnings)
+# 試験の window を OS の前面にせずにフォーカスを持たせるため、QPA の
+# QWindowSystemInterface を使う (tests/harness/test_window_focus.h)。この試験だけ。
+target_link_libraries(mvm_test_text_ui_input PRIVATE Qt6::GuiPrivate)
+target_include_directories(mvm_test_text_ui_input PRIVATE ${CMAKE_SOURCE_DIR}/tests/harness)
 target_compile_definitions(mvm_test_text_ui_input PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_TEXT_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")

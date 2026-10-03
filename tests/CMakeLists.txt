@@ -410,6 +410,12 @@ set_tests_properties(transition_preview PROPERTIES
     REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4;${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav"
     LABELS "workstation"
     RESOURCE_LOCK mvm_gpu
+    # 実 preview を何度も作り直し、再生を実際の時間で進める。他の試験と並べて CPU を取り合うと、
+    # preview の準備が 30 秒の期限に間に合わず、各場面の前提が外れる (2026-10-04 実測: 全論理
+    # コアを回す負荷で 5/5 失敗し、失敗した場面はすべて preview の準備の段階で止まっていた。
+    # 半分の負荷・直列実行では通過。製品の cut の提示間隔は負荷の有無で変わらず 2 frame 以下)。
+    # 並列に流さず、この試験だけで走らせる。
+    RUN_SERIAL TRUE
     TIMEOUT 120)
 
 # 横書き文字ツールの直接入力 (target は apps/mvm/CMakeLists.txt で定義)。
@@ -2675,7 +2681,7 @@ set(_p4d_formal_cases
     AvP95_20_001 AvMax_33_335 AvProjectionFalse AvMissingRaw AvNaN
     AvSummaryDoesNotMatchRaw ShutdownOrder TeardownBeforeJoin MissingBoolean
     StringFalseBoolean ProcessExitNonzero WrongAudioSampleRate WrongAudioChannels
-    WrongAudioSampleFormat)
+    WrongAudioSampleFormat TestFixedWindow TestFixedWindowString)
 foreach(_case IN LISTS _p4d_formal_cases)
     string(TOLOWER "${_case}" _case_name)
     mvm_add_test(phase4d_formal_checker_${_case_name}
@@ -2775,6 +2781,27 @@ target_link_libraries(mvm_test_display_target_contract PRIVATE mvm::preview_qt m
 mvm_add_test(p3_c2_display_target_preflight_unit
     COMMAND mvm_test_display_target_contract)
 
+# 試験用の固定 window が、利用者の画面より大きい描画先を作れること (画面の向き・解像度・
+# 拡大率に依存しない)。MVM_TEST_FIXED_WINDOW は末尾で全試験に付ける。
+add_executable(mvm_test_fixed_test_window harness/test_fixed_test_window.cpp)
+target_link_libraries(mvm_test_fixed_test_window PRIVATE
+    mvm::preview_qt Qt6::Test Qt6::Gui Qt6::Quick mvm::warnings)
+mvm_add_test(fixed_test_window_independent_of_screen
+    COMMAND mvm_test_fixed_test_window
+    PROPERTIES LABELS workstation RESOURCE_LOCK mvm_gpu TIMEOUT 60)
+# 試験用の固定 window のまま正式計測を始めない (exit 7)。素材は読む前に断るので存在しなくてよい。
+add_test(NAME p4_formal_refused_in_test_window_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+        -ExpectExit 7 -Exe "$<TARGET_FILE:mvm_p4_composition_spike>"
+        -ChildArgs "--source-a|a.mp4|--source-b|b.mp4|--metrics|unused.json|--workload|formal")
+add_test(NAME compositor_formal_preflight_refused_in_test_window_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+        -ExpectExit 7 -Exe "$<TARGET_FILE:mvm_compositor_spike>"
+        -ChildArgs "--source-a|a.mp4|--source-b|b.mp4|--metrics|unused.json|--formal-preflight")
+set_tests_properties(p4_formal_refused_in_test_window_negative
+    compositor_formal_preflight_refused_in_test_window_negative PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
+
 foreach(_p5e_preflight_case Good NegativeScreenName)
     string(TOLOWER "${_p5e_preflight_case}" _p5e_preflight_case_name)
     mvm_add_test(p5_e4_display_preflight_${_p5e_preflight_case_name}
@@ -2831,6 +2858,7 @@ endforeach()
 set(_p3c2_contract_cases
     GoodC2 NegativePreflightFalse NegativePreflightType
     NegativeWorkloadFalse NegativeWorkloadType
+    GoodTestFixedWindowFalse NegativeTestFixedWindow NegativeTestFixedWindowType
     NegativeMissingDisplayTelemetry NegativeRequestedWidth
     NegativeWindowWidth NegativeWindowHeight NegativeSurfaceWidth NegativeSurfaceHeight
     NegativeRhiWidth NegativeRhiHeight NegativeDpr
@@ -3991,4 +4019,15 @@ set(MVM_TEST_AUDIO_VOLUME_SCALE 0.25 CACHE STRING
 foreach(_mvm_test IN LISTS _mvm_all_tests)
     set_property(TEST ${_mvm_test} APPEND PROPERTY ENVIRONMENT_MODIFICATION
         "MVM_TEST_AUDIO_VOLUME_SCALE=set:${MVM_TEST_AUDIO_VOLUME_SCALE}")
+endforeach()
+
+# --- 試験の window を利用者の画面から切り離す --------------------------------
+# 1920x1080 の描画先を要求する検証アプリ (p3/p4/compositor spike、P5-C/E smoke) は、
+# 利用者の画面の向き・解像度・拡大率によって落ちていた (縦向き 1200x1920 で window が縮められる)。
+# 通常の試験では枠なし・拡大率 1.0 の window にして、画面の状態に依存させない
+# (src/app/preview/test_window_mode.h)。物理画面が測定対象の正式計測は CTest の外の script で
+# 回し、この変数を付けない。付いたまま正式計測を回しても、各 spike と checker が不成立にする。
+foreach(_mvm_test IN LISTS _mvm_all_tests)
+    set_property(TEST ${_mvm_test} APPEND PROPERTY ENVIRONMENT_MODIFICATION
+        "MVM_TEST_FIXED_WINDOW=set:1")
 endforeach()

@@ -12,6 +12,7 @@
 // **その output frame を実際に提示しなかったこと**である。counter だけでは
 // 「reject を数えたうえでそのまま描画する」bug を検出できない。
 #include "app/preview/preview_engine_rhi_item.h"
+#include "app/preview/test_window_mode.h"
 #include "media/audio_preview/audio_types.h"
 #include "preview_engine/preview_engine.h"
 #include "preview_engine/preview_engine_internal.h"
@@ -130,6 +131,7 @@ bool checksRemovalAfterPause(Fault fault) {
 
 int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+    mvm::app::prepareTestFixedWindowEnvironment();
     QGuiApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     const QStringList arguments = app.arguments();
@@ -230,6 +232,7 @@ int main(int argc, char** argv) {
     }
 
     QQuickWindow window;
+    mvm::app::applyTestFixedWindow(window);
     window.setWidth(1920);
     window.setHeight(1080);
     auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());

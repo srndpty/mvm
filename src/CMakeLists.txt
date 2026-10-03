@@ -260,6 +260,7 @@ if(MVM_ENABLE_QT)
         app/preview/preview_rhi_item.cpp
         app/preview/compositor_rhi_item.cpp
         app/preview/preview_engine_rhi_item.cpp
+        app/preview/test_window_mode.cpp
     )
     set_target_properties(mvm_preview_qt PROPERTIES AUTOMOC ON)
     target_include_directories(mvm_preview_qt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

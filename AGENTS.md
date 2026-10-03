@@ -207,6 +207,46 @@ pwsh scripts/make-testmedia.ps1 -Mode Smoke       # 自動検査用
 pwsh scripts/make-testmedia.ps1 -Mode Benchmark   # 性能計測用
 ```
 
+### GUI 試験は利用者の操作を止めずに回す
+
+開発機は同時に他の作業にも使う。通常のテストで「操作を止めて待つ」ことを要求しない。
+GUI 試験の window は `tests/harness/test_window_focus.h` で背面に置く。
+
+- 試験の window は OS のフォーカスを受けず (`Qt::WindowDoesNotAcceptFocus`)、OS のマウス入力も
+  透過する (`Qt::WindowTransparentForInput`)。QML の window は読み込みと同時に表示されるので、
+  flags は読み込み前の初期 property で渡す。
+- `requestActivate` / `qWaitForWindowActive` で OS の前面を取らない。Qt の中でだけフォーカスを
+  持たせる (`focusWithoutForeground`)。入力は QTest の合成 event で window へ直接送る。
+- 開始時に `isolatedFromUserInput` で、OS の前面になっていないことと、画面上の位置で OS の
+  マウスを受けないことを確かめる。満たさなければ判定しない (PROTOCOL_INVALID)。
+- window を画面の外へ置かない。OS が expose しないので描画されない (実測)。
+
+[事実] 2026-10-04、試験中に別プロセスの window が前面を 3 回奪っても、利用者が前面の window を
+切り替えても、`text_ui_direct_input` は 3/3 通過した。以前の方式では前面の変化 1 回で
+PROTOCOL_INVALID になっていた。透過させないと、試験の window の上を実際のマウスが通ったときの
+移動 event が合成 event に混ざり、hover の検査が乱れた。
+
+性能・DWM・提示の計測 (後述の Interactive measurement protocol) は、desktop の状態そのものが
+測定に影響するので、この方法の対象外である。
+
+### 通常の試験を利用者の画面の状態に依存させない
+
+画面の向き・解像度・拡大率は利用者が自由に変える。通常のテスト (CTest) の結果をそれに左右させない。
+
+- 決まった大きさの描画先を要求する検証アプリは `src/app/preview/test_window_mode.h` を使う。
+  CTest は全試験に `MVM_TEST_FIXED_WINDOW=1` を付け、window は枠なし・拡大率 1.0・focus を
+  取らない・入力を透過する。枠なしの window は画面より大きくても縮められない (枠付きは縮められる)。
+- 新しく window を作る検証アプリを足したら、同じ helper を通す。試験の中で画面の大きさ・向き・
+  拡大率を前提にしない。
+- 物理画面が測定対象の正式計測 (P3-C-2・P4 formal など) は CTest の外の script で回し、この変数を
+  付けない。付いたまま回すと、spike が起動を断るか、正式判定と checker が不成立にする。
+- 画面の状態が原因と思われる失敗を、利用者に画面を変えてもらって確かめない。今の画面より大きい
+  window を要求すれば同じ状況を作れる (`fixed_test_window_independent_of_screen`)。
+
+[事実] 2026-10-04、画面を縦向き (1200x1920) にした状態で `p4_c_contract_smoke`・
+`compositor_qt_actual_target_probe`・`p3_async_audio_failure_fail_close` が落ちた (枠付きの
+1920x1080 window が画面に合わせて縮められた)。
+
 ### negative test を必ず添える
 
 新しい検査を足したら、**その検査が無ければ落ちるテスト**を同時に足す。

@@ -444,12 +444,51 @@ int main(int argc, char** argv) {
             other.track.index = 1;
             trimmed.timelineClips.push_back(other);
             require(validateTimeline(trimmed).success, "リップルトリムの対照群");
+            require(rippleTrimTimelineClip(trimmed, "other", TrimEdge::Right, -20, LinkMode::Linked)
+                        .success,
+                    "別トラックのリップルトリム");
+            const auto trimmedRight = std::find_if(
+                trimmed.timelineClips.begin(), trimmed.timelineClips.end(), [](const auto& clip) {
+                    return clip.id != "voice" && clip.id != "other" &&
+                           clip.timelineStartFrame == 80;
+                });
             require(
-                rippleTrimTimelineClip(trimmed, "other", TrimEdge::Right, -20, LinkMode::Linked)
-                        .success &&
-                    cue(trimmed, "right") && cue(trimmed, "right")->startFrame == 80 &&
-                    cue(trimmed, "right")->linkClipId != "voice",
+                trimmedRight != trimmed.timelineClips.end() && cue(trimmed, "right") &&
+                    cue(trimmed, "right")->startFrame == 80 &&
+                    cue(trimmed, "right")->linkClipId == trimmedRight->id,
                 "別トラックのリップルトリムで二分した clip の右側の字幕を残し、右側へリンクする");
+            const auto trimmedRightId = trimmedRight->id;
+            const auto indexOf = [](const Project& project, const std::string& id) {
+                return static_cast<int>(
+                    std::find_if(project.timelineClips.begin(), project.timelineClips.end(),
+                                 [&](const auto& clip) { return clip.id == id; }) -
+                    project.timelineClips.begin());
+            };
+            auto trimmedWithoutLeft = trimmed;
+            require(deleteTimelineClip(trimmedWithoutLeft, indexOf(trimmedWithoutLeft, "voice"))
+                            .success &&
+                        cue(trimmedWithoutLeft, "right"),
+                    "リップルトリムの後、左側の clip を消しても右側の字幕は残る");
+            auto trimmedWithoutRight = trimmed;
+            require(deleteTimelineClip(trimmedWithoutRight,
+                                       indexOf(trimmedWithoutRight, trimmedRightId))
+                            .success &&
+                        !cue(trimmedWithoutRight, "right"),
+                    "リップルトリムの後、右側の clip を消すと右側の字幕も消える");
+        }
+        // 時間削除で clip が丸ごと消えても、区間の外へはみ出したリンク字幕は残し、リンクだけ
+        // 外す (はみ出した字幕のせいで時間削除全体を失敗させない)。
+        {
+            auto swallowed = media;
+            swallowed.timelineClips[0].timelineStartFrame = 50; // timeline [50, 170)
+            swallowed.subtitles->cues = {{"tail", 160, 190, "はみ出し", "voice"}};
+            require(validateTimeline(swallowed).success, "丸ごと消える clip の対照群");
+            require(editTimelineTime(swallowed, 50, 120, 0).success &&
+                        swallowed.timelineClips.empty() && cue(swallowed, "tail") &&
+                        cue(swallowed, "tail")->startFrame == 50 &&
+                        cue(swallowed, "tail")->endFrame == 70 &&
+                        cue(swallowed, "tail")->linkClipId.empty(),
+                    "丸ごと消えた clip の外に残る字幕はリンクだけを外して残す");
         }
         auto crowded = media;
         crowded.subtitles->cues.push_back({"next", 45, 50, "次", {}});

@@ -25,6 +25,8 @@ struct P4Config {
     int durationSeconds = 10;
     int warmupSeconds = 1;
     int displayTimeoutMs = 3000;
+    // 試験用の固定 window (app/preview/test_window_mode.h)。formal workload とは併用しない。
+    bool testFixedWindow = false;
 };
 
 // Phase 4 / C のcontract smoke raw producer。

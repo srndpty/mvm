@@ -129,6 +129,10 @@ if ((Integer $data 'requested_output_width') -ne 1920 -or
 }
 Boolean $data 'display_target_preflight_pass' $true | Out-Null
 Boolean $data 'formal_workload_started' $true | Out-Null
+# 試験用の固定 window (MVM_TEST_FIXED_WINDOW) は物理画面を測っていない。旧い raw には無い。
+if ($data.PSObject.Properties.Name -contains 'test_fixed_window') {
+    Boolean $data 'test_fixed_window' $false | Out-Null
+}
 
 $start = DisplayEnvironment $data 'display_environment_start'
 $end = DisplayEnvironment $data 'display_environment_end'

@@ -1,4 +1,5 @@
 #include "app/preview/compositor_rhi_item.h"
+#include "app/preview/test_window_mode.h"
 #include "compositor_spike_controller.h"
 
 #include <QGuiApplication>
@@ -123,14 +124,21 @@ int main(int argc, char** argv) {
         QSurfaceFormat::setDefaultFormat(surfaceFormat);
     }
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+    prepareTestFixedWindowEnvironment();
     QGuiApplication app(argc, argv);
     CompositorSpikeConfig config;
     if (!parse(app.arguments(), config)) {
         usage();
         return 2;
     }
+    if (testFixedWindowRequested() && config.formalPreflight) {
+        std::fprintf(stderr, "試験用の固定 window (MVM_TEST_FIXED_WINDOW=1) では "
+                             "--formal-preflight を使用できません\n");
+        return 7;
+    }
     CompositorSpikeController controller(config);
     QQmlApplicationEngine engine;
+    engine.setInitialProperties(testFixedWindowInitialProperties());
     engine.load(QUrl(QStringLiteral("qrc:/mvm/compositor_spike/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 5;
