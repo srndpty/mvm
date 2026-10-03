@@ -9,6 +9,9 @@
 
 #include "app/preview/test_window_mode.h"
 
+#include <cmath>
+#include <cstdio>
+
 #include <QElapsedTimer>
 #include <QGuiApplication>
 #include <QImage>
@@ -16,9 +19,6 @@
 #include <QSGRendererInterface>
 #include <QScreen>
 #include <QTest>
-
-#include <cmath>
-#include <cstdio>
 
 namespace {
 int failures = 0;
@@ -32,8 +32,9 @@ void check(bool condition, const char* message) {
 
 bool waitForFrame(QQuickWindow& window) {
     bool swapped = false;
-    QObject::connect(&window, &QQuickWindow::frameSwapped, &window, [&] { swapped = true; },
-                     Qt::QueuedConnection);
+    QObject::connect(
+        &window, &QQuickWindow::frameSwapped, &window, [&] { swapped = true; },
+        Qt::QueuedConnection);
     window.update();
     QElapsedTimer timer;
     timer.start();
@@ -81,21 +82,20 @@ int main(int argc, char** argv) {
                   window.flags().testFlag(Qt::WindowTransparentForInput),
               "固定 window が focus を取るか、入力を受けます");
         std::printf("固定 window: logical %dx%d、描画先 %dx%d、dpr %.3f\n", window.width(),
-                    window.height(), grabbed.width(), grabbed.height(),
-                    window.devicePixelRatio());
+                    window.height(), grabbed.width(), grabbed.height(), window.devicePixelRatio());
     }
     {
         // 対照: 枠付きの window は画面に合わせて縮められる。
         QQuickWindow window;
-        window.setFlags(Qt::Window | Qt::WindowDoesNotAcceptFocus |
-                        Qt::WindowTransparentForInput);
+        window.setFlags(Qt::Window | Qt::WindowDoesNotAcceptFocus | Qt::WindowTransparentForInput);
         window.resize(requested);
         window.show();
         check(QTest::qWaitForWindowExposed(&window), "枠付き window が expose されません");
         check(waitForFrame(window), "枠付き window が描画されません");
         std::printf("枠付き window: logical %dx%d\n", window.width(), window.height());
-        check(window.size() != requested,
-              "枠付き window が縮められませんでした (この試験は枠なしの効果を確かめられていません)");
+        check(
+            window.size() != requested,
+            "枠付き window が縮められませんでした (この試験は枠なしの効果を確かめられていません)");
     }
 
     if (failures != 0)

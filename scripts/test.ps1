@@ -54,6 +54,10 @@
     'k/n' 形式。BuildIndependent の対象を n 分割した k 番目だけを実行する。
     CI で複数 job に分けて並列に走らせるために使う。
 
+.PARAMETER WhisperRoot
+    固定リビジョンの Whisper の導入先。CI は MSYS2 の package の版が固定と違うため、
+    scripts/build-whisper.ps1 で構築した build/whisper-install を渡す。
+
 .EXAMPLE
     pwsh scripts/test.ps1
     pwsh scripts/test.ps1 -Preset ucrt64-release -Performance
@@ -81,7 +85,11 @@ param(
     [ValidatePattern('^[1-9][0-9]*/[1-9][0-9]*$')]
     [string]$Shard,
 
-    [string]$Ucrt64 = 'C:\msys64\ucrt64'
+    [string]$Ucrt64 = 'C:\msys64\ucrt64',
+
+    # 固定リビジョンの Whisper の導入先 (scripts/build-whisper.ps1 の出力)。
+    # 省略時は build.ps1 の既定 (UCRT64 の package) を使う。
+    [string]$WhisperRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -232,6 +240,7 @@ foreach ($p in $presets) {
     Write-Host "`n=== $p ===" -ForegroundColor Cyan
     # 非依存テストだけなら実行ファイルは不要なので configure で止める。
     $buildArgs = @{ Preset = $p; Ucrt64 = $Ucrt64 }
+    if ($WhisperRoot) { $buildArgs.WhisperRoot = $WhisperRoot }
     if ($Group -eq 'BuildIndependent') { $buildArgs.ConfigureOnly = $true }
     if ($Fast -and $Group -ne 'BuildIndependent') { $buildArgs.ReuseConfigure = $true }
     & (Join-Path $PSScriptRoot 'build.ps1') @buildArgs
