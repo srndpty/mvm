@@ -35,8 +35,6 @@ struct TimelineValidationResult {
     std::uint64_t overlapComparisons = 0;
 };
 
-enum class ClipKeyKind { Opacity, Volume };
-
 struct ClipKeyEditPreview {
     bool success = false;
     ClipEffects effects;

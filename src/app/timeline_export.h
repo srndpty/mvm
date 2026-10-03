@@ -49,6 +49,13 @@ struct TimelineExportGainKey {
     double gain = 1.0;
 };
 
+struct TimelineExportMotionFrame {
+    std::int64_t localFrame = 0;
+    double cropLeft = 0, cropTop = 0, cropRight = 0, cropBottom = 0;
+    double rectX = 0, rectY = 0, rectWidth = 0, rectHeight = 0;
+    double rotationDegrees = 0, shearDegrees = 0;
+};
+
 struct TimelineExportClipMapping {
     int projectClipIndex = -1;
     // 書き出す区間に合わせた clip (project::TimelineRenderSegment::clip)。トランジションで
@@ -79,12 +86,14 @@ struct TimelineExportClipMapping {
     double shearDegrees = 0.0;
     // クロスディゾルブの incoming。素材の余白を黒で埋めた全画面として重ねる (preview と同じ)。
     bool opaqueBackdrop = false;
+    std::vector<TimelineExportMotionFrame> motionFrames;
     std::vector<TimelineExportOpacityKey> opacityKeys;
     std::vector<TimelineExportGainKey> gainKeys;
 };
 
 struct TimelineExportPlan {
     bool success = false;
+    bool cancelled = false;
     TimelineExportResult::Backend backend = TimelineExportResult::Backend::Sequential;
     std::int64_t totalDurationFrames = 0;
     std::vector<TimelineExportClipMapping> clips;

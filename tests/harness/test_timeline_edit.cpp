@@ -1135,8 +1135,8 @@ void testRateStretch() {
               .success,
           "key付きclipのレート調整に失敗しました");
     const auto& keys = keyProject.timelineClips[0].effects.opacityKeys;
-    check(keys.size() == 3 && keys[0].frame == 0 && keys[1].frame == 301 &&
-              keys[1].valuePercent == 50.0 && keys[2].frame == 599,
+    check(keys.size() == 3 && keys[0].frame == 0 && keys[1].frame == 301 && keys[1].value == 50.0 &&
+              keys[2].frame == 599,
           "keyが尺に合わせて伸縮しません");
 
     // 50% の clip の trim: timeline 100 frame = 素材 50 frame。
@@ -1413,9 +1413,8 @@ void testStepClipVolume() {
     check(mvm::project::stepClipVolume(project, {keyed.id}, 1.0).success,
           "音量keyのあるaudio clipを+1dBできません");
     const auto& keys = findClip(project, keyed.id)->effects.volumeKeys;
-    check(keys.size() == 3 && keys[0].valuePercent == 0.0 &&
-              std::abs(keys[1].valuePercent - 112.20184543019634) < 1e-9 &&
-              keys[2].valuePercent == 200.0 &&
+    check(keys.size() == 3 && keys[0].value == 0.0 &&
+              std::abs(keys[1].value - 112.20184543019634) < 1e-9 && keys[2].value == 200.0 &&
               std::abs(volumeOf(keyed.id) - 112.20184543019634) < 1e-9,
           "音量keyを0%を保ったまま同じ規則で変えません");
 
@@ -3072,10 +3071,10 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
             }
         }
         auto oldSchema = serialized.json;
-        const auto schema = oldSchema.find("\"schema_version\": 14");
+        const auto schema = oldSchema.find("\"schema_version\": 15");
         check(schema != std::string::npos, "schema 14 が出力されません");
         if (schema != std::string::npos) {
-            oldSchema.replace(schema, std::string("\"schema_version\": 14").size(),
+            oldSchema.replace(schema, std::string("\"schema_version\": 15").size(),
                               "\"schema_version\": 13");
             check(!mvm::project::parseProjectJsonText(oldSchema, projectFile).success,
                   "schema 13 を受理しました");
@@ -3137,8 +3136,7 @@ void testClipKeyEditing() {
               evaluateClipKeys(keys, 100, 0) == 80 && evaluateClipKeys(keys, 100, 99) == 20,
           "線形補間と端の保持を評価する");
     const auto clamped = previewClipKeyEdit(project, video.id, ClipKeyKind::Opacity, 20, 99, 150);
-    check(clamped.success && clamped.frame == 79 &&
-              clamped.effects.opacityKeys[0].valuePercent == 100,
+    check(clamped.success && clamped.frame == 79 && clamped.effects.opacityKeys[0].value == 100,
           "キーの位置と値を隣接キー・値域で止める");
     {
         auto removed = project;
@@ -3161,8 +3159,7 @@ void testClipKeyEditing() {
     check(trimTimelineClip(project, video.id, TrimEdge::Left, 10, LinkMode::Single).success,
           "キー付きclipをtrimする");
     check(project.timelineClips[0].effects.opacityKeys.front().frame == 0 &&
-              std::abs(project.timelineClips[0].effects.opacityKeys.front().valuePercent - 80) <
-                  1e-9 &&
+              std::abs(project.timelineClips[0].effects.opacityKeys.front().value - 80) < 1e-9 &&
               project.timelineClips[0].effects.opacityKeys[2].frame == 70 &&
               project.timelineClips[0].effects.opacityKeys.back().frame == 89,
           "trim後の可視カーブと端を保持する");
@@ -3200,7 +3197,7 @@ void testClipKeyEditing() {
     malformed.timelineClips[0].effects.opacityKeys.push_back({20, 30});
     check(!validateTimeline(malformed).success, "重複キーを拒否する");
     malformed = original;
-    malformed.timelineClips[0].effects.opacityKeys[0].valuePercent =
+    malformed.timelineClips[0].effects.opacityKeys[0].value =
         std::numeric_limits<double>::quiet_NaN();
     check(!validateTimeline(malformed).success, "非有限キーを拒否する");
     malformed = original;

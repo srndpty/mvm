@@ -244,7 +244,7 @@ void testAutomationKeys() {
           "key の変わらない clip の編集で automation の key を知らせました");
 
     auto rekeyed = trimmed;
-    rekeyed.timelineClips[7].effects.opacityKeys[0].valuePercent = 50.0;
+    rekeyed.timelineClips[7].effects.opacityKeys[0].value = 50.0;
     Signals rekeyCounted;
     QObject rekeyContext;
     watch(model, rekeyCounted, rekeyContext);

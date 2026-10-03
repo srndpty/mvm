@@ -32,12 +32,13 @@ std::string pathToUtf8(const std::filesystem::path& path) {
 // clip は幾何 (位置・拡大・回転・crop) を決める元の clip。不透明度は opacityAt が区間の
 // local frame ごとに返す (トランジションの進み具合を含む)。
 bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportRequest& request,
-                      std::int64_t timelineDuration, bool requireOverlay,
+                      std::int64_t timelineDuration, std::int64_t localOffset, bool requireOverlay,
                       const std::function<std::optional<double>(std::int64_t)>& opacityAt,
-                      TimelineExportClipMapping& output, std::string& error) {
+                      TimelineExportClipMapping& output, std::string& error, bool& cancelled) {
     if (project::clipEffectsAreDefault(clip.effects) && !requireOverlay)
         return true;
-    const auto mapped = project::mapClipEffects(clip.effects);
+    const auto mapped =
+        project::mapClipEffects(project::evaluateClipEffects(clip.effects, localOffset));
     output.effectsEnabled = !project::clipEffectsAreDefault(clip.effects);
     output.cropLeft = static_cast<int>(std::lround(mapped.sourceRect.x * request.width));
     output.cropTop = static_cast<int>(std::lround(mapped.sourceRect.y * request.height));
@@ -104,7 +105,33 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
     output.rectWidth = rectWidth;
     output.rectHeight = rectHeight;
 
+    bool animatedMotion = false;
+    for (const auto& channel : project::effectChannels())
+        animatedMotion = animatedMotion || (channel.kind != project::ClipKeyKind::Opacity &&
+                                            channel.kind != project::ClipKeyKind::Volume &&
+                                            !(clip.effects.*channel.keys).empty());
     for (std::int64_t frame = 0; frame < timelineDuration; ++frame) {
+        if (request.progress && frame % 256 == 0 && request.progress(0, timelineDuration)) {
+            cancelled = true;
+            error = "書き出し準備をキャンセルしました";
+            return false;
+        }
+        if (animatedMotion) {
+            auto evaluatedClip = clip;
+            evaluatedClip.effects = project::evaluateClipEffects(clip.effects, localOffset + frame);
+            TimelineExportClipMapping geometry;
+            if (!mapExportEffects(evaluatedClip, request, 0, 0, true, opacityAt, geometry, error,
+                                  cancelled))
+                return false;
+            output.motionFrames.push_back(
+                {frame, evaluatedClip.effects.cropLeftPercent * request.width / 100,
+                 evaluatedClip.effects.cropTopPercent * request.height / 100,
+                 evaluatedClip.effects.cropRightPercent * request.width / 100,
+                 evaluatedClip.effects.cropBottomPercent * request.height / 100, geometry.rectX,
+                 geometry.rectY, geometry.rectWidth, geometry.rectHeight, geometry.rotationDegrees,
+                 geometry.shearDegrees});
+        }
+
         const auto opacity = opacityAt(frame);
         if (!opacity) {
             error = clip.name + ": 不透明度を評価できません";
@@ -240,6 +267,12 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             anyAudio = true;
             mapped.mixerPan = segment->mixerPan;
             for (std::int64_t frame = 0; frame < duration.frame; ++frame) {
+                if (request.progress && frame % 256 == 0 &&
+                    request.progress(0, plan.totalDurationFrames)) {
+                    plan.cancelled = true;
+                    plan.error = "書き出し準備をキャンセルしました";
+                    return plan;
+                }
                 const auto gain = project::renderSegmentGain(
                     *segment, request.fpsNum, request.fpsDen, clip.timelineStartFrame + frame);
                 if (!gain) {
@@ -262,8 +295,9 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             return project::renderSegmentOpacity(*segment, request.fpsNum, request.fpsDen,
                                                  clip.timelineStartFrame + localFrame);
         };
-        if (!mapExportEffects(segment->original, request, duration.frame, overlay, opacityAt,
-                              mapped, plan.error))
+        if (!mapExportEffects(segment->original, request, duration.frame,
+                              clip.timelineStartFrame - segment->original.timelineStartFrame,
+                              overlay, opacityAt, mapped, plan.error, plan.cancelled))
             return plan;
         mapped.opaqueBackdrop = segment->fadeIn.has_value();
         plan.clips.push_back(std::move(mapped));
@@ -292,6 +326,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
     }
     const auto plan = mapTimelineExportPlan(project, request);
     if (!plan.success) {
+        result.cancelled = plan.cancelled;
         result.error = plan.error;
         return result;
     }
@@ -398,6 +433,8 @@ TimelineExportResult exportTimeline(const project::Project& project,
     clips.reserve(plan.clips.size());
     std::vector<std::vector<MvmExportOpacityKeyframe>> opacityStorage;
     std::vector<std::vector<MvmExportGainKeyframe>> gainStorage;
+    std::vector<std::vector<MvmExportMotionFrame>> motionStorage;
+    motionStorage.reserve(plan.clips.size());
     opacityStorage.reserve(plan.clips.size());
     gainStorage.reserve(plan.clips.size());
     for (const auto& planned : plan.clips) {
@@ -434,6 +471,13 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.timeline_start_frame = planned.timelineStartFrame;
         mapped.timeline_duration_frames = planned.timelineDurationFrames;
         mapped.effects_enabled = planned.effectsEnabled ? 1 : 0;
+        auto& motion = motionStorage.emplace_back();
+        for (const auto& frame : planned.motionFrames)
+            motion.push_back({frame.localFrame, frame.cropLeft, frame.cropTop, frame.cropRight,
+                              frame.cropBottom, frame.rectX, frame.rectY, frame.rectWidth,
+                              frame.rectHeight, frame.rotationDegrees, frame.shearDegrees});
+        mapped.motion_frames = motion.data();
+        mapped.motion_frame_count = static_cast<int>(motion.size());
         mapped.crop_left = planned.cropLeft;
         mapped.crop_top = planned.cropTop;
         mapped.crop_right = planned.cropRight;

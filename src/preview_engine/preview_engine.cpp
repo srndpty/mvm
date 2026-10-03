@@ -1176,7 +1176,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // SRV cache から外して捨てる (GPU 完了までは retirement が保持する)。
     // render thread で、pairing と提示直前の検証を終えた後に呼ぶ。
     std::optional<std::string> addStillLayersLocked(const CompositionSnapshot& snapshot,
-                                                    gpu::ComposedFrame& composed) {
+                                                    gpu::ComposedFrame& composed,
+                                                    std::int64_t outputFrame) {
         std::set<const PreviewStillImage*> referenced;
         for (std::size_t i = 0; i < snapshot.layers.size(); ++i) {
             const PreviewCompositionLayer& layer = snapshot.layers[i];
@@ -1206,6 +1207,33 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             still.effectsEnabled = layer.effectsEnabled;
             still.rotationDegrees = layer.rotationDegrees;
             composed.layers.push_back(std::move(still));
+        }
+        for (auto& rendered : composed.layers) {
+            const auto& layer = snapshot.layers[static_cast<std::size_t>(rendered.zOrder)];
+            if (!layer.motion)
+                continue;
+            const auto value = layer.motion->evaluate(outputFrame);
+            if (!std::isfinite(value.opacity) || value.opacity < 0 || value.opacity > 1 ||
+                !std::isfinite(layer.motionOpacityMultiplier) ||
+                layer.motionOpacityMultiplier < 0 || layer.motionOpacityMultiplier > 1 ||
+                !std::isfinite(value.rotationDegrees) || !std::isfinite(value.destination.x) ||
+                !std::isfinite(value.destination.y) || !std::isfinite(value.destination.width) ||
+                !std::isfinite(value.destination.height) || value.destination.width <= 0 ||
+                value.destination.height <= 0 || !std::isfinite(value.sourceRect.x) ||
+                !std::isfinite(value.sourceRect.y) || !std::isfinite(value.sourceRect.width) ||
+                !std::isfinite(value.sourceRect.height) || value.sourceRect.x < 0 ||
+                value.sourceRect.y < 0 || value.sourceRect.width <= 0 ||
+                value.sourceRect.height <= 0 ||
+                value.sourceRect.x + value.sourceRect.width > 1.000001F ||
+                value.sourceRect.y + value.sourceRect.height > 1.000001F)
+                return "モーションの評価値が不正です";
+            rendered.destination = {value.destination.x, value.destination.y,
+                                    value.destination.width, value.destination.height};
+            rendered.sourceUv = {value.sourceRect.x, value.sourceRect.y, value.sourceRect.width,
+                                 value.sourceRect.height};
+            rendered.rotationDegrees = value.rotationDegrees;
+            rendered.opacity = value.opacity * layer.motionOpacityMultiplier;
+            rendered.effectsEnabled = true;
         }
         std::stable_sort(composed.layers.begin(), composed.layers.end(),
                          gpu::deterministicLayerLess);
@@ -3718,7 +3746,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                 // 既存の clear をそのまま使い、静止画があればその上に描く。
                 // 提示の authority は scheduler の時計であり、decode source を代用にしない。
                 gpu::ComposedFrame composed;
-                sourcelessFailure = engine.impl_->addStillLayersLocked(*snapshot, composed);
+                sourcelessFailure = engine.impl_->addStillLayersLocked(*snapshot, composed, target);
                 if (!sourcelessFailure && !composed.layers.empty()) {
                     gpu::ExternalCompositionTarget targetView{
                         static_cast<ID3D11RenderTargetView*>(renderTargetView), width, height};
@@ -3959,7 +3987,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     // 静止画 layer は pairing と提示直前の検証の対象外なので、
                     // 検証を通った後で snapshot の z 順どおりに差し込む。
                     const std::optional<std::string> stillFailure =
-                        engine.impl_->addStillLayersLocked(*snapshot, composed);
+                        engine.impl_->addStillLayersLocked(*snapshot, composed, target);
                     gpu::ExternalCompositionTarget targetView{
                         static_cast<ID3D11RenderTargetView*>(renderTargetView), width, height};
                     std::string error;

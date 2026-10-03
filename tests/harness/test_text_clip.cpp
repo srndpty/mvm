@@ -336,7 +336,7 @@ int main(int argc, char** argv) {
         direct.timelineClips[0].track.index = 3;
         require(mvm::project::validateTimeline(direct).success, "V4 の文字 clip を拒否しました");
     }
-    // 文字の effect は不透明度 (値・key・fade) だけ。書き出しでだけ効く effect を持たせない。
+    // 文字にも共通のモーションを適用する。音量は文字へ適用しない。
     {
         auto withOpacity = project;
         withOpacity.timelineClips[0].effects.opacityKeys = {{0, 100.0}, {15, 0.0}};
@@ -346,12 +346,14 @@ int main(int argc, char** argv) {
         auto withScale = project;
         withScale.timelineClips[0].effects.scaleXPercent =
             withScale.timelineClips[0].effects.scaleYPercent = 150.0;
-        require(!mvm::project::validateTimeline(withScale).success,
-                "文字 clip の拡大率を受理しました");
+        require(mvm::project::validateTimeline(withScale).success,
+                "文字 clip の拡大率を拒否しました");
         auto withPosition = project;
         withPosition.timelineClips[0].effects.positionXPercent = 10.0;
-        require(!mvm::project::validateTimeline(withPosition).success,
-                "文字 clip の位置 effect を受理しました");
+        withPosition.timelineClips[0].effects.positionXKeys = {
+            {0, -10}, {15, 10, mvm::project::KeyInterpolation::EaseInOut}};
+        require(mvm::project::validateTimeline(withPosition).success,
+                "文字 clip の位置 effect を拒否しました");
     }
     std::puts("文字 clip の保存・描画・編集・定位置・track と effect の制約、"
               "多 track / 多 clip の書き出しを確認しました");

@@ -379,6 +379,23 @@ int main() {
                 automationPlan.clips[1].gainKeys[5].gain == 1.0 &&
                 automationPlan.clips[1].gainKeys[10].gain == 2.0,
             "手動カーブとフェードを出力フレームへ反映できません");
+    picture.effects = {};
+    picture.effects.positionXKeys = {{0, -20, mvm::project::KeyInterpolation::EaseIn}, {10, 20}};
+    picture.effects.scaleXKeys = {{0, 50}, {10, 100}};
+    automated.timelineClips = {picture};
+    const auto motionPlan = mvm::app::mapTimelineExportPlan(automated, request);
+    require(motionPlan.success && motionPlan.clips[0].motionFrames.size() == 11,
+            "モーションを全出力フレームへ評価しません");
+    if (motionPlan.success && motionPlan.clips[0].motionFrames.size() == 11) {
+        const auto& midpoint = motionPlan.clips[0].motionFrames[5];
+        require(std::abs(midpoint.rectWidth - request.width * 0.75) < 1e-9 &&
+                    std::abs(midpoint.rectX - request.width * 0.025) < 1e-9,
+                "中間フレームの拡大とイーズの位置が独立した期待値と違います");
+    }
+    auto cancelledRequest = request;
+    cancelledRequest.progress = [](long long, long long) { return true; };
+    require(!mvm::app::mapTimelineExportPlan(automated, cancelledRequest).success,
+            "モーション書き出し準備をキャンセルできません");
     testTrackOutputMatchesPreview(request);
     return 0;
 }

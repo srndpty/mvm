@@ -1012,6 +1012,100 @@ int main(int argc, char** argv) {
             check(controller.textOverlayClip().isEmpty(),
                   "確定後も文字を engine の合成から外したままです");
 
+            // ウィンドウ全体のショートカットをキー編集へ振り分ける。
+            {
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                auto* inspector = findVisualItem(window, QStringLiteral("keyframeInspector"));
+                check(inspector != nullptr, "前提: キー編集パネルがありません");
+                if (inspector) {
+                    check(controller.setEffectAnimation(QStringLiteral("positionX"), true),
+                          "ショートカット試験のアニメーションを有効にできません");
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    controller.seekTimelineFrame(20);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    check(controller.setEffectValue(QStringLiteral("positionX"), 20, true),
+                          "ショートカット試験のキーを作れません");
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    inspector->setProperty("selectedChannel", QStringLiteral("positionX"));
+                    inspector->forceActiveFocus();
+                    QTest::keyClick(window, Qt::Key_Left, Qt::ControlModifier);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    check(controller.playheadFrame() == 10, "Ctrl+左で前のキーへ移動しません");
+                    QTest::keyClick(window, Qt::Key_Right, Qt::ControlModifier);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    check(controller.playheadFrame() == 20, "Ctrl+右で次のキーへ移動しません");
+                    inspector->setProperty("selectedFrames", QVariantList{0});
+                    QTest::keyClick(window, Qt::Key_C, Qt::ControlModifier);
+                    inspector->setProperty("selectedChannel", QStringLiteral("positionY"));
+                    QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    const auto yAnimated = [&] {
+                        for (const auto& channel : controller.keyframeChannels()) {
+                            const auto data = channel.toMap();
+                            if (data.value(QStringLiteral("name")) == QStringLiteral("positionY"))
+                                return data.value(QStringLiteral("animated")).toBool();
+                        }
+                        return false;
+                    };
+                    check(yAnimated() && textClipCount(controller) == 1,
+                          "Ctrl+C/Vでキーを別項目へ貼り付けません (クリップを複製しました)");
+                    inspector->setProperty("selectedFrames", QVariantList{10});
+                    QTest::keyClick(window, Qt::Key_X, Qt::ControlModifier);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    check(!yAnimated() && textClipCount(controller) == 1,
+                          "Ctrl+Xでキーをカットしません (クリップを消しました)");
+                    QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    check(yAnimated() && textClipCount(controller) == 1,
+                          "最後のキーをカットした直後のペーストがクリップ操作になりました");
+                    inspector->setProperty("selectedFrames", QVariantList{10});
+                    QTest::keyClick(window, Qt::Key_Delete);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    check(!yAnimated() && textClipCount(controller) == 1,
+                          "Deleteで選択キーを削除しません (クリップを消しました)");
+                    controller.undoLastEdit(); // キー削除
+                    controller.undoLastEdit(); // カット後のペースト
+                    controller.undoLastEdit(); // カット
+                    controller.undoLastEdit(); // ペースト
+                    controller.undoLastEdit(); // 2個目のキー
+                    controller.undoLastEdit(); // アニメーションの有効化
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    controller.seekTimelineFrame(10);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    window->contentItem()->forceActiveFocus();
+                }
+            }
+
+            // 選択中の文字の区間外へルーラーで移動しても、エフェクト対象は文字のまま。
+            {
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                auto* ruler = findVisualItem(window, QStringLiteral("timelineRulerArea"));
+                check(ruler != nullptr, "前提: ルーラーがありません");
+                if (ruler) {
+                    const QPoint point =
+                        ruler->mapToScene(QPointF(0, ruler->height() / 2)).toPoint();
+                    QTest::mousePress(window, Qt::LeftButton, {}, point);
+                    check(!controller.scrubAudioSnapshotForTest().open,
+                          "単純なルーラークリックでスクラブ音声デバイスを開きました");
+                    QTest::mouseRelease(window, Qt::LeftButton, {}, point);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    check(controller.playheadFrame() == 0 &&
+                              controller.selectedTextClip()
+                                      .value(QStringLiteral("clipId"))
+                                      .toString() == clipId,
+                          "文字の区間外へのルーラー移動でエフェクト対象が変わりました");
+                    check(!controller.keyframeChannels().isEmpty() &&
+                              controller.keyframeChannels()
+                                  .front()
+                                  .toMap()
+                                  .value(QStringLiteral("editable"))
+                                  .toBool(),
+                          "選択文字の区間外でキー編集を有効にしません");
+                }
+                controller.seekTimelineFrame(10);
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+            }
+
             // 2. Esc は破棄する。
             QTest::mouseClick(window, Qt::LeftButton, {}, scenePoint(0.6, 0.7));
             pump();

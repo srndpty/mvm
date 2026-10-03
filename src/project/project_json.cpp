@@ -753,7 +753,7 @@ private:
     }
 
     bool parseClipEffects(ClipEffects& effects) {
-        bool seen[15] = {};
+        bool seen[24] = {};
         if (!consume('{'))
             return false;
         skipWhitespace();
@@ -793,6 +793,25 @@ private:
                     field = 12;
                 else if (key == "volume_keys")
                     field = 13;
+                else if (key == "position_x_keys")
+                    field = 15;
+                else if (key == "position_y_keys")
+                    field = 16;
+                else if (key == "scale_x_keys")
+                    field = 17;
+                else if (key == "scale_y_keys")
+                    field = 18;
+                else if (key == "rotation_keys")
+                    field = 19;
+                else if (key == "crop_left_keys")
+                    field = 20;
+                else if (key == "crop_top_keys")
+                    field = 21;
+                else if (key == "crop_right_keys")
+                    field = 22;
+                else if (key == "crop_bottom_keys")
+                    field = 23;
+
                 else
                     return fail("effects に未知の field があります: " + key);
                 if (seen[field])
@@ -828,6 +847,25 @@ private:
                     return false;
                 if (field == 13 && !parseClipKeys(effects.volumeKeys))
                     return false;
+                if (field == 15 && !parseClipKeys(effects.positionXKeys))
+                    return false;
+                if (field == 16 && !parseClipKeys(effects.positionYKeys))
+                    return false;
+                if (field == 17 && !parseClipKeys(effects.scaleXKeys))
+                    return false;
+                if (field == 18 && !parseClipKeys(effects.scaleYKeys))
+                    return false;
+                if (field == 19 && !parseClipKeys(effects.rotationKeys))
+                    return false;
+                if (field == 20 && !parseClipKeys(effects.cropLeftKeys))
+                    return false;
+                if (field == 21 && !parseClipKeys(effects.cropTopKeys))
+                    return false;
+                if (field == 22 && !parseClipKeys(effects.cropRightKeys))
+                    return false;
+                if (field == 23 && !parseClipKeys(effects.cropBottomKeys))
+                    return false;
+
                 skipWhitespace();
                 if (consumeIf(','))
                     continue;
@@ -853,6 +891,8 @@ private:
                     return false;
                 bool hasFrame = false;
                 bool hasValue = false;
+                bool hasInterpolation = false, hasStart = false, hasEnd = false;
+                bool hasControl1 = false, hasControl2 = false;
                 ClipKeyframe keyframe;
                 while (true) {
                     std::string field;
@@ -862,10 +902,43 @@ private:
                         if (hasFrame || !parseInteger64(keyframe.frame))
                             return false;
                         hasFrame = true;
-                    } else if (field == "value_percent") {
-                        if (hasValue || !parseNumber(keyframe.valuePercent))
+                    } else if (field == "value") {
+                        if (hasValue || !parseNumber(keyframe.value))
                             return false;
                         hasValue = true;
+                    } else if (field == "interpolation") {
+                        std::string interpolation;
+                        if (hasInterpolation || !parseString(interpolation))
+                            return fail("補間の指定が不正です");
+                        if (interpolation == "linear")
+                            keyframe.interpolation = KeyInterpolation::Linear;
+                        else if (interpolation == "ease_in")
+                            keyframe.interpolation = KeyInterpolation::EaseIn;
+                        else if (interpolation == "ease_out")
+                            keyframe.interpolation = KeyInterpolation::EaseOut;
+                        else if (interpolation == "spline")
+                            keyframe.interpolation = KeyInterpolation::Spline;
+                        else if (interpolation == "ease_in_out")
+                            keyframe.interpolation = KeyInterpolation::EaseInOut;
+                        else
+                            return fail("未知のキーフレーム補間です");
+                        hasInterpolation = true;
+                    } else if (field == "control1") {
+                        if (hasControl1 || !parseNumber(keyframe.control1))
+                            return false;
+                        hasControl1 = true;
+                    } else if (field == "control2") {
+                        if (hasControl2 || !parseNumber(keyframe.control2))
+                            return false;
+                        hasControl2 = true;
+                    } else if (field == "curve_start") {
+                        if (hasStart || !parseNumber(keyframe.curveStart))
+                            return fail("曲線の開始値が不正です");
+                        hasStart = true;
+                    } else if (field == "curve_end") {
+                        if (hasEnd || !parseNumber(keyframe.curveEnd))
+                            return fail("曲線の終了値が不正です");
+                        hasEnd = true;
                     } else {
                         return fail("キーフレームに未知の field があります: " + field);
                     }
@@ -873,8 +946,12 @@ private:
                     if (!consumeIf(','))
                         break;
                 }
-                if (!hasFrame || !hasValue || !consume('}'))
+                if (!hasFrame || !hasValue || !hasInterpolation || !hasStart || !hasEnd ||
+                    !consume('}'))
                     return false;
+                if (keyframe.interpolation == KeyInterpolation::Spline &&
+                    (!hasControl1 || !hasControl2))
+                    return fail("スプラインには両方の制御値が必要です");
                 keys.push_back(keyframe);
                 skipWhitespace();
                 if (!consumeIf(','))
@@ -1552,8 +1629,20 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
         for (std::size_t keyIndex = 0; keyIndex < keys.size(); ++keyIndex) {
             if (keyIndex != 0)
                 json << ',';
-            json << "{\"frame\":" << keys[keyIndex].frame
-                 << ",\"value_percent\":" << keys[keyIndex].valuePercent << '}';
+            json << "{\"frame\":" << keys[keyIndex].frame << ",\"value\":" << keys[keyIndex].value
+                 << ",\"interpolation\":\""
+                 << (keys[keyIndex].interpolation == KeyInterpolation::Linear    ? "linear"
+                     : keys[keyIndex].interpolation == KeyInterpolation::EaseIn  ? "ease_in"
+                     : keys[keyIndex].interpolation == KeyInterpolation::EaseOut ? "ease_out"
+                     : keys[keyIndex].interpolation == KeyInterpolation::Spline  ? "spline"
+                                                                                 : "ease_in_out")
+                 << "\""
+                 << ",\"curve_start\":" << keys[keyIndex].curveStart
+                 << ",\"curve_end\":" << keys[keyIndex].curveEnd;
+            if (keys[keyIndex].interpolation == KeyInterpolation::Spline)
+                json << ",\"control1\":" << keys[keyIndex].control1
+                     << ",\"control2\":" << keys[keyIndex].control2;
+            json << '}';
         }
         json << ']';
     };
@@ -1622,6 +1711,25 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
         writeKeys(clip.effects.opacityKeys);
         json << ",\n        \"volume_keys\": ";
         writeKeys(clip.effects.volumeKeys);
+        json << ",\n        \"position_x_keys\": ";
+        writeKeys(clip.effects.positionXKeys);
+        json << ",\n        \"position_y_keys\": ";
+        writeKeys(clip.effects.positionYKeys);
+        json << ",\n        \"scale_x_keys\": ";
+        writeKeys(clip.effects.scaleXKeys);
+        json << ",\n        \"scale_y_keys\": ";
+        writeKeys(clip.effects.scaleYKeys);
+        json << ",\n        \"rotation_keys\": ";
+        writeKeys(clip.effects.rotationKeys);
+        json << ",\n        \"crop_left_keys\": ";
+        writeKeys(clip.effects.cropLeftKeys);
+        json << ",\n        \"crop_top_keys\": ";
+        writeKeys(clip.effects.cropTopKeys);
+        json << ",\n        \"crop_right_keys\": ";
+        writeKeys(clip.effects.cropRightKeys);
+        json << ",\n        \"crop_bottom_keys\": ";
+        writeKeys(clip.effects.cropBottomKeys);
+
         json << "\n      }";
         if (clip.kind == TimelineClipKind::Text) {
             const auto& text = clip.text;

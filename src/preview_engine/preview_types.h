@@ -111,6 +111,20 @@ struct PreviewStillImage {
     std::vector<std::uint8_t> rgba;
 };
 
+struct PreviewMotionValue {
+    PreviewNormalizedRect destination;
+    PreviewNormalizedRect sourceRect;
+    float rotationDegrees = 0;
+    float opacity = 1;
+};
+
+// 不変の評価器。render thread は出力フレームの値だけを取得する。
+class PreviewMotion {
+public:
+    virtual ~PreviewMotion() = default;
+    virtual PreviewMotionValue evaluate(std::int64_t outputFrame) const = 0;
+};
+
 struct PreviewCompositionLayer {
     // video layer が参照する source。静止画 layer では 0 のまま。
     PreviewSourceId source;
@@ -131,6 +145,9 @@ struct PreviewCompositionLayer {
     // クロスディゾルブの incoming に使い、余白の所でも下の layer を 1 - opacity に減らす。
     // video layer で回転が 0 のときだけ受理する。
     bool opaqueBackdrop = false;
+    std::shared_ptr<const PreviewMotion> motion{};
+    // トランジション係数はクリップ自身の不透明度と別に掛ける。
+    float motionOpacityMultiplier = 1;
     bool operator==(const PreviewCompositionLayer&) const = default;
 };
 

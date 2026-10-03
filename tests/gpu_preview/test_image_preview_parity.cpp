@@ -111,6 +111,7 @@ struct ParityCase {
     // 縦横の拡大率。プレビューの枠のハンドルで縦横を別々に伸縮できるので、違う値も見る。
     double scaleX = 70.0;
     double scaleY = 70.0;
+    int motionFrame = -1;
 };
 
 // crop が非対称で回転も掛かる組み合わせで、以前の書き出しは平行四辺形になっていた
@@ -130,6 +131,9 @@ constexpr ParityCase kCases[] = {
      130.0, 60.0},
     {"V2 縦横別の拡大率 60/120 + 非対称 crop + 回転 20 度", 1, 20.0, 10.0, 5.0, 20.0, 10.0, true,
      60.0, 120.0},
+    {"画像モーション先頭", 0, 0, 0, 0, 0, 0, true, 70, 70, 0},
+    {"画像モーション途中", 0, 0, 0, 0, 0, 0, true, 70, 70, 15},
+    {"画像モーション末尾", 1, 0, 0, 0, 0, 0, false, 70, 70, 29},
 };
 
 enum class Kind { Red, Blue, Black, Other };
@@ -182,15 +186,15 @@ std::string describe(const Agreement& a) {
 // shiftX は対照用に preview だけ位置をずらす量 (%)。
 std::vector<Kind> composePreview(OwnedDevice& device, gpu::GpuCompositor& compositor,
                                  const project::Project& project, const gpu::DecodedGpuFrame& still,
-                                 double shiftX, int caseIndex) {
+                                 double shiftX, int caseIndex, int frameIndex = 0) {
     // 比べるのは画像 clip ("image") だけ。V1 の灰色の背景は比較から外れるので描かない。
-    const auto mapped = app::mapTimelinePreviewFrame(project, 0);
+    const auto mapped = app::mapTimelinePreviewFrame(project, frameIndex);
     const auto target = std::find_if(mapped.stillLayers.begin(), mapped.stillLayers.end(),
                                      [](const auto& entry) { return entry.clipId == "image"; });
     require(mapped.success && mapped.layers.empty() && target != mapped.stillLayers.end() &&
                 target->kind == project::TimelineClipKind::Image,
             "preview の対応づけに画像 clip がありません");
-    auto effects = project.timelineClips[0].effects;
+    auto effects = project::evaluateClipEffects(project.timelineClips[0].effects, frameIndex);
     effects.positionXPercent += shiftX;
     preview::PreviewCompositionLayer layer;
     app::applyPreviewLayerEffects(layer, effects, target->opacity, 0, 30);
@@ -293,6 +297,18 @@ int main(int argc, char** argv) {
         clip.effects.cropBottomPercent = parity.cropBottom;
         clip.effects.scaleXPercent = parity.scaleX;
         clip.effects.scaleYPercent = parity.scaleY;
+        const int frameIndex = std::max(0, parity.motionFrame);
+        if (parity.motionFrame >= 0) {
+            using Interpolation = project::KeyInterpolation;
+            clip.effects.positionXKeys = {{0, -10, Interpolation::EaseIn}, {29, 15}};
+            clip.effects.positionYKeys = {{0, 5, Interpolation::EaseOut}, {29, -10}};
+            clip.effects.scaleXKeys = {{0, 70}, {29, 90}};
+            clip.effects.scaleYKeys = {{0, 80}, {29, 75}};
+            clip.effects.rotationKeys = {{0, -10, Interpolation::EaseInOut}, {29, 20}};
+            clip.effects.cropLeftKeys = {{0, 0}, {29, 10}};
+            clip.effects.cropBottomKeys = {{0, 0}, {29, 5}};
+        }
+
         // V2 以上は V1 との間の affine transition で合成する。withBackground なら V1 に灰色の
         // 背景を置く。灰色は赤・青・黒のどれでもないので比較から外れ、画像の画素だけを比べる。
         // V1 が空の区間でも transition が掛かることは、背景の無い case で見る (以前は掛からず、
@@ -323,7 +339,8 @@ int main(int argc, char** argv) {
         QProcess decoder;
         decoder.start(QStringLiteral("C:/msys64/ucrt64/bin/ffmpeg.exe"),
                       {QStringLiteral("-loglevel"), QStringLiteral("error"), QStringLiteral("-i"),
-                       QString::fromStdWString(request.outputPath.wstring()),
+                       QString::fromStdWString(request.outputPath.wstring()), QStringLiteral("-vf"),
+                       QStringLiteral("select='eq(n,%1)'").arg(frameIndex),
                        QStringLiteral("-frames:v"), QStringLiteral("1"), QStringLiteral("-y"),
                        framePath});
         require(decoder.waitForFinished(30000) && decoder.exitCode() == 0,
@@ -342,9 +359,11 @@ int main(int argc, char** argv) {
             }
 
         const Agreement same =
-            compare(composePreview(device, compositor, project, still, 0.0, caseIndex), exported);
+            compare(composePreview(device, compositor, project, still, 0.0, caseIndex, frameIndex),
+                    exported);
         const Agreement shifted =
-            compare(composePreview(device, compositor, project, still, 25.0, caseIndex), exported);
+            compare(composePreview(device, compositor, project, still, 25.0, caseIndex, frameIndex),
+                    exported);
         std::printf("%s\n  同じ effect: %s\n  位置をずらした対照: %s\n", parity.name,
                     describe(same).c_str(), describe(shifted).c_str());
         // 空振りしていないこと: 画像の画素を十分に比べている。

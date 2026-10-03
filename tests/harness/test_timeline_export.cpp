@@ -529,6 +529,41 @@ int main(int argc, char** argv) {
                   "transition-local端key欠落を拒否しません");
             check(!std::filesystem::exists(invalidOutput),
                   "invalid transition mappingで出力を生成しました");
+            invalid.motion_frame_count = 10;
+            invalid.motion_frames = nullptr;
+            invalidError[0] = '\0';
+            check(mvm_mlt_export_two_track(&invalid, 1, 10, &invalidSpec,
+                                           toUtf8(invalidOutput).c_str(), nullptr, invalidError,
+                                           sizeof(invalidError)) != 0 &&
+                      std::string(invalidError).find("モーション配列") != std::string::npos,
+                  "欠落したモーション配列を固有の検査で拒否しない");
+            invalid.motion_frame_count = -1;
+            check(mvm_mlt_export_two_track(&invalid, 1, 10, &invalidSpec,
+                                           toUtf8(invalidOutput).c_str(), nullptr, invalidError,
+                                           sizeof(invalidError)) != 0 &&
+                      std::string(invalidError).find("モーション配列") != std::string::npos,
+                  "負のモーション件数を拒否しない");
+            MvmExportMotionFrame motion[10] = {};
+            MvmExportOpacityKeyframe opacity[10] = {};
+            for (int frame = 0; frame < 10; ++frame) {
+                motion[frame].local_frame = frame;
+                motion[frame].rect_width = 320;
+                motion[frame].rect_height = 240;
+                opacity[frame] = {frame, 1};
+            }
+            invalid.source_frame_count = 120;
+            invalid.motion_frame_count = 10;
+            invalid.motion_frames = motion;
+            invalid.opacity_keyframe_count = 10;
+            invalid.opacity_keyframes = opacity;
+            auto cancelledSpec = invalidSpec;
+            cancelledSpec.progress_callback = [](long long, long long, void*) { return 1; };
+            check(mvm_mlt_export_two_track(&invalid, 1, 10, &cancelledSpec,
+                                           toUtf8(invalidOutput).c_str(), nullptr, invalidError,
+                                           sizeof(invalidError)) == MVM_EXPORT_CANCELLED &&
+                      std::string(invalidError).find("書き出し準備をキャンセル") !=
+                          std::string::npos,
+                  "MLTのモーション準備中にキャンセルできない");
         }
         mvm::project::Project overlaid = mvm::project::createDefaultProject();
         mvm::project::TimelineClip bottom{mvm::project::TimelineClipKind::Video,
@@ -679,6 +714,81 @@ int main(int argc, char** argv) {
                       "ディゾルブの後に余白が黒ではありません");
                 std::printf("縦長ディゾルブの余白: frame 60 = %d,%d,%d、frame 67 = %d,%d,%d\n",
                             middleBar.r, middleBar.g, middleBar.b, lateBar.r, lateBar.g, lateBar.b);
+            }
+        }
+    }
+
+    // モーションの中間値を固定値の対照群と実画素で比較する。
+    if (runs(Part::Tractor)) {
+        const auto source = testDirectory / L"motion-source.mp4";
+        check(generateEffectsFixture(ffmpeg, source), "モーションの素材を生成できません");
+        auto motion = mvm::project::createDefaultProject();
+        mvm::project::TimelineClip clip;
+        clip.kind = mvm::project::TimelineClipKind::Manim;
+        clip.id = "motion";
+        clip.name = "モーション";
+        clip.mediaPath = source;
+        clip.sourceFpsNum = 60;
+        clip.sourceFpsDen = 1;
+        clip.sourceFrameCount = 120;
+        clip.sourceOutFrame = 61;
+        auto& effects = clip.effects;
+        using Interpolation = mvm::project::KeyInterpolation;
+        effects.positionXKeys = {{0, -20, Interpolation::EaseIn}, {60, 20}};
+        effects.positionYKeys = {{0, -10, Interpolation::EaseOut}, {60, 10}};
+        effects.scaleXKeys = {{0, 50}, {60, 80}};
+        effects.scaleYKeys = {{0, 60}, {60, 90}};
+        effects.rotationKeys = {{0, -30, Interpolation::EaseInOut}, {60, 30}};
+        effects.cropLeftKeys = {{0, 0}, {60, 20}};
+        effects.cropRightKeys = {{0, 20}, {60, 0}};
+        effects.cropTopKeys = {{0, 0}, {60, 10}};
+        effects.cropBottomKeys = {{0, 10}, {60, 0}};
+        motion.timelineClips = {clip};
+        mvm::app::TimelineExportRequest motionRequest;
+        motionRequest.width = 320;
+        motionRequest.height = 240;
+        motionRequest.outputPath = testDirectory / L"motion.mp4";
+        const auto rendered = mvm::app::exportTimeline(motion, motionRequest);
+        check(rendered.success, "モーションを書き出せません");
+        if (!rendered.success)
+            std::fprintf(stderr, "モーション: %s\n", rendered.error.c_str());
+        if (rendered.success) {
+            for (const int frame : {0, 15, 30, 45, 60}) {
+                const double t = frame / 60.0;
+                auto reference = motion;
+                auto& fixed = reference.timelineClips[0].effects;
+                fixed = {};
+                fixed.positionXPercent = -20 + 40 * t * t;
+                fixed.positionYPercent = -10 + 20 * (2 * t - t * t);
+                fixed.scaleXPercent = 50 + 30 * t;
+                fixed.scaleYPercent = 60 + 30 * t;
+                fixed.rotationDegrees = -30 + 60 * (3 * t * t - 2 * t * t * t);
+                fixed.cropLeftPercent = 20 * t;
+                fixed.cropRightPercent = 20 * (1 - t);
+                fixed.cropTopPercent = 10 * t;
+                fixed.cropBottomPercent = 10 * (1 - t);
+                reference.timelineClips[0].sourceOutFrame = 1;
+                auto referenceRequest = motionRequest;
+                referenceRequest.outputPath =
+                    testDirectory / (L"motion-reference-" + std::to_wstring(frame) + L".mp4");
+                const auto staticResult = mvm::app::exportTimeline(reference, referenceRequest);
+                check(staticResult.success, "モーションの固定値対照群を書き出せません");
+                if (!staticResult.success)
+                    continue;
+                const auto actual = decodeFrame(motionRequest.outputPath, frame);
+                const auto expected = decodeFrame(referenceRequest.outputPath, 0);
+                check(!actual.rgba.empty() && actual.rgba.size() == expected.rgba.size(),
+                      "モーションの画素比較が空振りです");
+                if (actual.rgba.empty() || actual.rgba.size() != expected.rgba.size())
+                    continue;
+                double difference = 0;
+                for (std::size_t i = 0; i < actual.rgba.size(); ++i)
+                    difference += std::abs(static_cast<int>(actual.rgba[i]) -
+                                           static_cast<int>(expected.rgba[i]));
+                const double meanDifference = difference / static_cast<double>(actual.rgba.size());
+                std::printf("モーションframe %d: 固定値対照群との画素差 %.3f\n", frame,
+                            meanDifference);
+                check(meanDifference < 3, "モーションの実画素が固定値の対照群と一致しません");
             }
         }
     }

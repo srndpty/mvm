@@ -662,7 +662,10 @@ void testMultipleClipClipboard(const std::filesystem::path& path) {
               controller.copySelectedClips() && controller.pasteClips() &&
               controller.clipCount() == 4 && controller.videoTrackCount() == 4,
           "複数clipを相対位置ごと空きtrackへ配置できません");
-    check(controller.saveProject(), "複数clipの貼り付け結果を保存できません");
+    const bool saved = controller.saveProject();
+    check(saved, (std::string("複数clipの貼り付け結果を保存できません: ") +
+                  controller.statusText().toStdString())
+                     .c_str());
     const auto placed = mvm::project::loadProjectJson(path);
     check(placed.success && placed.project.timelineClips[2].timelineStartFrame == 0 &&
               placed.project.timelineClips[3].timelineStartFrame == 40,
@@ -716,7 +719,7 @@ void testPenKeyUndoRedo(const std::filesystem::path& path) {
     check(controller.saveProject(), "ペンのキーを保存できません");
     const auto loaded = mvm::project::loadProjectJson(path);
     check(loaded.success && loaded.project.timelineClips[0].effects.opacityKeys.size() == 1 &&
-              loaded.project.timelineClips[0].effects.opacityKeys[0].valuePercent == 75.0,
+              loaded.project.timelineClips[0].effects.opacityKeys[0].value == 75.0,
           "ペンのキーを再読込できません");
 }
 
@@ -2313,6 +2316,110 @@ void testMediaFilePlacement(const std::filesystem::path& path, const std::filesy
 
 // プレビュー上の枠 (移動・拡縮) の controller 側。素材の寸法はプロジェクトパネルから取り、
 // ドラッグ中は preview だけ、確定は 1 つの undo にする。
+void testMotionKeyframes(const std::filesystem::path& path) {
+    auto initial = videoProject();
+    auto later = initial.timelineClips.front();
+    later.id = "later-motion";
+    later.timelineStartFrame = 200;
+    initial.timelineClips.push_back(later);
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "モーション試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.selectTimelineClips({QStringLiteral("video")}),
+          "モーション対象を選択できません");
+    int notifications = 0;
+    QObject::connect(&controller, &mvm::app::MvmController::stateChanged, [&] { ++notifications; });
+    check(controller.setEffectAnimation(QStringLiteral("positionX"), true),
+          "ストップウォッチをオンにできません");
+    check(notifications > 0, "時計の確定直後に表示変更を通知しません");
+    controller.moveEffectKey(QStringLiteral("positionX"), 0, 0, true);
+    check(controller.undoLastEdit(), "キー選択後にアニメーション開始をUndoできません");
+    bool stillAnimated = false;
+    for (const auto& entry : controller.keyframeChannels()) {
+        const auto channel = entry.toMap();
+        if (channel.value(QStringLiteral("name")) == QStringLiteral("positionX"))
+            stillAnimated = channel.value(QStringLiteral("animated")).toBool();
+    }
+    check(!stillAnimated, "キーを選択しただけで余分なUndoを追加しました");
+    check(controller.redoLastEdit(), "アニメーション開始をRedoできません");
+    check(controller.setEffectValue(QStringLiteral("positionX"), -20, true),
+          "最初のキーの値を変更できません");
+    controller.seekTimelineFrame(100);
+    check(controller.setEffectValue(QStringLiteral("positionX"), 20, true),
+          "現在位置へキーを追加できません");
+    check(controller.setEffectInterpolation(QStringLiteral("positionX"), 0, 1),
+          "イーズインを設定できません");
+    controller.seekTimelineFrame(50);
+    check(std::abs(controller.effectPositionX() + 10) < 1e-9,
+          "現在フレームのイーズ評価値を表示しません");
+    check(controller.toggleEffectKey(QStringLiteral("positionX")), "曲線上へキーを追加できません");
+    check(!controller.moveEffectKey(QStringLiteral("positionX"), 50, 100, true),
+          "既存キーへの衝突を拒否しません");
+    const auto before = controller.effectPositionX();
+    check(controller.setEffectValue(QStringLiteral("positionX"), 10, false) &&
+              controller.cancelEffectPreview() &&
+              std::abs(controller.effectPositionX() - before) < 1e-9,
+          "キーの一時編集を取り消せません");
+    check(controller.setEffectAnimation(QStringLiteral("positionX"), false) &&
+              std::abs(controller.effectPositionX() + 10) < 1e-9,
+          "オフで現在値を保持しません");
+    check(controller.undoLastEdit(), "ストップウォッチのオフをUndoできません");
+    // 描画デバイスを付けていない試験では、表示のseekは失敗する。移動先は別に検査する。
+    controller.seekEffectKey(QStringLiteral("positionX"), 1);
+    check(controller.playheadFrame() == 100, "次のキーへ移動できません");
+    controller.seekEffectKey(QStringLiteral("positionX"), -1);
+    check(controller.playheadFrame() == 50, "前のキーへ移動できません");
+    check(!controller.setEffectInterpolation(QStringLiteral("positionX"), 0, 99),
+          "未知の補間を受理しました");
+    check(controller.copyEffectKeys(QStringLiteral("positionX"), {0, 50}, false),
+          "キーをコピーできません");
+    controller.seekTimelineFrame(10);
+    check(controller.pasteEffectKeys(QStringLiteral("positionY")),
+          "XのキーをYへ貼り付けられません");
+    check(controller.undoLastEdit() && controller.redoLastEdit(),
+          "キー貼り付けのUndo/Redoが失敗しました");
+    check(controller.copyEffectKeys(QStringLiteral("positionY"), {10, 60}, true),
+          "キーをカットできません");
+    check(std::abs(controller.effectPositionY() + 20) < 1e-9,
+          "最後のキーのカットで現在値を保ちません");
+    check(controller.undoLastEdit(), "キーのカットをUndoできません");
+    controller.seekTimelineFrame(100);
+    check(!controller.pasteEffectKeys(QStringLiteral("positionY")),
+          "尺外へのキー貼り付けを拒否しません");
+    controller.seekTimelineFrame(0);
+    check(controller.setEffectSpline(QStringLiteral("positionX"), 0, 0.2, 0.8, false) &&
+              controller.cancelEffectPreview(),
+          "曲線ハンドルの一時編集を取り消せません");
+    check(controller.setEffectSpline(QStringLiteral("positionX"), 0, 0.2, 0.8, true),
+          "曲線ハンドルを確定できません");
+    check(!controller.setEffectSpline(QStringLiteral("positionX"), 0, -1, 0.8, true),
+          "不正な曲線ハンドルを拒否しません");
+    controller.seekTimelineFrame(150);
+    check(controller.editEffectKey(QStringLiteral("positionX"), 0, 1, -20, true),
+          "区間外で既存キーを移動できません");
+    check(controller.undoLastEdit(), "区間外のキー移動をUndoできません");
+    check(controller.setEffectSpline(QStringLiteral("positionX"), 0, 0.4, 0.6, true),
+          "区間外でスプラインを編集できません");
+    check(controller.undoLastEdit(), "区間外の曲線編集をUndoできません");
+    check(controller.deleteEffectKeys(QStringLiteral("positionX"), {0, 50}),
+          "区間外で複数キーを削除できません");
+    check(controller.undoLastEdit(), "複数キー削除を一回のUndoで戻せません");
+    check(!controller.deleteEffectKeys(QStringLiteral("positionX"), {999}),
+          "存在しないキー削除を受理しました");
+    check(controller.copyEffectKeys(QStringLiteral("positionX"), {0, 50}, true),
+          "区間外で複数キーをカットできません");
+    check(controller.undoLastEdit(), "区間外のカットをUndoできません");
+    const int beforePaste = notifications;
+    check(controller.pasteEffectKeys(QStringLiteral("rotation")) && notifications > beforePaste,
+          "区間外のペースト直後に表示を更新しません");
+    check(controller.undoLastEdit(), "区間外のペーストをUndoできません");
+    check(controller.saveProject(), "モーション付きProjectを保存できません");
+    const auto loaded = mvm::project::loadProjectJson(path);
+    check(loaded.success && loaded.project.timelineClips.front().effects.positionXKeys.size() == 3,
+          "キー列の保存復元に失敗しました");
+    controller.shutdown();
+}
+
 void testPreviewTransform(const std::filesystem::path& path) {
     const auto near = [](const QVariant& value, double expected) {
         return std::abs(value.toDouble() - expected) < 1e-6;
@@ -2464,6 +2571,7 @@ int main(int argc, char** argv) {
     testMoveOverwritesAndDragBounds(directory / L"move-overwrite.mvm");
     testPreviewPlanFollowsEdits(directory / L"preview-plan.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
+    testMotionKeyframes(directory / L"motion.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。
     // 初期化は 1 回だけにする。1 プロセスで init / shutdown を繰り返すと、2 回目の init で

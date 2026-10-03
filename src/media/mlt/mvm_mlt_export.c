@@ -36,6 +36,15 @@ static int export_cancel_requested(const MvmExportSpec* spec, mlt_consumer consu
     return spec->progress_callback(completed, total, spec->progress_opaque) != 0;
 }
 
+static int export_prepare_cancel_requested(const MvmExportSpec* spec, int* status, long long total,
+                                           char* err, size_t err_size) {
+    if (!export_cancel_requested(spec, NULL, total))
+        return 0;
+    *status = MVM_EXPORT_CANCELLED;
+    set_err(err, err_size, "書き出し準備をキャンセルしました");
+    return 1;
+}
+
 /* 音声出力の authority は timeline 上の独立 audio clip だけである。video producer が
  * 内蔵する音声は、linked audio clip を削除した timeline で復活させてはならないため、
  * audio track を持たない書き出しは常に an=1 にする。 */
@@ -200,9 +209,10 @@ static int file_size_utf8(const char* path, unsigned long long* size) {
  * (docs/premiere-like-editing.md §18.6)。寸法を保てば affine の座標系は出力と同じになる。
  * 配置の矩形 (rect_*) は呼び出し側が crop 前の全体の位置として渡す。 */
 static int attach_export_crop(mlt_profile profile, mlt_producer cut, const MvmExportClip* clip,
-                              char* err, size_t err_size) {
+                              long long filter_in, char* err, size_t err_size,
+                              const MvmExportSpec* spec, int* cancel_status) {
     if (clip->crop_left == 0 && clip->crop_top == 0 && clip->crop_right == 0 &&
-        clip->crop_bottom == 0)
+        clip->crop_bottom == 0 && clip->motion_frame_count == 0)
         return 0;
     if (!profile || profile->width <= 0 || profile->height <= 0) {
         set_err(err, err_size, "crop の基準になる profile の寸法が不正です");
@@ -223,7 +233,28 @@ static int attach_export_crop(mlt_profile profile, mlt_producer cut, const MvmEx
              (height - clip->crop_top - clip->crop_bottom) * 100.0 / height);
     mlt_properties props = MLT_FILTER_PROPERTIES(filter);
     mlt_properties_set(props, "rect", rect);
+    for (int index = 0; index < clip->motion_frame_count; ++index) {
+        if (index % 256 == 0 &&
+            export_prepare_cancel_requested(spec, cancel_status, clip->timeline_duration_frames,
+                                            err, err_size)) {
+            mlt_filter_close(filter);
+            return 1;
+        }
+        const MvmExportMotionFrame* frame = &clip->motion_frames[index];
+        mlt_rect animated = {frame->crop_left, frame->crop_top,
+                             width - frame->crop_left - frame->crop_right,
+                             height - frame->crop_top - frame->crop_bottom, 1};
+        if (mlt_properties_anim_set_rect(props, "rect", animated, (mlt_position)frame->local_frame,
+                                         (mlt_position)clip->timeline_duration_frames,
+                                         mlt_keyframe_linear) != 0) {
+            mlt_filter_close(filter);
+            set_err(err, err_size, "クロップのモーションを設定できません");
+            return 1;
+        }
+    }
     mlt_properties_set(props, "color", "#00000000");
+    mlt_filter_set_in_and_out(filter, (mlt_position)filter_in,
+                              (mlt_position)(filter_in + clip->timeline_duration_frames - 1));
     mlt_properties_set_int(props, "circle", 0);
     mlt_properties_set_double(props, "radius", 0.0);
     if (mlt_producer_attach(cut, filter) != 0) {
@@ -237,7 +268,7 @@ static int attach_export_crop(mlt_profile profile, mlt_producer cut, const MvmEx
 
 static int attach_export_affine(mlt_profile profile, mlt_producer cut, const MvmExportClip* clip,
                                 long long producer_in, long long duration, char* err,
-                                size_t err_size) {
+                                size_t err_size, const MvmExportSpec* spec, int* cancel_status) {
     mlt_filter filter = mlt_factory_filter(profile, "affine", NULL);
     if (!filter) {
         set_err(err, err_size, "必須filter 'affine'を作れません");
@@ -260,9 +291,34 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
     mlt_filter_set_in_and_out(filter, (mlt_position)producer_in,
                               (mlt_position)(producer_in + duration - 1));
     for (int i = 0; i < clip->opacity_keyframe_count; ++i) {
+        if (i % 256 == 0 &&
+            export_prepare_cancel_requested(spec, cancel_status, clip->timeline_duration_frames,
+                                            err, err_size)) {
+            mlt_filter_close(filter);
+            return 1;
+        }
         const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[i];
         mlt_rect rect = {clip->rect_x, clip->rect_y, clip->rect_width, clip->rect_height,
                          key->opacity};
+        if (clip->motion_frame_count > 0) {
+            const MvmExportMotionFrame* frame = &clip->motion_frames[key->local_frame];
+            rect.x = frame->rect_x;
+            rect.y = frame->rect_y;
+            rect.w = frame->rect_width;
+            rect.h = frame->rect_height;
+            if (mlt_properties_anim_set_double(
+                    props, "transition.fix_rotate_x", frame->rotation_degrees,
+                    (mlt_position)key->local_frame, (mlt_position)clip->timeline_duration_frames,
+                    mlt_keyframe_linear) != 0 ||
+                mlt_properties_anim_set_double(props, "transition.fix_shear_x",
+                                               frame->shear_degrees, (mlt_position)key->local_frame,
+                                               (mlt_position)clip->timeline_duration_frames,
+                                               mlt_keyframe_linear) != 0) {
+                mlt_filter_close(filter);
+                set_err(err, err_size, "回転モーションを設定できません");
+                return 1;
+            }
+        }
         if (mlt_properties_anim_set_rect(props, "transition.rect", rect,
                                          (mlt_position)key->local_frame, (mlt_position)duration,
                                          mlt_keyframe_linear) != 0) {
@@ -340,7 +396,8 @@ static int attach_export_backdrop(mlt_profile profile, mlt_producer cut, const M
 }
 
 static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
-                                       const MvmExportClip* clip, char* err, size_t err_size) {
+                                       const MvmExportClip* clip, char* err, size_t err_size,
+                                       const MvmExportSpec* spec, int* cancel_status) {
     mlt_transition transition = mlt_factory_transition(profile, "affine", NULL);
     if (!transition) {
         set_err(err, err_size, "必須transition 'affine'を作れません");
@@ -362,9 +419,32 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
         transition, (mlt_position)clip->timeline_start_frame,
         (mlt_position)(clip->timeline_start_frame + clip->timeline_duration_frames - 1));
     for (int index = 0; index < clip->opacity_keyframe_count; ++index) {
+        if (index % 256 == 0 &&
+            export_prepare_cancel_requested(spec, cancel_status, clip->timeline_duration_frames,
+                                            err, err_size)) {
+            mlt_transition_close(transition);
+            return 1;
+        }
         const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[index];
         mlt_rect rect = {clip->rect_x, clip->rect_y, clip->rect_width, clip->rect_height,
                          key->opacity};
+        if (clip->motion_frame_count > 0) {
+            const MvmExportMotionFrame* frame = &clip->motion_frames[key->local_frame];
+            rect.x = frame->rect_x;
+            rect.y = frame->rect_y;
+            rect.w = frame->rect_width;
+            rect.h = frame->rect_height;
+            if (mlt_properties_anim_set_double(
+                    props, "fix_rotate_x", frame->rotation_degrees, (mlt_position)key->local_frame,
+                    (mlt_position)clip->timeline_duration_frames, mlt_keyframe_linear) != 0 ||
+                mlt_properties_anim_set_double(
+                    props, "fix_shear_x", frame->shear_degrees, (mlt_position)key->local_frame,
+                    (mlt_position)clip->timeline_duration_frames, mlt_keyframe_linear) != 0) {
+                mlt_transition_close(transition);
+                set_err(err, err_size, "回転モーションを設定できません");
+                return 1;
+            }
+        }
         if (mlt_properties_anim_set_rect(props, "rect", rect, (mlt_position)key->local_frame,
                                          (mlt_position)clip->timeline_duration_frames,
                                          mlt_keyframe_linear) != 0) {
@@ -388,7 +468,8 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
  * filter_inはclip-local frame 0に対応するparent producer位置。 */
 static int attach_tractor_clip_filters(mlt_profile profile, mlt_producer cut,
                                        const MvmExportClip* clip, int track, long long filter_in,
-                                       char* err, size_t err_size) {
+                                       char* err, size_t err_size, const MvmExportSpec* spec,
+                                       int* cancel_status) {
     if (clip->is_audio) {
         if (clip->mixer_pan != 0.0) {
             // panner は初期値が無いと split の評価へ入らない。初期化後のパン値は split で指定する。
@@ -460,16 +541,51 @@ static int attach_tractor_clip_filters(mlt_profile profile, mlt_producer cut,
         return 0;
     }
     if (track == 0 && clip->effects_enabled)
-        return attach_export_crop(profile, cut, clip, err, err_size) != 0 ||
+        return attach_export_crop(profile, cut, clip, filter_in, err, err_size, spec,
+                                  cancel_status) != 0 ||
                attach_export_affine(profile, cut, clip, filter_in, clip->timeline_duration_frames,
-                                    err, err_size) != 0;
+                                    err, err_size, spec, cancel_status) != 0;
     /* 上位映像trackへopaque-black affine filterをattachしない。cropだけをcutへ置く。
      * クロスディゾルブの incoming だけは余白を黒で埋める (attach_export_backdrop)。 */
     if (track > 0)
-        return attach_export_crop(profile, cut, clip, err, err_size) != 0 ||
+        return attach_export_crop(profile, cut, clip, filter_in, err, err_size, spec,
+                                  cancel_status) != 0 ||
                (clip->opaque_backdrop &&
                 attach_export_backdrop(profile, cut, clip, filter_in,
                                        clip->timeline_duration_frames, err, err_size) != 0);
+    return 0;
+}
+
+static int validate_motion_frames(const MvmExportClip* clips, int count, const MvmExportSpec* spec,
+                                  char* err, size_t err_size) {
+    for (int index = 0; index < count; ++index) {
+        const MvmExportClip* clip = &clips[index];
+        if (clip->motion_frame_count < 0 ||
+            (clip->motion_frame_count > 0 &&
+             (!clip->motion_frames || clip->is_audio ||
+              clip->motion_frame_count != clip->timeline_duration_frames ||
+              clip->opacity_keyframe_count != clip->motion_frame_count ||
+              !clip->opacity_keyframes))) {
+            set_err(err, err_size, "モーション配列の件数または参照が不正です");
+            return 1;
+        }
+        for (int i = 0; i < clip->motion_frame_count; ++i) {
+            const MvmExportMotionFrame* frame = &clip->motion_frames[i];
+            if (frame->local_frame != i || clip->opacity_keyframes[i].local_frame != i ||
+                !isfinite(frame->crop_left) || !isfinite(frame->crop_top) ||
+                !isfinite(frame->crop_right) || !isfinite(frame->crop_bottom) ||
+                frame->crop_left < 0 || frame->crop_top < 0 || frame->crop_right < 0 ||
+                frame->crop_bottom < 0 || frame->crop_left + frame->crop_right >= spec->width ||
+                frame->crop_top + frame->crop_bottom >= spec->height || !isfinite(frame->rect_x) ||
+                !isfinite(frame->rect_y) || !isfinite(frame->rect_width) ||
+                !isfinite(frame->rect_height) || frame->rect_width <= 0 ||
+                frame->rect_height <= 0 || !isfinite(frame->rotation_degrees) ||
+                !isfinite(frame->shear_degrees)) {
+                set_err(err, err_size, "モーションのフレーム値が不正です");
+                return 1;
+            }
+        }
+    }
     return 0;
 }
 
@@ -506,6 +622,8 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
                 spec->height, spec->fps_num, spec->fps_den);
         return 1;
     }
+    if (validate_motion_frames(clips, clip_count, spec, err, err_size) != 0)
+        return 1;
     if (spec->timeout_ms <= 0) {
         set_err(err, err_size, "timeout_ms が 0 以下です: %d", spec->timeout_ms);
         return 1;
@@ -657,9 +775,10 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
                 goto fail;
             }
             cuts[cut_count++] = cut;
-            if (attach_export_crop(profile, cut, &clips[i], err, err_size) != 0 ||
-                attach_export_affine(profile, cut, &clips[i], producer_in, duration, err,
-                                     err_size) != 0) {
+            if (attach_export_crop(profile, cut, &clips[i], producer_in, err, err_size, spec,
+                                   &cancelled) != 0 ||
+                attach_export_affine(profile, cut, &clips[i], producer_in, duration, err, err_size,
+                                     spec, &cancelled) != 0) {
                 goto fail;
             }
             if (mlt_playlist_append(playlist, cut) != 0) {
@@ -842,6 +961,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         set_err(err, err_size, "M7b tractor export引数が不正です");
         return 1;
     }
+    if (validate_motion_frames(clips, clip_count, spec, err, err_size) != 0)
+        return 1;
     /* 映像 playlist は V1/V2 を常に作り、それより上は使われている最上位 track まで作る。
      * audio は clip ごとに 1 本の playlist を持つ。 */
     for (int index = 0; index < clip_count; ++index) {
@@ -1071,7 +1192,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             goto cleanup;
         }
         cuts[cut_count++] = cut;
-        if (attach_tractor_clip_filters(profile, cut, clip, track, producer_in, err, err_size) != 0)
+        if (attach_tractor_clip_filters(profile, cut, clip, track, producer_in, err, err_size, spec,
+                                        &failed) != 0)
             goto cleanup;
         if (mlt_playlist_append(playlists[track], cut) != 0) {
             set_err(err, err_size, "clip %dをtrack %d playlistへ追加できません", index, track);
@@ -1091,7 +1213,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
              * producer_out-1を返すため、affineのclip-local位置が
              * actual_duration+paddingになるようfilter原点をずらす。 */
             if (attach_tractor_clip_filters(profile, tail, clip, track, producer_in - 1 - padding,
-                                            err, err_size) != 0)
+                                            err, err_size, spec, &failed) != 0)
                 goto cleanup;
             if (mlt_playlist_append(playlists[track], tail) != 0) {
                 set_err(err, err_size, "clip %dの末尾frameを補完できません", index);
@@ -1120,7 +1242,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     for (int index = 0; index < clip_count; ++index) {
         if (clips[index].is_audio || clips[index].video_track == 0)
             continue;
-        if (plant_export_overlay_affine(profile, tractor, &clips[index], err, err_size) != 0)
+        if (plant_export_overlay_affine(profile, tractor, &clips[index], err, err_size, spec,
+                                        &failed) != 0)
             goto cleanup;
         if (out)
             ++out->transition_count;

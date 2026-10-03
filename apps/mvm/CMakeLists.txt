@@ -58,6 +58,7 @@ qt_add_qml_module(mvm
         TrackEyeIcon.qml
         TimelineToolPanel.qml
         TextClipInspector.qml
+        KeyframeInspector.qml
         TransitionInspector.qml
         TransitionEditorMath.js
         TrackEyePaint.js
@@ -152,6 +153,7 @@ qt_add_qml_module(mvm_test_text_ui_input
         TrackEyeIcon.qml
         TimelineToolPanel.qml
         TextClipInspector.qml
+        KeyframeInspector.qml
         TransitionInspector.qml
         TransitionEditorMath.js
         TrackEyePaint.js

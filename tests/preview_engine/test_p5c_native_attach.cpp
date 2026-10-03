@@ -5,6 +5,7 @@
 #include <d3d11.h>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -53,8 +54,10 @@ public:
 };
 
 void require(bool condition, const char* message) {
-    if (!condition)
+    if (!condition) {
+        std::cerr << "検査失敗: " << message << '\n';
         throw std::runtime_error(message);
+    }
 }
 
 template<typename T>
@@ -79,6 +82,114 @@ bool createDevice(ComPointer<ID3D11Device>& device, ComPointer<ID3D11DeviceConte
     return SUCCEEDED(result) && device && context;
 }
 
+class TestMotion final : public PreviewMotion {
+public:
+    PreviewMotionValue evaluate(std::int64_t frame) const override {
+        lastFrame = frame;
+        ++calls;
+        PreviewMotionValue value;
+        value.destination = {frame == 0 ? 0.0F : 0.5F, 0, 0.5F, 1};
+        value.opacity = frame == 0 ? 1.0F : 0.5F;
+        if (frame == 16)
+            value.opacity = std::numeric_limits<float>::quiet_NaN();
+        return value;
+    }
+
+    mutable std::int64_t lastFrame = -1;
+    mutable int calls = 0;
+};
+
+void testMotionRender(ID3D11Device* device, ID3D11DeviceContext* context) {
+    D3D11_TEXTURE2D_DESC descriptor{};
+    descriptor.Width = 64;
+    descriptor.Height = 32;
+    descriptor.MipLevels = descriptor.ArraySize = 1;
+    descriptor.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    descriptor.SampleDesc.Count = 1;
+    descriptor.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ID3D11Texture2D* rawTarget = nullptr;
+    require(SUCCEEDED(device->CreateTexture2D(&descriptor, nullptr, &rawTarget)),
+            "モーション検査の描画先を作れません");
+    ComPointer<ID3D11Texture2D> target(rawTarget);
+    ID3D11RenderTargetView* rawView = nullptr;
+    require(SUCCEEDED(device->CreateRenderTargetView(target.get(), nullptr, &rawView)),
+            "モーション検査の描画先viewを作れません");
+    ComPointer<ID3D11RenderTargetView> view(rawView);
+    descriptor.BindFlags = 0;
+    descriptor.Usage = D3D11_USAGE_STAGING;
+    descriptor.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D* rawStaging = nullptr;
+    require(SUCCEEDED(device->CreateTexture2D(&descriptor, nullptr, &rawStaging)),
+            "モーション検査の読み戻し先を作れません");
+    ComPointer<ID3D11Texture2D> staging(rawStaging);
+
+    PreviewEngine engine;
+    const auto releaseEngine = [](PreviewEngine* value) {
+        if (value->status().state == PreviewEngineState::Shutdown ||
+            value->status().state == PreviewEngineState::Error)
+            return;
+        value->requestShutdown();
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            const auto completed = PreviewRenderPort::completeRuntimeTeardown(*value);
+            if (completed && completed.value())
+                break;
+        }
+    };
+    std::unique_ptr<PreviewEngine, decltype(releaseEngine)> cleanup(&engine, releaseEngine);
+    require(engine.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+            "モーション検査のengineを初期化できません");
+    require(PreviewRenderPort::bindRenderThread(engine), "モーション描画threadを登録できません");
+    require(PreviewRenderPort::attachNativeD3D11Device(engine, device, context),
+            "モーション検査のdeviceを接続できません");
+    auto image = std::make_shared<PreviewStillImage>();
+    image->width = 64;
+    image->height = 32;
+    image->rgba.assign(64 * 32 * 4, 255);
+    auto motion = std::make_shared<TestMotion>();
+    auto composition = std::make_shared<CompositionSnapshot>();
+    PreviewCompositionLayer layer;
+    layer.stillImage = image;
+    layer.motion = motion;
+    composition->layers.push_back(layer);
+    require(engine.submitComposition(composition), "モーション構成を受理できません");
+    for (const int frame : {0, 15}) {
+        require(engine.seek({frame}), "モーションの指定frameへseekできません");
+        const float background[4] = {0, 0, 0, 1};
+        context->ClearRenderTargetView(view.get(), background);
+        bool presented = false;
+        for (int attempt = 0; attempt < 8 && !presented; ++attempt) {
+            const auto rendered = PreviewRenderPort::renderFrame(engine, view.get(), 64, 32);
+            require(rendered, "モーションの指定frameを描画できません");
+            presented = rendered.value().presented;
+        }
+        require(presented && motion->lastFrame == frame && motion->calls > 0,
+                "構成を再送せずに描画frameのモーションを評価できません");
+        context->CopyResource(staging.get(), target.get());
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        require(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)),
+                "モーション描画結果を読み戻せません");
+        const auto* pixels = static_cast<const unsigned char*>(mapped.pData) + 16 * mapped.RowPitch;
+        const int left = pixels[16 * 4], right = pixels[48 * 4];
+        context->Unmap(staging.get(), 0);
+        std::cout << "モーション frame " << frame << " 左 " << left << " 右 " << right << std::endl;
+        require(frame == 0 ? left > 240 && right < 10 : left < 10 && right >= 120 && right <= 136,
+                "描画frameの移動と不透明度が画素へ反映されません");
+    }
+    require(engine.seek({16}), "不正モーションのframeへseekできません");
+    const auto invalid = PreviewRenderPort::renderFrame(engine, view.get(), 64, 32);
+    require(!invalid &&
+                invalid.error().detail.find("モーションの評価値が不正") != std::string::npos,
+            "不正な不透明度を描画して成功扱いにしました");
+    require(engine.requestShutdown(), "モーション検査を終了できません");
+    bool complete = false;
+    for (int attempt = 0; attempt < 8 && !complete; ++attempt) {
+        const auto teardown = PreviewRenderPort::completeRuntimeTeardown(engine);
+        require(teardown, "モーション検査の解放に失敗しました");
+        complete = teardown.value();
+    }
+    require(complete, "モーション検査の解放が完了しません");
+}
+
 } // namespace
 
 int main() {
@@ -89,6 +200,7 @@ int main() {
         ComPointer<ID3D11DeviceContext> contextB;
         require(createDevice(deviceA, contextA), "D3D11 device Aを作成できません");
         require(createDevice(deviceB, contextB), "D3D11 device Bを作成できません");
+        testMotionRender(deviceA.get(), contextA.get());
 
         PreviewEngine failed;
         auto failedSink = std::make_shared<RecordingSink>();

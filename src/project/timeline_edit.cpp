@@ -130,8 +130,9 @@ bool trimClipBoundary(const Project& project, TimelineClip& clip, TrimEdge edge,
         clip.sourceInFrame = 0;
         clip.sourceOutFrame = newEnd - newStart;
         clip.sourceFrameCount = clip.sourceOutFrame;
-        reframeClipKeys(clip.effects.opacityKeys, originalDuration.frame, clip.sourceOutFrame,
-                        newStart - originalStart);
+        for (const auto& channel : effectChannels())
+            reframeClipKeys(clip.effects.*channel.keys, originalDuration.frame, clip.sourceOutFrame,
+                            newStart - originalStart);
         return true;
     }
     const std::int64_t originalStart = clip.timelineStartFrame;
@@ -176,10 +177,9 @@ bool trimClipBoundary(const Project& project, TimelineClip& clip, TrimEdge edge,
         return false;
     }
     const auto localShift = clip.timelineStartFrame - originalStart;
-    reframeClipKeys(clip.effects.opacityKeys, originalDuration.frame, adjustedDuration.frame,
-                    localShift);
-    reframeClipKeys(clip.effects.volumeKeys, originalDuration.frame, adjustedDuration.frame,
-                    localShift);
+    for (const auto& channel : effectChannels())
+        reframeClipKeys(clip.effects.*channel.keys, originalDuration.frame, adjustedDuration.frame,
+                        localShift);
     return true;
 }
 
@@ -498,6 +498,15 @@ bool dissolveClipOpaqueOver(const Project& project, const TimelineClip& clip,
             error = sourceLocal.error;
             return false;
         }
+        const auto evaluated = evaluateClipEffects(clip.effects, local);
+        if (evaluated.positionXPercent != 0 || evaluated.positionYPercent != 0 ||
+            evaluated.scaleXPercent != 100 || evaluated.scaleYPercent != 100 ||
+            evaluated.rotationDegrees != 0 || evaluated.cropLeftPercent != 0 ||
+            evaluated.cropRightPercent != 0 || evaluated.cropTopPercent != 0 ||
+            evaluated.cropBottomPercent != 0) {
+            error = kDissolveRequirement + clip.name;
+            return false;
+        }
         if (evaluateClipOpacity(clip.effects, local, sourceLocal.frame,
                                 clip.sourceOutFrame - clip.sourceInFrame) < 1.0) {
             error = kDissolveRequirement + clip.name;
@@ -770,19 +779,6 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "text / image clip の素材範囲が尺と一致しません: " + clip.name;
             return result;
         }
-        // 文字の effect は不透明度 (値・key・fade) だけを扱う。位置・拡大・回転・切り抜きと
-        // 音量は、書き出しでは効くが preview の静止画 layer では描けないので持たせない。
-        if (clip.kind == TimelineClipKind::Text) {
-            ClipEffects opacityOnly;
-            opacityOnly.opacityPercent = clip.effects.opacityPercent;
-            opacityOnly.opacityKeys = clip.effects.opacityKeys;
-            opacityOnly.fadeInFrames = clip.effects.fadeInFrames;
-            opacityOnly.fadeOutFrames = clip.effects.fadeOutFrames;
-            if (clip.effects != opacityOnly) {
-                result.error = "text clip には不透明度以外の effect を設定できません: " + clip.name;
-                return result;
-            }
-        }
         if (clip.sourceFpsNum <= 0 || clip.sourceFpsDen <= 0 || clip.sourceFrameCount <= 0 ||
             clip.sourceInFrame < 0 || clip.sourceOutFrame <= clip.sourceInFrame ||
             clip.sourceOutFrame > clip.sourceFrameCount) {
@@ -825,8 +821,8 @@ TimelineValidationResult validateTimeline(const Project& project) {
         }
         const auto duration = timelineClipDuration(project, clip);
         if (!duration.success ||
-            !validateClipKeyframes(clip.effects.opacityKeys, duration.frame, 100.0, effectsError) ||
-            !validateClipKeyframes(clip.effects.volumeKeys, duration.frame, 200.0, effectsError) ||
+            !validateEffectKeys(clip.effects, duration.frame, clip.kind == TimelineClipKind::Audio,
+                                effectsError) ||
             (clip.kind == TimelineClipKind::Audio &&
              (!clip.effects.opacityKeys.empty() || clip.effects.opacityPercent != 100.0)) ||
             (clip.kind != TimelineClipKind::Audio &&
@@ -1950,15 +1946,15 @@ TimelineEditResult stepClipVolume(Project& project, const std::vector<std::strin
         changed = changed || *stepped != clip.effects.volumePercent;
         clip.effects.volumePercent = *stepped;
         for (auto& key : clip.effects.volumeKeys) {
-            if (key.valuePercent == 0.0)
+            if (key.value == 0.0)
                 continue;
-            const auto steppedKey = stepVolumePercentByDb(key.valuePercent, stepDb);
+            const auto steppedKey = stepVolumePercentByDb(key.value, stepDb);
             if (!steppedKey) {
                 result.error = "音量キーを段階的に変えられません: " + clip.name;
                 return result;
             }
-            changed = changed || *steppedKey != key.valuePercent;
-            key.valuePercent = *steppedKey;
+            changed = changed || *steppedKey != key.value;
+            key.value = *steppedKey;
         }
     }
     if (firstTarget < 0) {
@@ -3286,7 +3282,8 @@ ClipKeyEditPreview previewClipKeyEdit(const Project& project, const std::string&
         return result;
     }
     const auto& clip = project.timelineClips[static_cast<std::size_t>(index)];
-    if ((kind == ClipKeyKind::Volume) != (clip.kind == TimelineClipKind::Audio) ||
+    if (!effectChannel(kind) ||
+        (kind == ClipKeyKind::Volume) != (clip.kind == TimelineClipKind::Audio) ||
         !std::isfinite(requestedPercent)) {
         result.error = "キーフレームの種別または値が不正です";
         return result;
@@ -3297,8 +3294,7 @@ ClipKeyEditPreview previewClipKeyEdit(const Project& project, const std::string&
     if (!duration.success)
         return result;
     result.effects = clip.effects;
-    auto& keys =
-        kind == ClipKeyKind::Volume ? result.effects.volumeKeys : result.effects.opacityKeys;
+    auto& keys = result.effects.*effectChannel(kind)->keys;
     auto found = std::find_if(keys.begin(), keys.end(), [originalFrame](const auto& key) {
         return key.frame == originalFrame;
     });
@@ -3306,16 +3302,16 @@ ClipKeyEditPreview previewClipKeyEdit(const Project& project, const std::string&
         result.error = "移動元のキーフレームがありません";
         return result;
     }
-    const double maximum = kind == ClipKeyKind::Volume ? 200.0 : 100.0;
-    const double value = std::clamp(requestedPercent, 0.0, maximum);
+    const auto& channel = *effectChannel(kind);
+    const double value = std::clamp(requestedPercent, channel.minimum, channel.maximum);
     if (originalFrame < 0) {
         result.frame = std::clamp<std::int64_t>(requestedFrame, 0, duration.frame - 1);
         found = std::find_if(keys.begin(), keys.end(),
                              [&](const auto& key) { return key.frame == result.frame; });
         if (found != keys.end())
-            found->valuePercent = value;
+            found->value = value;
         else
-            keys.push_back({result.frame, value});
+            insertClipKey(keys, result.frame, value);
         std::sort(keys.begin(), keys.end(),
                   [](const auto& a, const auto& b) { return a.frame < b.frame; });
     } else {
@@ -3324,7 +3320,8 @@ ClipKeyEditPreview previewClipKeyEdit(const Project& project, const std::string&
         const auto upper =
             position + 1 == keys.size() ? duration.frame - 1 : keys[position + 1].frame - 1;
         result.frame = std::clamp(requestedFrame, lower, upper);
-        keys[position] = {result.frame, value};
+        keys[position].frame = result.frame;
+        keys[position].value = value;
     }
     Project candidate = project;
     candidate.timelineClips[static_cast<std::size_t>(index)].effects = result.effects;
@@ -3357,13 +3354,16 @@ TimelineEditResult deleteClipKey(Project& project, const std::string& clipId, Cl
         return {false, -1, "キーフレームを削除する clip がありません"};
     Project candidate = project;
     auto& clip = candidate.timelineClips[static_cast<std::size_t>(index)];
-    if ((kind == ClipKeyKind::Volume) != (clip.kind == TimelineClipKind::Audio))
+    if (!effectChannel(kind) ||
+        (kind == ClipKeyKind::Volume) != (clip.kind == TimelineClipKind::Audio))
         return {false, -1, "キーフレームの種別が不正です"};
-    auto& keys = kind == ClipKeyKind::Volume ? clip.effects.volumeKeys : clip.effects.opacityKeys;
+    auto& keys = clip.effects.*effectChannel(kind)->keys;
     const auto found = std::find_if(keys.begin(), keys.end(),
                                     [frame](const auto& key) { return key.frame == frame; });
     if (found == keys.end())
         return {false, -1, "削除するキーフレームがありません"};
+    if (keys.size() == 1)
+        clip.effects.*effectChannel(kind)->base = found->value;
     keys.erase(found);
     return commitCandidate(project, std::move(candidate), index);
 }
@@ -3431,8 +3431,8 @@ bool applyClipSpeed(Project& candidate, int index, TrimEdge edge, std::int64_t s
             const std::int64_t end = clip.timelineStartFrame + before.frame;
             clip.timelineStartFrame = end - after.frame;
         }
-        rescaleClipKeys(clip.effects.opacityKeys, before.frame, after.frame);
-        rescaleClipKeys(clip.effects.volumeKeys, before.frame, after.frame);
+        for (const auto& channel : effectChannels())
+            rescaleClipKeys(clip.effects.*channel.keys, before.frame, after.frame);
     }
     return true;
 }
@@ -3835,7 +3835,7 @@ TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, 
         result.error = sourceFrame.error;
         return result;
     }
-    // 保持は素材 frame と一緒に見た目も止める。挿入位置で評価した不透明度 (key と fade 込み) を
+    // 保持中もモーションは継続する。不透明度は挿入位置の値 (key と fade 込み) を
     // 保持 clip の基本値へ焼き込む。automation を捨てるだけだと、fade の途中などで保持へ
     // 入った瞬間に基本値へ跳び、右側の clip へ戻るとまた元の値へ跳ぶ。
     const auto fadeFrame = clipFadeSourceFrameAt(original, project.timelineFpsNum,
@@ -3873,6 +3873,12 @@ TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, 
     hold.frameHold =
         FrameHold{sourceFrame.frame,         original.sourceFpsNum, original.sourceFpsDen,
                   original.sourceFrameCount, original.speedNum,     original.speedDen};
+    for (const auto& channel : effectChannels()) {
+        if (channel.kind == ClipKeyKind::Opacity || channel.kind == ClipKeyKind::Volume)
+            continue;
+        hold.effects.*channel.keys = original.effects.*channel.keys;
+        reframeClipKeys(hold.effects.*channel.keys, end - start, holdFrames, frame - start);
+    }
     hold.effects.opacityPercent = heldOpacityPercent;
     hold.effects.opacityKeys.clear();
     hold.effects.volumeKeys.clear();
