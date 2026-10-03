@@ -1895,7 +1895,7 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
             result.error = "分割後の clip ID を作れません";
             return result;
         }
-        relinkSubtitlesAfterSplit(candidate, left.id, right.id, frame);
+        relinkSubtitlesAfterSplit(candidate, left.id, right.id, frame, newId);
         if (!right.linkGroupId.empty()) {
             const auto found = rightLinkGroups.find(right.linkGroupId);
             right.linkGroupId = found == rightLinkGroups.end() ? std::string{} : found->second;

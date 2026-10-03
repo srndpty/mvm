@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <numeric>
+#include <string_view>
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -40,10 +42,17 @@ std::string utf8(const std::filesystem::path& path) {
     auto text = path.u8string();
     return {text.begin(), text.end()};
 }
-} // namespace
 
-bool prepareAudio(const Request& request, const std::atomic<bool>* cancel,
-                  std::vector<float>& samples, std::string& error) {
+// 区間の開始の手前へ seek してからデコードする。seek の手前の余白 (preroll) を少し読み、
+// timestamp で正確な開始位置まで捨てる。
+constexpr std::int64_t kSeekPrerollMs = 2000;
+
+// 1 回分の準備。allowSeek なら区間の開始の手前へ seek する。seek が開始位置を越えた場合
+// (overshoot) は false を返して overshoot を立てる。呼び出し側は seek せずにやり直す。
+bool preparePass(const Request& request, const std::atomic<bool>* cancel, bool allowSeek,
+                 std::vector<float>& samples, std::string& error, PrepareStats& stats,
+                 bool& overshoot) {
+    overshoot = false;
     if (request.sourceBeginMs < 0 ||
         (request.sourceEndMs != -1 && request.sourceEndMs <= request.sourceBeginMs)) {
         error = "文字起こしの素材区間が不正です";
@@ -115,11 +124,33 @@ bool prepareAudio(const Request& request, const std::atomic<bool>* cancel,
     std::int64_t cursor = 0;
     std::vector<float> output;
     std::int64_t origin = stream->start_time;
+    // 長い素材の後半だけを使う clip で、先頭から区間まで全部デコードしない。
+    // mp3 は索引が無いと seek 先の時刻が推定になり (可変ビットレート)、字幕の時刻がずれうる。
+    // mp3 のデコードは十分に速い (85 分を約 1.7 秒) ので、mp3 は先頭から読む。
+    // 先頭の時刻が分からない素材も、seek 後の位置を素材の時刻へ換算できないので先頭から読む。
+    // WAV は先頭の時刻を持たないが、PCM の timestamp は定義上 0 から始まる。
+    bool seekPending = false;
+    const std::string_view formatName(raw->iformat->name);
+    if (origin == AV_NOPTS_VALUE && formatName == "wav")
+        origin = 0;
+    const bool seekableFormat =
+        formatName.find("mp3") == std::string_view::npos && origin != AV_NOPTS_VALUE;
+    if (allowSeek && seekableFormat && request.sourceBeginMs > kSeekPrerollMs) {
+        const auto target = origin + av_rescale_q(request.sourceBeginMs - kSeekPrerollMs,
+                                                  AVRational{1, 1000}, stream->time_base);
+        if (avformat_seek_file(raw, index, std::numeric_limits<std::int64_t>::min(), target, target,
+                               AVSEEK_FLAG_BACKWARD) >= 0) {
+            avcodec_flush_buffers(codec.get());
+            seekPending = true;
+            stats.seeked = true;
+        }
+    }
     const auto append = [&](const float* data, int count) {
         const auto a = std::max(cursor, first), b = std::min(cursor + count, last);
         if (b > a)
             output.insert(output.end(), data + (a - cursor), data + (b - cursor));
         cursor += count;
+        stats.decodedSamples += count;
         return output.size() <= static_cast<std::size_t>(std::numeric_limits<int>::max());
     };
     const auto drain = [&]() {
@@ -130,9 +161,32 @@ bool prepareAudio(const Request& request, const std::atomic<bool>* cancel,
             if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
                 if (origin == AV_NOPTS_VALUE)
                     origin = frame->best_effort_timestamp;
+                // 先頭から読んだ場合、16kHz の各サンプルは素材の 0 番目のサンプルを起点とする
+                // 格子の上にある。seek 後はリサンプラーが途中のサンプルから始まるので、格子が
+                // サンプル未満ずれて値が変わる (実測: 48kHz の AAC で最大差 0.07)。格子が揃う
+                // 位置 (48kHz なら 3 の倍数) まで無音を前へ足す。無音は捨てる余白の中に入る。
+                if (seekPending) {
+                    const auto rate = codec->sample_rate;
+                    const auto step = rate / std::gcd(rate, 16000);
+                    const auto sourceIndex = av_rescale_q(frame->best_effort_timestamp - origin,
+                                                          stream->time_base, AVRational{1, rate});
+                    const auto pad = ((sourceIndex % step) + step) % step;
+                    if (pad > 0 && swr_inject_silence(swr.get(), static_cast<int>(pad)) < 0)
+                        return false;
+                }
                 const auto desired = av_rescale_q(frame->best_effort_timestamp - origin,
                                                   stream->time_base, AVRational{1, 16000}) -
                                      swr_get_delay(swr.get(), 16000);
+                // seek 後の最初の frame の位置から数え始める。区間の開始を越えていたら、
+                // 開始の手前が欠けるので seek せずにやり直させる (時刻をずらさない)。
+                if (seekPending) {
+                    seekPending = false;
+                    if (desired > first) {
+                        overshoot = true;
+                        return false;
+                    }
+                    cursor = std::max<std::int64_t>(0, desired);
+                }
                 // 時刻の隙間を無音で保ち、認識後の字幕が素材の時刻からずれないようにする。
                 if (desired > cursor + 1) {
                     float silence[4096]{};
@@ -171,7 +225,8 @@ bool prepareAudio(const Request& request, const std::atomic<bool>* cancel,
         }
         if (packet->stream_index == index) {
             if (avcodec_send_packet(codec.get(), packet.get()) < 0 || !drain()) {
-                error = "音声をデコードできません";
+                if (!overshoot)
+                    error = "音声をデコードできません";
                 return false;
             }
         }
@@ -204,5 +259,21 @@ bool prepareAudio(const Request& request, const std::atomic<bool>* cancel,
     }
     samples = std::move(output);
     return true;
+}
+} // namespace
+
+bool prepareAudio(const Request& request, const std::atomic<bool>* cancel,
+                  std::vector<float>& samples, std::string& error, PrepareStats* stats) {
+    PrepareStats local;
+    auto& counted = stats ? *stats : local;
+    counted = {};
+    bool overshoot = false;
+    if (preparePass(request, cancel, true, samples, error, counted, overshoot))
+        return true;
+    if (!overshoot)
+        return false;
+    // seek が区間の開始を越えた。先頭から読み直す (仕事は増えるが時刻は正確)。
+    error.clear();
+    return preparePass(request, cancel, false, samples, error, counted, overshoot);
 }
 } // namespace mvm::transcribe

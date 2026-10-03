@@ -2066,6 +2066,46 @@ ApplicationWindow {
                         y: timelinePanel.rulerHeight + timelinePanel.addVideoRowHeight
                         height: timelinePanel.subtitleRowHeight; width: parent.width
                         color: "#221e29"; border.color: "#48404f"
+                        // S1 の空白から始めた左ドラッグは、触れた字幕をすべて選ぶ (clip の矩形選択と
+                        // 同じ操作)。字幕の delegate は後に宣言するので、字幕の上の press はそちらが受ける。
+                        MouseArea {
+                            id: subtitleSelectionArea
+                            objectName: "subtitleSelectionArea"
+                            anchors.fill: parent
+                            enabled: !root.mvmController.busy && !root.mvmController.playing
+                            acceptedButtons: Qt.LeftButton
+                            preventStealing: true
+                            property real startX: 0
+                            property real currentX: 0
+                            property bool selecting: false
+                            onPressed: mouse => {
+                                startX = mouse.x;
+                                currentX = mouse.x;
+                                selecting = true;
+                            }
+                            onPositionChanged: mouse => currentX = Math.max(0, Math.min(width, mouse.x))
+                            onReleased: {
+                                if (!selecting)
+                                    return;
+                                selecting = false;
+                                const left = Math.min(startX, currentX), right = Math.max(startX, currentX);
+                                root.mvmController.selectTimelineSubtitlesInRange(
+                                    Math.floor(left / timelinePanel.pixelsPerFrame),
+                                    Math.floor(right / timelinePanel.pixelsPerFrame));
+                                root.leftPanelTab = 3;
+                            }
+                            onCanceled: selecting = false
+                        }
+                        Rectangle {
+                            visible: subtitleSelectionArea.selecting
+                            x: Math.min(subtitleSelectionArea.startX, subtitleSelectionArea.currentX)
+                            width: Math.abs(subtitleSelectionArea.currentX - subtitleSelectionArea.startX)
+                            y: 1; height: parent.height - 2
+                            color: "#334f78a8"
+                            border.color: "#9bc8ff"
+                            border.width: 1
+                            z: 90
+                        }
                         CompactMenu {
                             id: subtitleMenu
                             CompactMenuItem {

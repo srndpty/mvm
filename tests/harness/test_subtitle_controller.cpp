@@ -5,6 +5,7 @@
 #include "project/subtitles.h"
 #include "timeline_wheel_filter.h"
 
+#include <windows.h>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -227,6 +228,13 @@ int main(int argc, char** argv) {
             "複数選択した字幕の削除");
     require(controller.undoLastEdit() && controller.subtitleModel()->rowCount() == 2,
             "字幕の削除は 1 回の Undo");
+    require(controller.selectedSubtitleIds().size() == 2 && controller.canDeleteSelection() &&
+                controller.copySelectedClips() &&
+                controller.statusText().startsWith(QStringLiteral("2件")),
+            "Undo で字幕の複数選択も戻り、コピーの対象も 2 件になる");
+    require(controller.redoLastEdit() && controller.subtitleModel()->rowCount() == 0 &&
+                controller.selectedSubtitleIds().isEmpty() && controller.undoLastEdit(),
+            "Redo では削除した字幕を選択に残さない");
     require(controller.selectTimelineSubtitle(cueIdAt(0), false) &&
                 controller.selectTimelineClips({}) && controller.selectedSubtitleIds().isEmpty() &&
                 !controller.canDeleteSelection(),
@@ -464,6 +472,79 @@ int main(int argc, char** argv) {
             "一覧を閉じた後の対照群ではタイムラインへホイールを渡す");
     view.removeEventFilter(&wheelFilter);
     controller.shutdown();
+    {
+        // 認識した素材の出どころ。外部で同じ path の素材を差し替えたら、古い候補を適用しない。
+        const auto copyPath = temp.filePath(QStringLiteral("provenance.wav"));
+        require(QFile::copy(QString::fromUtf8(MVM_SUBTITLE_TEST_AUDIO), copyPath),
+                "出どころ試験の素材を複製");
+        auto provenanceProject = project;
+        provenanceProject.mediaItems.front().mediaPath = copyPath.toStdWString();
+        provenanceProject.subtitles.reset();
+        const auto provenancePath =
+            std::filesystem::path(temp.filePath("provenance.mvm").toStdWString());
+        require(mvm::project::saveProjectJson(provenanceProject, provenancePath).success,
+                "出どころ試験のProject保存");
+        MvmController provenance(provenancePath, {}, provenanceProject);
+        std::atomic<bool> hold{true};
+        provenance.setTranscriptionRunnerForTest([&](const auto&, const std::atomic<bool>* stop) {
+            while (hold.load() && !stop->load())
+                QThread::msleep(2);
+            mvm::transcribe::Result result;
+            result.success = true;
+            result.segments = {{0, 1000, "差し替え前の本文"}};
+            return result;
+        });
+        // 認識の途中で、size と更新時刻を保ったまま中央の 1 byte だけを書き換える
+        // (内容全体の hash でしか見つからない差し替え)。
+        require(provenance.startTranscription("audio", false, modelUrl, "cpu", "ja", 0),
+                "出どころ試験の認識開始");
+        QThread::msleep(100);
+        {
+            // 更新時刻は 100ns 単位 (FILETIME) で比べるので、Win32 で丸めずに戻す。
+            const std::wstring widePath = copyPath.toStdWString();
+            HANDLE handle = CreateFileW(widePath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                        FILE_ATTRIBUTE_NORMAL, nullptr);
+            require(handle != INVALID_HANDLE_VALUE, "素材の書き換えの準備");
+            FILETIME created{}, accessed{}, written{};
+            LARGE_INTEGER size{};
+            require(GetFileTime(handle, &created, &accessed, &written) &&
+                        GetFileSizeEx(handle, &size),
+                    "素材の時刻と大きさを控える");
+            LARGE_INTEGER middle{};
+            middle.QuadPart = size.QuadPart / 2;
+            char byte = 0;
+            DWORD done = 0;
+            require(SetFilePointerEx(handle, middle, nullptr, FILE_BEGIN) &&
+                        ReadFile(handle, &byte, 1, &done, nullptr) && done == 1,
+                    "中央の 1 byte を読む");
+            byte = static_cast<char>(byte ^ 0x5a);
+            require(SetFilePointerEx(handle, middle, nullptr, FILE_BEGIN) &&
+                        WriteFile(handle, &byte, 1, &done, nullptr) && done == 1 &&
+                        SetFileTime(handle, &created, &accessed, &written),
+                    "中央の 1 byte を書き換えて更新時刻を元へ戻す");
+            CloseHandle(handle);
+        }
+        hold.store(false);
+        require(pump([&] { return !provenance.transcribing(); }) &&
+                    !provenance.canApplyTranscription() &&
+                    provenance.transcriptionError().contains(QStringLiteral("素材が変更")),
+                "認識中の素材の差し替え (size・更新時刻は同じ) を検出して候補を作らない");
+        // 対照群: 差し替えなければ候補を作る。その後、確認中に素材を差し替えると適用しない。
+        require(provenance.startTranscription("audio", false, modelUrl, "cpu", "ja", 0) &&
+                    pump([&] { return !provenance.transcribing(); }) &&
+                    provenance.canApplyTranscription(),
+                "対照群: 差し替えなければ候補を作る");
+        {
+            QFile file(copyPath);
+            require(file.open(QIODevice::Append) && file.write("x", 1) == 1, "素材へ追記");
+        }
+        require(!provenance.applyTranscription(true) &&
+                    provenance.subtitleModel()->rowCount() == 0 &&
+                    provenance.transcriptionError().contains(QStringLiteral("認識した後に")),
+                "候補の確認中に差し替えた素材へは適用しない");
+        provenance.shutdown();
+    }
     {
         // 文字起こしした音声 clip を Alt+ドラッグで複製する (利用者の環境でクラッシュした操作)。
         auto linkedProject = project;

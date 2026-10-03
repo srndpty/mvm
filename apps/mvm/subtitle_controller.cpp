@@ -1,4 +1,5 @@
 #include "app/text_raster.h"
+#include "media_source_identity.h"
 #include "mvm_controller.h"
 #include "project/subtitles.h"
 #include "project/timeline_edit.h"
@@ -542,6 +543,8 @@ bool MvmController::startTranscription(const QString& sourceId, bool timelineCli
     transcriptionProjectPath_ = projectPath_;
     // クリップから作った字幕は、そのクリップへリンクする (移動に追従する)。
     transcriptionLinkClipId_ = linkClipId;
+    transcriptionSourcePath_ = QString::fromStdWString(request.mediaPath.wstring());
+    transcriptionSource_ = {};
     transcribing_ = true;
     const auto fpsNum = project_.timelineFpsNum, fpsDen = project_.timelineFpsDen;
     request.progress = [this](int progress) {
@@ -560,14 +563,37 @@ bool MvmController::startTranscription(const QString& sourceId, bool timelineCli
                                             offset, speedNum, speedDen,
                                             runner = transcriptionRunner_] {
             transcribe::Result result;
-            try {
-                result = runner(request, &transcriptionCancel_);
-            } catch (const std::exception&) {
-                result.error = "文字起こし処理に失敗しました";
+            // 認識した素材の出どころ。認識の前後で、実体 (volume・file ID)・size・更新時刻と
+            // 内容全体の hash が一致することを確かめる。外部で同じ path の素材を差し替えると、
+            // Project の revision は変わらないので、ここで見ないと古い字幕を新しい素材へ適用する。
+            // 内容を全部読むので worker で行う。
+            const QString mediaPath = QString::fromStdWString(request.mediaPath.wstring());
+            const auto before = probeMediaSource(mediaPath);
+            const auto hashBefore = mediaContentHash(mediaPath);
+            if (!before.identity.exists || !hashBefore) {
+                result.error = "文字起こしの素材を読めません";
+            } else {
+                try {
+                    result = runner(request, &transcriptionCancel_);
+                } catch (const std::exception&) {
+                    result.error = "文字起こし処理に失敗しました";
+                }
+                if (result.success) {
+                    const auto after = probeMediaSource(mediaPath);
+                    const auto hashAfter = mediaContentHash(mediaPath);
+                    if (after.key != before.key || after.identity != before.identity ||
+                        hashAfter != hashBefore) {
+                        result.success = false;
+                        result.segments.clear();
+                        result.error = "認識中に素材が変更されました。再実行してください";
+                    }
+                }
             }
             QMetaObject::invokeMethod(
                 this,
-                [this, result = std::move(result), fpsNum, fpsDen, offset, speedNum, speedDen] {
+                [this, result = std::move(result), fpsNum, fpsDen, offset, speedNum, speedDen,
+                 source = before] {
+                    transcriptionSource_ = source;
                     if (transcriptionThread_.joinable())
                         transcriptionThread_.join();
                     transcribing_ = false;
@@ -637,6 +663,16 @@ bool MvmController::applyTranscription(bool replace) {
     if (!canApplyTranscription()) {
         transcriptionError_ =
             QStringLiteral("認識結果が無いか、プロジェクトが変更されています。再実行してください");
+        Q_EMIT stateChanged();
+        return false;
+    }
+    // 候補を確認している間に素材が差し替えられていないか。GUI thread で数 GB を読まないよう、
+    // ここでは実体・size・更新時刻だけを見る (内容の hash は認識の前後で worker が見ている)。
+    const auto current = probeMediaSource(transcriptionSourcePath_);
+    if (!current.identity.exists || current.key != transcriptionSource_.key ||
+        current.identity != transcriptionSource_.identity) {
+        transcriptionError_ =
+            QStringLiteral("認識した後に素材が変更されました。再実行してください");
         Q_EMIT stateChanged();
         return false;
     }
@@ -807,6 +843,30 @@ bool MvmController::placeTimelineSubtitles(const QString& anchorId, qint64 start
     setStatus(QString::number(selectedSubtitleIds_.size()) +
               (duplicate ? QStringLiteral("件の字幕を複製しました")
                          : QStringLiteral("件の字幕を移動しました")));
+    Q_EMIT stateChanged();
+    return true;
+}
+} // namespace mvm::app
+
+namespace mvm::app {
+bool MvmController::selectTimelineSubtitlesInRange(qint64 fromFrame, qint64 toFrame) {
+    // S1 の矩形選択。区間 [fromFrame, toFrame] に掛かる字幕をすべて選ぶ。表示範囲の外の字幕も
+    // 含める (delegate は表示範囲の字幕にしか無いので、Project から求める)。clip の選択は外す。
+    if (toFrame < fromFrame)
+        std::swap(fromFrame, toFrame);
+    std::vector<std::string> ids;
+    if (project_.subtitles)
+        for (const auto& cue : project_.subtitles->cues)
+            if (cue.startFrame <= toFrame && cue.endFrame > fromFrame)
+                ids.push_back(cue.id);
+    setTimelineSelection({}, false);
+    setCurrentClipSelection(-1);
+    selectedSubtitleIds_ = std::move(ids);
+    if (!selectedSubtitleIds_.empty())
+        selectedSubtitleId_ = QString::fromStdString(selectedSubtitleIds_.front());
+    setStatus(selectedSubtitleIds_.empty() ? QStringLiteral("字幕の選択を解除しました")
+                                           : QString::number(selectedSubtitleIds_.size()) +
+                                                 QStringLiteral("件の字幕を選択しました"));
     Q_EMIT stateChanged();
     return true;
 }

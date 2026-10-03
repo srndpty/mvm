@@ -34,6 +34,59 @@ int main(int argc, char** argv) {
             "指定区間のサンプル数");
     require(std::equal(samples.begin(), samples.end(), full.begin() + 8000),
             "素材のトリム区間を比較");
+    // 素材の後半だけを使う区間は、開始の手前へ seek して先頭からはデコードしない。
+    // 所要時間ではなく、デコードした量で比べる。結果は先頭から読んだ場合と一致する。
+    {
+        mvm::transcribe::PrepareStats fromStart, seekedStats;
+        std::vector<float> wholeFile;
+        request.sourceBeginMs = 0;
+        request.sourceEndMs = -1;
+        require(mvm::transcribe::prepareAudio(request, nullptr, wholeFile, error, &fromStart) &&
+                    !fromStart.seeked,
+                "対照群: 先頭からの区間は seek しない");
+        request.sourceBeginMs = 3000;
+        request.sourceEndMs = 4000;
+        require(mvm::transcribe::prepareAudio(request, nullptr, samples, error, &seekedStats),
+                "後半の区間の音声準備");
+        float maxDifference = 0;
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            maxDifference = std::max(maxDifference, std::abs(samples[i] - full[48000 + i]));
+        std::printf("区間 3〜4 秒: seek=%d、デコード %lld / 全体 %lld サンプル、最大差 %g\n",
+                    seekedStats.seeked, static_cast<long long>(seekedStats.decodedSamples),
+                    static_cast<long long>(fromStart.decodedSamples), maxDifference);
+        require(seekedStats.seeked && samples.size() == 16000 &&
+                    seekedStats.decodedSamples < fromStart.decodedSamples * 3 / 4,
+                "後半の区間は seek し、先頭からはデコードしない");
+        require(maxDifference < 1e-4F, "seek しても先頭から読んだ場合と同じサンプルになる");
+        // 動画 (mp4 / AAC) も同じ。AAC は frame が重なるので、seek の手前の余白で揃える。
+        // リサンプラーの格子を揃えないと最大差 0.07 になった (格子の補正の negative 対照)。
+        auto video = request;
+        video.mediaPath = MVM_TRANSCRIBE_VIDEO_AUDIO;
+        require(std::filesystem::is_regular_file(video.mediaPath),
+                "動画の試験素材がありません。pwsh scripts/make-testmedia.ps1 -Mode "
+                "Smokeを実行してください");
+        video.sourceBeginMs = 0;
+        video.sourceEndMs = -1;
+        std::vector<float> videoWhole, videoPart;
+        mvm::transcribe::PrepareStats videoFull, videoSeek;
+        require(mvm::transcribe::prepareAudio(video, nullptr, videoWhole, error, &videoFull),
+                "動画の音声準備の対照群");
+        video.sourceBeginMs = 3000;
+        video.sourceEndMs = 4000;
+        require(mvm::transcribe::prepareAudio(video, nullptr, videoPart, error, &videoSeek) &&
+                    videoPart.size() == 16000 && videoWhole.size() >= 64000,
+                "動画の後半の区間の音声準備");
+        float videoDifference = 0;
+        for (std::size_t i = 0; i < videoPart.size(); ++i)
+            videoDifference =
+                std::max(videoDifference, std::abs(videoPart[i] - videoWhole[48000 + i]));
+        std::printf("動画 3〜4 秒: seek=%d、デコード %lld / 全体 %lld、最大差 %g\n",
+                    videoSeek.seeked, static_cast<long long>(videoSeek.decodedSamples),
+                    static_cast<long long>(videoFull.decodedSamples), videoDifference);
+        require(videoSeek.seeked && videoSeek.decodedSamples < videoFull.decodedSamples * 3 / 4 &&
+                    videoDifference < 1e-4F,
+                "動画も seek して、先頭から読んだ場合と同じ位置のサンプルになる");
+    }
     request.sourceBeginMs = 0;
     request.sourceEndMs = -1;
     std::atomic<bool> cancelled{true};
@@ -67,10 +120,29 @@ int main(int argc, char** argv) {
         const std::uint32_t vocabularyCount = 0;
         file.write(reinterpret_cast<const char*>(&vocabularyCount), sizeof(vocabularyCount));
     }
+    // 対照群: キャンセルしなければ、読み込みは何度も読んで最後まで進む。
+    int reads = 0;
+    request.modelReadObserver = [&] { ++reads; };
     const auto empty = mvm::transcribe::transcribe(request);
     require(!empty.success &&
                 empty.error == "認識モデルに重みがありません。検査用の空モデルは使用できません",
             "正常なEOFでも重みのないモデルを成功にしない");
+    require(reads > 3, "対照群: モデルの読み込みで実際に読んだ回数を数える");
+    // モデルの読み込みの途中でキャンセルすると、次の読み込みで打ち切る (数 GB のモデルの
+    // 読み込み完了を待たない)。
+    {
+        std::atomic<bool> cancel{false};
+        int readsAfterCancel = 0;
+        request.modelReadObserver = [&] {
+            if (cancel.load())
+                ++readsAfterCancel;
+            cancel.store(true);
+        };
+        const auto stoppedLoad = mvm::transcribe::transcribe(request, &cancel);
+        require(!stoppedLoad.success && stoppedLoad.cancelled && readsAfterCancel <= 1,
+                "モデルの読み込み中のキャンセルで読み込みを打ち切る");
+        request.modelReadObserver = nullptr;
+    }
     {
         std::ofstream file(request.modelPath, std::ios::binary);
         file.write(reinterpret_cast<const char*>(emptyHeader), sizeof(emptyHeader));

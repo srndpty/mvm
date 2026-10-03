@@ -1092,6 +1092,8 @@ int main(int argc, char** argv) {
                                              "2\n00:00:01,000 --> 00:00:01,500\n二つ目\n")
                                   .toUtf8());
                     srt.close();
+                    // 最後に、この場面の編集をすべて戻す (以降の検査は字幕の無い状態を前提にする)。
+                    const auto depthBefore = controller.undoDepthForTest();
                     check(controller.importSubtitles(QUrl::fromLocalFile(srt.fileName()), true),
                           "前提: 字幕を読み込めません");
                     pump(300);
@@ -1129,6 +1131,30 @@ int main(int argc, char** argv) {
                                   std::llabs(cueAt(2, Qt::UserRole + 2).toLongLong() - 150) <= 1,
                               "Alt+ドラッグで字幕を複製できません "
                               "(元は残し、複製を離した位置へ置く)");
+                        // S1 の空白から始めた矩形選択で、触れた字幕をすべて選ぶ。
+                        // 字幕は [0,30) [60,90) [150,180)。frame 200 から 40 まで引くと後ろの 2
+                        // 件。
+                        if (auto* area = window->findChild<QQuickItem*>(
+                                QStringLiteral("subtitleSelectionArea"))) {
+                            const auto at = [&](double frame) {
+                                return area
+                                    ->mapToScene(
+                                        QPointF(frame * pixelsPerFrame, area->height() / 2))
+                                    .toPoint();
+                            };
+                            QTest::mousePress(window, Qt::LeftButton, {}, at(200));
+                            for (int step = 1; step <= 8; ++step)
+                                QTest::mouseMove(window, at(200 - 160.0 * step / 8));
+                            QTest::mouseRelease(window, Qt::LeftButton, {}, at(40));
+                            pump(200);
+                            const auto ids = controller.selectedSubtitleIds();
+                            check(ids.size() == 2 &&
+                                      ids.contains(cueAt(1, Qt::UserRole + 1).toString()) &&
+                                      ids.contains(cueAt(2, Qt::UserRole + 1).toString()),
+                                  "S1 の矩形選択で触れた字幕を複数選べません");
+                        } else {
+                            check(false, "前提: S1 の矩形選択の領域がありません");
+                        }
                         // 1 件目と 2 件目を選んで 1 件目を掴むと、2 件とも同じ量だけ動く。
                         const QString secondId = cueAt(1, Qt::UserRole + 1).toString();
                         controller.selectTimelineSubtitle(firstId, false);
@@ -1141,9 +1167,11 @@ int main(int argc, char** argv) {
                                       60,
                               "選択した字幕をまとめて動かせません");
                     }
-                    controller.undoLastEdit(); // 移動
-                    controller.undoLastEdit(); // 複製
-                    controller.undoLastEdit(); // 読み込み
+                    const auto edits = controller.undoDepthForTest() - depthBefore;
+                    std::printf("字幕の場面の編集: %zu 件を戻す\n", edits);
+                    while (controller.undoDepthForTest() > depthBefore &&
+                           controller.undoLastEdit()) {
+                    }
                     // 字幕を押すと左のパネルが字幕へ切り替わる。以降の検査はエフェクトコントロールを使う。
                     window->setProperty("leftPanelTab", 0);
                     pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);

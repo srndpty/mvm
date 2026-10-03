@@ -60,9 +60,13 @@ bool shiftLinkedSubtitles(Project& project, const std::unordered_set<std::string
                           std::int64_t delta, std::string& error);
 // clip を削除・カットしたときに、その clip にリンクした字幕を消す。
 void eraseLinkedSubtitles(Project& project, const std::unordered_set<std::string>& clipIds);
-// 分割で右半分になった clip へ、分割位置以降に始まる字幕のリンクを付け替える。
+// clip を frame で分割したときのリンクの付け替え。分割位置以降に始まる字幕は右半分の clip へ
+// リンクを移す。分割位置を跨ぐ字幕は frame で 2 つに分け (本文も splitSubtitleText で分ける)、
+// 前半を左、後半を右の clip へリンクする。後から片方の clip を消しても、その clip の上に
+// あった部分だけが消える。
 void relinkSubtitlesAfterSplit(Project& project, const std::string& leftId,
-                               const std::string& rightId, std::int64_t frame);
+                               const std::string& rightId, std::int64_t frame,
+                               const std::function<std::string()>& newId);
 // clipIds にリンクした字幕のリンクを外す。外した件数を返す。
 std::size_t unlinkSubtitles(Project& project, const std::unordered_set<std::string>& clipIds);
 // 素材の削除・上書きなどで消えた clip へのリンクを外す (字幕自体は残す)。

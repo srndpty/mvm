@@ -61,6 +61,46 @@ int main(int argc, char** argv) {
                     error.find("行目") != std::string::npos,
                 "不正SRTは部分適用しない");
     }
+    // 本文中の < > { } は装飾ではない。実際の装飾記法だけを拒否する。
+    for (const char* plain : {"a < b", "std::vector<int>", "f(x) = { x > 0 のとき }", "<>"}) {
+        std::vector<SubtitleCue> read;
+        const std::string srtText =
+            std::string("1\n00:00:00,000 --> 00:00:01,000\n") + plain + "\n";
+        require(parseSrt(srtText, 60, 1, id, read, error) && read.size() == 1 &&
+                    read[0].content == plain,
+                "記号を含む普通の本文は読み込む");
+    }
+    for (const char* markup :
+         {"<i>斜体</i>", "<B>太字</B>", "<font color=\"red\">赤</font>", "{\\an8}上に表示"}) {
+        std::vector<SubtitleCue> read;
+        const std::string srtText =
+            std::string("1\n00:00:00,000 --> 00:00:01,000\n") + markup + "\n";
+        require(!parseSrt(srtText, 60, 1, id, read, error) &&
+                    error.find("装飾記法") != std::string::npos,
+                "実際の装飾記法は拒否する");
+    }
+    {
+        // 文字起こしで作った (clip にリンクした) 字幕も SRT へ出せる。リンクは SRT に含めない。
+        auto linkedSrt = createDefaultProject();
+        TimelineClip speech;
+        speech.kind = TimelineClipKind::Text;
+        speech.id = "speech";
+        speech.name = "発話";
+        speech.text.content = "発話";
+        speech.sourceFpsNum = 60;
+        speech.sourceFrameCount = speech.sourceOutFrame = 120;
+        linkedSrt.timelineClips = {speech};
+        linkedSrt.subtitles.emplace();
+        linkedSrt.subtitles->cues = {{"a", 0, 60, "std::vector<int> の説明", "speech"},
+                                     {"b", 60, 120, "後半", "speech"}};
+        std::string linkedText;
+        std::vector<SubtitleCue> reread;
+        require(writeSrt(linkedSrt, linkedText, error) &&
+                    parseSrt(linkedText, 60, 1, id, reread, error) && reread.size() == 2 &&
+                    reread[0].content == "std::vector<int> の説明" && reread[0].endFrame == 60 &&
+                    reread[1].startFrame == 60 && reread[1].linkClipId.empty(),
+                "clip にリンクした字幕を SRT へ書き出し、区間と本文を保つ");
+    }
     std::int64_t frame = -1;
     require(subtitleTimeToFrame(25, 60, 1, frame, error) && frame == 2, "同率は後方へ丸める");
     require(subtitleTimeToFrame(1001, 30000, 1001, frame, error) && frame == 30, "非整数fps換算");
@@ -227,6 +267,32 @@ int main(int argc, char** argv) {
                 moved.subtitles->cues[0].linkClipId == "speech" &&
                 moved.subtitles->cues[1].linkClipId == "right",
             "分割位置以降の字幕は右半分へリンクを付け替える");
+    moved = source;
+    int splitIds = 0;
+    require(
+        splitTimelineClips(
+            moved, {"speech"}, 80, [&] { return "split-" + std::to_string(++splitIds); },
+            LinkMode::Linked)
+                .success &&
+            moved.subtitles->cues.size() == 4 && moved.subtitles->cues[0].id == "a" &&
+            moved.subtitles->cues[0].endFrame == 80 &&
+            moved.subtitles->cues[0].linkClipId == "speech" &&
+            moved.subtitles->cues[0].content == "前" && moved.subtitles->cues[1].startFrame == 80 &&
+            moved.subtitles->cues[1].endFrame == 90 && moved.subtitles->cues[1].content == "半" &&
+            moved.subtitles->cues[1].linkClipId != "speech" &&
+            moved.subtitles->cues[1].linkClipId == moved.subtitles->cues[2].linkClipId,
+        "分割位置を跨ぐ字幕は分割位置で 2 つに分け、後半を右半分へリンクする");
+    {
+        const auto rightClip = moved.subtitles->cues[1].linkClipId;
+        const auto rightIndex =
+            static_cast<int>(std::find_if(moved.timelineClips.begin(), moved.timelineClips.end(),
+                                          [&](const auto& clip) { return clip.id == rightClip; }) -
+                             moved.timelineClips.begin());
+        require(deleteTimelineClip(moved, rightIndex).success &&
+                    moved.subtitles->cues.size() == 2 && moved.subtitles->cues[0].id == "a" &&
+                    moved.subtitles->cues[0].endFrame == 80,
+                "右半分の clip を消すと、その上にあった字幕の部分だけが消える");
+    }
     moved = source;
     require(unlinkTimelineClip(moved, "speech").success &&
                 std::all_of(moved.subtitles->cues.begin(), moved.subtitles->cues.end(),

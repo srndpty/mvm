@@ -7,6 +7,7 @@
 #include "media/audio_preview/wasapi_audio_sink.h"
 #include "media/transcribe/transcribe.h"
 #include "media_bin_model.h"
+#include "media_source_identity.h"
 #include "preview_engine/preview_engine.h"
 #include "project/media_bin.h"
 #include "project/project.h"
@@ -525,6 +526,8 @@ public:
     // timeline 上の字幕のクリック。additive (Ctrl / Shift) なら選択へ足し引きする。
     // clip の選択は外し、Delete・コピー・カット・ペースト・複製の対象を字幕にする。
     Q_INVOKABLE bool selectTimelineSubtitle(const QString& id, bool additive);
+    // S1 の矩形選択。frame の区間 [fromFrame, toFrame] に掛かる字幕をすべて選ぶ。
+    Q_INVOKABLE bool selectTimelineSubtitlesInRange(qint64 fromFrame, qint64 toFrame);
     // timeline のドラッグの確定。anchorId を startFrame へ置く量だけ、選択中の字幕
     // (anchor が選択外なら anchor だけ) を動かす。duplicate (Alt+ドラッグ) なら元を残して
     // 複製を置く。複製はリンクを持たない。重なる配置は全体を拒否する。
@@ -1250,6 +1253,9 @@ private:
     bool clipboardHoldsSubtitles_ = false;
     std::optional<project::SubtitleStyle> subtitleStylePreview_;
     std::string transcriptionLinkClipId_;
+    // 認識した素材と、認識を始めたときの出どころ (実体・size・更新時刻)。適用の直前に照合する。
+    QString transcriptionSourcePath_;
+    MediaSourceProbe transcriptionSource_;
     bool burnSubtitles_ = true;
     bool commitSubtitleEdit(project::Project candidate);
     bool copySelectedSubtitles(bool cut);
@@ -1284,6 +1290,8 @@ private:
         // project の approximateProjectBytes。履歴へ積むときに埋める。
         std::size_t bytes = 0;
         QString selectedSubtitleId{};
+        // timeline で選んだ字幕 (複数)。clip の選択と同じく、戻した Project に残るものだけを戻す。
+        std::vector<std::string> selectedSubtitleIds{};
     };
 
     // Undo / Redo 履歴は、両方の合計の件数と Project の複製の概算 byte 数で上限を決める。

@@ -970,6 +970,7 @@ void MvmController::refreshAudioMixerModel() {
 
 void MvmController::pushUndoEntry(UndoEntry entry) {
     entry.selectedSubtitleId = selectedSubtitleId_;
+    entry.selectedSubtitleIds = selectedSubtitleIds_;
     entry.bytes = project::approximateProjectBytes(entry.project);
     undoHistory_.push_back(std::move(entry));
     // 新しい編集をした時点で、やり直し先の未来は無くなる。
@@ -6425,10 +6426,13 @@ bool MvmController::stepEditHistory(std::vector<UndoEntry>& from, std::vector<Un
     UndoEntry current{std::move(project_), selectedClipIds_, std::move(currentId), playheadFrame_,
                       currentRevision_};
     current.selectedSubtitleId = selectedSubtitleId_;
+    current.selectedSubtitleIds = selectedSubtitleIds_;
     current.bytes = project::approximateProjectBytes(current.project);
     const std::vector<std::string> previousSelection = entry.selectedClipIds;
     const std::string previousCurrentClipId = entry.currentClipId;
     selectedSubtitleId_ = entry.selectedSubtitleId;
+    // refreshTimelineModel が、戻した Project に無い字幕を選択から外す。
+    selectedSubtitleIds_ = entry.selectedSubtitleIds;
     project_ = std::move(entry.project);
     playheadFrame_ = entry.playheadFrame;
     currentRevision_ = entry.revision;

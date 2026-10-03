@@ -122,6 +122,35 @@ std::string formatTime(std::int64_t ms) {
     return out.str();
 }
 
+// SRT の装飾記法か。対応していないので読み込みを拒否する。実際の記法だけを見る:
+// <b> <i> <u> <s> <font ...> とその閉じタグ、ASS の上書き {\an8} など。
+// "a < b" や "std::vector<int>" や "{ x > 0 }" は普通の本文として通す。
+bool hasSrtMarkup(std::string_view line) {
+    const auto lower = [](char c) {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    };
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        if (line[i] == '{' && i + 1 < line.size() && line[i + 1] == '\\')
+            return true;
+        if (line[i] != '<')
+            continue;
+        std::size_t j = i + 1;
+        if (j < line.size() && line[j] == '/')
+            ++j;
+        std::string name;
+        while (j < line.size() && std::isalpha(static_cast<unsigned char>(line[j])))
+            name += lower(line[j++]);
+        if (j >= line.size())
+            continue;
+        if ((name == "b" || name == "i" || name == "u" || name == "s") && line[j] == '>')
+            return true;
+        if (name == "font" && (line[j] == '>' || line[j] == ' ') &&
+            line.find('>', j) != std::string_view::npos)
+            return true;
+    }
+    return false;
+}
+
 void sortCues(SubtitleTrack& track) {
     std::sort(track.cues.begin(), track.cues.end(),
               [](const auto& a, const auto& b) { return a.startFrame < b.startFrame; });
@@ -274,11 +303,31 @@ void eraseLinkedSubtitles(Project& project, const std::unordered_set<std::string
 }
 
 void relinkSubtitlesAfterSplit(Project& project, const std::string& leftId,
-                               const std::string& rightId, std::int64_t frame) {
-    if (project.subtitles)
-        for (auto& cue : project.subtitles->cues)
-            if (cue.linkClipId == leftId && cue.startFrame >= frame)
-                cue.linkClipId = rightId;
+                               const std::string& rightId, std::int64_t frame,
+                               const std::function<std::string()>& newId) {
+    if (!project.subtitles)
+        return;
+    std::vector<SubtitleCue> rights;
+    for (auto& cue : project.subtitles->cues) {
+        if (cue.linkClipId != leftId)
+            continue;
+        if (cue.startFrame >= frame) {
+            cue.linkClipId = rightId;
+        } else if (cue.endFrame > frame) {
+            auto right = cue;
+            right.id = newId();
+            right.startFrame = frame;
+            right.linkClipId = rightId;
+            const double ratio = static_cast<double>(frame - cue.startFrame) /
+                                 static_cast<double>(cue.endFrame - cue.startFrame);
+            std::tie(cue.content, right.content) =
+                splitSubtitleText(cue.content, ratio, std::nullopt);
+            cue.endFrame = frame;
+            rights.push_back(std::move(right));
+        }
+    }
+    project.subtitles->cues.insert(project.subtitles->cues.end(), rights.begin(), rights.end());
+    sortCues(*project.subtitles);
 }
 
 std::size_t unlinkSubtitles(Project& project, const std::unordered_set<std::string>& clipIds) {
@@ -527,7 +576,7 @@ bool parseSrt(std::string_view text, std::int64_t num, std::int64_t den,
             !subtitleTimeToFrame(b, num, den, cue.endFrame, error))
             return fail(i, error);
         for (++i; i < lines.size() && !lines[i].empty(); ++i) {
-            if (lines[i].find_first_of("<>{}") != std::string::npos)
+            if (hasSrtMarkup(lines[i]))
                 return fail(i, "装飾記法には対応していません");
             if (!cue.content.empty())
                 cue.content += '\n';
@@ -585,7 +634,18 @@ bool writeSrt(const Project& project, std::string& text, std::string& error) {
             error = "SRTを書き出せません: " + error;
             return false;
         }
-        if (verified != project.subtitles->cues) {
+        // SRT が表せるのは区間と本文だけ。clip とのリンク (linkClipId) は mvm の Project の
+        // 情報なので比べない (比べると、文字起こしした字幕を SRT へ出せなくなる)。
+        const auto& original = project.subtitles->cues;
+        const bool kept = verified.size() == original.size() &&
+                          std::equal(verified.begin(), verified.end(), original.begin(),
+                                     [](const SubtitleCue& reparsed, const SubtitleCue& cue) {
+                                         return reparsed.id == cue.id &&
+                                                reparsed.startFrame == cue.startFrame &&
+                                                reparsed.endFrame == cue.endFrame &&
+                                                reparsed.content == cue.content;
+                                     });
+        if (!kept) {
             error = "SRTのミリ秒単位で本文・字幕区間を保持できません";
             return false;
         }

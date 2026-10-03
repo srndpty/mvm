@@ -3916,7 +3916,8 @@ add_custom_target(mvm_subtitle_validation DEPENDS
 
 add_executable(mvm_test_transcribe harness/test_transcribe.cpp)
 target_link_libraries(mvm_test_transcribe PRIVATE mvm::transcribe mvm::warnings)
-target_compile_definitions(mvm_test_transcribe PRIVATE MVM_TRANSCRIBE_NO_AUDIO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/png_alpha.png")
+target_compile_definitions(mvm_test_transcribe PRIVATE MVM_TRANSCRIBE_NO_AUDIO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/png_alpha.png"
+    MVM_TRANSCRIBE_VIDEO_AUDIO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
 add_executable(mvm_test_transcribe_model_reader transcribe/test_model_reader.cpp)
 target_include_directories(mvm_test_transcribe_model_reader PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(mvm_test_transcribe_model_reader PRIVATE mvm::warnings)

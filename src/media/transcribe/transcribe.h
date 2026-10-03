@@ -26,6 +26,9 @@ struct Request {
     std::string initialPrompt;
     int threads = 4;
     std::function<void(int)> progress;
+    // 試験用の差し込み口。モデルの読み込みで 1 回読むたびに、読む前に呼ぶ。
+    // キャンセルが読み込みの途中で効くことを、実モデル無しで確かめるために使う。
+    std::function<void()> modelReadObserver;
 };
 
 struct Result {
@@ -37,8 +40,15 @@ struct Result {
 };
 
 Result transcribe(const Request& request, const std::atomic<bool>* cancel = nullptr);
+
+// 音声の準備で実際にデコードした量。所要時間ではなく仕事量で性能の退行を検査する。
+struct PrepareStats {
+    std::int64_t decodedSamples = 0; // 16kHz に変換した後のサンプル数 (捨てた分も含む)
+    bool seeked = false;             // 区間の開始の手前へ seek したか
+};
+
 // 音声の準備は認識エンジンから独立して検査できる。
 bool prepareAudio(const Request& request, const std::atomic<bool>* cancel,
-                  std::vector<float>& samples, std::string& error);
+                  std::vector<float>& samples, std::string& error, PrepareStats* stats = nullptr);
 } // namespace mvm::transcribe
 #endif

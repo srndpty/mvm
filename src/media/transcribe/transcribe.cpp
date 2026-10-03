@@ -47,6 +47,10 @@ bool stopped(const std::atomic<bool>* cancel) {
     return cancel && cancel->load();
 }
 
+// モデルの読み込み中にキャンセルされた。読み込みの callback から投げ、whisper の初期化を
+// 途中で打ち切る (whisper の loader には中断の手段が無い)。
+struct ModelLoadCancelled {};
+
 struct CallbackState {
     const Request* request;
     const std::atomic<bool>* cancel;
@@ -86,6 +90,11 @@ Result transcribe(const Request& request, const std::atomic<bool>* cancel) {
         return result;
     }
     ggml_backend_load_all_from_path(MVM_WHISPER_BIN_DIR);
+    if (stopped(cancel)) {
+        result.cancelled = true;
+        result.error = "文字起こしをキャンセルしました";
+        return result;
+    }
     auto contextParams = whisper_context_default_params();
     contextParams.use_gpu = request.backend == Backend::Vulkan;
     contextParams.flash_attn = false;
@@ -136,7 +145,9 @@ Result transcribe(const Request& request, const std::atomic<bool>* cancel) {
         struct ModelInput {
             FILE* file;
             std::int64_t size;
-        } modelInput{file, 0};
+            const std::atomic<bool>* cancel;
+            const Request* request;
+        } modelInput{file, 0, cancel, &request};
 
         if (_fseeki64(file, 0, SEEK_END) != 0 || (modelInput.size = _ftelli64(file)) < 4 ||
             _fseeki64(file, 0, SEEK_SET) != 0) {
@@ -159,12 +170,23 @@ Result transcribe(const Request& request, const std::atomic<bool>* cancel) {
         whisper_model_loader loader{
             &modelInput,
             [](void* opaque, void* output, size_t size) {
-                return detail::readModelBytes(static_cast<ModelInput*>(opaque)->file, output, size);
+                auto& input = *static_cast<ModelInput*>(opaque);
+                // 数 GB のモデルの読み込み中もキャンセルを効かせる。効かないと、読み込み中に
+                // window を閉じたとき、終了処理が読み込みの完了を待って止まる。
+                if (input.request->modelReadObserver)
+                    input.request->modelReadObserver();
+                if (stopped(input.cancel))
+                    throw ModelLoadCancelled{};
+                return detail::readModelBytes(input.file, output, size);
             },
             [](void* opaque) { return std::feof(static_cast<ModelInput*>(opaque)->file) != 0; },
             [](void*) {}};
+        if (stopped(cancel))
+            throw ModelLoadCancelled{};
         std::unique_ptr<whisper_context, decltype(&whisper_free)> context(
             whisper_init_with_params(&loader, contextParams), whisper_free);
+        if (stopped(cancel))
+            throw ModelLoadCancelled{};
         if (!context) {
             result.error = logs.modelError.empty() ? "認識モデルが破損しているか、初期化できません"
                                                    : logs.modelError;
@@ -254,6 +276,9 @@ Result transcribe(const Request& request, const std::atomic<bool>* cancel) {
             return result;
         }
         result.success = true;
+    } catch (const ModelLoadCancelled&) {
+        result.cancelled = true;
+        result.error = "文字起こしをキャンセルしました";
     } catch (const std::exception&) {
         result.error = "認識エンジンの処理に失敗しました";
     }
