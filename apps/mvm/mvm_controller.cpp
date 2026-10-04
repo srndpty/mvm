@@ -2115,18 +2115,23 @@ class MathWritePreviewAnimation final : public preview::PreviewStillAnimation {
 public:
     MathWritePreviewAnimation(project::TimelineClip clip, std::int64_t fpsNum, std::int64_t fpsDen,
                               std::shared_ptr<const MathCoverageSequence> frames,
-                              math::MathComposeStyle style, preview::PreviewPixelRect rect)
+                              math::MathComposeStyle style, preview::PreviewPixelRect rect,
+                              MvmController::MathWriteObserver observer)
         : clip_(std::move(clip)), fpsNum_(fpsNum), fpsDen_(fpsDen), frames_(std::move(frames)),
-          style_(style), rect_(rect) {}
+          style_(style), rect_(rect), observer_(std::move(observer)) {}
 
     preview::PreviewPixelRect patchRect() const override { return rect_; }
 
     std::int64_t stateAt(std::int64_t outputFrame) const override {
         const auto index =
             mathIntroFrameAt(clip_, fpsNum_, fpsDen_, outputFrame - clip_.timelineStartFrame);
-        if (!index || *index < 0 || *index >= static_cast<std::int64_t>(frames_->frames.size()))
-            return -1;
-        return *index;
+        const std::int64_t state =
+            !index || *index < 0 || *index >= static_cast<std::int64_t>(frames_->frames.size())
+                ? -1
+                : *index;
+        if (observer_)
+            observer_(clip_.id, outputFrame, state);
+        return state;
     }
 
     void fillPatch(std::int64_t state, std::uint8_t* out) const override {
@@ -2140,6 +2145,7 @@ private:
     std::shared_ptr<const MathCoverageSequence> frames_;
     math::MathComposeStyle style_;
     preview::PreviewPixelRect rect_;
+    MvmController::MathWriteObserver observer_;
 };
 
 void attachClipMotion(preview::PreviewCompositionLayer& layer, const project::ClipEffects& effects,
@@ -3591,7 +3597,8 @@ MvmController::mathWriteAnimation(int clipIndex, const preview::PreviewStillImag
         return found->animation;
     auto animation = std::make_shared<MathWritePreviewAnimation>(
         clip, project_.timelineFpsNum, project_.timelineFpsDen, resident.frames, style,
-        preview::PreviewPixelRect{left, top, sequence.width, sequence.height});
+        preview::PreviewPixelRect{left, top, sequence.width, sequence.height},
+        mathWriteObserverForTest_);
     mathWriteAnimations_.insert(clipId, {memo, animation});
     return animation;
 }

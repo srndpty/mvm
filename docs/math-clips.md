@@ -320,15 +320,23 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
   入れない (連番の描き方を変えても静止の cache を無効にしない)。
 - disk は `<cache>/write/<key>/00000.png …` と provenance `<cache>/write/<key>.txt`
   (`mvm-math-sequence-artifact/1`、大きさ・枚数・各 frame の byte 数・script・toolchain)。
-  `write/<key>.partial-<ticket>/` へ置いてから rename し、provenance を最後に書く。合わない・
-  欠けた・読めない frame の結果は消して描き直す。`.partial-` の残りは確認の前に消す。
+  古い provenance を消してから PNG を `<key>/` へ写し、provenance を最後に書く (provenance が
+  確定の印)。合わない・欠けた・読めない frame の結果は消して描き直す。
+  - [事実] P1.2: 以前は `write/<key>.partial-<ticket>/` に置いてから directory を rename していたが、
+    `math_raster_cache_focused` が ctest で 15 回に 1 回ほど `Permission denied` で落ちた
+    (書いた直後の file を他の process が開いていると、Windows は directory の rename を拒む)。
+    rename をやめた後は 20 回連続で通過した。
 - 静止と同じ worker・権限・世代・取消で扱う。連番の Ready は disk に揃っている (書き出しに使える)
   ことだけを表し、frame を decode しない。
 - **preview 用の mask の memory (P1.1):** preview が合成で要求した連番だけを、別の worker
   (`residentPool_`) で 1 画素 1 byte の mask に読む (`residentSequence`)。全 clip の合計に上限
   (既定 256 MB、`setResidentMemoryBudget`) があり、読む前に予約する (`MathResidencyBudget`)。
   予約は mask が破棄されるときに返るので、cache が手放しても preview engine が持っている分は
-  上限に数え続ける (memory に実際にある量を超えない)。
+  上限に数え続ける (memory に実際にある mask の量を超えない)。
+  - この上限が数えるのは、memory に置いた A8 の被覆 (1 画素 1 byte x 幅 x 高さ x 枚数) の
+    中身だけである。process 全体・GPU・decode の memory は数えない。数えないものの例:
+    PNG の decode 中の一時的な RGBA、静止の描画、preview engine の texture (静止画の出力全面の
+    RGBA と、書き換える patch の作業領域)、合成の結果、video の decode。
   - 足りなければ、cache だけが持つ mask を最も長く使っていないものから外す (LRU)。合成中の
     animation や engine が使っている mask は外さない (外しても memory は空かず、同じ frame の
     clip どうしで追い出し合う)。
@@ -392,6 +400,23 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
   `math_controller_focused` 151 件。実 Manim の smoke は 95 / 95、終了コード 0
   (`build/math-p11-write-20261005-081951.log`)。予約の上限検査を無効にする変異では、
   6 本の連番の memory が最大 24576 byte (上限 10000) になり、cache と controller の試験が落ちた。
+### 再生中に mask が届くとき (P1.2、2026-10-05)
+
+- 再生中は tick ごとに `handOffPlaybackSources` が合成を組み、前と違えば engine へ出し直す。
+  mask が届いた次の tick の合成には Write の animation が付き、出し直す。静止画の pointer は
+  変わらないので activation は前の合成の frame を引き継ぎ (過去の frame)、engine はすぐに使う。
+  Write の frame は engine が出力 frame から `stateAt` で決めるので、届いた時刻の frame から見せ、
+  0 からやり直さない。再生を止めたり seek したりはしない。prefetch は P2 のまま。
+- 試験: `math_write_native_playback` (`mvm_test_math_controller --native-write`)。実 D3D11 の
+  preview で再生し、engine の render thread が評価した (出力 frame, Write の frame) を記録する。
+  mask が届く時刻は cache の試験用の保留 (`holdResidentLoadsForTest`) で決める。
+  - [事実] 1. 再生前に mask が memory にある: 再生の先頭 (frame 0) から 61〜62 件を記録し、すべて
+    Write の frame = 出力 frame。
+  - [事実] 2. 再生前は memory に無く、frame 30 で届ける: 届く前の記録は 0 件 (静止を見せる)。
+    届いた後は frame 32〜33 から 38〜39 件を記録し、すべて Write の frame = 出力 frame
+    (frame 0 を見せない)。再生の組み直しの回数は変わらない。5 回連続で通過した。
+  - [事実] 合成の出し直しを「重ねる source が変わったときだけ」に変える変異では、2 の記録が
+    0 件になり、試験が落ちた。
 - [未検証] 大きな式・長い Write の preview の再生中の負荷 (render thread での patch の着色と送信)。
   1080p 全面の式では 1 frame の patch が約 8 MB になる。
 - [未検証] Write を付けた解の公式を人が一通り制作する手順 (P0 と同じく自動試験は契約の確認)。

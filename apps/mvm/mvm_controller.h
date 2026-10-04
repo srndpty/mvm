@@ -647,6 +647,19 @@ public:
     // 試験用: 数式の backend の確認を差し替えて確かめ直す (偽の backend を注入する)。
     void setMathPreflightForTest(MathRasterCache::PreflightFunction preflight);
     MathRasterCache& mathRastersForTest() { return *mathRasters_; }
+    // 試験用: Write の preview の評価 (engine の render thread が出力 frame ごとに呼ぶ) を観測する。
+    // 引数は clip ID・出力 frame・見せる Write の frame (-1 は静止)。設定後に作る animation に効く。
+    // render thread から呼ぶので、observer は thread 安全にすること。
+    using MathWriteObserver =
+        std::function<void(const std::string& clipId, std::int64_t outputFrame, std::int64_t state)>;
+    void setMathWriteObserverForTest(MathWriteObserver observer) {
+        mathWriteObserverForTest_ = std::move(observer);
+        mathWriteAnimations_.clear();
+    }
+    // 試験用: 最後に engine へ出した composition (再生中の引き継ぎも含む)。
+    std::shared_ptr<const preview::CompositionSnapshot> submittedCompositionForTest() const {
+        return submittedComposition_;
+    }
 
     int textPreviewSerial() const { return textPreviewSerial_; }
 
@@ -1448,6 +1461,7 @@ private:
         std::shared_ptr<const preview::PreviewStillAnimation> animation;
     };
     mutable QHash<QString, MathWriteAnimationMemo> mathWriteAnimations_;
+    MathWriteObserver mathWriteObserverForTest_;
     // 入力中の数式 (clip ID と、Project へまだ保存していない値)。
     std::optional<std::pair<std::string, project::MathClipData>> mathPreviewOverride_;
     mutable QHash<QString, QRect> textRasterBounds_;

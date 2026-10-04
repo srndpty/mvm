@@ -198,9 +198,8 @@ Outcome renderJob(const std::filesystem::path& directory, const std::filesystem:
 // ---- Write の連番 ----
 //
 // disk の形: cacheDirectory/write/<key>/00000.png ... と cacheDirectory/write/<key>.txt
-// (provenance)。描いた PNG は write/<key>.partial-<ticket>/ へ置いてから <key>/ へ rename し、
-// provenance を最後に atomic に書く。provenance が無い・合わないものは使わず消す
-// (途中で止まった結果を引かない)。
+// (provenance)。古い provenance を消してから PNG を <key>/ へ写し、provenance を最後に atomic に
+// 書く。provenance が無い・合わないものは使わず消す (途中で止まった結果を引かない)。
 
 using SequenceEntry = MathRasterCache::SequenceEntry;
 
@@ -391,12 +390,9 @@ SequenceOutcome renderSequenceJob(const std::filesystem::path& directory,
         return sequenceFailed(math::MathRenderStatus::Failed,
                               "数式の作業 directory を作成できません: " + error.message());
     const auto rendered = backend.renderSequence(request, cancel);
-    const auto staging = sequenceRoot(directory) /
-                         (key.toStdWString() + L".partial-" + std::to_wstring(ticket));
     const auto cleanup = [&] {
         std::error_code ignored;
         std::filesystem::remove_all(request.jobDirectory, ignored);
-        std::filesystem::remove_all(staging, ignored);
     };
     if (rendered.status == math::MathRenderStatus::Cancelled || cancel->load()) {
         cleanup();
@@ -415,23 +411,24 @@ SequenceOutcome renderSequenceJob(const std::filesystem::path& directory,
                               "Write の連番の枚数または大きさが要求と違います", rendered.log);
     }
 
-    // 作業 directory の PNG を staging へ写してから、まとめて <key>/ へ移す。
-    std::filesystem::remove_all(staging, error);
-    std::filesystem::create_directories(staging, error);
+    // 作業 directory の PNG を <key>/ へ写し、provenance を最後に書く。provenance がこの連番の
+    // 確定の印なので、directory の rename で置き換えない。Windows では書いた直後の file を
+    // 他の process (anti-virus・索引など) が開いていると directory の rename が失敗する
+    // (実測: 試験の 15 回に 1 回 "Permission denied")。先に古い provenance を消すので、
+    // 書き終えるまでこの key の連番は使われない。
+    const auto sequence = sequenceDirectory(directory, key);
+    std::filesystem::remove(sequenceProvenancePath(directory, key), error);
+    if (!error)
+        std::filesystem::create_directories(sequence, error);
     std::vector<std::uintmax_t> sizes;
     for (std::size_t index = 0; !error && index < rendered.frames.size(); ++index) {
-        std::filesystem::copy_file(rendered.frames[index], sequenceFramePath(staging, index),
+        std::filesystem::copy_file(rendered.frames[index], sequenceFramePath(sequence, index),
                                    std::filesystem::copy_options::overwrite_existing, error);
         if (!error)
             sizes.push_back(
-                std::filesystem::file_size(sequenceFramePath(staging, index), error));
+                std::filesystem::file_size(sequenceFramePath(sequence, index), error));
         if (!error && sizes.back() == 0)
             error = std::make_error_code(std::errc::io_error);
-    }
-    const auto sequence = sequenceDirectory(directory, key);
-    if (!error) {
-        removeSequenceArtifact(directory, key);
-        std::filesystem::rename(staging, sequence, error);
     }
     std::string writeError;
     if (error || !writeAtomically(sequenceProvenancePath(directory, key),
@@ -524,6 +521,7 @@ void MathRasterCache::clearRecords() {
     resident_.clear();
     loading_.clear();
     overBudget_.clear();
+    heldResident_.clear();
 }
 
 void MathRasterCache::setPreflight(PreflightFunction preflight) {
@@ -591,14 +589,6 @@ void MathRasterCache::startPreflight() {
         // ごとに分けてあり、権限 (Project lock) があるので、他の instance が使っていない。
         std::error_code error;
         std::filesystem::remove_all(directory / L"jobs", error);
-        // 連番の staging の残り (provenance を書く前に止まったもの) も同じ理由で消す。
-        for (std::filesystem::directory_iterator it(sequenceRoot(directory), error), end;
-             !error && it != end; it.increment(error)) {
-            if (it->path().filename().wstring().find(L".partial-") != std::wstring::npos) {
-                std::error_code ignored;
-                std::filesystem::remove_all(it->path(), ignored);
-            }
-        }
         auto result = preflight(jobs / L"preflight", cancel.get());
         if (cancel->load())
             return;
@@ -766,6 +756,16 @@ void MathRasterCache::setResidentMemoryBudget(std::size_t bytes) {
     residency_ = makeResidencyBudget(bytes);
 }
 
+void MathRasterCache::holdResidentLoadsForTest(bool hold) {
+    holdResident_ = hold;
+    if (hold)
+        return;
+    auto held = std::move(heldResident_);
+    heldResident_.clear();
+    for (auto& item : held)
+        finishResident(item.key, item.ticket, std::move(item.frames), std::move(item.error));
+}
+
 MathRasterCache::ResidentSequence
 MathRasterCache::residencyOf(const math::MathSequenceSpec& spec) const {
     ResidentSequence result;
@@ -825,8 +825,8 @@ MathRasterCache::residentSequence(const math::MathSequenceSpec& spec) {
     }
     if (!reserved) {
         const auto message =
-            QStringLiteral("Write の preview は memory の上限 (%1 MB) に収まらないため、"
-                           "書き終えた式で表示します (書き出しには影響しません)。"
+            QStringLiteral("Write の preview 用の mask が memory の上限 (全 clip の合計 %1 MB) に"
+                           "収まらないため、書き終えた式で表示します (書き出しには影響しません)。"
                            "必要 %2 MB、使用中 %3 MB")
                 .arg(residency_->limit() >> 20)
                 .arg(bytes >> 20)
@@ -875,6 +875,10 @@ void MathRasterCache::finishResident(const QString& key, std::uint64_t ticket,
     // frames を捨てると予約も返る。
     if (found == loading_.end() || found->ticket != ticket || shutDown_)
         return;
+    if (holdResident_) {
+        heldResident_.push_back({key, ticket, std::move(frames), std::move(error)});
+        return;
+    }
     loading_.erase(found);
     if (!frames) {
         // disk の連番が壊れている。消して、連番を Failed にする (forgetFailures・再試行で描き直す)。

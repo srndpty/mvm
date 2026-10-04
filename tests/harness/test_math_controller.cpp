@@ -11,19 +11,24 @@
 // - Write: 確定した式の連番を描いて preview に付け、書き出しへ渡す。入力中・連番の描画中は
 //   静止を見せ、連番が描けていなければ書き出さない
 
+#include "app/preview/preview_engine_rhi_item.h"
 #include "math_fake_backend.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include <QElapsedTimer>
@@ -465,7 +470,161 @@ void testWriteResidencyBudget(const QTemporaryDir& temp, const project::Project&
 
 } // namespace
 
+// ---- 再生中に Write の mask が memory に届く (実 D3D11 preview、--native-write) ----
+//
+// 5 秒の数式 clip の先頭 2 秒 (120 frame) が Write。engine の render thread が出力 frame ごとに
+// 評価した Write の frame を observer で記録し、timeline の frame と比べる。
+//   1. 再生前に mask が memory にある: 再生の先頭から frame 0 の Write を見せる
+//   2. 再生前は memory に無く、Write の途中で mask を届ける: 一時停止・seek をせずに、届いた後の
+//      frame から Write を見せ、frame 0 からやり直さない (timeline の時刻が authority)
+struct WriteObservation {
+    std::mutex mutex;
+    std::vector<std::pair<std::int64_t, std::int64_t>> frames; // (出力 frame, Write の frame)
+
+    void clear() {
+        std::lock_guard lock(mutex);
+        frames.clear();
+    }
+
+    std::vector<std::pair<std::int64_t, std::int64_t>> snapshot() {
+        std::lock_guard lock(mutex);
+        return frames;
+    }
+};
+
+bool submittedHasWrite(const MvmController& controller) {
+    const auto composition = controller.submittedCompositionForTest();
+    if (!composition)
+        return false;
+    return std::any_of(composition->layers.begin(), composition->layers.end(),
+                       [](const auto& layer) { return layer.stillImage && layer.stillAnimation; });
+}
+
+int nativeWritePlayback() {
+    QTemporaryDir temp;
+    check(temp.isValid(), "native: 作業フォルダー");
+    const auto path = std::filesystem::path(temp.filePath("native write.mvm").toStdWString());
+    const auto initial = project::createDefaultProject();
+    check(project::saveProjectJson(initial, path).success, "native: project の保存");
+    auto captured = std::make_shared<CapturedExport>();
+    FakeMathBackend backend;
+    auto controller = makeController(path, initial, captured);
+    QQuickWindow window;
+    // 入力を送らない試験だが、利用者の作業を止めないよう前面とフォーカスを奪わず、OS の
+    // マウス入力も透過させる (tests/harness/test_window_focus.h と同じ flags)。
+    window.setFlags(Qt::Window | Qt::WindowDoesNotAcceptFocus | Qt::WindowTransparentForInput);
+    window.resize(640, 360);
+    auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+    surface->setWidth(640);
+    surface->setHeight(360);
+    controller->attachPreview(surface);
+    window.show();
+    // 空の timeline には提示する frame が無いので、ここでは engine の準備だけを待つ。
+    check(pump([&] { return controller->previewReady(); }), "native: preview の初期化");
+    controller->setMathPreflightForTest(backend.preflight());
+    check(pump([&] {
+              return controller->mathRastersForTest().backendState() ==
+                     mvm::app::MathRasterCache::BackendState::Available;
+          }),
+          "native: 偽の backend が使える");
+    check(controller->createMathClip(QStringLiteral("WIDE native")), "native: 数式 clip を作る");
+    const auto clips = mathClips(*controller);
+    if (clips.size() != 1)
+        return 1;
+    const auto clipId = QString::fromStdString(clips[0]->id);
+    const auto start = clips[0]->timelineStartFrame;
+    constexpr std::int64_t kWrite = 120;
+    check(start == 0 && controller->updateMathClip(
+                            clipId, {{QStringLiteral("intro"), QStringLiteral("write")},
+                                     {QStringLiteral("introSeconds"), 2.0}}),
+          "native: 先頭 2 秒 (120 frame) の Write を付ける");
+    check(pump([&] { return writeState(*controller, clipId) == QStringLiteral("ready"); }),
+          "native: 連番が disk に揃う");
+    auto observation = std::make_shared<WriteObservation>();
+    controller->setMathWriteObserverForTest(
+        [observation](const std::string&, std::int64_t frame, std::int64_t state) {
+            std::lock_guard lock(observation->mutex);
+            observation->frames.emplace_back(frame, state);
+        });
+    // Write の区間の記録は、すべて「Write の frame = timeline の frame - clip の先頭」であること。
+    const auto timelineAuthoritative = [&](const auto& frames) {
+        bool all = true;
+        for (const auto& [frame, state] : frames)
+            if (frame >= start && frame < start + kWrite)
+                all = all && state == frame - start;
+        return all;
+    };
+
+    // 1. 再生前に mask が memory にある。
+    check(controller->seekTimelineFrame(0) && pump([&] {
+              return submittedHasWrite(*controller) && controller->previewPresentedLatest();
+          }),
+          "1: 一時停止中に mask を読み、合成に Write を付ける");
+    observation->clear();
+    const auto rebuildsBefore = controller->playbackRebuildCount();
+    check(controller->canPlay() && controller->playTimeline(), "1: 先頭から再生する");
+    check(pump([&] { return controller->playheadFrame() >= 60; }), "1: 再生が 60 frame まで進む");
+    check(controller->pauseTimeline(), "1: 再生を止める");
+    const auto first = observation->snapshot();
+    std::int64_t firstMin = std::numeric_limits<std::int64_t>::max();
+    for (const auto& [frame, state] : first)
+        firstMin = std::min(firstMin, frame);
+    std::fprintf(stderr, "1: 記録 %zu 件、最小の frame %lld\n", first.size(),
+                 static_cast<long long>(firstMin));
+    check(!first.empty() && firstMin <= 2 && timelineAuthoritative(first),
+          "1: 再生の先頭から、出力 frame と同じ Write の frame を見せる");
+
+    // 2. 再生前は memory に無い。Write の途中で mask を届ける。
+    controller->mathRastersForTest().setResidentMemoryBudget(
+        mvm::app::MathRasterCache::kDefaultResidentMemoryBudget);
+    controller->mathRastersForTest().holdResidentLoadsForTest(true);
+    check(controller->seekTimelineFrame(0) && pump([&] {
+              return controller->previewPresentedLatest() && !submittedHasWrite(*controller) &&
+                     controller->mathRastersForTest().heldResidentLoadCountForTest() == 1;
+          }),
+          "2: 先頭へ戻すと mask は memory に無く (読み終えても届けない)、静止を見せる");
+    observation->clear();
+    check(controller->playTimeline(), "2: 先頭から再生する");
+    check(pump([&] { return controller->playheadFrame() >= 30; }), "2: 再生が 30 frame まで進む");
+    check(!submittedHasWrite(*controller) && observation->snapshot().empty(),
+          "2: mask が届く前は Write を付けない (静止を見せる)");
+    const auto released = controller->playheadFrame();
+    controller->mathRastersForTest().holdResidentLoadsForTest(false);
+    check(pump([&] { return controller->playheadFrame() >= released + 40; }),
+          "2: 一時停止せずに再生が進む");
+    const bool stillPlaying = controller->playing();
+    check(controller->pauseTimeline(), "2: 再生を止める");
+    const auto second = observation->snapshot();
+    std::int64_t secondMin = std::numeric_limits<std::int64_t>::max();
+    std::int64_t secondMax = -1;
+    for (const auto& [frame, state] : second) {
+        secondMin = std::min(secondMin, frame);
+        secondMax = std::max(secondMax, frame);
+    }
+    std::fprintf(stderr, "2: 届けた時の再生位置 %lld、記録 %zu 件 (frame %lld..%lld)\n",
+                 static_cast<long long>(released), second.size(), static_cast<long long>(secondMin),
+                 static_cast<long long>(secondMax));
+    check(stillPlaying && controller->playbackRebuildCount() == rebuildsBefore,
+          "2: mask が届いても再生を止めず、組み直し (seek) もしない");
+    check(!second.empty() && secondMin >= released - 10 && secondMin < start + kWrite,
+          "2: 届いた後の再生中の frame から Write を見せる (Write の区間の中で始まる)");
+    check(timelineAuthoritative(second),
+          "2: Write の frame は timeline の frame から決まり、0 からやり直さない");
+    check(std::none_of(second.begin(), second.end(),
+                       [](const auto& item) { return item.first > 0 && item.second == 0; }),
+          "2: 途中から見せ始めた Write に frame 0 を出さない");
+    controller->shutdown();
+    std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
+    return failures == 0 && checks > 0 ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--native-write") {
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+        QQuickStyle::setStyle(QStringLiteral("Basic"));
+        QGuiApplication app(argc, argv);
+        return nativeWritePlayback();
+    }
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
     QQuickStyle::setStyle(QStringLiteral("Basic"));

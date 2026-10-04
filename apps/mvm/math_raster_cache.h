@@ -23,7 +23,8 @@
 
 namespace mvm::app {
 
-// Write の preview が memory に置く連番の mask の総量の上限 (全 clip の合計)。
+// Write の preview が memory に置く連番の mask (A8 の被覆の中身) の総量の上限 (全 clip の合計)。
+// process 全体・GPU・decode の memory は数えない。
 // 予約してから decode し、mask が破棄される (どこからも参照されなくなる) ときに返す。
 // cache が手放しても preview engine が持っている間は返らないので、memory に実際にある量を数える。
 class MathResidencyBudget {
@@ -211,6 +212,10 @@ public:
     // disk から mask を読んだ回数 (試験が追い出しと読み直しを確かめる)。
     int residentLoadCount() const { return residentLoads_; }
     int residentSequenceCount() const { return static_cast<int>(resident_.size()); }
+    // 試験用: true の間は、読み終えた mask を Loading のまま留め、false にしたときに届ける。
+    // 再生中に mask が届く時刻を試験が決めるために使う (読み込みそのものは止めない)。
+    void holdResidentLoadsForTest(bool hold);
+    int heldResidentLoadCountForTest() const { return static_cast<int>(heldResident_.size()); }
     const std::filesystem::path& cacheDirectory() const { return cacheDirectory_; }
     // この instance の作業 directory (cacheDirectory/jobs/<session>)。
     std::filesystem::path jobsDirectory() const;
@@ -288,6 +293,14 @@ private:
     std::shared_ptr<MathResidencyBudget> residency_;
     std::uint64_t useTick_ = 0;
     int residentLoads_ = 0;
+    struct HeldResident {
+        QString key;
+        std::uint64_t ticket = 0;
+        std::shared_ptr<const MathCoverageSequence> frames;
+        QString error;
+    };
+    bool holdResident_ = false;
+    std::vector<HeldResident> heldResident_;
     std::uint64_t nextTicket_ = 1;
     std::uint64_t preflightGeneration_ = 0;
     std::shared_ptr<std::atomic<bool>> preflightCancel_;

@@ -417,19 +417,6 @@ void testSequenceRenderAndDisk(const std::filesystem::path& root) {
     }
 }
 
-void testSequenceStaleStaging(const std::filesystem::path& root) {
-    const auto directory = root / L"sequence staging";
-    const auto staging = directory / L"write" / L"abc.partial-7";
-    std::filesystem::create_directories(staging);
-    std::ofstream(staging / L"00000.png", std::ios::binary) << "途中";
-    const auto finished = directory / L"write" / L"def";
-    std::filesystem::create_directories(finished);
-    FakeBackend backend;
-    auto cache = readyCache(directory, backend);
-    check(!std::filesystem::exists(staging), "権限があれば連番の staging の残りを消す");
-    check(std::filesystem::exists(finished), "staging でない連番の directory は消さない");
-}
-
 void testSequenceFailuresAndCancel(const std::filesystem::path& root) {
     FakeBackend backend;
     auto cache = readyCache(root / L"sequence failures", backend);
@@ -487,9 +474,13 @@ void testSequenceResidency(const std::filesystem::path& root) {
         specs.push_back(writeSpec(name, 8));
     check(cache->residentSequence(specs[0]).state == MathRasterCache::Residency::NotReady,
           "disk の連番が揃う前は memory に読まない");
-    for (const auto& s : specs)
-        check(waitForSequence(*cache, s).state == MathRasterCache::State::Ready,
-              "6 本の連番がすべて disk に揃う");
+    for (const auto& s : specs) {
+        const auto entry = waitForSequence(*cache, s);
+        check(entry.state == MathRasterCache::State::Ready,
+              "6 本の連番がすべて disk に揃う: " + s.still.source +
+                  " state=" + std::to_string(static_cast<int>(entry.state)) + " " +
+                  entry.message.toStdString());
+    }
     check(cache->residentBytes() == 0, "6 本が disk に揃っても memory には 1 本も読まない");
 
     std::size_t peak = 0;
@@ -664,7 +655,6 @@ int main(int argc, char** argv) {
     testWithoutAuthority(root);
     testDirectoryChangeDuringPreflight(root);
     testSequenceRenderAndDisk(root);
-    testSequenceStaleStaging(root);
     testSequenceFailuresAndCancel(root);
     testSequenceResidency(root);
     testSequenceCorruptResident(root);
