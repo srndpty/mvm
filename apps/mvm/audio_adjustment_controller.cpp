@@ -1,45 +1,238 @@
 #include "mvm_controller.h"
 #include "shuttle_audio_playback.h"
 
+#include <algorithm>
 #include <cmath>
-#include <set>
+#include <map>
+#include <utility>
 
-#include <QCryptographicHash>
-#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QStringList>
 
 namespace mvm::app {
-QString MvmController::audioAdjustmentFingerprint(const project::Project& source) const {
-    auto clean = source;
-    for (auto& track : clean.audioTracks) {
-        track.muted = false;
-        track.solo = false;
+namespace {
+constexpr qint64 kSmallContentRecheckMs = 400;
+constexpr qint64 kLargeContentRecheckMs = 15000;
+constexpr std::uint64_t kSmallContentByteLimit = 8ull * 1024ull * 1024ull;
+
+std::filesystem::path pathFromIdentityKey(const std::string& key) {
+    return std::filesystem::path(QString::fromUtf8(key).toStdWString());
+}
+} // namespace
+
+bool MvmController::audioAdjustmentNeedsRegeneration() const {
+    return audioAdjustmentNeedsRegeneration_;
+}
+
+void MvmController::connectAudioFileWatch() {
+    audioContentClock_.start();
+    connect(&audioFileWatcher_, &QFileSystemWatcher::fileChanged, this, [this](const QString& path) {
+        audioContentDirty_ = true;
+        if (!audioFileWatcher_.files().contains(path))
+            audioFileWatcher_.addPath(path);
+        ensureAudioAdjustmentTimer();
+    });
+}
+
+void MvmController::refreshAudioInputAuthority(bool notify) {
+    // ファイル内容はここでは読まない。音声入力の射影が同じ編集でも、保存した fingerprint は
+    // 変わるので再生成フラグだけ更新する。
+    audioProjectionHash_ = audioProjectionHash(project_);
+    updateAudioAdjustmentRegeneration(notify);
+    if (projectHasAudioAdjustmentFingerprint() || audioAdjustmentResult_ || audioAdjustmentJob_)
+        ensureAudioAdjustmentTimer();
+}
+
+void MvmController::updateAudioAdjustmentRegeneration(bool notify) {
+    const bool need = computeAudioAdjustmentNeedsRegeneration();
+    if (need == audioAdjustmentNeedsRegeneration_)
+        return;
+    audioAdjustmentNeedsRegeneration_ = need;
+    if (notify)
+        emit stateChanged();
+}
+
+bool MvmController::projectHasAudioAdjustmentFingerprint() const {
+    for (const auto& clip : project_.timelineClips)
+        if (!clip.effects.audioAdjustmentFingerprint.empty())
+            return true;
+    return false;
+}
+
+bool MvmController::computeAudioAdjustmentNeedsRegeneration() const {
+    for (const auto& clip : project_.timelineClips) {
+        if (clip.effects.audioAdjustmentFingerprint.empty())
+            continue;
+        std::string projection;
+        std::vector<AudioFileIdentity> files;
+        if (!parseAudioInputFingerprint(clip.effects.audioAdjustmentFingerprint, projection, files) ||
+            projection != audioProjectionHash_)
+            return true;
+        for (const auto& file : files) {
+            const auto cached = audioFileCache_.find(file.key);
+            if (cached == audioFileCache_.end() || !cached->second.hashed)
+                continue;
+            if (!cached->second.exists || cached->second.size != file.size ||
+                cached->second.mtime100ns != file.mtime100ns ||
+                cached->second.contentSha256 != file.contentSha256)
+                return true;
+        }
     }
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    std::set<std::filesystem::path> paths;
-    for (auto& clip : clean.timelineClips) {
-        clip.effects.normalizationGainDb = 0;
-        clip.effects.duckingDb = 0;
-        clip.effects.duckingKeys.clear();
-        clip.effects.audioAdjustmentSettings.clear();
-        clip.effects.audioAdjustmentFingerprint.clear();
-        if (clip.enabled && clip.kind == project::TimelineClipKind::Audio)
-            paths.insert(clip.mediaPath);
+    return false;
+}
+
+bool MvmController::audioCheapIdentityMatches(const std::vector<AudioFileIdentity>& files) const {
+    if (files.empty())
+        return false;
+    for (const auto& file : files) {
+        const auto cached = audioFileCache_.find(file.key);
+        if (cached == audioFileCache_.end() || !cached->second.exists ||
+            cached->second.size != file.size || cached->second.mtime100ns != file.mtime100ns)
+            return false;
     }
-    const auto json = project::serializeProjectJson(clean, projectPath_);
-    if (!json.success)
-        return {};
-    hash.addData(QByteArray::fromStdString(json.json));
-    for (const auto& path : paths) {
-        const QFileInfo info(QString::fromStdWString(path.wstring()));
-        if (!info.isFile())
-            return {};
-        hash.addData(info.absoluteFilePath().toUtf8());
-        hash.addData(QByteArray::number(info.size()));
-        hash.addData(QByteArray::number(info.lastModified().toMSecsSinceEpoch()));
+    return true;
+}
+
+QStringList MvmController::audioWatchPaths() const {
+    QStringList paths;
+    const auto add = [&](const std::string& key) {
+        const auto path = QString::fromUtf8(key);
+        if (!path.isEmpty() && !paths.contains(path))
+            paths.append(path);
+    };
+    if (audioAdjustmentResult_)
+        for (const auto& file : audioAdjustmentResult_->files)
+            add(file.key);
+    for (const auto& clip : project_.timelineClips) {
+        std::string projection;
+        std::vector<AudioFileIdentity> files;
+        if (parseAudioInputFingerprint(clip.effects.audioAdjustmentFingerprint, projection, files))
+            for (const auto& file : files)
+                add(file.key);
     }
-    return QString::fromLatin1(hash.result().toHex());
+    return paths;
+}
+
+void MvmController::syncAudioFileWatch() {
+    const auto wanted = audioWatchPaths();
+    const auto current = audioFileWatcher_.files();
+    for (const auto& path : current)
+        if (!wanted.contains(path))
+            audioFileWatcher_.removePath(path);
+    for (const auto& path : wanted)
+        if (!audioFileWatcher_.files().contains(path))
+            audioFileWatcher_.addPath(path);
+}
+
+void MvmController::ensureAudioAdjustmentTimer() {
+    if (!audioAdjustmentTimer_.isActive())
+        audioAdjustmentTimer_.start(100);
+}
+
+void MvmController::reapAudioAdjustmentJobs() {
+    std::erase_if(audioAdjustmentRetired_, [](const std::unique_ptr<AudioAdjustmentJob>& job) {
+        return job->ready();
+    });
+    std::erase_if(audioContentRetired_, [](const std::unique_ptr<AudioContentHashJob>& job) {
+        return job->ready();
+    });
+}
+
+void MvmController::refreshAudioFileCacheCheap() {
+    if (!audioAdjustmentResult_)
+        return;
+    for (const auto& file : audioAdjustmentResult_->files) {
+        AudioFileIdentity now;
+        std::string error;
+        auto& cached = audioFileCache_[file.key];
+        if (!inspectAudioFile(pathFromIdentityKey(file.key), now, false, nullptr, error)) {
+            cached.key = file.key;
+            cached.exists = false;
+            cached.hashed = false;
+            continue;
+        }
+        const bool same = cached.exists && cached.size == now.size &&
+                          cached.mtime100ns == now.mtime100ns && cached.key == now.key;
+        const auto sha = cached.contentSha256;
+        const bool hashed = cached.hashed;
+        cached = now;
+        if (same) {
+            cached.contentSha256 = sha;
+            cached.hashed = hashed;
+        }
+    }
+}
+
+void MvmController::scheduleAudioContentRecheck() {
+    if (audioContentJob_)
+        return;
+    std::vector<std::filesystem::path> paths;
+    std::uint64_t bytes = 0;
+    if (audioAdjustmentResult_) {
+        for (const auto& file : audioAdjustmentResult_->files) {
+            paths.push_back(pathFromIdentityKey(file.key));
+            bytes += file.size;
+        }
+    } else if (projectHasAudioAdjustmentFingerprint()) {
+        for (const auto& clip : project_.timelineClips) {
+            if (!clip.enabled || clip.kind != project::TimelineClipKind::Audio)
+                continue;
+            paths.push_back(clip.mediaPath);
+        }
+    }
+    if (paths.empty())
+        return;
+    const auto gap = bytes > kSmallContentByteLimit ? kLargeContentRecheckMs : kSmallContentRecheckMs;
+    if (!audioContentDirty_ &&
+        audioContentClock_.elapsed() - audioContentCheckedAtMs_ < gap)
+        return;
+    audioContentJob_ = std::make_unique<AudioContentHashJob>(std::move(paths));
+    ensureAudioAdjustmentTimer();
+}
+
+void MvmController::finishAudioContentRecheck() {
+    if (!audioContentJob_ || !audioContentJob_->ready())
+        return;
+    const auto hashed = audioContentJob_->take();
+    audioContentJob_.reset();
+    audioContentCheckedAtMs_ = audioContentClock_.elapsed();
+    audioContentDirty_ = false;
+    if (!hashed.completed)
+        return;
+    bool mismatch = false;
+    for (const auto& file : hashed.files)
+        audioFileCache_[file.key] = file;
+    if (audioAdjustmentResult_) {
+        if (hashed.files.size() != audioAdjustmentResult_->files.size())
+            mismatch = true;
+        for (const auto& expected : audioAdjustmentResult_->files) {
+            const auto found = std::find_if(hashed.files.begin(), hashed.files.end(),
+                                            [&](const auto& file) { return file.key == expected.key; });
+            if (found == hashed.files.end() || found->contentSha256 != expected.contentSha256 ||
+                found->size != expected.size || found->mtime100ns != expected.mtime100ns)
+                mismatch = true;
+        }
+    }
+    updateAudioAdjustmentRegeneration(true);
+    if (mismatch)
+        dropAudioAdjustmentResult(
+            QStringLiteral("解析後に素材の内容が変わりました。再解析してください"));
+}
+
+void MvmController::dropAudioAdjustmentResult(const QString& error) {
+    const bool hadResult = audioAdjustmentResult_.has_value();
+    stopAudioAdjustmentAudition();
+    audioAdjustmentResult_.reset();
+    audioContentConfirmed_ = false;
+    if (audioContentJob_) {
+        audioContentJob_->cancel();
+        audioContentRetired_.push_back(std::move(audioContentJob_));
+    }
+    audioAdjustmentError_ = error;
+    if (hadResult)
+        emit audioAdjustmentResultsChanged();
+    emit audioAdjustmentChanged();
 }
 
 int MvmController::audioAdjustmentProgress() const {
@@ -49,9 +242,9 @@ int MvmController::audioAdjustmentProgress() const {
 
 bool MvmController::canApplyAudioAdjustment() const {
     return !audioAdjustmentJob_ && audioAdjustmentResult_ && audioAdjustmentResult_->success &&
-           audioAdjustmentSource_ && *audioAdjustmentSource_ == project_ && !busy_ && !playing() &&
-           !audioAdjustmentInputFingerprint_.isEmpty() &&
-           audioAdjustmentFingerprint(project_) == audioAdjustmentInputFingerprint_;
+           !busy_ && !playing() && audioContentConfirmed_ &&
+           audioAdjustmentResult_->projectionHash == audioProjectionHash_ &&
+           audioCheapIdentityMatches(audioAdjustmentResult_->files);
 }
 
 QVariantList MvmController::audioAdjustmentResults() const {
@@ -93,39 +286,20 @@ QVariantList MvmController::audioAdjustmentRanges() const {
 }
 
 QVariantMap MvmController::savedAudioAdjustmentSettings() const {
-    for (const auto& clip : project_.timelineClips)
-        if (!clip.effects.audioAdjustmentSettings.empty())
-            return QJsonDocument::fromJson(
-                       QByteArray::fromStdString(clip.effects.audioAdjustmentSettings))
-                .object()
-                .toVariantMap();
+    const auto parse = [](const std::string& json) {
+        return QJsonDocument::fromJson(QByteArray::fromStdString(json)).object().toVariantMap();
+    };
+    if (!project_.lastAudioAdjustmentSettings.empty())
+        return parse(project_.lastAudioAdjustmentSettings);
+    for (auto clip = project_.timelineClips.rbegin(); clip != project_.timelineClips.rend(); ++clip)
+        if (!clip->effects.audioAdjustmentSettings.empty())
+            return parse(clip->effects.audioAdjustmentSettings);
     return {};
-}
-
-bool MvmController::audioAdjustmentNeedsRegeneration() const {
-    QString current;
-    for (const auto& clip : project_.timelineClips)
-        if (!clip.effects.audioAdjustmentFingerprint.empty()) {
-            if (current.isEmpty())
-                current = audioAdjustmentFingerprint(project_);
-            if (current.isEmpty() ||
-                current != QString::fromStdString(clip.effects.audioAdjustmentFingerprint))
-                return true;
-        }
-    return false;
 }
 
 bool MvmController::startAudioAdjustment(const QVariantMap& options) {
     if (busy_ || audioAdjustmentJob_)
         return false;
-    if (!pauseTimeline()) {
-        audioAdjustmentError_ = QStringLiteral("解析の前にタイムラインの再生を停止できません");
-        emit audioAdjustmentChanged();
-        return false;
-    }
-    stopAudioAdjustmentAudition();
-    audioAdjustmentResult_.reset();
-    emit audioAdjustmentResultsChanged();
     audioAdjustmentError_.clear();
     project::AudioAdjustmentSettings settings;
     bool valid = true;
@@ -176,12 +350,32 @@ bool MvmController::startAudioAdjustment(const QVariantMap& options) {
         emit audioAdjustmentChanged();
         return false;
     }
-    audioAdjustmentInputFingerprint_ = audioAdjustmentFingerprint(project_);
-    if (audioAdjustmentInputFingerprint_.isEmpty()) {
+    bool hasAudio = false;
+    for (const auto& clip : project_.timelineClips) {
+        if (!clip.enabled || clip.kind != project::TimelineClipKind::Audio)
+            continue;
+        hasAudio = true;
+        AudioFileIdentity identity;
+        if (!inspectAudioFile(clip.mediaPath, identity, false, nullptr, error)) {
+            audioAdjustmentError_ = QStringLiteral("解析する素材の状態を確認できません");
+            emit audioAdjustmentChanged();
+            return false;
+        }
+    }
+    if (!hasAudio || audioProjectionHash(project_).empty()) {
         audioAdjustmentError_ = QStringLiteral("解析する素材の状態を確認できません");
         emit audioAdjustmentChanged();
         return false;
     }
+    if (!pauseTimeline()) {
+        audioAdjustmentError_ = QStringLiteral("解析の前にタイムラインの再生を停止できません");
+        emit audioAdjustmentChanged();
+        return false;
+    }
+    stopAudioAdjustmentAudition();
+    audioAdjustmentResult_.reset();
+    audioContentConfirmed_ = false;
+    emit audioAdjustmentResultsChanged();
     QVariantList voiceTracks;
     for (int track : settings.voiceTracks)
         voiceTracks.append(track);
@@ -192,17 +386,16 @@ bool MvmController::startAudioAdjustment(const QVariantMap& options) {
         {"reductionDb", settings.reductionDb}, {"thresholdDb", settings.thresholdDb},
         {"attackMs", settings.attackMs},       {"holdMs", settings.holdMs},
         {"releaseMs", settings.releaseMs}};
-    audioAdjustmentSource_ = project_;
+    audioAdjustmentLastProgress_ = -1;
     audioAdjustmentJob_ = std::make_unique<AudioAdjustmentJob>(project_, settings);
-    audioAdjustmentTimer_.disconnect(this);
-    connect(&audioAdjustmentTimer_, &QTimer::timeout, this, &MvmController::pollAudioAdjustment);
-    audioAdjustmentTimer_.start(100);
+    ensureAudioAdjustmentTimer();
     emit audioAdjustmentChanged();
     return true;
 }
 
 void MvmController::pollAudioAdjustment() {
-    bool resultsChanged = false;
+    reapAudioAdjustmentJobs();
+    bool changed = false;
     if (audioAdjustmentJob_ && audioAdjustmentJob_->ready()) {
         auto result = audioAdjustmentJob_->take();
         audioAdjustmentJob_.reset();
@@ -210,60 +403,89 @@ void MvmController::pollAudioAdjustment() {
             audioAdjustmentError_ = QStringLiteral("解析を中止しました");
         else if (!result.success)
             audioAdjustmentError_ = QString::fromStdString(result.error);
-        else if (!audioAdjustmentSource_ || *audioAdjustmentSource_ != project_ ||
-                 audioAdjustmentFingerprint(project_) != audioAdjustmentInputFingerprint_)
+        else if (result.projectionHash != audioProjectionHash_ || result.fingerprintText.empty())
             audioAdjustmentError_ =
                 QStringLiteral("解析中に編集または素材の変更がありました。再解析してください");
         else {
+            for (const auto& file : result.files)
+                audioFileCache_[file.key] = file;
             audioAdjustmentResult_ = std::move(result);
-            resultsChanged = true;
+            audioContentConfirmed_ = true;
+            audioContentCheckedAtMs_ = audioContentClock_.elapsed();
+            audioContentDirty_ = false;
+            emit audioAdjustmentResultsChanged();
         }
+        changed = true;
     }
+    refreshAudioFileCacheCheap();
     if (audioAdjustmentResult_ &&
-        (!audioAdjustmentSource_ || *audioAdjustmentSource_ != project_ ||
-         audioAdjustmentFingerprint(project_) != audioAdjustmentInputFingerprint_)) {
-        stopAudioAdjustmentAudition();
-        audioAdjustmentResult_.reset();
-        resultsChanged = true;
-        audioAdjustmentError_ =
-            QStringLiteral("解析後に編集または素材の変更がありました。再解析してください");
+        (audioAdjustmentResult_->projectionHash != audioProjectionHash_ ||
+         !audioCheapIdentityMatches(audioAdjustmentResult_->files))) {
+        dropAudioAdjustmentResult(
+            QStringLiteral("解析後に編集または素材の変更がありました。再解析してください"));
+        changed = true;
     }
+    finishAudioContentRecheck();
+    scheduleAudioContentRecheck();
+    syncAudioFileWatch();
     if (audioAdjustmentAudition_) {
         const auto error = audioAdjustmentAudition_->error();
-        const auto valid = project::validateTimeline(audioAdjustmentResult_->candidate);
-        const double endSeconds = static_cast<double>(valid.totalFrames - playheadFrame_) *
-                                  static_cast<double>(project_.timelineFpsDen) /
-                                  static_cast<double>(project_.timelineFpsNum);
-        if (!error.empty() ||
+        const auto valid = audioAdjustmentResult_
+                               ? project::validateTimeline(audioAdjustmentResult_->candidate)
+                               : project::TimelineValidationResult{};
+        const double endSeconds = audioAdjustmentResult_ && valid.success
+                                      ? static_cast<double>(valid.totalFrames - playheadFrame_) *
+                                            static_cast<double>(project_.timelineFpsDen) /
+                                            static_cast<double>(project_.timelineFpsNum)
+                                      : 0;
+        if (!audioAdjustmentResult_ || !error.empty() ||
             static_cast<double>(audioAdjustmentAudition_->elapsedSamples()) >= endSeconds * 48000) {
             if (!error.empty())
                 audioAdjustmentError_ = QString::fromStdString(error);
             stopAudioAdjustmentAudition();
+            changed = true;
         }
     }
-    if (!audioAdjustmentJob_ && !audioAdjustmentResult_)
+    if (audioAdjustmentJob_) {
+        const int progress = audioAdjustmentJob_->progress();
+        if (progress != audioAdjustmentLastProgress_) {
+            audioAdjustmentLastProgress_ = progress;
+            changed = true;
+        }
+    }
+    if (!audioAdjustmentJob_ && audioAdjustmentRetired_.empty() && !audioAdjustmentResult_ &&
+        !audioAdjustmentAudition_ && !audioContentJob_ && audioContentRetired_.empty() &&
+        !projectHasAudioAdjustmentFingerprint())
         audioAdjustmentTimer_.stop();
-    if (resultsChanged)
-        emit audioAdjustmentResultsChanged();
-    emit audioAdjustmentChanged();
+    if (changed)
+        emit audioAdjustmentChanged();
 }
 
 void MvmController::stopAudioAdjustmentAudition() {
     if (audioAdjustmentAudition_) {
         audioAdjustmentAudition_->stop();
         audioAdjustmentAudition_.reset();
+        emit audioAdjustmentChanged();
     }
-    emit audioAdjustmentChanged();
 }
 
 void MvmController::cancelAudioAdjustment() {
     stopAudioAdjustmentAudition();
-    if (audioAdjustmentJob_)
+    if (audioAdjustmentJob_) {
         audioAdjustmentJob_->cancel();
-    audioAdjustmentJob_.reset();
+        audioAdjustmentRetired_.push_back(std::move(audioAdjustmentJob_));
+    }
     audioAdjustmentResult_.reset();
-    audioAdjustmentSource_.reset();
-    audioAdjustmentTimer_.stop();
+    audioContentConfirmed_ = false;
+    if (audioContentJob_) {
+        audioContentJob_->cancel();
+        audioContentRetired_.push_back(std::move(audioContentJob_));
+    }
+    if (!audioAdjustmentRetired_.empty() || !audioContentRetired_.empty() ||
+        projectHasAudioAdjustmentFingerprint())
+        ensureAudioAdjustmentTimer();
+    else
+        audioAdjustmentTimer_.stop();
     emit audioAdjustmentResultsChanged();
     emit audioAdjustmentChanged();
 }
@@ -282,12 +504,21 @@ bool MvmController::auditionAudioAdjustment() {
         return false;
     }
     audioAdjustmentAudition_ = std::move(audition);
+    ensureAudioAdjustmentTimer();
     emit audioAdjustmentChanged();
     return true;
 }
 
 bool MvmController::applyAudioAdjustment() {
     stopAudioAdjustmentAudition();
+    // 表示用の再確認は timer に任せる。適用の直前だけは size と更新時刻をその場で見る。
+    refreshAudioFileCacheCheap();
+    if (audioAdjustmentResult_ &&
+        (audioAdjustmentResult_->projectionHash != audioProjectionHash_ ||
+         !audioCheapIdentityMatches(audioAdjustmentResult_->files))) {
+        dropAudioAdjustmentResult(
+            QStringLiteral("解析後に編集または素材の変更がありました。再解析してください"));
+    }
     if (!canApplyAudioAdjustment()) {
         audioAdjustmentError_ =
             QStringLiteral("適用できる解析結果がありません。再解析してください");
@@ -298,12 +529,12 @@ bool MvmController::applyAudioAdjustment() {
     const auto serialized = QJsonDocument(QJsonObject::fromVariantMap(audioAdjustmentOptions_))
                                 .toJson(QJsonDocument::Compact)
                                 .toStdString();
+    candidate.lastAudioAdjustmentSettings = serialized;
     for (auto& clip : candidate.timelineClips)
         for (const auto& measured : audioAdjustmentResult_->clips)
             if (clip.id == measured.clipId) {
                 clip.effects.audioAdjustmentSettings = serialized;
-                clip.effects.audioAdjustmentFingerprint =
-                    audioAdjustmentInputFingerprint_.toStdString();
+                clip.effects.audioAdjustmentFingerprint = audioAdjustmentResult_->fingerprintText;
             }
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("自動音量調整を適用できません: ")))
         return false;

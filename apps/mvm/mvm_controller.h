@@ -39,6 +39,8 @@
 #include <QRectF>
 #include <QString>
 #include <QStringList>
+#include <QFileSystemWatcher>
+#include <QStringList>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
@@ -199,6 +201,11 @@ class MvmController : public QObject {
 
 public:
     bool audioAdjusting() const { return audioAdjustmentJob_ != nullptr; }
+
+    // 取消した worker の破棄まで終わっている。中止そのものは待たない。
+    bool audioAdjustmentWorkersIdle() const {
+        return audioAdjustmentJob_ == nullptr && audioAdjustmentRetired_.empty();
+    }
 
     int audioAdjustmentProgress() const;
     QVariantList audioAdjustmentResults() const;
@@ -893,15 +900,39 @@ Q_SIGNALS:
     void externalCanonicalChangeOnSave();
 
 private:
+    void connectAudioFileWatch();
     void pollAudioAdjustment();
-    QString audioAdjustmentFingerprint(const project::Project& source) const;
+    void refreshAudioInputAuthority(bool notify);
+    void updateAudioAdjustmentRegeneration(bool notify);
+    bool computeAudioAdjustmentNeedsRegeneration() const;
+    void reapAudioAdjustmentJobs();
+    void refreshAudioFileCacheCheap();
+    void scheduleAudioContentRecheck();
+    void finishAudioContentRecheck();
+    void dropAudioAdjustmentResult(const QString& error);
+    void syncAudioFileWatch();
+    void ensureAudioAdjustmentTimer();
+    bool audioCheapIdentityMatches(const std::vector<AudioFileIdentity>& files) const;
+    bool projectHasAudioAdjustmentFingerprint() const;
+    QStringList audioWatchPaths() const;
+
+    std::string audioProjectionHash_;
+    bool audioAdjustmentNeedsRegeneration_ = false;
+    bool audioContentConfirmed_ = false;
+    bool audioContentDirty_ = false;
+    qint64 audioContentCheckedAtMs_ = 0;
+    QElapsedTimer audioContentClock_;
+    int audioAdjustmentLastProgress_ = -1;
+    std::map<std::string, AudioFileIdentity> audioFileCache_;
     std::unique_ptr<AudioAdjustmentJob> audioAdjustmentJob_;
+    std::vector<std::unique_ptr<AudioAdjustmentJob>> audioAdjustmentRetired_;
+    std::unique_ptr<AudioContentHashJob> audioContentJob_;
+    std::vector<std::unique_ptr<AudioContentHashJob>> audioContentRetired_;
     std::optional<AudioAdjustmentResult> audioAdjustmentResult_;
-    std::optional<project::Project> audioAdjustmentSource_;
     QVariantMap audioAdjustmentOptions_;
-    QString audioAdjustmentInputFingerprint_;
     QString audioAdjustmentError_;
     QTimer audioAdjustmentTimer_;
+    QFileSystemWatcher audioFileWatcher_;
     std::unique_ptr<ShuttleAudioPlayback> audioAdjustmentAudition_;
     bool startTimelineExport(const QUrl& outputUrl, int videoCrf);
 

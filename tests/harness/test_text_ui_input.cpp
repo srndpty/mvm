@@ -299,6 +299,54 @@ void testTransitionInspector(QQuickWindow* window, mvm::app::MvmController& cont
         check(std::abs(drawnCenter - clipCenter) <= 1.5,
               "timeline のトランジションが clip の縦中央にありません");
     }
+    if (auto* panel = window->findChild<QQuickItem*>(QStringLiteral("timelinePanel"))) {
+        const int previousZoom = panel->property("zoomIndex").toInt();
+        panel->setProperty("zoomIndex", 0);
+        const auto narrowClip = [&] {
+            for (QQuickItem* item : visualItems(window))
+                if (item->objectName().startsWith(QStringLiteral("timelineClip_")) &&
+                    item->isVisible() && item->width() < 40)
+                    return true;
+            return false;
+        };
+        pumpUntil(
+            [&] {
+                return panel->property("pixelsPerFrame").toDouble() <= 0.005 + 1e-6 && narrowClip();
+            },
+            2000);
+        if (drawn) {
+            const double pixelsPerFrame = panel->property("pixelsPerFrame").toDouble();
+            double span = -1;
+            for (const auto& value : controller.timelineTransitions()) {
+                const auto row = value.toMap();
+                if (row.value(QStringLiteral("transitionId")).toString() != transitionId)
+                    continue;
+                span = static_cast<double>(row.value(QStringLiteral("end")).toLongLong() -
+                                            row.value(QStringLiteral("start")).toLongLong()) *
+                       pixelsPerFrame;
+            }
+            check(span >= 0 && (span < 8 ? !drawn->isVisible()
+                                         : std::abs(drawn->width() - span) <= 1),
+                  "極限まで縮小したクロスフェードを、実幅より広げて描いています");
+            auto* label = drawn->findChild<QQuickItem*>(QStringLiteral("timelineTransitionLabel"));
+            check(!label || !label->isVisible() ||
+                      label->mapToItem(drawn, QPointF(label->width(), 0)).x() <= drawn->width() + 1,
+                  "クロスフェードの文字が帯の外へ出ています");
+        }
+        bool checkedNarrowClip = false;
+        for (QQuickItem* item : visualItems(window)) {
+            if (!item->objectName().startsWith(QStringLiteral("timelineClip_")) || !item->isVisible())
+                continue;
+            auto* name = item->findChild<QQuickItem*>(QStringLiteral("timelineClipName"));
+            if (item->width() < 40) {
+                check(name && !name->isVisible(), "小さい clip の名前が外へ漏れています");
+                checkedNarrowClip = true;
+            }
+        }
+        check(checkedNarrowClip, "極限まで縮小しても小さい clip の名前を検査できません");
+        panel->setProperty("zoomIndex", previousZoom);
+        pump(200);
+    }
     if (drawn && outgoing) {
         // 再生ヘッド (上のルーラーで cut へ動かした) が端の上に重ならないよう離す。
         controller.seekTimelineFrame(0);

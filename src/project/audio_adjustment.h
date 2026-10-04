@@ -6,6 +6,8 @@
 #include <vector>
 
 namespace mvm::project {
+struct Project;
+
 struct AudioAdjustmentSettings {
     std::vector<int> voiceTracks;
     int bgmTrack = -1;
@@ -27,6 +29,10 @@ struct AudioDetectedRange {
 
 bool validateAudioAdjustmentSettings(const AudioAdjustmentSettings& settings, int trackCount,
                                      std::string& error);
+// 解析・再生成の authority。timeline fps、有効・無効を含む音声 clip の素材対応、
+// 速度、トリム、音量、フェード、音声トランジション、トラックのゲインとパンだけを書く。
+// mute・solo、自動補正の出力、字幕、映像の変形は含めない。
+std::string audioAdjustmentInputProjection(const Project& project);
 std::vector<AudioDetectedRange> mergeAudioDetectedRanges(std::vector<AudioDetectedRange> ranges);
 std::vector<ClipKeyframe> makeDuckingKeys(const std::vector<AudioDetectedRange>& ranges,
                                           const AudioAdjustmentSettings& settings,

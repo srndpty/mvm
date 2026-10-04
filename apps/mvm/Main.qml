@@ -2836,6 +2836,8 @@ ApplicationWindow {
                                         anchors.leftMargin: 12
                                         anchors.rightMargin: 12
                                         anchors.topMargin: 5
+                                        visible: clipItem.width >= 40
+                                        clip: true
                                         text: clipItem.displayName
                                         color: "white"
                                         font.bold: true
@@ -2940,6 +2942,10 @@ ApplicationWindow {
                                 }
 
                                 Column {
+                                    objectName: "timelineClipName"
+                                    // 幅が余白より狭いと elide が効かず、名前が clip の外へ描かれる。
+                                    visible: clipItem.width >= 40
+                                    clip: true
                                     anchors.fill: parent
                                     anchors.leftMargin: 12
                                     anchors.rightMargin: 12
@@ -3578,16 +3584,21 @@ ApplicationWindow {
                                 readonly property bool selected:
                                     modelData.transitionId === root.mvmController.selectedTransitionId
                                 objectName: "timelineTransition_" + modelData.transitionId
+                                readonly property real spanPixels:
+                                    (modelData.end - modelData.start) * timelinePanel.pixelsPerFrame
                                 x: modelData.start * timelinePanel.pixelsPerFrame
                                 // Premiere と同じく clip の中央に低い帯で描く。上下に残した clip の部分で
                                 // cut の端を掴んで trim できる (離れればトランジションは消える)。
+                                // 極限まで縮小して帯が数 px になると、最低幅や斜線が隣の clip へはみ出す。
+                                // そのときは描かない。
+                                visible: spanPixels >= 8
                                 y: timelinePanel.rowY(modelData.trackKind, modelData.trackIndex)
                                    - timelinePanel.tracksTop + 3
                                    + Math.round((timelinePanel.trackHeight - 6 - height) / 2)
-                                width: Math.max(4, (modelData.end - modelData.start)
-                                                   * timelinePanel.pixelsPerFrame)
+                                width: spanPixels
                                 height: Math.round((timelinePanel.trackHeight - 6) * 0.55)
                                 radius: 2
+                                clip: true
                                 color: selected ? "#c0e0b040" : "#80c89a3c"
                                 border.color: selected ? "#ffe08a" : "#d8b35a"
                                 border.width: selected ? 2 : 1
@@ -3610,8 +3621,9 @@ ApplicationWindow {
                                     onHeightChanged: requestPaint()
                                 }
                                 Label {
+                                    objectName: "timelineTransitionLabel"
                                     anchors.centerIn: parent
-                                    visible: parent.width > 70
+                                    visible: implicitWidth + 8 <= parent.width
                                     text: transitionItem.modelData.trackKind === "audio"
                                           ? "クロスフェード" : "クロスディゾルブ"
                                     color: "white"

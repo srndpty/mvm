@@ -5,9 +5,23 @@
 #include "project/project.h"
 
 #include <atomic>
+#include <cstdint>
+#include <filesystem>
 #include <future>
+#include <string>
+#include <vector>
 
 namespace mvm::app {
+// 解析した PCM の出自。size と 100ns の更新時刻に加え、内容の SHA-256 を authority にする。
+struct AudioFileIdentity {
+    std::string key;
+    std::uint64_t size = 0;
+    std::uint64_t mtime100ns = 0;
+    std::string contentSha256;
+    bool exists = false;
+    bool hashed = false;
+};
+
 struct AudioAdjustmentClipResult {
     std::string clipId;
     std::string name;
@@ -24,6 +38,44 @@ struct AudioAdjustmentResult {
     project::Project candidate;
     std::vector<AudioAdjustmentClipResult> clips;
     std::vector<project::AudioDetectedRange> ranges;
+    std::string projectionHash;
+    std::vector<AudioFileIdentity> files;
+    std::string fingerprintText;
+};
+
+// hashContent が false のときは size と更新時刻だけを読む。running が false なら内容 hash を中断する。
+bool inspectAudioFile(const std::filesystem::path& path, AudioFileIdentity& identity,
+                      bool hashContent, const std::atomic<bool>* running, std::string& error);
+std::string audioProjectionHash(const project::Project& project);
+std::string formatAudioInputFingerprint(const std::string& projectionHash,
+                                        const std::vector<AudioFileIdentity>& files);
+bool parseAudioInputFingerprint(const std::string& text, std::string& projectionHash,
+                                std::vector<AudioFileIdentity>& files);
+
+// decode / open の前で worker を止める試験用。nullptr で無効。待っている間は cancel を見ない。
+void setAudioAdjustmentOpenGateForTest(std::atomic<bool>* gate);
+int audioAdjustmentOpenGateWaitersForTest();
+
+struct AudioContentHashResult {
+    bool completed = false;
+    std::vector<AudioFileIdentity> files;
+};
+
+// 内容 hash は GUI を止めない。ready になる前に破棄しない。
+class AudioContentHashJob final {
+public:
+    explicit AudioContentHashJob(std::vector<std::filesystem::path> paths);
+    ~AudioContentHashJob();
+
+    void cancel() { running_ = false; }
+
+    bool ready() const;
+
+    AudioContentHashResult take();
+
+private:
+    std::atomic<bool> running_{true};
+    std::future<AudioContentHashResult> future_;
 };
 
 AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,

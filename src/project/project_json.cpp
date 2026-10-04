@@ -181,6 +181,7 @@ public:
         bool hasMediaFolders = false;
         bool hasMediaItems = false;
         bool hasSubtitles = false;
+        bool hasLastAudioAdjustmentSettings = false;
         std::string format;
         if (!consume('{'))
             return finish(error);
@@ -263,6 +264,12 @@ public:
                     if (hasSubtitles || !parseSubtitles(project.subtitles))
                         return failAndFinish("字幕データが重複または不正です", error);
                     hasSubtitles = true;
+                } else if (key == "last_audio_adjustment_settings") {
+                    if (hasLastAudioAdjustmentSettings ||
+                        !parseString(project.lastAudioAdjustmentSettings))
+                        return failAndFinish("last_audio_adjustment_settings が重複または不正です",
+                                             error);
+                    hasLastAudioAdjustmentSettings = true;
                 } else if (!skipValue()) {
                     return finish(error);
                 }
@@ -1992,7 +1999,8 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
     }
     if (!project.mediaItems.empty())
         json << '\n';
-    json << "  ]\n}\n";
+    json << "  ],\n  \"last_audio_adjustment_settings\": \""
+         << escapeJson(project.lastAudioAdjustmentSettings) << "\"\n}\n";
 
     result.json = json.str();
     result.success = true;

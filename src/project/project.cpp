@@ -232,6 +232,7 @@ std::size_t approximateProjectBytes(const Project& project) {
         for (const auto& channel : effectChannels())
             bytes += (clip.effects.*channel.keys).size() * sizeof(ClipKeyframe);
     }
+    bytes += heapBytes(project.lastAudioAdjustmentSettings);
     bytes += project.timelineTransitions.size() * sizeof(TimelineTransition);
     for (const auto& transition : project.timelineTransitions)
         bytes += heapBytes(transition.id) + heapBytes(transition.outgoingClipId) +

@@ -1,8 +1,13 @@
 #include "project/audio_adjustment.h"
 
+#include "project/project.h"
+
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <locale>
 #include <set>
+#include <sstream>
 
 namespace mvm::project {
 bool validateAudioAdjustmentSettings(const AudioAdjustmentSettings& s, int trackCount,
@@ -106,5 +111,66 @@ std::vector<ClipKeyframe> makeDuckingKeys(const std::vector<AudioDetectedRange>&
     if (std::all_of(keys.begin(), keys.end(), [](const auto& key) { return key.value == 0; }))
         keys.clear();
     return keys;
+}
+
+namespace {
+const TimelineClip* clipById(const Project& project, const std::string& id) {
+    for (const auto& clip : project.timelineClips)
+        if (clip.id == id)
+            return &clip;
+    return nullptr;
+}
+
+void appendKeys(std::ostringstream& out, const std::vector<ClipKeyframe>& keys) {
+    out << keys.size();
+    for (const auto& key : keys)
+        out << ' ' << key.frame << ' ' << key.value << ' ' << static_cast<int>(key.interpolation)
+            << ' ' << key.curveStart << ' ' << key.curveEnd << ' ' << key.control1 << ' '
+            << key.control2;
+}
+} // namespace
+
+std::string audioAdjustmentInputProjection(const Project& project) {
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out << std::setprecision(17);
+    out << "fps " << project.timelineFpsNum << ' ' << project.timelineFpsDen << '\n';
+    out << "tracks " << project.audioTracks.size() << '\n';
+    for (std::size_t index = 0; index < project.audioTracks.size(); ++index) {
+        const auto& track = project.audioTracks[index];
+        out << index << ' ' << track.mixerGainDb << ' ' << track.mixerPan << '\n';
+    }
+    for (const auto& clip : project.timelineClips) {
+        if (clip.kind != TimelineClipKind::Audio)
+            continue;
+        const auto path = clip.mediaPath.generic_u8string();
+        out << "clip " << clip.id << ' ' << (clip.enabled ? 1 : 0) << ' ' << clip.track.index
+            << ' ' << clip.sourceFpsNum << ' ' << clip.sourceFpsDen << ' ' << clip.sourceFrameCount
+            << ' ' << clip.sourceInFrame << ' ' << clip.sourceOutFrame << ' '
+            << clip.timelineStartFrame << ' ' << clip.speedNum << ' ' << clip.speedDen << ' '
+            << (clip.preservePitch ? 1 : 0) << ' ' << clip.effects.volumePercent << ' '
+            << clip.effects.fadeInFrames << ' ' << clip.effects.fadeOutFrames << ' ';
+        if (clip.frameHold)
+            out << "hold " << clip.frameHold->sourceFrame << ' ' << clip.frameHold->sourceFpsNum
+                << ' ' << clip.frameHold->sourceFpsDen << ' ' << clip.frameHold->sourceFrameCount
+                << ' ' << clip.frameHold->speedNum << ' ' << clip.frameHold->speedDen;
+        else
+            out << "hold -";
+        out << " path " << std::string(reinterpret_cast<const char*>(path.data()), path.size())
+            << '\n';
+        appendKeys(out, clip.effects.volumeKeys);
+        out << '\n';
+    }
+    for (const auto& transition : project.timelineTransitions) {
+        const auto* outgoing = clipById(project, transition.outgoingClipId);
+        const auto* incoming = clipById(project, transition.incomingClipId);
+        if (!outgoing || !incoming || outgoing->kind != TimelineClipKind::Audio ||
+            incoming->kind != TimelineClipKind::Audio)
+            continue;
+        out << "xfade " << transition.id << ' ' << transition.outgoingClipId << ' '
+            << transition.incomingClipId << ' ' << transition.framesBeforeCut << ' '
+            << transition.framesAfterCut << '\n';
+    }
+    return out.str();
 }
 } // namespace mvm::project

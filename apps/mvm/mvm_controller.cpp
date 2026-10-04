@@ -499,6 +499,9 @@ MvmController::MvmController(std::filesystem::path projectPath,
     // slip preview も scrub と同じく最新の位置だけを反映し、Seeking 中は次の tick で再試行する。
     slipPreviewTimer_.setInterval(16);
     connect(&slipPreviewTimer_, &QTimer::timeout, this, &MvmController::applySlipPreview);
+    connect(&audioAdjustmentTimer_, &QTimer::timeout, this, &MvmController::pollAudioAdjustment);
+    connectAudioFileWatch();
+    refreshAudioInputAuthority(false);
 }
 
 MvmController::~MvmController() {
@@ -1034,6 +1037,7 @@ bool MvmController::commitProjectEdit(project::Project candidate, const QString&
     UndoEntry undo{std::move(project_), selectedClipIds_, std::move(currentId), playheadFrame_,
                    currentRevision_};
     project_ = std::move(candidate);
+    refreshAudioInputAuthority(true);
     pushUndoEntry(std::move(undo));
     currentRevision_ = nextRevision_++;
     refreshTimelineModel(invalidation);
@@ -1453,6 +1457,7 @@ bool MvmController::restoreRecovery() {
     if (busy_ || !projectLockHeld_ || !recoveryProject_ || !pauseTimeline())
         return false;
     project_ = *recoveryProject_;
+    refreshAudioInputAuthority(true);
     audioMixerBuses_.clear();
     audioMixerPeaks_.clear();
     // 復元した作業状態の基準は、今のdiskではなくrecoveryに記録されたcanonical。
@@ -6438,6 +6443,7 @@ bool MvmController::stepEditHistory(std::vector<UndoEntry>& from, std::vector<Un
     // refreshTimelineModel が、戻した Project に無い字幕を選択から外す。
     selectedSubtitleIds_ = entry.selectedSubtitleIds;
     project_ = std::move(entry.project);
+    refreshAudioInputAuthority(true);
     playheadFrame_ = entry.playheadFrame;
     currentRevision_ = entry.revision;
     from.pop_back();
@@ -6750,6 +6756,7 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     if (!pauseTimeline())
         return false;
     project_ = std::move(loaded);
+    refreshAudioInputAuthority(false);
     ++projectGeneration_;
     selectedSubtitleId_.clear();
     selectedSubtitleIds_.clear();
@@ -7001,6 +7008,7 @@ bool MvmController::discardUnsavedChanges() {
     }
     const std::string selectedId = currentClipId();
     project_ = savedProject_;
+    refreshAudioInputAuthority(true);
     audioMixerBuses_.clear();
     audioMixerPeaks_.clear();
     clearEditHistory();

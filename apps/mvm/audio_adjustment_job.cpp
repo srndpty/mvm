@@ -7,9 +7,226 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <map>
+#include <string_view>
 #include <thread>
 
+#include <QCryptographicHash>
+#include <QFileInfo>
+#include <QString>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 namespace mvm::app {
+namespace {
+std::atomic<bool>* openGate = nullptr;
+std::atomic<int> openGateWaiters{0};
+
+struct FileHandle {
+    HANDLE value = INVALID_HANDLE_VALUE;
+    ~FileHandle() {
+        if (value != INVALID_HANDLE_VALUE)
+            CloseHandle(value);
+    }
+};
+
+bool identitiesMatch(const std::vector<AudioFileIdentity>& start,
+                     const std::vector<AudioFileIdentity>& end) {
+    if (start.size() != end.size())
+        return false;
+    for (std::size_t index = 0; index < start.size(); ++index)
+        if (start[index].key != end[index].key || start[index].size != end[index].size ||
+            start[index].mtime100ns != end[index].mtime100ns ||
+            start[index].contentSha256 != end[index].contentSha256)
+            return false;
+    return true;
+}
+
+bool collectAudioIdentities(const project::Project& project, std::vector<AudioFileIdentity>& files,
+                            const std::atomic<bool>& running, std::string& error) {
+    std::map<std::string, AudioFileIdentity> unique;
+    for (const auto& clip : project.timelineClips) {
+        if (!running) {
+            error.clear();
+            return false;
+        }
+        if (!clip.enabled || clip.kind != project::TimelineClipKind::Audio)
+            continue;
+        AudioFileIdentity identity;
+        if (!inspectAudioFile(clip.mediaPath, identity, true, &running, error))
+            return false;
+        unique.insert_or_assign(identity.key, identity);
+    }
+    files.clear();
+    for (auto& [key, identity] : unique) {
+        (void)key;
+        files.push_back(std::move(identity));
+    }
+    return true;
+}
+} // namespace
+
+bool inspectAudioFile(const std::filesystem::path& path, AudioFileIdentity& identity,
+                      bool hashContent, const std::atomic<bool>* running, std::string& error) {
+    identity = {};
+    const QFileInfo info(QString::fromStdWString(path.wstring()));
+    const auto absolute = info.absoluteFilePath().toStdWString();
+    identity.key = QString::fromStdWString(absolute).toUtf8().toStdString();
+    if (identity.key.find('\n') != std::string::npos || identity.key.find('\r') != std::string::npos) {
+        error = "解析する素材の path を識別できません";
+        return false;
+    }
+    FileHandle file;
+    file.value = CreateFileW(absolute.c_str(), GENERIC_READ,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file.value == INVALID_HANDLE_VALUE) {
+        error = "解析する素材を開けません";
+        return false;
+    }
+    LARGE_INTEGER size{};
+    FILETIME written{};
+    if (!GetFileSizeEx(file.value, &size) || size.QuadPart < 0 ||
+        !GetFileTime(file.value, nullptr, nullptr, &written)) {
+        error = "解析する素材の状態を確認できません";
+        return false;
+    }
+    ULARGE_INTEGER mtime{};
+    mtime.LowPart = written.dwLowDateTime;
+    mtime.HighPart = written.dwHighDateTime;
+    identity.exists = true;
+    identity.size = static_cast<std::uint64_t>(size.QuadPart);
+    identity.mtime100ns = mtime.QuadPart;
+    if (!hashContent)
+        return true;
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    std::vector<char> buffer(1024 * 1024);
+    for (;;) {
+        if (running && !running->load(std::memory_order_acquire)) {
+            error.clear();
+            return false;
+        }
+        DWORD read = 0;
+        if (!ReadFile(file.value, buffer.data(), static_cast<DWORD>(buffer.size()), &read,
+                      nullptr)) {
+            error = "解析する素材の内容を確認できません";
+            return false;
+        }
+        if (read == 0)
+            break;
+        hash.addData(QByteArrayView(buffer.data(), static_cast<qsizetype>(read)));
+    }
+    identity.contentSha256 = hash.result().toHex().toStdString();
+    identity.hashed = true;
+    return true;
+}
+
+std::string audioProjectionHash(const project::Project& project) {
+    const auto text = project::audioAdjustmentInputProjection(project);
+    return QCryptographicHash::hash(QByteArray::fromStdString(text), QCryptographicHash::Sha256)
+        .toHex()
+        .toStdString();
+}
+
+std::string formatAudioInputFingerprint(const std::string& projectionHash,
+                                        const std::vector<AudioFileIdentity>& files) {
+    std::string text = "v2\n" + projectionHash + "\n";
+    for (const auto& file : files)
+        text += std::to_string(file.size) + " " + std::to_string(file.mtime100ns) + " " +
+                file.contentSha256 + " " + file.key + "\n";
+    return text;
+}
+
+bool parseAudioInputFingerprint(const std::string& text, std::string& projectionHash,
+                                std::vector<AudioFileIdentity>& files) {
+    constexpr std::string_view prefix = "v2\n";
+    if (text.size() < prefix.size() || text.compare(0, prefix.size(), prefix) != 0)
+        return false;
+    const auto hashEnd = text.find('\n', prefix.size());
+    if (hashEnd == std::string::npos)
+        return false;
+    projectionHash = text.substr(prefix.size(), hashEnd - prefix.size());
+    if (projectionHash.size() != 64)
+        return false;
+    files.clear();
+    std::size_t line = hashEnd + 1;
+    while (line < text.size()) {
+        const auto end = text.find('\n', line);
+        const auto row = text.substr(line, end == std::string::npos ? std::string::npos : end - line);
+        line = end == std::string::npos ? text.size() : end + 1;
+        if (row.empty())
+            continue;
+        const auto sizeEnd = row.find(' ');
+        const auto mtimeEnd = sizeEnd == std::string::npos ? std::string::npos : row.find(' ', sizeEnd + 1);
+        const auto shaEnd = mtimeEnd == std::string::npos ? std::string::npos : row.find(' ', mtimeEnd + 1);
+        if (sizeEnd == std::string::npos || mtimeEnd == std::string::npos || shaEnd == std::string::npos)
+            return false;
+        AudioFileIdentity file;
+        char* sizeStop = nullptr;
+        char* mtimeStop = nullptr;
+        file.size = std::strtoull(row.c_str(), &sizeStop, 10);
+        file.mtime100ns = std::strtoull(row.c_str() + sizeEnd + 1, &mtimeStop, 10);
+        file.contentSha256 = row.substr(mtimeEnd + 1, shaEnd - (mtimeEnd + 1));
+        file.key = row.substr(shaEnd + 1);
+        file.exists = true;
+        file.hashed = true;
+        if (sizeStop != row.c_str() + sizeEnd || mtimeStop != row.c_str() + mtimeEnd ||
+            file.contentSha256.size() != 64 || file.key.empty())
+            return false;
+        files.push_back(std::move(file));
+    }
+    return true;
+}
+
+void setAudioAdjustmentOpenGateForTest(std::atomic<bool>* gate) {
+    openGate = gate;
+}
+
+int audioAdjustmentOpenGateWaitersForTest() {
+    return openGateWaiters.load(std::memory_order_acquire);
+}
+
+AudioContentHashJob::AudioContentHashJob(std::vector<std::filesystem::path> paths) {
+    future_ = std::async(std::launch::async, [this, paths = std::move(paths)] {
+        AudioContentHashResult result;
+        std::map<std::string, AudioFileIdentity> unique;
+        for (const auto& path : paths) {
+            if (!running_.load(std::memory_order_acquire))
+                return result;
+            AudioFileIdentity identity;
+            std::string error;
+            if (!inspectAudioFile(path, identity, true, &running_, error))
+                return result;
+            unique.insert_or_assign(identity.key, std::move(identity));
+        }
+        if (!running_.load(std::memory_order_acquire))
+            return result;
+        for (auto& [key, identity] : unique) {
+            (void)key;
+            result.files.push_back(std::move(identity));
+        }
+        result.completed = true;
+        return result;
+    });
+}
+
+AudioContentHashJob::~AudioContentHashJob() {
+    cancel();
+    if (future_.valid())
+        future_.wait();
+}
+
+bool AudioContentHashJob::ready() const {
+    return future_.valid() &&
+           future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+}
+
+AudioContentHashResult AudioContentHashJob::take() {
+    return future_.get();
+}
+
 AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
                                              const project::AudioAdjustmentSettings& settings,
                                              const std::atomic<bool>& running,
@@ -19,6 +236,14 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
             settings, static_cast<int>(source.audioTracks.size()), combined.error))
         return combined;
     combined.candidate = source;
+    combined.projectionHash = audioProjectionHash(combined.candidate);
+    if (!collectAudioIdentities(combined.candidate, combined.files, running, combined.error)) {
+        combined.cancelled = !running && combined.error.empty();
+        if (combined.error.empty() && !combined.cancelled)
+            combined.error = "解析する素材の内容を確認できません";
+        return combined;
+    }
+    const auto filesAtStart = combined.files;
     // 解析対象は明示指定。mute / solo と前回の自動調整を測定入力から除く。
     for (auto& track : source.audioTracks) {
         track.muted = false;
@@ -90,6 +315,18 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
         const bool voice = clip.clip.track.index != settings.bgmTrack;
         const auto pan = project::audioMixGains(0, clip.segment.mixerPan);
         std::vector<float> pcm;
+        // open / decode が戻らない素材でも、取消が GUI で待たされないことを試験する。
+        // 待っている間は running を見ない。
+        if (openGate != nullptr) {
+            openGateWaiters.fetch_add(1, std::memory_order_release);
+            while (openGate->load(std::memory_order_acquire))
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            openGateWaiters.fetch_sub(1, std::memory_order_release);
+            if (!running) {
+                result.cancelled = true;
+                return result;
+            }
+        }
         // PCM は 200 ms ずつ渡し、検出窓は従来どおり 20 ms に分ける。
         constexpr std::int64_t blockSamples = 9600;
         for (auto start = clip.timelineStartSample; start < clip.timelineEndSample;
@@ -240,6 +477,20 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
         combined.error = valid.error;
         return combined;
     }
+    std::vector<AudioFileIdentity> filesAtEnd;
+    if (!collectAudioIdentities(combined.candidate, filesAtEnd, running, combined.error)) {
+        combined.cancelled = !running && combined.error.empty();
+        if (combined.error.empty() && !combined.cancelled)
+            combined.error = "解析する素材の内容を確認できません";
+        return combined;
+    }
+    if (!identitiesMatch(filesAtStart, filesAtEnd)) {
+        combined.error = "解析中に素材の内容が変わりました。再解析してください";
+        combined.files.clear();
+        return combined;
+    }
+    combined.fingerprintText =
+        formatAudioInputFingerprint(combined.projectionHash, combined.files);
     combined.success = true;
     progress = 100;
     return combined;

@@ -4,6 +4,7 @@
 #include "core/checked_output_timebase.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
+#include "project/audio_adjustment.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "project/timeline_render.h"
@@ -15,6 +16,7 @@
 
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -29,6 +31,9 @@
 #include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QThread>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 using namespace mvm;
 
@@ -304,6 +309,29 @@ int main(int argc, char** argv) {
         "声：長い説明を持つ録音素材の日本語タイトルを狭い画面でも最後まで折り返して確認します";
     p.audioTracks[0].muted = true;
     p.audioTracks[1].solo = true;
+    {
+        auto audible = p;
+        audible.audioTracks[0].muted = false;
+        audible.audioTracks[1].solo = false;
+        auto subtitled = p;
+        project::SubtitleCue cue;
+        cue.id = "cue";
+        cue.startFrame = 0;
+        cue.endFrame = 30;
+        cue.content = "字幕本文";
+        subtitled.subtitles = project::SubtitleTrack{};
+        subtitled.subtitles->cues.push_back(cue);
+        auto gained = p;
+        gained.audioTracks[1].mixerGainDb = -6;
+        require(project::audioAdjustmentInputProjection(audible) ==
+                        project::audioAdjustmentInputProjection(p) &&
+                    project::audioAdjustmentInputProjection(subtitled) ==
+                        project::audioAdjustmentInputProjection(p),
+                "mute・solo・字幕は解析入力に含めない");
+        require(project::audioAdjustmentInputProjection(gained) !=
+                    project::audioAdjustmentInputProjection(p),
+                "トラックゲインは解析入力に含める");
+    }
     project::AudioAdjustmentSettings settings;
     settings.voiceTracks = {0, 2};
     settings.bgmTrack = 1;
@@ -674,6 +702,8 @@ int main(int argc, char** argv) {
     require(controller.applyAudioAdjustment() && controller.saveProject(), "解析を一括適用・保存");
     const auto applied = project::loadProjectJson(path).project;
     require(!applied.timelineClips[1].effects.duckingKeys.empty() &&
+                !applied.timelineClips[0].effects.audioAdjustmentFingerprint.empty() &&
+                !applied.lastAudioAdjustmentSettings.empty() &&
                 !controller.audioAdjustmentNeedsRegeneration(),
             "設定と fingerprint を保存");
     require(controller.undoLastEdit() && controller.saveProject() &&
@@ -685,6 +715,57 @@ int main(int argc, char** argv) {
     require(controller.startAudioAdjustment(options) &&
                 pump([&] { return !controller.audioAdjusting(); }),
             "古い結果の検査を準備");
+    require(controller.setTrackMuted(QStringLiteral("audio"), 2, true) &&
+                controller.canApplyAudioAdjustment(),
+            "mute では解析候補を失効させない");
+    require(controller.undoLastEdit() && controller.canApplyAudioAdjustment() &&
+                !controller.projectForTest()
+                     .timelineClips[0]
+                     .effects.audioAdjustmentFingerprint.empty(),
+            "mute を戻しても解析候補と保存済み fingerprint を保てる");
+    require(controller.addTimelineMarker() && controller.canApplyAudioAdjustment(),
+            "マーカーでは解析候補を失効させない");
+    require(controller.undoLastEdit() && controller.canApplyAudioAdjustment(),
+            "マーカーを戻しても解析候補を保てる");
+    {
+        QVariantMap rejected = options;
+        rejected.insert(QStringLiteral("voiceTracks"), QVariantList{});
+        require(!controller.startAudioAdjustment(rejected) && controller.canApplyAudioAdjustment() &&
+                    !controller.audioAdjusting() &&
+                    controller.audioAdjustmentError().contains(QStringLiteral("トラック")),
+                "不正な設定では再生停止や候補の破棄をせず解析を始めない");
+    }
+    {
+        const auto voicePath = QString::fromStdWString(p.timelineClips[0].mediaPath.wstring());
+        HANDLE handle = CreateFileW(reinterpret_cast<const wchar_t*>(voicePath.utf16()),
+                                    FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        FILETIME written{};
+        require(handle != INVALID_HANDLE_VALUE &&
+                    GetFileTime(handle, nullptr, nullptr, &written),
+                "差し替え前の更新時刻を読む");
+        CloseHandle(handle);
+        QFile voiceFile(voicePath);
+        require(voiceFile.open(QIODevice::ReadWrite), "内容だけ変える素材を開く");
+        auto contents = voiceFile.readAll();
+        require(contents.size() > 8, "内容比較の素材が短すぎる");
+        const auto middle = contents.size() / 2;
+        const char previous = contents.at(middle);
+        contents[middle] = static_cast<char>(previous ^ 0x5a);
+        require(voiceFile.seek(0) && voiceFile.write(contents) == contents.size(),
+                "中央の 1 byte を書き換える");
+        voiceFile.close();
+        handle = CreateFileW(reinterpret_cast<const wchar_t*>(voicePath.utf16()),
+                             FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        require(handle != INVALID_HANDLE_VALUE && SetFileTime(handle, nullptr, nullptr, &written),
+                "size を保ったまま更新時刻を戻す");
+        CloseHandle(handle);
+        QFileInfo restored(voicePath);
+        require(restored.size() == contents.size(), "1 byte の書き換えで size が変わった");
+        require(pump([&] { return !controller.canApplyAudioAdjustment(); }),
+                "size と更新時刻を戻しても内容が違う素材には古い解析を適用できない");
+    }
     require(controller.setAudioTrackMix(0, -6, 0) && !controller.applyAudioAdjustment(),
             "解析後の編集で古い結果を拒否");
     require(controller.audioAdjustmentNeedsRegeneration(), "声の音量編集後に再生成を案内");
@@ -700,10 +781,26 @@ int main(int argc, char** argv) {
             "-ac", "2", "-c:a", "pcm_s16le", temp.filePath("voice.wav")});
     require(!controller.applyAudioAdjustment(), "素材差し替え後の古い解析結果を拒否");
     controller.cancelAudioAdjustment();
-    require(controller.startAudioAdjustment(options), "取消試験の解析開始");
-    controller.cancelAudioAdjustment();
-    require(!controller.audioAdjusting() && !controller.canApplyAudioAdjustment(),
-            "取消で結果と worker の寿命を閉じる");
+    {
+        std::atomic<bool> gate{true};
+        app::setAudioAdjustmentOpenGateForTest(&gate);
+        require(controller.startAudioAdjustment(options), "取消試験の解析開始");
+        require(pump([&] { return app::audioAdjustmentOpenGateWaitersForTest() >= 1; }),
+                "decode 前で worker が止まっている");
+        QElapsedTimer cancelTime;
+        cancelTime.start();
+        controller.cancelAudioAdjustment();
+        const auto elapsed = cancelTime.elapsed();
+        require(elapsed < 500 && !controller.audioAdjusting(),
+                "解析の中止が worker の終了を待たない");
+        require(app::audioAdjustmentOpenGateWaitersForTest() >= 1,
+                "中止したあとも worker は open の前で止まっている");
+        gate = false;
+        require(pump([&] { return controller.audioAdjustmentWorkersIdle(); }),
+                "gate を開けると取消した worker が終わる");
+        app::setAudioAdjustmentOpenGateForTest(nullptr);
+        require(!controller.canApplyAudioAdjustment(), "取消で結果を閉じる");
+    }
     require(controller.startAudioAdjustment(options) &&
                 pump([&] { return !controller.audioAdjusting(); }) &&
                 controller.canApplyAudioAdjustment(),
@@ -834,6 +931,29 @@ int main(int argc, char** argv) {
     for (const auto& warning : warnings)
         std::fprintf(stderr, "%s\n", qPrintable(warning.toString()));
     require(warnings.empty(), "自動調整 UI の binding・レイアウト警告がない");
+    {
+        QVariantMap later = options;
+        later.insert(QStringLiteral("voiceTracks"), QVariantList{2});
+        later.insert(QStringLiteral("voiceLufs"), -18.0);
+        require(controller.startAudioAdjustment(later) &&
+                    pump([&] { return !controller.audioAdjusting(); }) &&
+                    controller.canApplyAudioAdjustment() && controller.applyAudioAdjustment() &&
+                    controller.saveProject(),
+                "別トラックへ 2 回目の自動調整を適用");
+        require(std::abs(controller.savedAudioAdjustmentSettings().value(QStringLiteral("voiceLufs")).toDouble() +
+                         18) < 1e-6,
+                "ダイアログには最後に適用した設定を出す");
+        const auto saved = project::loadProjectJson(path).project;
+        const auto first = QJsonDocument::fromJson(QByteArray::fromStdString(
+                                                       saved.timelineClips[0].effects.audioAdjustmentSettings))
+                               .object();
+        const auto last = QJsonDocument::fromJson(
+                              QByteArray::fromStdString(saved.lastAudioAdjustmentSettings))
+                              .object();
+        require(std::abs(first.value(QStringLiteral("voiceLufs")).toDouble() + 16) < 1e-6 &&
+                    std::abs(last.value(QStringLiteral("voiceLufs")).toDouble() + 18) < 1e-6,
+                "最初の clip の設定ではなく、最後に適用した設定を保存する");
+    }
     controller.shutdown();
     std::puts("自動音量調整の解析・編集・保存・履歴・失効・実描画の検査に合格しました");
     return 0;

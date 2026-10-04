@@ -229,6 +229,9 @@ struct Project {
     std::vector<MediaFolder> mediaFolders;
     std::vector<MediaItem> mediaItems;
     std::optional<SubtitleTrack> subtitles;
+    // 自動音量調整ダイアログが次に開くときへ出す、最後に適用した設定。
+    // clip ごとの記録は適用対象の履歴であり、ダイアログの authority はこちら。
+    std::string lastAudioAdjustmentSettings;
     bool operator==(const Project&) const = default;
 };
 
