@@ -6755,6 +6755,9 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     settleRecoveryWrite();
     if (!pauseTimeline())
         return false;
+    cancelAudioAdjustment();
+    audioFileCache_.clear();
+    audioContentDirty_ = true;
     project_ = std::move(loaded);
     refreshAudioInputAuthority(false);
     ++projectGeneration_;

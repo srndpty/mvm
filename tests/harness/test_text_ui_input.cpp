@@ -17,8 +17,10 @@
 #include "project/timeline_edit.h"
 #include "test_media_fixture.h"
 #include "test_window_focus.h"
+#include "timeline_wheel_filter.h"
 #include "trim_cursor.h"
 #include "waveform_cache.h"
+#include "waveform_view.h"
 
 #include <algorithm>
 #include <chrono>
@@ -32,6 +34,7 @@
 #include <QGuiApplication>
 #include <QPointer>
 #include <QQmlApplicationEngine>
+#include <QQmlComponent>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -322,11 +325,11 @@ void testTransitionInspector(QQuickWindow* window, mvm::app::MvmController& cont
                 if (row.value(QStringLiteral("transitionId")).toString() != transitionId)
                     continue;
                 span = static_cast<double>(row.value(QStringLiteral("end")).toLongLong() -
-                                            row.value(QStringLiteral("start")).toLongLong()) *
+                                           row.value(QStringLiteral("start")).toLongLong()) *
                        pixelsPerFrame;
             }
-            check(span >= 0 && (span < 8 ? !drawn->isVisible()
-                                         : std::abs(drawn->width() - span) <= 1),
+            check(span >= 0 &&
+                      (span < 8 ? !drawn->isVisible() : std::abs(drawn->width() - span) <= 1),
                   "極限まで縮小したクロスフェードを、実幅より広げて描いています");
             auto* label = drawn->findChild<QQuickItem*>(QStringLiteral("timelineTransitionLabel"));
             check(!label || !label->isVisible() ||
@@ -335,7 +338,8 @@ void testTransitionInspector(QQuickWindow* window, mvm::app::MvmController& cont
         }
         bool checkedNarrowClip = false;
         for (QQuickItem* item : visualItems(window)) {
-            if (!item->objectName().startsWith(QStringLiteral("timelineClip_")) || !item->isVisible())
+            if (!item->objectName().startsWith(QStringLiteral("timelineClip_")) ||
+                !item->isVisible())
                 continue;
             auto* name = item->findChild<QQuickItem*>(QStringLiteral("timelineClipName"));
             if (item->width() < 40) {
@@ -459,6 +463,192 @@ int countTextLayers(QQuickWindow* window) {
         if (item->objectName().startsWith(QStringLiteral("textLayer_")))
             ++count;
     return count;
+}
+
+// 長尺音声でも、目盛り・音量線・キーは表示範囲の分だけ生成する。
+// 素材 decode は波形用の fake に置き換え、実際の Main.qml と Window の wheel 配送を通す。
+int checkLongAudioZoom(const std::filesystem::path& projectPath) {
+    constexpr int kFrames = 300000;
+    auto project = mvm::project::createDefaultProject();
+    project.audioTracks.push_back({"A2", false});
+    for (int track = 0; track < 2; ++track) {
+        mvm::project::TimelineClip clip;
+        clip.id = "long-audio-" + std::to_string(track);
+        clip.name = "長尺音声";
+        clip.kind = mvm::project::TimelineClipKind::Audio;
+        clip.track = {mvm::project::TrackKind::Audio, track};
+        clip.mediaPath = std::filesystem::path(MVM_TEXT_TEST_VIDEO).parent_path() / "wav_48k.wav";
+        clip.sourceFpsNum = 60;
+        clip.sourceFrameCount = kFrames;
+        clip.sourceOutFrame = kFrames;
+        for (int index = 0; index < 600; ++index)
+            clip.effects.volumeKeys.push_back({index * 500, index % 2 ? 40.0 : 100.0});
+        project.timelineClips.push_back(std::move(clip));
+    }
+    mvm::test::attachFixtureMedia(project);
+    project.subtitles = mvm::project::SubtitleTrack{};
+    for (int index = 0; index < 1347; ++index) {
+        mvm::project::SubtitleCue cue;
+        cue.id = "long-cue-" + std::to_string(index);
+        cue.startFrame = index * 200;
+        cue.endFrame = cue.startFrame + 100;
+        cue.content = "長尺の字幕";
+        project.subtitles->cues.push_back(std::move(cue));
+    }
+    mvm::app::MvmController controller(projectPath, {}, project);
+    mvm::app::WaveformCache cache(mvm::app::WaveformCache::kDefaultBudgetBytes,
+                                  [](const std::string&, const std::atomic<bool>*) {
+                                      mvm::audio::AudioWaveformResult result;
+                                      mvm::core::WaveformPeakBuilder builder;
+                                      std::vector<float> samples(kFrames, 0.5f);
+                                      const float* planes[] = {samples.data(), samples.data()};
+                                      result.success =
+                                          builder.reset(60, 2, 1, result.error) &&
+                                          builder.addPlanar(0, planes, kFrames, result.error) &&
+                                          builder.finish(result.peaks, result.error);
+                                      return result;
+                                  });
+    QQmlApplicationEngine engine;
+    engine.setInitialProperties(
+        {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&cache)},
+         {QStringLiteral("flags"), mvm::test::backgroundWindowFlags()}});
+    engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
+    auto* window = engine.rootObjects().isEmpty()
+                       ? nullptr
+                       : qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+    auto* panel =
+        window ? window->findChild<QQuickItem*>(QStringLiteral("timelinePanel")) : nullptr;
+    auto* flick =
+        window ? window->findChild<QQuickItem*>(QStringLiteral("timelineFlick")) : nullptr;
+    if (!window || !panel || !flick) {
+        controller.shutdown();
+        return 3;
+    }
+    QString isolationReason;
+    if (!QTest::qWaitForWindowExposed(window) ||
+        !mvm::test::isolatedFromUserInput(window, isolationReason)) {
+        std::fprintf(stderr, "PROTOCOL_INVALID: %s\n", qPrintable(isolationReason));
+        controller.shutdown();
+        return 3;
+    }
+    TimelineWheelEventFilter filter(window, panel);
+    window->installEventFilter(&filter);
+    check(pumpUntil([&] { return cache.readyBytes() > 0; }), "長尺波形の前提が完成しません");
+    const auto countItems = [&](const QString& name) {
+        int count = 0;
+        for (auto* item : visualItems(window))
+            if (item->objectName() == name)
+                ++count;
+        return count;
+    };
+    int drawingIndex = 0;
+    const auto checkDrawing = [&](bool allKeys) {
+        pump(100);
+        const int ticks = countItems(QStringLiteral("timelineRulerTick"));
+        check(ticks > 0 && ticks <= static_cast<int>(std::ceil(flick->width() / 70)) + 4,
+              "長尺の画面外にも時間目盛りを生成しています");
+        const int keys = countItems(QStringLiteral("timelineAutomationKey"));
+        check(keys > 0 && (allKeys ? keys == 1200 : keys < 30),
+              "音量キーの描画範囲が表示幅に従いません");
+        int shapes = 0;
+        for (auto* item : visualItems(window)) {
+            if (item->objectName() != QStringLiteral("timelineAutomationShape"))
+                continue;
+            ++shapes;
+            check(item->width() <= flick->width() + 1,
+                  "音量線の描画先が表示幅より大きくなっています");
+        }
+        check(shapes == 2, "長尺音声 2 本の音量線を実際に検査できません");
+        int waveforms = 0;
+        for (auto* item : visualItems(window))
+            if (auto* waveform = qobject_cast<mvm::app::WaveformView*>(item)) {
+                if (waveform->isVisible() && waveform->channelCount() == 2 && waveform->width() > 0)
+                    ++waveforms;
+            }
+        check(waveforms == 2, "音声 2 本のステレオ波形を実際に表示していません");
+        const auto image = window->grabWindow();
+        check(!image.isNull(), "長尺ズームを実際に描画できません");
+        const auto prefix = QCoreApplication::arguments().value(2);
+        if (!prefix.isEmpty())
+            check(image.save(prefix + QStringLiteral("-%1.png").arg(drawingIndex)),
+                  "長尺ズームの確認画像を保存できません");
+        std::printf("長尺ズーム %d: 目盛り %d、キー %d、波形 %d\n", drawingIndex++, ticks, keys,
+                    waveforms);
+    };
+    checkDrawing(false);
+    const QPointF position = flick->mapToScene(QPointF(flick->width() / 2, 20));
+    for (int index = 0; index < 3; ++index) {
+        const int previous = panel->property("zoomIndex").toInt();
+        QWheelEvent event(position, window->mapToGlobal(position.toPoint()), {}, QPoint(0, -120),
+                          Qt::NoButton, Qt::AltModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &event);
+        check(panel->property("zoomIndex").toInt() == previous - 1,
+              "長尺波形を表示中に Window のホイールで縮小できません");
+        checkDrawing(false);
+    }
+    panel->setProperty("zoomIndex", 0);
+    checkDrawing(true);
+    panel->setProperty("zoomIndex", 10);
+    flick->setProperty("contentX", 150000.0);
+    checkDrawing(false);
+    bool movedTick = false;
+    for (auto* item : visualItems(window))
+        if (item->objectName() == QStringLiteral("timelineRulerTick") && item->x() > 100000)
+            movedTick = true;
+    check(movedTick, "スクロール先の時刻へ目盛りが入れ替わりません");
+    QQmlComponent observerComponent(&engine);
+    observerComponent.setData(R"(import QtQml
+QtObject {
+    id: observer
+    required property var observed
+    property int peak: observed.count
+    property Connections listener: Connections {
+        target: observer.observed
+        function onCountChanged() { observer.peak = Math.max(observer.peak, observer.observed.count); }
+    }
+})",
+                              QUrl());
+    auto* rulerRepeater = window->findChild<QObject*>(QStringLiteral("timelineRulerTicks"));
+    std::unique_ptr<QObject> observer(observerComponent.createWithInitialProperties(
+        {{QStringLiteral("observed"), QVariant::fromValue(rulerRepeater)}}));
+    check(observer != nullptr, "ズーム中の目盛り生成数を監視できません");
+    for (const int seconds : {1800, 3600}) {
+        panel->setProperty("zoomIndex", 8);
+        flick->setProperty("contentX", seconds * 60 * panel->property("pixelsPerFrame").toDouble() -
+                                           flick->width() / 2);
+        pump(100);
+        if (observer)
+            observer->setProperty("peak", rulerRepeater->property("count"));
+        int peakSubtitleRows = controller.subtitleWindow()->rowCount();
+        const auto connection =
+            QObject::connect(controller.subtitleWindow(), &QAbstractItemModel::rowsInserted, window,
+                             [&](const QModelIndex&, int, int) {
+                                 peakSubtitleRows = std::max(
+                                     peakSubtitleRows, controller.subtitleWindow()->rowCount());
+                             });
+        for (const int delta : {120, -120, 120, -120}) {
+            QWheelEvent event(position, window->mapToGlobal(position.toPoint()), {},
+                              QPoint(0, delta), Qt::NoButton, Qt::AltModifier, Qt::NoScrollPhase,
+                              false);
+            QCoreApplication::sendEvent(window, &event);
+            pump(30);
+            const double centerFrame =
+                (flick->property("contentX").toDouble() + flick->width() / 2) /
+                panel->property("pixelsPerFrame").toDouble();
+            check(std::abs(centerFrame - seconds * 60) < 0.5,
+                  "後半ズームの中心時刻が変わり、同じ場所を比較できていません");
+        }
+        QObject::disconnect(connection);
+        const int peakTicks = observer ? observer->property("peak").toInt() : -1;
+        std::printf("後半ズーム %d 秒: 目盛り最大 %d、字幕行最大 %d\n", seconds, peakTicks,
+                    peakSubtitleRows);
+        check(peakTicks > 0 && peakTicks <= static_cast<int>(std::ceil(flick->width() / 70)) + 4,
+              "後半のズーム中に画面外の目盛りを一時的に大量生成しています");
+        check(peakSubtitleRows < 100, "後半のズーム中に字幕の絞り込み範囲が一時的に広がります");
+    }
+    controller.shutdown();
+    return failures == 0 ? 0 : 1;
 }
 
 // 字幕のように短い文字 clip が多くても、preview の文字 layer (preview 全面の delegate) は
@@ -791,6 +981,12 @@ int main(int argc, char** argv) {
             checkAudioMixerPanel(directory.filePath(QStringLiteral("mixer.mvm")).toStdWString());
         mvm_mlt_runtime_shutdown();
         return mixerResult;
+    }
+    if (application.arguments().contains(QStringLiteral("--long-audio-zoom"))) {
+        const int result =
+            checkLongAudioZoom(directory.filePath(QStringLiteral("long-audio.mvm")).toStdWString());
+        mvm_mlt_runtime_shutdown();
+        return result;
     }
 
     // V1 に映像を置く。文字は映像の上 (V2) に置かれ、engine が合成する経路を通る。

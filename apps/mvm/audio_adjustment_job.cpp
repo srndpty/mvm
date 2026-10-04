@@ -23,14 +23,31 @@ namespace mvm::app {
 namespace {
 std::atomic<bool>* openGate = nullptr;
 std::atomic<int> openGateWaiters{0};
+std::atomic<int> contentHashJobsStarted{0};
 
 struct FileHandle {
     HANDLE value = INVALID_HANDLE_VALUE;
+
     ~FileHandle() {
         if (value != INVALID_HANDLE_VALUE)
             CloseHandle(value);
     }
 };
+
+using FileLocks = std::vector<std::unique_ptr<FileHandle>>;
+
+std::shared_ptr<FileLocks> lockAudioFiles(const std::vector<std::filesystem::path>& paths) {
+    auto locks = std::make_shared<FileLocks>();
+    for (const auto& path : paths) {
+        auto file = std::make_unique<FileHandle>();
+        file->value = CreateFileW(path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file->value == INVALID_HANDLE_VALUE)
+            return {};
+        locks->push_back(std::move(file));
+    }
+    return locks;
+}
 
 bool identitiesMatch(const std::vector<AudioFileIdentity>& start,
                      const std::vector<AudioFileIdentity>& end) {
@@ -44,15 +61,18 @@ bool identitiesMatch(const std::vector<AudioFileIdentity>& start,
     return true;
 }
 
-bool collectAudioIdentities(const project::Project& project, std::vector<AudioFileIdentity>& files,
-                            const std::atomic<bool>& running, std::string& error) {
+bool collectAudioIdentities(const project::Project& project,
+                            const project::AudioAdjustmentSettings& settings,
+                            std::vector<AudioFileIdentity>& files, const std::atomic<bool>& running,
+                            std::string& error) {
     std::map<std::string, AudioFileIdentity> unique;
     for (const auto& clip : project.timelineClips) {
         if (!running) {
             error.clear();
             return false;
         }
-        if (!clip.enabled || clip.kind != project::TimelineClipKind::Audio)
+        if (!clip.enabled || clip.kind != project::TimelineClipKind::Audio ||
+            !project::audioAdjustmentTargetsTrack(settings, clip.track.index))
             continue;
         AudioFileIdentity identity;
         if (!inspectAudioFile(clip.mediaPath, identity, true, &running, error))
@@ -74,7 +94,8 @@ bool inspectAudioFile(const std::filesystem::path& path, AudioFileIdentity& iden
     const QFileInfo info(QString::fromStdWString(path.wstring()));
     const auto absolute = info.absoluteFilePath().toStdWString();
     identity.key = QString::fromStdWString(absolute).toUtf8().toStdString();
-    if (identity.key.find('\n') != std::string::npos || identity.key.find('\r') != std::string::npos) {
+    if (identity.key.find('\n') != std::string::npos ||
+        identity.key.find('\r') != std::string::npos) {
         error = "解析する素材の path を識別できません";
         return false;
     }
@@ -130,6 +151,15 @@ std::string audioProjectionHash(const project::Project& project) {
         .toStdString();
 }
 
+std::string audioProjectionHash(const project::Project& project,
+                                const project::AudioAdjustmentSettings& settings) {
+    return QCryptographicHash::hash(QByteArray::fromStdString(
+                                        project::audioAdjustmentInputProjection(project, settings)),
+                                    QCryptographicHash::Sha256)
+        .toHex()
+        .toStdString();
+}
+
 std::string formatAudioInputFingerprint(const std::string& projectionHash,
                                         const std::vector<AudioFileIdentity>& files) {
     std::string text = "v2\n" + projectionHash + "\n";
@@ -154,14 +184,18 @@ bool parseAudioInputFingerprint(const std::string& text, std::string& projection
     std::size_t line = hashEnd + 1;
     while (line < text.size()) {
         const auto end = text.find('\n', line);
-        const auto row = text.substr(line, end == std::string::npos ? std::string::npos : end - line);
+        const auto row =
+            text.substr(line, end == std::string::npos ? std::string::npos : end - line);
         line = end == std::string::npos ? text.size() : end + 1;
         if (row.empty())
             continue;
         const auto sizeEnd = row.find(' ');
-        const auto mtimeEnd = sizeEnd == std::string::npos ? std::string::npos : row.find(' ', sizeEnd + 1);
-        const auto shaEnd = mtimeEnd == std::string::npos ? std::string::npos : row.find(' ', mtimeEnd + 1);
-        if (sizeEnd == std::string::npos || mtimeEnd == std::string::npos || shaEnd == std::string::npos)
+        const auto mtimeEnd =
+            sizeEnd == std::string::npos ? std::string::npos : row.find(' ', sizeEnd + 1);
+        const auto shaEnd =
+            mtimeEnd == std::string::npos ? std::string::npos : row.find(' ', mtimeEnd + 1);
+        if (sizeEnd == std::string::npos || mtimeEnd == std::string::npos ||
+            shaEnd == std::string::npos)
             return false;
         AudioFileIdentity file;
         char* sizeStop = nullptr;
@@ -188,17 +222,49 @@ int audioAdjustmentOpenGateWaitersForTest() {
     return openGateWaiters.load(std::memory_order_acquire);
 }
 
-AudioContentHashJob::AudioContentHashJob(std::vector<std::filesystem::path> paths) {
-    future_ = std::async(std::launch::async, [this, paths = std::move(paths)] {
+int audioContentHashJobsStartedForTest() {
+    return contentHashJobsStarted.load();
+}
+
+AudioContentHashJob::AudioContentHashJob(std::vector<std::filesystem::path> paths, bool lockFiles) {
+    contentHashJobsStarted.fetch_add(1);
+    std::sort(paths.begin(), paths.end());
+    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+    future_ = std::async(std::launch::async, [this, paths = std::move(paths), lockFiles] {
         AudioContentHashResult result;
+        if (lockFiles) {
+            result.locks = lockAudioFiles(paths);
+            if (!result.locks) {
+                result.status = AudioContentHashResult::Status::ReadError;
+                for (const auto& path : paths) {
+                    AudioFileIdentity identity;
+                    std::string error;
+                    inspectAudioFile(path, identity, false, nullptr, error);
+                    result.files.push_back(std::move(identity));
+                }
+                return result;
+            }
+        }
         std::map<std::string, AudioFileIdentity> unique;
         for (const auto& path : paths) {
             if (!running_.load(std::memory_order_acquire))
                 return result;
             AudioFileIdentity identity;
             std::string error;
-            if (!inspectAudioFile(path, identity, true, &running_, error))
-                return result;
+            if (!inspectAudioFile(path, identity, true, &running_, error)) {
+                if (!running_)
+                    return result;
+                const auto attributes = GetFileAttributesW(path.wstring().c_str());
+                const auto code = GetLastError();
+                result.status =
+                    attributes == INVALID_FILE_ATTRIBUTES &&
+                            (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND)
+                        ? AudioContentHashResult::Status::Missing
+                        : AudioContentHashResult::Status::ReadError;
+                identity.hashed = false;
+                unique.insert_or_assign(identity.key, std::move(identity));
+                continue;
+            }
             unique.insert_or_assign(identity.key, std::move(identity));
         }
         if (!running_.load(std::memory_order_acquire))
@@ -207,7 +273,8 @@ AudioContentHashJob::AudioContentHashJob(std::vector<std::filesystem::path> path
             (void)key;
             result.files.push_back(std::move(identity));
         }
-        result.completed = true;
+        if (result.status == AudioContentHashResult::Status::Cancelled)
+            result.status = AudioContentHashResult::Status::Complete;
         return result;
     });
 }
@@ -236,8 +303,20 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
             settings, static_cast<int>(source.audioTracks.size()), combined.error))
         return combined;
     combined.candidate = source;
-    combined.projectionHash = audioProjectionHash(combined.candidate);
-    if (!collectAudioIdentities(combined.candidate, combined.files, running, combined.error)) {
+    combined.settings = settings;
+    combined.projectionHash = audioProjectionHash(combined.candidate, settings);
+    std::vector<std::filesystem::path> paths;
+    for (const auto& clip : source.timelineClips)
+        if (clip.enabled && clip.kind == project::TimelineClipKind::Audio &&
+            project::audioAdjustmentTargetsTrack(settings, clip.track.index))
+            paths.push_back(clip.mediaPath);
+    const auto locks = lockAudioFiles(paths);
+    if (!locks) {
+        combined.error = "解析する素材を読み取り専用で保護できません";
+        return combined;
+    }
+    if (!collectAudioIdentities(combined.candidate, settings, combined.files, running,
+                                combined.error)) {
         combined.cancelled = !running && combined.error.empty();
         if (combined.error.empty() && !combined.cancelled)
             combined.error = "解析する素材の内容を確認できません";
@@ -294,8 +373,7 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
         ClipSampleReaders reader;
         reader.reset(1, 48000);
         const auto& clip = plan.clips[index];
-        auto target = std::find_if(candidate->timelineClips.begin(),
-                                   candidate->timelineClips.end(),
+        auto target = std::find_if(candidate->timelineClips.begin(), candidate->timelineClips.end(),
                                    [&](const auto& item) { return item.id == clip.clip.id; });
         if (target == candidate->timelineClips.end()) {
             result.error = "解析したクリップがありません";
@@ -377,15 +455,20 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
                     for (auto sample = first; sample < end; ++sample) {
                         const auto at = static_cast<std::size_t>(sample) * 2;
                         squaresLeft += static_cast<double>(pcm[at]) * static_cast<double>(pcm[at]);
-                        squaresRight += static_cast<double>(pcm[at + 1]) * static_cast<double>(pcm[at + 1]);
+                        squaresRight +=
+                            static_cast<double>(pcm[at + 1]) * static_cast<double>(pcm[at + 1]);
                     }
                     windows.push_back({start + first, start + end,
-                        std::sqrt(std::max(squaresLeft, squaresRight) / static_cast<double>(end - first))});
+                                       std::sqrt(std::max(squaresLeft, squaresRight) /
+                                                 static_cast<double>(end - first))});
                 }
             const auto done = completed.fetch_add(count, std::memory_order_relaxed) + count;
-            const auto percent = static_cast<int>(static_cast<double>(done) / static_cast<double>(total) * 100);
+            const auto percent =
+                static_cast<int>(static_cast<double>(done) / static_cast<double>(total) * 100);
             auto previous = progress.load(std::memory_order_relaxed);
-            while (previous < percent && !progress.compare_exchange_weak(previous, percent, std::memory_order_relaxed)) {}
+            while (previous < percent &&
+                   !progress.compare_exchange_weak(previous, percent, std::memory_order_relaxed)) {
+            }
         }
         AudioAdjustmentClipResult measured;
         measured.clipId = target->id;
@@ -415,8 +498,9 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
         return result;
     };
     // スレッド数と常駐メモリを制限し、結果は元の clip 順に取りまとめる。
-    const auto concurrency = std::min(plan.clips.size(),
-        static_cast<std::size_t>(std::clamp(std::thread::hardware_concurrency(), 1U, 4U)));
+    const auto concurrency =
+        std::min(plan.clips.size(),
+                 static_cast<std::size_t>(std::clamp(std::thread::hardware_concurrency(), 1U, 4U)));
     std::vector<AudioAdjustmentResult> outputs(plan.clips.size());
     std::atomic<std::size_t> next{0};
     std::vector<std::future<void>> workers;
@@ -478,7 +562,8 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
         return combined;
     }
     std::vector<AudioFileIdentity> filesAtEnd;
-    if (!collectAudioIdentities(combined.candidate, filesAtEnd, running, combined.error)) {
+    if (!collectAudioIdentities(combined.candidate, settings, filesAtEnd, running,
+                                combined.error)) {
         combined.cancelled = !running && combined.error.empty();
         if (combined.error.empty() && !combined.cancelled)
             combined.error = "解析する素材の内容を確認できません";
@@ -489,8 +574,7 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
         combined.files.clear();
         return combined;
     }
-    combined.fingerprintText =
-        formatAudioInputFingerprint(combined.projectionHash, combined.files);
+    combined.fingerprintText = formatAudioInputFingerprint(combined.projectionHash, combined.files);
     combined.success = true;
     progress = 100;
     return combined;

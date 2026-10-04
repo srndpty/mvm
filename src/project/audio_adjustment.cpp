@@ -130,26 +130,42 @@ void appendKeys(std::ostringstream& out, const std::vector<ClipKeyframe>& keys) 
 }
 } // namespace
 
+bool audioAdjustmentTargetsTrack(const AudioAdjustmentSettings& settings, int track) {
+    return track == settings.bgmTrack ||
+           std::find(settings.voiceTracks.begin(), settings.voiceTracks.end(), track) !=
+               settings.voiceTracks.end();
+}
+
 std::string audioAdjustmentInputProjection(const Project& project) {
+    AudioAdjustmentSettings settings;
+    for (std::size_t index = 0; index < project.audioTracks.size(); ++index)
+        settings.voiceTracks.push_back(static_cast<int>(index));
+    return audioAdjustmentInputProjection(project, settings);
+}
+
+std::string audioAdjustmentInputProjection(const Project& project,
+                                           const AudioAdjustmentSettings& settings) {
     std::ostringstream out;
     out.imbue(std::locale::classic());
     out << std::setprecision(17);
     out << "fps " << project.timelineFpsNum << ' ' << project.timelineFpsDen << '\n';
-    out << "tracks " << project.audioTracks.size() << '\n';
     for (std::size_t index = 0; index < project.audioTracks.size(); ++index) {
+        if (!audioAdjustmentTargetsTrack(settings, static_cast<int>(index)))
+            continue;
         const auto& track = project.audioTracks[index];
         out << index << ' ' << track.mixerGainDb << ' ' << track.mixerPan << '\n';
     }
     for (const auto& clip : project.timelineClips) {
-        if (clip.kind != TimelineClipKind::Audio)
+        if (clip.kind != TimelineClipKind::Audio ||
+            !audioAdjustmentTargetsTrack(settings, clip.track.index))
             continue;
         const auto path = clip.mediaPath.generic_u8string();
-        out << "clip " << clip.id << ' ' << (clip.enabled ? 1 : 0) << ' ' << clip.track.index
-            << ' ' << clip.sourceFpsNum << ' ' << clip.sourceFpsDen << ' ' << clip.sourceFrameCount
-            << ' ' << clip.sourceInFrame << ' ' << clip.sourceOutFrame << ' '
-            << clip.timelineStartFrame << ' ' << clip.speedNum << ' ' << clip.speedDen << ' '
-            << (clip.preservePitch ? 1 : 0) << ' ' << clip.effects.volumePercent << ' '
-            << clip.effects.fadeInFrames << ' ' << clip.effects.fadeOutFrames << ' ';
+        out << "clip " << clip.id << ' ' << (clip.enabled ? 1 : 0) << ' ' << clip.track.index << ' '
+            << clip.sourceFpsNum << ' ' << clip.sourceFpsDen << ' ' << clip.sourceFrameCount << ' '
+            << clip.sourceInFrame << ' ' << clip.sourceOutFrame << ' ' << clip.timelineStartFrame
+            << ' ' << clip.speedNum << ' ' << clip.speedDen << ' ' << (clip.preservePitch ? 1 : 0)
+            << ' ' << clip.effects.volumePercent << ' ' << clip.effects.fadeInFrames << ' '
+            << clip.effects.fadeOutFrames << ' ';
         if (clip.frameHold)
             out << "hold " << clip.frameHold->sourceFrame << ' ' << clip.frameHold->sourceFpsNum
                 << ' ' << clip.frameHold->sourceFpsDen << ' ' << clip.frameHold->sourceFrameCount
@@ -165,7 +181,9 @@ std::string audioAdjustmentInputProjection(const Project& project) {
         const auto* outgoing = clipById(project, transition.outgoingClipId);
         const auto* incoming = clipById(project, transition.incomingClipId);
         if (!outgoing || !incoming || outgoing->kind != TimelineClipKind::Audio ||
-            incoming->kind != TimelineClipKind::Audio)
+            incoming->kind != TimelineClipKind::Audio ||
+            !audioAdjustmentTargetsTrack(settings, outgoing->track.index) ||
+            !audioAdjustmentTargetsTrack(settings, incoming->track.index))
             continue;
         out << "xfade " << transition.id << ' ' << transition.outgoingClipId << ' '
             << transition.incomingClipId << ' ' << transition.framesBeforeCut << ' '

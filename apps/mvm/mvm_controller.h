@@ -32,14 +32,13 @@
 
 #include <QAbstractItemModel>
 #include <QElapsedTimer>
+#include <QFileSystemWatcher>
 #include <QHash>
 #include <QImage>
 #include <QObject>
 #include <QRect>
 #include <QRectF>
 #include <QString>
-#include <QStringList>
-#include <QFileSystemWatcher>
 #include <QStringList>
 #include <QTimer>
 #include <QUrl>
@@ -65,6 +64,8 @@ class MvmController : public QObject {
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY stateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
     Q_PROPERTY(bool audioAdjusting READ audioAdjusting NOTIFY audioAdjustmentChanged)
+    Q_PROPERTY(
+        bool audioAdjustmentApplying READ audioAdjustmentApplying NOTIFY audioAdjustmentChanged)
     Q_PROPERTY(
         int audioAdjustmentProgress READ audioAdjustmentProgress NOTIFY audioAdjustmentChanged)
     Q_PROPERTY(QVariantList audioAdjustmentResults READ audioAdjustmentResults NOTIFY
@@ -202,9 +203,12 @@ class MvmController : public QObject {
 public:
     bool audioAdjusting() const { return audioAdjustmentJob_ != nullptr; }
 
+    bool audioAdjustmentApplying() const { return audioApplyPending_; }
+
     // 取消した worker の破棄まで終わっている。中止そのものは待たない。
     bool audioAdjustmentWorkersIdle() const {
-        return audioAdjustmentJob_ == nullptr && audioAdjustmentRetired_.empty();
+        return audioAdjustmentJob_ == nullptr && audioAdjustmentRetired_.empty() &&
+               audioContentJob_ == nullptr && audioContentRetired_.empty();
     }
 
     int audioAdjustmentProgress() const;
@@ -223,6 +227,7 @@ public:
     Q_INVOKABLE void cancelAudioAdjustment();
     Q_INVOKABLE bool auditionAudioAdjustment();
     Q_INVOKABLE void stopAudioAdjustmentAudition();
+    // 非同期照合の開始時は false。確定時に audioAdjustmentApplied を通知する。
     Q_INVOKABLE bool applyAudioAdjustment();
     using ExportRunner =
         std::function<TimelineExportResult(const project::Project&, const TimelineExportRequest&)>;
@@ -890,6 +895,7 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     void audioAdjustmentChanged();
+    void audioAdjustmentApplied();
     void audioAdjustmentResultsChanged();
     void stateChanged();
     void timelineTransitionsChanged();
@@ -909,6 +915,7 @@ private:
     void refreshAudioFileCacheCheap();
     void scheduleAudioContentRecheck();
     void finishAudioContentRecheck();
+    bool commitAudioAdjustment();
     void dropAudioAdjustmentResult(const QString& error);
     void syncAudioFileWatch();
     void ensureAudioAdjustmentTimer();
@@ -917,11 +924,12 @@ private:
     QStringList audioWatchPaths() const;
 
     std::string audioProjectionHash_;
+    std::map<std::string, std::string> audioSavedProjectionHashes_;
     bool audioAdjustmentNeedsRegeneration_ = false;
     bool audioContentConfirmed_ = false;
     bool audioContentDirty_ = false;
-    qint64 audioContentCheckedAtMs_ = 0;
-    QElapsedTimer audioContentClock_;
+    bool audioApplyPending_ = false;
+    project::AudioAdjustmentSettings audioAuthoritySettings_;
     int audioAdjustmentLastProgress_ = -1;
     std::map<std::string, AudioFileIdentity> audioFileCache_;
     std::unique_ptr<AudioAdjustmentJob> audioAdjustmentJob_;

@@ -1571,6 +1571,14 @@ ApplicationWindow {
             function frameAtContentX(contentX) {
                 return Math.max(0, Math.round(contentX / pixelsPerFrame));
             }
+            // 倍率、カーソル位置の補正、表示範囲の左右が揃ってから一度だけ絞り直す。
+            // 個別の binding の途中で絞ると、後半ほど一時的な区間が広がり字幕を大量生成する。
+            function refreshVisibleWindows() {
+                root.mvmController.subtitleWindow.setVisibleRange(subtitleCues.visibleStartFrame,
+                                                                  subtitleCues.visibleEndFrame);
+                root.mvmController.timelineClipWindow.setVisibleRange(timelineClips.visibleStartFrame,
+                                                                      timelineClips.visibleEndFrame);
+            }
             function setZoom(direction, anchorItemX) {
                 const nextIndex = Math.max(minimumZoomIndex, Math.min(zoomLevels.length - 1,
                                                        zoomIndex + direction));
@@ -2148,8 +2156,7 @@ ApplicationWindow {
                             onVisibleEndFrameChanged: updateWindow()
                             Component.onCompleted: updateWindow()
                             function updateWindow() {
-                                root.mvmController.subtitleWindow.setVisibleRange(visibleStartFrame,
-                                                                                  visibleEndFrame);
+                                Qt.callLater(timelinePanel.refreshVisibleWindows);
                             }
                             delegate: Item {
                                 id: subtitleItem
@@ -2284,17 +2291,21 @@ ApplicationWindow {
                         z: 100
 
                         Repeater {
-                            model: {
-                                const nominalFps = Math.max(1, Math.round(root.mvmController.timelineFpsNum / root.mvmController.timelineFpsDen));
-                                const framesPerTick = timelinePanel.tickSeconds * nominalFps;
-                                return Math.ceil(timelineContent.width / (framesPerTick * timelinePanel.pixelsPerFrame)) + 1;
-                            }
+                            id: visibleRulerTicks
+                            objectName: "timelineRulerTicks"
+                            readonly property real tickWidth: timelinePanel.tickSeconds
+                                * Math.max(1, Math.round(root.mvmController.timelineFpsNum / root.mvmController.timelineFpsDen))
+                                * timelinePanel.pixelsPerFrame
+                            readonly property int firstTick: Math.max(0, Math.floor(timelineFlick.contentX / tickWidth) - 1)
+                            model: Math.max(0, Math.ceil((timelineFlick.contentX + timelineFlick.width) / tickWidth)
+                                              - firstTick + 1)
 
                             Item {
                                 id: rulerTick
+                                objectName: "timelineRulerTick"
                                 required property int index
-                                readonly property int nominalFps: Math.max(1, Math.round(root.mvmController.timelineFpsNum / root.mvmController.timelineFpsDen))
-                                x: index * timelinePanel.tickSeconds * nominalFps * timelinePanel.pixelsPerFrame
+                                readonly property int tickIndex: visibleRulerTicks.firstTick + index
+                                x: tickIndex * visibleRulerTicks.tickWidth
                                 width: 1
                                 height: ruler.height
 
@@ -2308,7 +2319,7 @@ ApplicationWindow {
                                     x: 4
                                     y: 1
                                     text: {
-                                        const seconds = rulerTick.index * timelinePanel.tickSeconds;
+                                        const seconds = rulerTick.tickIndex * timelinePanel.tickSeconds;
                                         const minutes = Math.floor(seconds / 60);
                                         const rest = seconds % 60;
                                         return minutes + ":" + (rest < 10 ? "0" : "") + rest;
@@ -2661,8 +2672,7 @@ ApplicationWindow {
                             onVisibleEndFrameChanged: updateWindow()
                             Component.onCompleted: updateWindow()
                             function updateWindow() {
-                                root.mvmController.timelineClipWindow.setVisibleRange(visibleStartFrame,
-                                                                                      visibleEndFrame);
+                                Qt.callLater(timelinePanel.refreshVisibleWindows);
                             }
 
                             delegate: Rectangle {
@@ -2715,8 +2725,12 @@ ApplicationWindow {
                                 }
                                 // 自動化の線の頂点 (clip 内の座標)。ペンの当たり判定と同じ頂点を使う。
                                 readonly property var automationPoints:
-                                    Gestures.penLinePoints(shownKeys, automationBase, penGeometry)
-                                        .map(point => Qt.point(point.x, point.y))
+                                    Gestures.penVisibleLinePoints(shownKeys, automationBase, penGeometry,
+                                                                 clipWaveform.visibleLeft, clipWaveform.visibleRight)
+                                        .map(point => Qt.point(point.x - clipWaveform.visibleLeft, point.y))
+                                readonly property var visibleAutomationKeys:
+                                    Gestures.penVisibleKeys(shownKeys, penGeometry,
+                                                           clipWaveform.visibleLeft, clipWaveform.visibleRight)
 
                                 function penFrameAt(x) {
                                     return Math.max(0, Math.min(clipItem.timelineDurationFrames - 1,
@@ -3079,7 +3093,11 @@ ApplicationWindow {
                                 // 急な傾きの線がぼやける。線は Shape (CurveRenderer) でベクタ描画する。
                                 Shape {
                                     id: automationShape
-                                    anchors.fill: parent
+                                    objectName: "timelineAutomationShape"
+                                    x: clipWaveform.visibleLeft
+                                    width: Math.max(0, clipWaveform.visibleRight - clipWaveform.visibleLeft)
+                                    height: parent.height
+                                    visible: width > 0
                                     z: 30
                                     preferredRendererType: Shape.CurveRenderer
                                     // 波形や clip の色と同系色にしない。暗い縁取りで明るい波形の上でも読める。
@@ -3103,8 +3121,9 @@ ApplicationWindow {
 
                                 // キーは塗りつぶした青い四角。ドラッグ中・ポイント中のキーは白く大きくする。
                                 Repeater {
-                                    model: clipItem.shownKeys
+                                    model: clipItem.visibleAutomationKeys
                                     delegate: Rectangle {
+                                        objectName: "timelineAutomationKey"
                                         required property var modelData
                                         readonly property bool active:
                                             modelData.frame === (clipItem.previewKeys ? clipItem.penFrame

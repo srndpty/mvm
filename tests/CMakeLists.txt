@@ -424,6 +424,12 @@ set_tests_properties(transition_preview PROPERTIES
 # 横書き文字ツールの直接入力 (target は apps/mvm/CMakeLists.txt で定義)。
 # 実 window と GPU を使うので mvm_gpu を排他し、workstation label を付ける。
 add_test(NAME text_ui_direct_input COMMAND mvm_test_text_ui_input)
+add_test(NAME long_audio_zoom_visible_range COMMAND mvm_test_text_ui_input --long-audio-zoom
+    "${CMAKE_BINARY_DIR}/tests/long-audio-zoom")
+set_tests_properties(long_audio_zoom_visible_range PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav"
+    LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 60)
 set_tests_properties(text_ui_direct_input PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"

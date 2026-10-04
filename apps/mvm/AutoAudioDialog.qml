@@ -23,6 +23,10 @@ ModernDialog {
         invalidFields = [];
     }
     onClosed: mvmController.cancelAudioAdjustment()
+    Connections {
+        target: dialog.mvmController
+        function onAudioAdjustmentApplied() { dialog.close(); }
+    }
     title: "BGM の自動音量調整"
     parent: Overlay.overlay
     x: (parent.width - width) / 2
@@ -51,7 +55,7 @@ ModernDialog {
                 }
             }
             ModernDialogButton {
-                text: "適用"
+                text: dialog.mvmController.audioAdjustmentApplying ? "素材を確認中…" : "適用"
                 prominent: true
                 enabled: dialog.mvmController.canApplyAudioAdjustment
                 onClicked: { if (dialog.mvmController.applyAudioAdjustment()) dialog.close(); }

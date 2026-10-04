@@ -335,8 +335,33 @@ int main(int argc, char** argv) {
     project::AudioAdjustmentSettings settings;
     settings.voiceTracks = {0, 2};
     settings.bgmTrack = 1;
+    {
+        auto scoped = settings;
+        scoped.voiceTracks = {0};
+        auto offline = p;
+        offline.timelineClips[2].mediaPath = file("対象外で存在しない.wav");
+        offline.audioTracks[2].mixerGainDb = -12;
+        require(project::audioAdjustmentInputProjection(offline, scoped) ==
+                    project::audioAdjustmentInputProjection(p, scoped),
+                "対象外トラックの素材とゲインは authority に含めない");
+        std::atomic<bool> scopeRunning{true};
+        std::atomic<int> scopeProgress{0};
+        const auto scopedResult =
+            app::analyzeAudioAdjustment(offline, scoped, scopeRunning, scopeProgress);
+        require(scopedResult.success && scopedResult.clips.size() == 2 &&
+                    scopedResult.files.size() == 2,
+                "対象外の offline 素材を開かず選択した声と BGM だけを解析する");
+    }
     std::atomic<bool> running{true};
     std::atomic<int> progress{0};
+    {
+        app::AudioContentHashJob unreadable({std::filesystem::path(temp.path().toStdWString())});
+        require(pump([&] { return unreadable.ready(); }), "読取失敗の内容照合が完了する");
+        const auto hashed = unreadable.take();
+        require(hashed.status == app::AudioContentHashResult::Status::ReadError &&
+                    hashed.files.size() == 1 && !hashed.files[0].hashed,
+                "読めない入力を Complete として扱わず失敗の出自を返す");
+    }
     auto result = app::analyzeAudioAdjustment(p, settings, running, progress);
     if (!result.success)
         std::fprintf(stderr, "%s\n", result.error.c_str());
@@ -699,7 +724,10 @@ int main(int argc, char** argv) {
                 controller.canApplyAudioAdjustment(),
             "解析結果を適用前に確認");
     require(project::loadProjectJson(path).project == p, "解析結果が保存対象へ勝手に反映されない");
-    require(controller.applyAudioAdjustment() && controller.saveProject(), "解析を一括適用・保存");
+    require(!controller.applyAudioAdjustment() &&
+                pump([&] { return controller.audioAdjustmentResults().empty(); }) &&
+                controller.audioAdjustmentError().isEmpty() && controller.saveProject(),
+            "最終内容照合を待って解析を一括適用・保存");
     const auto applied = project::loadProjectJson(path).project;
     require(!applied.timelineClips[1].effects.duckingKeys.empty() &&
                 !applied.timelineClips[0].effects.audioAdjustmentFingerprint.empty() &&
@@ -712,6 +740,69 @@ int main(int argc, char** argv) {
     require(controller.redoLastEdit() && controller.saveProject() &&
                 project::loadProjectJson(path).project == applied,
             "Redo でカーブと設定を復元");
+    {
+        app::MvmController reopened(path, {}, applied);
+        require(pump([&] { return !reopened.audioAdjustmentNeedsRegeneration(); }),
+                "保存済み調整は読込時の内容照合で有効になる");
+        const auto checks = app::audioContentHashJobsStartedForTest();
+        QElapsedTimer quietTimer;
+        quietTimer.start();
+        require(pump([&] { return quietTimer.elapsed() >= 1200; }) &&
+                    app::audioContentHashJobsStartedForTest() == checks,
+                "保存済み調整の待機中には全内容 hash を周期実行しない");
+    }
+    {
+        auto missingProject = applied;
+        auto& missingClip = missingProject.timelineClips[0];
+        const auto source = temp.filePath("missing-after-save.wav");
+        require(QFile::copy(QString::fromStdWString(missingClip.mediaPath.wstring()), source),
+                "消失試験の素材を作る");
+        app::AudioFileIdentity identity;
+        require(app::inspectAudioFile(std::filesystem::path(source.toStdWString()), identity, true,
+                                      nullptr, error),
+                "消失前の内容を照合");
+        std::string projection;
+        std::vector<app::AudioFileIdentity> files;
+        require(app::parseAudioInputFingerprint(missingClip.effects.audioAdjustmentFingerprint,
+                                                projection, files),
+                "保存済み出自を読む");
+        app::AudioFileIdentity originalIdentity;
+        require(
+            app::inspectAudioFile(missingClip.mediaPath, originalIdentity, false, nullptr, error),
+            "消失対象の正規化した path を確認");
+        bool replaced = false;
+        for (auto& fileIdentity : files)
+            if (fileIdentity.key == originalIdentity.key) {
+                fileIdentity = identity;
+                replaced = true;
+            }
+        require(replaced, "消失する素材を保存済み fingerprint の比較対象へ含める");
+        missingClip.mediaPath = std::filesystem::path(source.toStdWString());
+        missingProject.mediaItems[0].mediaPath = missingClip.mediaPath;
+        projection = app::audioProjectionHash(missingProject, settings);
+        for (auto& clip : missingProject.timelineClips)
+            clip.effects.audioAdjustmentFingerprint =
+                app::formatAudioInputFingerprint(projection, files);
+        const auto missingPath = file("missing-project.json");
+        const auto savedMissing = project::saveProjectJson(missingProject, missingPath);
+        if (!savedMissing.success)
+            std::fprintf(stderr, "%s\n", savedMissing.error.c_str());
+        require(savedMissing.success, "消失前の Project を保存");
+        {
+            app::MvmController closed(missingPath, {}, missingProject);
+        }
+        require(QFile::remove(source), "Controller 破棄後に素材を削除");
+        app::MvmController reopened(missingPath, {}, project::loadProjectJson(missingPath).project);
+        const auto checks = app::audioContentHashJobsStartedForTest();
+        require(pump([&] { return reopened.audioAdjustmentNeedsRegeneration(); }),
+                "素材が消失した保存済み調整は再生成が必要");
+        require(pump([&] {
+                    return app::audioContentHashJobsStartedForTest() > checks &&
+                           reopened.audioAdjustmentWorkersIdle();
+                }) &&
+                    reopened.audioAdjustmentNeedsRegeneration(),
+                "照合後も消失を成功扱いしない");
+    }
     require(controller.startAudioAdjustment(options) &&
                 pump([&] { return !controller.audioAdjusting(); }),
             "古い結果の検査を準備");
@@ -730,8 +821,8 @@ int main(int argc, char** argv) {
     {
         QVariantMap rejected = options;
         rejected.insert(QStringLiteral("voiceTracks"), QVariantList{});
-        require(!controller.startAudioAdjustment(rejected) && controller.canApplyAudioAdjustment() &&
-                    !controller.audioAdjusting() &&
+        require(!controller.startAudioAdjustment(rejected) &&
+                    controller.canApplyAudioAdjustment() && !controller.audioAdjusting() &&
                     controller.audioAdjustmentError().contains(QStringLiteral("トラック")),
                 "不正な設定では再生停止や候補の破棄をせず解析を始めない");
     }
@@ -741,8 +832,7 @@ int main(int argc, char** argv) {
                                     FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         FILETIME written{};
-        require(handle != INVALID_HANDLE_VALUE &&
-                    GetFileTime(handle, nullptr, nullptr, &written),
+        require(handle != INVALID_HANDLE_VALUE && GetFileTime(handle, nullptr, nullptr, &written),
                 "差し替え前の更新時刻を読む");
         CloseHandle(handle);
         QFile voiceFile(voicePath);
@@ -763,8 +853,14 @@ int main(int argc, char** argv) {
         CloseHandle(handle);
         QFileInfo restored(voicePath);
         require(restored.size() == contents.size(), "1 byte の書き換えで size が変わった");
+        const auto beforeApply = controller.projectForTest();
+        require(!controller.applyAudioAdjustment() && controller.projectForTest() == beforeApply,
+                "イベント処理前の内容差し替え直後には確定しない");
         require(pump([&] { return !controller.canApplyAudioAdjustment(); }),
                 "size と更新時刻を戻しても内容が違う素材には古い解析を適用できない");
+        require(pump([&] { return controller.audioAdjustmentResults().empty(); }) &&
+                    controller.projectForTest() == beforeApply,
+                "最終 SHA-256 不一致の結果を確定せず破棄する");
     }
     require(controller.setAudioTrackMix(0, -6, 0) && !controller.applyAudioAdjustment(),
             "解析後の編集で古い結果を拒否");
@@ -787,6 +883,11 @@ int main(int argc, char** argv) {
         require(controller.startAudioAdjustment(options), "取消試験の解析開始");
         require(pump([&] { return app::audioAdjustmentOpenGateWaitersForTest() >= 1; }),
                 "decode 前で worker が止まっている");
+        const auto lockedSource = QString::fromStdWString(p.timelineClips[0].mediaPath.wstring());
+        QFile forbiddenWrite(lockedSource);
+        require(!forbiddenWrite.open(QIODevice::ReadWrite) &&
+                    !QFile::rename(lockedSource, lockedSource + QStringLiteral(".replacement")),
+                "初期 hash 後から decoder open 前までの書換えと差し替えを拒否する");
         QElapsedTimer cancelTime;
         cancelTime.start();
         controller.cancelAudioAdjustment();
@@ -890,6 +991,7 @@ int main(int argc, char** argv) {
         ("import QtQuick\nimport QtQuick.Controls\nimport \"" + uiPath +
          "\"\nApplicationWindow { width: 260; height: 220; visible: true; "
          "QtObject { id: emptyController; property var audioTrackModel: []; "
+         "signal audioAdjustmentApplied(); property bool audioAdjustmentApplying: false; "
          "property var savedAudioAdjustmentSettings: ({}); property bool audioAdjusting: false; "
          "property bool audioAdjustmentAuditioning: false; property bool canApplyAudioAdjustment: "
          "false; "
@@ -937,22 +1039,38 @@ int main(int argc, char** argv) {
         later.insert(QStringLiteral("voiceLufs"), -18.0);
         require(controller.startAudioAdjustment(later) &&
                     pump([&] { return !controller.audioAdjusting(); }) &&
-                    controller.canApplyAudioAdjustment() && controller.applyAudioAdjustment() &&
-                    controller.saveProject(),
+                    controller.canApplyAudioAdjustment() && !controller.applyAudioAdjustment() &&
+                    pump([&] { return controller.audioAdjustmentResults().empty(); }) &&
+                    controller.audioAdjustmentError().isEmpty() && controller.saveProject(),
                 "別トラックへ 2 回目の自動調整を適用");
-        require(std::abs(controller.savedAudioAdjustmentSettings().value(QStringLiteral("voiceLufs")).toDouble() +
+        require(std::abs(controller.savedAudioAdjustmentSettings()
+                             .value(QStringLiteral("voiceLufs"))
+                             .toDouble() +
                          18) < 1e-6,
                 "ダイアログには最後に適用した設定を出す");
         const auto saved = project::loadProjectJson(path).project;
-        const auto first = QJsonDocument::fromJson(QByteArray::fromStdString(
-                                                       saved.timelineClips[0].effects.audioAdjustmentSettings))
-                               .object();
-        const auto last = QJsonDocument::fromJson(
-                              QByteArray::fromStdString(saved.lastAudioAdjustmentSettings))
-                              .object();
+        const auto first =
+            QJsonDocument::fromJson(
+                QByteArray::fromStdString(saved.timelineClips[0].effects.audioAdjustmentSettings))
+                .object();
+        const auto last =
+            QJsonDocument::fromJson(QByteArray::fromStdString(saved.lastAudioAdjustmentSettings))
+                .object();
         require(std::abs(first.value(QStringLiteral("voiceLufs")).toDouble() + 16) < 1e-6 &&
                     std::abs(last.value(QStringLiteral("voiceLufs")).toDouble() + 18) < 1e-6,
                 "最初の clip の設定ではなく、最後に適用した設定を保存する");
+        require(controller.startAudioAdjustment(later) &&
+                    pump([&] { return !controller.audioAdjusting(); }) &&
+                    controller.canApplyAudioAdjustment(),
+                "最終照合の取消試験を準備する");
+        const auto beforeCancel = controller.projectForTest();
+        require(!controller.applyAudioAdjustment() && controller.audioAdjustmentApplying(),
+                "最終照合中は未確定であることを示す");
+        controller.cancelAudioAdjustment();
+        require(pump([&] { return controller.audioAdjustmentWorkersIdle(); }) &&
+                    controller.projectForTest() == beforeCancel &&
+                    !controller.audioAdjustmentApplying(),
+                "取消した世代の最終 hash が一致しても Project を確定しない");
     }
     controller.shutdown();
     std::puts("自動音量調整の解析・編集・保存・履歴・失効・実描画の検査に合格しました");

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <future>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -41,12 +42,16 @@ struct AudioAdjustmentResult {
     std::string projectionHash;
     std::vector<AudioFileIdentity> files;
     std::string fingerprintText;
+    project::AudioAdjustmentSettings settings;
 };
 
-// hashContent が false のときは size と更新時刻だけを読む。running が false なら内容 hash を中断する。
+// hashContent が false のときは size と更新時刻だけを読む。running が false なら内容 hash
+// を中断する。
 bool inspectAudioFile(const std::filesystem::path& path, AudioFileIdentity& identity,
                       bool hashContent, const std::atomic<bool>* running, std::string& error);
 std::string audioProjectionHash(const project::Project& project);
+std::string audioProjectionHash(const project::Project& project,
+                                const project::AudioAdjustmentSettings& settings);
 std::string formatAudioInputFingerprint(const std::string& projectionHash,
                                         const std::vector<AudioFileIdentity>& files);
 bool parseAudioInputFingerprint(const std::string& text, std::string& projectionHash,
@@ -55,16 +60,19 @@ bool parseAudioInputFingerprint(const std::string& text, std::string& projection
 // decode / open の前で worker を止める試験用。nullptr で無効。待っている間は cancel を見ない。
 void setAudioAdjustmentOpenGateForTest(std::atomic<bool>* gate);
 int audioAdjustmentOpenGateWaitersForTest();
+int audioContentHashJobsStartedForTest();
 
 struct AudioContentHashResult {
-    bool completed = false;
+    enum class Status { Complete, Cancelled, Missing, ReadError };
+    Status status = Status::Cancelled;
     std::vector<AudioFileIdentity> files;
+    std::shared_ptr<void> locks;
 };
 
 // 内容 hash は GUI を止めない。ready になる前に破棄しない。
 class AudioContentHashJob final {
 public:
-    explicit AudioContentHashJob(std::vector<std::filesystem::path> paths);
+    explicit AudioContentHashJob(std::vector<std::filesystem::path> paths, bool lockFiles = false);
     ~AudioContentHashJob();
 
     void cancel() { running_ = false; }

@@ -6,15 +6,21 @@
 #include <map>
 #include <utility>
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStringList>
 
 namespace mvm::app {
 namespace {
-constexpr qint64 kSmallContentRecheckMs = 400;
-constexpr qint64 kLargeContentRecheckMs = 15000;
-constexpr std::uint64_t kSmallContentByteLimit = 8ull * 1024ull * 1024ull;
+project::AudioAdjustmentSettings targetSettings(const std::string& text) {
+    const auto object = QJsonDocument::fromJson(QByteArray::fromStdString(text)).object();
+    project::AudioAdjustmentSettings settings;
+    settings.bgmTrack = object.value("bgmTrack").toInt(-1);
+    for (const auto& value : object.value("voiceTracks").toArray())
+        settings.voiceTracks.push_back(value.toInt(-1));
+    return settings;
+}
 
 std::filesystem::path pathFromIdentityKey(const std::string& key) {
     return std::filesystem::path(QString::fromUtf8(key).toStdWString());
@@ -26,19 +32,38 @@ bool MvmController::audioAdjustmentNeedsRegeneration() const {
 }
 
 void MvmController::connectAudioFileWatch() {
-    audioContentClock_.start();
-    connect(&audioFileWatcher_, &QFileSystemWatcher::fileChanged, this, [this](const QString& path) {
-        audioContentDirty_ = true;
-        if (!audioFileWatcher_.files().contains(path))
-            audioFileWatcher_.addPath(path);
-        ensureAudioAdjustmentTimer();
-    });
+    connect(&audioFileWatcher_, &QFileSystemWatcher::fileChanged, this,
+            [this](const QString& path) {
+                const auto key = path.toUtf8().toStdString();
+                audioFileCache_[key].hashed = false;
+                audioContentDirty_ = true;
+                if (audioAdjustmentResult_ &&
+                    std::any_of(audioAdjustmentResult_->files.begin(),
+                                audioAdjustmentResult_->files.end(),
+                                [&](const auto& file) { return file.key == key; }))
+                    audioContentConfirmed_ = false;
+                updateAudioAdjustmentRegeneration(true);
+                emit audioAdjustmentChanged();
+                if (!audioFileWatcher_.files().contains(path))
+                    audioFileWatcher_.addPath(path);
+                ensureAudioAdjustmentTimer();
+            });
 }
 
 void MvmController::refreshAudioInputAuthority(bool notify) {
     // ファイル内容はここでは読まない。音声入力の射影が同じ編集でも、保存した fingerprint は
     // 変わるので再生成フラグだけ更新する。
-    audioProjectionHash_ = audioProjectionHash(project_);
+    audioProjectionHash_ = audioProjectionHash(project_, audioAuthoritySettings_);
+    audioSavedProjectionHashes_.clear();
+    for (const auto& clip : project_.timelineClips)
+        if (!clip.effects.audioAdjustmentFingerprint.empty() &&
+            !audioSavedProjectionHashes_.contains(clip.effects.audioAdjustmentSettings))
+            audioSavedProjectionHashes_[clip.effects.audioAdjustmentSettings] =
+                audioProjectionHash(project_, targetSettings(clip.effects.audioAdjustmentSettings));
+    for (const auto& path : audioWatchPaths())
+        if (const auto cached = audioFileCache_.find(path.toUtf8().toStdString());
+            cached == audioFileCache_.end() || !cached->second.hashed)
+            audioContentDirty_ = true;
     updateAudioAdjustmentRegeneration(notify);
     if (projectHasAudioAdjustmentFingerprint() || audioAdjustmentResult_ || audioAdjustmentJob_)
         ensureAudioAdjustmentTimer();
@@ -66,13 +91,17 @@ bool MvmController::computeAudioAdjustmentNeedsRegeneration() const {
             continue;
         std::string projection;
         std::vector<AudioFileIdentity> files;
-        if (!parseAudioInputFingerprint(clip.effects.audioAdjustmentFingerprint, projection, files) ||
-            projection != audioProjectionHash_)
+        const auto savedProjection =
+            audioSavedProjectionHashes_.find(clip.effects.audioAdjustmentSettings);
+        if (!parseAudioInputFingerprint(clip.effects.audioAdjustmentFingerprint, projection,
+                                        files) ||
+            savedProjection == audioSavedProjectionHashes_.end() ||
+            projection != savedProjection->second)
             return true;
         for (const auto& file : files) {
             const auto cached = audioFileCache_.find(file.key);
             if (cached == audioFileCache_.end() || !cached->second.hashed)
-                continue;
+                return true;
             if (!cached->second.exists || cached->second.size != file.size ||
                 cached->second.mtime100ns != file.mtime100ns ||
                 cached->second.contentSha256 != file.contentSha256)
@@ -131,23 +160,20 @@ void MvmController::ensureAudioAdjustmentTimer() {
 }
 
 void MvmController::reapAudioAdjustmentJobs() {
-    std::erase_if(audioAdjustmentRetired_, [](const std::unique_ptr<AudioAdjustmentJob>& job) {
-        return job->ready();
-    });
-    std::erase_if(audioContentRetired_, [](const std::unique_ptr<AudioContentHashJob>& job) {
-        return job->ready();
-    });
+    std::erase_if(audioAdjustmentRetired_,
+                  [](const std::unique_ptr<AudioAdjustmentJob>& job) { return job->ready(); });
+    std::erase_if(audioContentRetired_,
+                  [](const std::unique_ptr<AudioContentHashJob>& job) { return job->ready(); });
 }
 
 void MvmController::refreshAudioFileCacheCheap() {
-    if (!audioAdjustmentResult_)
-        return;
-    for (const auto& file : audioAdjustmentResult_->files) {
+    for (const auto& path : audioWatchPaths()) {
+        const auto key = path.toUtf8().toStdString();
         AudioFileIdentity now;
         std::string error;
-        auto& cached = audioFileCache_[file.key];
-        if (!inspectAudioFile(pathFromIdentityKey(file.key), now, false, nullptr, error)) {
-            cached.key = file.key;
+        auto& cached = audioFileCache_[key];
+        if (!inspectAudioFile(pathFromIdentityKey(key), now, false, nullptr, error)) {
+            cached.key = key;
             cached.exists = false;
             cached.hashed = false;
             continue;
@@ -160,33 +186,30 @@ void MvmController::refreshAudioFileCacheCheap() {
         if (same) {
             cached.contentSha256 = sha;
             cached.hashed = hashed;
+        } else {
+            audioContentDirty_ = true;
+            audioContentConfirmed_ = false;
         }
     }
+    updateAudioAdjustmentRegeneration(true);
 }
 
 void MvmController::scheduleAudioContentRecheck() {
-    if (audioContentJob_)
+    if (audioContentJob_ || !audioContentDirty_)
         return;
     std::vector<std::filesystem::path> paths;
-    std::uint64_t bytes = 0;
     if (audioAdjustmentResult_) {
         for (const auto& file : audioAdjustmentResult_->files) {
             paths.push_back(pathFromIdentityKey(file.key));
-            bytes += file.size;
         }
     } else if (projectHasAudioAdjustmentFingerprint()) {
-        for (const auto& clip : project_.timelineClips) {
-            if (!clip.enabled || clip.kind != project::TimelineClipKind::Audio)
-                continue;
-            paths.push_back(clip.mediaPath);
-        }
+        for (const auto& path : audioWatchPaths())
+            paths.push_back(std::filesystem::path(path.toStdWString()));
     }
     if (paths.empty())
         return;
-    const auto gap = bytes > kSmallContentByteLimit ? kLargeContentRecheckMs : kSmallContentRecheckMs;
-    if (!audioContentDirty_ &&
-        audioContentClock_.elapsed() - audioContentCheckedAtMs_ < gap)
-        return;
+    audioContentDirty_ = false;
+    audioContentConfirmed_ = false;
     audioContentJob_ = std::make_unique<AudioContentHashJob>(std::move(paths));
     ensureAudioAdjustmentTimer();
 }
@@ -196,19 +219,18 @@ void MvmController::finishAudioContentRecheck() {
         return;
     const auto hashed = audioContentJob_->take();
     audioContentJob_.reset();
-    audioContentCheckedAtMs_ = audioContentClock_.elapsed();
-    audioContentDirty_ = false;
-    if (!hashed.completed)
+    if (hashed.status == AudioContentHashResult::Status::Cancelled)
         return;
-    bool mismatch = false;
+    bool mismatch = hashed.status != AudioContentHashResult::Status::Complete;
     for (const auto& file : hashed.files)
         audioFileCache_[file.key] = file;
     if (audioAdjustmentResult_) {
         if (hashed.files.size() != audioAdjustmentResult_->files.size())
             mismatch = true;
         for (const auto& expected : audioAdjustmentResult_->files) {
-            const auto found = std::find_if(hashed.files.begin(), hashed.files.end(),
-                                            [&](const auto& file) { return file.key == expected.key; });
+            const auto found =
+                std::find_if(hashed.files.begin(), hashed.files.end(),
+                             [&](const auto& file) { return file.key == expected.key; });
             if (found == hashed.files.end() || found->contentSha256 != expected.contentSha256 ||
                 found->size != expected.size || found->mtime100ns != expected.mtime100ns)
                 mismatch = true;
@@ -218,6 +240,21 @@ void MvmController::finishAudioContentRecheck() {
     if (mismatch)
         dropAudioAdjustmentResult(
             QStringLiteral("解析後に素材の内容が変わりました。再解析してください"));
+    else if (audioAdjustmentResult_ && !audioContentDirty_) {
+        audioContentConfirmed_ = true;
+        if (audioApplyPending_) {
+            audioApplyPending_ = false;
+            if (!canApplyAudioAdjustment()) {
+                dropAudioAdjustmentResult(
+                    QStringLiteral("最終照合中に状態が変わりました。再解析してください"));
+            } else if (commitAudioAdjustment())
+                emit audioAdjustmentApplied();
+        }
+    } else if (audioApplyPending_) {
+        dropAudioAdjustmentResult(
+            QStringLiteral("最終照合中に素材が変更されました。再解析してください"));
+    }
+    emit audioAdjustmentChanged();
 }
 
 void MvmController::dropAudioAdjustmentResult(const QString& error) {
@@ -225,6 +262,7 @@ void MvmController::dropAudioAdjustmentResult(const QString& error) {
     stopAudioAdjustmentAudition();
     audioAdjustmentResult_.reset();
     audioContentConfirmed_ = false;
+    audioApplyPending_ = false;
     if (audioContentJob_) {
         audioContentJob_->cancel();
         audioContentRetired_.push_back(std::move(audioContentJob_));
@@ -242,7 +280,7 @@ int MvmController::audioAdjustmentProgress() const {
 
 bool MvmController::canApplyAudioAdjustment() const {
     return !audioAdjustmentJob_ && audioAdjustmentResult_ && audioAdjustmentResult_->success &&
-           !busy_ && !playing() && audioContentConfirmed_ &&
+           !busy_ && !playing() && !audioApplyPending_ && audioContentConfirmed_ &&
            audioAdjustmentResult_->projectionHash == audioProjectionHash_ &&
            audioCheapIdentityMatches(audioAdjustmentResult_->files);
 }
@@ -352,7 +390,8 @@ bool MvmController::startAudioAdjustment(const QVariantMap& options) {
     }
     bool hasAudio = false;
     for (const auto& clip : project_.timelineClips) {
-        if (!clip.enabled || clip.kind != project::TimelineClipKind::Audio)
+        if (!clip.enabled || clip.kind != project::TimelineClipKind::Audio ||
+            !project::audioAdjustmentTargetsTrack(settings, clip.track.index))
             continue;
         hasAudio = true;
         AudioFileIdentity identity;
@@ -362,7 +401,7 @@ bool MvmController::startAudioAdjustment(const QVariantMap& options) {
             return false;
         }
     }
-    if (!hasAudio || audioProjectionHash(project_).empty()) {
+    if (!hasAudio) {
         audioAdjustmentError_ = QStringLiteral("解析する素材の状態を確認できません");
         emit audioAdjustmentChanged();
         return false;
@@ -373,6 +412,11 @@ bool MvmController::startAudioAdjustment(const QVariantMap& options) {
         return false;
     }
     stopAudioAdjustmentAudition();
+    if (audioContentJob_) {
+        audioContentJob_->cancel();
+        audioContentRetired_.push_back(std::move(audioContentJob_));
+    }
+    audioApplyPending_ = false;
     audioAdjustmentResult_.reset();
     audioContentConfirmed_ = false;
     emit audioAdjustmentResultsChanged();
@@ -387,6 +431,8 @@ bool MvmController::startAudioAdjustment(const QVariantMap& options) {
         {"attackMs", settings.attackMs},       {"holdMs", settings.holdMs},
         {"releaseMs", settings.releaseMs}};
     audioAdjustmentLastProgress_ = -1;
+    audioAuthoritySettings_ = settings;
+    refreshAudioInputAuthority(false);
     audioAdjustmentJob_ = std::make_unique<AudioAdjustmentJob>(project_, settings);
     ensureAudioAdjustmentTimer();
     emit audioAdjustmentChanged();
@@ -411,16 +457,14 @@ void MvmController::pollAudioAdjustment() {
                 audioFileCache_[file.key] = file;
             audioAdjustmentResult_ = std::move(result);
             audioContentConfirmed_ = true;
-            audioContentCheckedAtMs_ = audioContentClock_.elapsed();
             audioContentDirty_ = false;
             emit audioAdjustmentResultsChanged();
         }
         changed = true;
     }
     refreshAudioFileCacheCheap();
-    if (audioAdjustmentResult_ &&
-        (audioAdjustmentResult_->projectionHash != audioProjectionHash_ ||
-         !audioCheapIdentityMatches(audioAdjustmentResult_->files))) {
+    if (audioAdjustmentResult_ && (audioAdjustmentResult_->projectionHash != audioProjectionHash_ ||
+                                   !audioCheapIdentityMatches(audioAdjustmentResult_->files))) {
         dropAudioAdjustmentResult(
             QStringLiteral("解析後に編集または素材の変更がありました。再解析してください"));
         changed = true;
@@ -477,6 +521,7 @@ void MvmController::cancelAudioAdjustment() {
     }
     audioAdjustmentResult_.reset();
     audioContentConfirmed_ = false;
+    audioApplyPending_ = false;
     if (audioContentJob_) {
         audioContentJob_->cancel();
         audioContentRetired_.push_back(std::move(audioContentJob_));
@@ -511,11 +556,10 @@ bool MvmController::auditionAudioAdjustment() {
 
 bool MvmController::applyAudioAdjustment() {
     stopAudioAdjustmentAudition();
-    // 表示用の再確認は timer に任せる。適用の直前だけは size と更新時刻をその場で見る。
+    // 適用要求は非同期の全内容照合へ渡し、保護ハンドルを保持した完了処理で確定する。
     refreshAudioFileCacheCheap();
-    if (audioAdjustmentResult_ &&
-        (audioAdjustmentResult_->projectionHash != audioProjectionHash_ ||
-         !audioCheapIdentityMatches(audioAdjustmentResult_->files))) {
+    if (audioAdjustmentResult_ && (audioAdjustmentResult_->projectionHash != audioProjectionHash_ ||
+                                   !audioCheapIdentityMatches(audioAdjustmentResult_->files))) {
         dropAudioAdjustmentResult(
             QStringLiteral("解析後に編集または素材の変更がありました。再解析してください"));
     }
@@ -525,7 +569,33 @@ bool MvmController::applyAudioAdjustment() {
         emit audioAdjustmentChanged();
         return false;
     }
-    auto candidate = audioAdjustmentResult_->candidate;
+    std::vector<std::filesystem::path> paths;
+    for (const auto& file : audioAdjustmentResult_->files)
+        paths.push_back(pathFromIdentityKey(file.key));
+    if (audioContentJob_) {
+        audioContentJob_->cancel();
+        audioContentRetired_.push_back(std::move(audioContentJob_));
+    }
+    audioApplyPending_ = true;
+    audioAdjustmentError_.clear();
+    audioContentConfirmed_ = false;
+    audioContentDirty_ = false;
+    audioContentJob_ = std::make_unique<AudioContentHashJob>(std::move(paths), true);
+    ensureAudioAdjustmentTimer();
+    emit audioAdjustmentChanged();
+    return false;
+}
+
+bool MvmController::commitAudioAdjustment() {
+    auto candidate = project_;
+    for (auto& clip : candidate.timelineClips)
+        for (const auto& measured : audioAdjustmentResult_->candidate.timelineClips)
+            if (clip.id == measured.id && project::audioAdjustmentTargetsTrack(
+                                              audioAdjustmentResult_->settings, clip.track.index)) {
+                clip.effects.normalizationGainDb = measured.effects.normalizationGainDb;
+                clip.effects.duckingDb = measured.effects.duckingDb;
+                clip.effects.duckingKeys = measured.effects.duckingKeys;
+            }
     const auto serialized = QJsonDocument(QJsonObject::fromVariantMap(audioAdjustmentOptions_))
                                 .toJson(QJsonDocument::Compact)
                                 .toStdString();
