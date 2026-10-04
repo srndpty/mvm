@@ -112,6 +112,8 @@ typedef struct {
     /* 非0を返すと書き出しを中止する。completed/totalはframe数。 */
     int (*progress_callback)(long long completed, long long total, void* opaque);
     void* progress_opaque;
+    /* 非0なら Matroska / PCM で音声を非圧縮出力する。0なら MP4 / AAC。 */
+    int lossless_audio;
 } MvmExportSpec;
 
 typedef struct {

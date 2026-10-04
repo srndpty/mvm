@@ -28,6 +28,10 @@ ApplicationWindow {
         id: clipTranscribeDialog
         mvmController: root.mvmController
     }
+    AutoAudioDialog {
+        id: autoAudioDialog
+        mvmController: root.mvmController
+    }
     function openClipTranscription(clipId) {
         root.mvmController.selectTimelineClip(clipId, false);
         clipTranscribeDialog.openForClip(clipId);
@@ -312,6 +316,7 @@ ApplicationWindow {
             }
         }
         CompactMenu {
+            objectName: "editMenu"
             title: "編集"
             CompactMenuItem {
                 action: undoAction
@@ -325,6 +330,12 @@ ApplicationWindow {
             CompactMenuItem { action: pasteClipsAction }
             CompactMenuItem { action: duplicateClipsAction }
             CompactMenuItem { action: speedDurationAction }
+            CompactMenuItem {
+                objectName: "autoAudioMenuItem"
+                text: "自動音量調整…"
+                enabled: !root.mvmController.busy
+                onTriggered: autoAudioDialog.open()
+            }
             CompactMenuSeparator {}
             CompactMenuItem { action: splitAtPlayheadAction }
             CompactMenuItem { action: splitAllTracksAction }

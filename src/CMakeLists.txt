@@ -19,6 +19,7 @@ add_library(mvm::core ALIAS mvm_core)
 # --- minimal product Project Model -----------------------------------------
 # Qt / MLT / Manim に依存しない純粋な値型と schema 固定 JSON のみ。
 add_library(mvm_project STATIC
+    project/audio_adjustment.cpp
     project/clip_effects.cpp
     project/media_bin.cpp
     project/path_identity.cpp
@@ -227,6 +228,12 @@ target_link_libraries(mvm_audio_waveform
     PRIVATE PkgConfig::MVM_FFMPEG mvm::warnings
 )
 add_library(mvm::audio_waveform ALIAS mvm_audio_waveform)
+
+# ラウドネス解析。PCM の測定のみを担当し、Qt と MLT に依存しない。
+add_library(mvm_audio_analysis STATIC media/audio_analysis/loudness_meter.cpp)
+target_include_directories(mvm_audio_analysis PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_audio_analysis PRIVATE PkgConfig::MVM_FFMPEG PkgConfig::MVM_AVFILTER mvm::warnings)
+add_library(mvm::audio_analysis ALIAS mvm_audio_analysis)
 
 # --- 画像素材 -----------------------------------------------------------------
 # 素材の stream 構成の判定と、静止画の decode。preview と書き出しの両方がここを通り、

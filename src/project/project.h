@@ -143,7 +143,7 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 16;
+inline constexpr int kProjectSchemaVersion = 17;
 
 struct SubtitleCue {
     std::string id;

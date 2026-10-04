@@ -53,6 +53,18 @@ clip の編集で字幕を置き直すとき、毎回 timeline の frame から�
 
 ## 既知の未解決の問題
 
+- [事実] 2026-10-04、自動音量調整の検証で release の `transition_preview` が、
+  23.976 fps の初期提示の準備と `stale-engine-seek` の先読み要求の前提で失敗する回があった。
+  debug の全体検査では通過した。変更前 HEAD (`91eda91`) と変更後の release を固定回数で
+  比較すると、変更前は通過し、変更後にも通過する回があった。原因と新機能との因果関係は
+  未特定であり、全体検査を合格とは扱わない。新機能の解析・試聴・編集・書き出しの関連追試は
+  修正後に通過している。比較ログは `build/audio-adjustment-baseline/baseline-transition*.xml`、
+  `build/ucrt64-release/audio-adjustment-final.xml` と `audio-adjustment-transition-*.xml` に保存した。
+  入口移動・音声解析の最適化後の `scripts/test.ps1 -Fast` では release は 1434/1434 通過し、
+  debug は `transition_preview` だけ失敗した (frame 110 の incoming 不透明度が −1、期待 0.025)。
+  この形は下記の単独検証でも観測されている。新機能の解析・試聴・製品メニュー操作は両構成で通過。
+  ログは `build/audio-adjustment-optimized-tests.log` に保存した。
+
 - [事実] 2026-10-04、release の通常テスト一式 (並列 8) の 1 回で
   `preview_engine_p5e_remove_fatal_event_order` が SEGFAULT で落ちた。単独では 5/5 通過。
   preview engine は字幕の作業で変更していない。再現条件と原因は未確認。

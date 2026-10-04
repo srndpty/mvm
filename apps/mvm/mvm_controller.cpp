@@ -502,6 +502,7 @@ MvmController::MvmController(std::filesystem::path projectPath,
 }
 
 MvmController::~MvmController() {
+    cancelAudioAdjustment();
     shutdown();
 }
 
@@ -3441,7 +3442,7 @@ bool MvmController::textClipHasMotion(const QString& clipId) const {
     const project::ClipEffects defaults;
     for (const auto& channel : project::effectChannels())
         if (channel.kind != project::ClipKeyKind::Opacity &&
-            channel.kind != project::ClipKeyKind::Volume &&
+            !project::isAudioEffectChannel(channel.kind) &&
             (effects.*channel.base != defaults.*channel.base || !(effects.*channel.keys).empty()))
             return true;
     return false;
@@ -7513,15 +7514,16 @@ QVariantList MvmController::keyframeChannels() const {
     }
     const auto local = effectEditFrame(clip);
     const auto evaluated = project::evaluateClipEffects(effects, local);
-    const QStringList labels{
-        QStringLiteral("不透明度"),    QStringLiteral("音量"),        QStringLiteral("位置 X"),
-        QStringLiteral("位置 Y"),      QStringLiteral("拡大率 X"),    QStringLiteral("拡大率 Y"),
-        QStringLiteral("回転"),        QStringLiteral("クロップ 左"), QStringLiteral("クロップ 上"),
-        QStringLiteral("クロップ 右"), QStringLiteral("クロップ 下")};
+    const QStringList labels{QStringLiteral("不透明度"),        QStringLiteral("音量"),
+                             QStringLiteral("ダッキング (dB)"), QStringLiteral("位置 X"),
+                             QStringLiteral("位置 Y"),          QStringLiteral("拡大率 X"),
+                             QStringLiteral("拡大率 Y"),        QStringLiteral("回転"),
+                             QStringLiteral("クロップ 左"),     QStringLiteral("クロップ 上"),
+                             QStringLiteral("クロップ 右"),     QStringLiteral("クロップ 下")};
     std::size_t index = 0;
     for (const auto& channel : project::effectChannels()) {
         const auto label = labels[static_cast<qsizetype>(index++)];
-        if ((channel.kind == project::ClipKeyKind::Volume) !=
+        if (project::isAudioEffectChannel(channel.kind) !=
             (clip.kind == project::TimelineClipKind::Audio))
             continue;
         const auto& keys = keyframeDisplayKeys_.at(channel.name);
@@ -7552,7 +7554,7 @@ bool MvmController::setEffectAnimation(const QString& name, bool enabled) {
         return false;
     auto candidate = project_;
     auto& clip = candidate.timelineClips[static_cast<std::size_t>(currentClipIndex_)];
-    if ((channel->kind == project::ClipKeyKind::Volume) !=
+    if (project::isAudioEffectChannel(channel->kind) !=
         (clip.kind == project::TimelineClipKind::Audio))
         return false;
     const auto duration = project::timelineClipDuration(candidate, clip);
@@ -7578,7 +7580,7 @@ bool MvmController::toggleEffectKey(const QString& name) {
         return false;
     auto candidate = project_;
     auto& clip = candidate.timelineClips[static_cast<std::size_t>(currentClipIndex_)];
-    if ((channel->kind == project::ClipKeyKind::Volume) !=
+    if (project::isAudioEffectChannel(channel->kind) !=
         (clip.kind == project::TimelineClipKind::Audio))
         return false;
     const auto duration = project::timelineClipDuration(candidate, clip);
@@ -7631,7 +7633,7 @@ bool MvmController::editEffectKey(const QString& name, qint64 from, qint64 to, d
               [](const auto& a, const auto& b) { return a.frame < b.frame; });
     std::string error;
     if (!project::validateEffectKeys(effects, duration.frame,
-                                     channel->kind == project::ClipKeyKind::Volume, error)) {
+                                     project::isAudioEffectChannel(channel->kind), error)) {
         setStatus(QString::fromStdString(error));
         return failEffectEdit(commit);
     }
@@ -7962,6 +7964,7 @@ bool MvmController::failEffectEdit(bool commit) {
 }
 
 void MvmController::shutdown() {
+    cancelAudioAdjustment();
     transcriptionCancel_.store(true);
     if (transcriptionThread_.joinable())
         transcriptionThread_.join();

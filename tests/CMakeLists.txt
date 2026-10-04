@@ -337,6 +337,7 @@ qt_add_executable(mvm_test_controller_export
     ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
 target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_controller_export PRIVATE
+    mvm::audio_adjustment
     mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
@@ -361,6 +362,7 @@ qt_add_executable(mvm_test_sourceless_timeline_playback
 target_include_directories(mvm_test_sourceless_timeline_playback PRIVATE
     ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_sourceless_timeline_playback PRIVATE
+    mvm::audio_adjustment
     mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
@@ -394,6 +396,7 @@ qt_add_executable(mvm_test_transition_preview
 target_include_directories(mvm_test_transition_preview PRIVATE
     ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_transition_preview PRIVATE
+    mvm::audio_adjustment
     mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
@@ -3970,6 +3973,23 @@ list(FILTER _subtitle_controller_sources EXCLUDE REGEX "test_mvm_controller_expo
 qt_add_executable(mvm_test_subtitle_controller harness/test_subtitle_controller.cpp ${_subtitle_controller_sources})
 target_include_directories(mvm_test_subtitle_controller PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 get_target_property(_subtitle_controller_libraries mvm_test_controller_export LINK_LIBRARIES)
+qt_add_executable(mvm_test_audio_adjustment harness/test_audio_adjustment.cpp ${_subtitle_controller_sources})
+target_include_directories(mvm_test_audio_adjustment PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_audio_adjustment PRIVATE ${_subtitle_controller_libraries})
+target_compile_definitions(mvm_test_audio_adjustment PRIVATE ${MVM_MLT_PATH_DEFS}
+    MVM_AUDIO_ADJUSTMENT_FFMPEG="${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
+    MVM_AUDIO_ADJUSTMENT_UI_DIR="${CMAKE_SOURCE_DIR}/apps/mvm")
+add_test(NAME audio_adjustment_contract COMMAND mvm_test_audio_adjustment "${CMAKE_BINARY_DIR}")
+add_test(NAME audio_adjustment_benchmark_summary
+    COMMAND ${MVM_PWSH} -NoProfile -File
+    "${CMAKE_CURRENT_SOURCE_DIR}/harness/test_audio_adjustment_benchmark.ps1"
+    -WorkDir "${CMAKE_CURRENT_BINARY_DIR}/audio-adjustment-benchmark-summary")
+set_tests_properties(audio_adjustment_benchmark_summary PROPERTIES TIMEOUT 30)
+set_tests_properties(audio_adjustment_contract PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120)
+add_test(NAME audio_adjustment_audition COMMAND mvm_test_audio_adjustment "${CMAKE_BINARY_DIR}" --audition)
+set_tests_properties(audio_adjustment_audition PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120 LABELS workstation)
 target_link_libraries(mvm_test_subtitle_controller PRIVATE ${_subtitle_controller_libraries})
 target_compile_definitions(mvm_test_subtitle_controller PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_SUBTITLE_PANEL_QML="${CMAKE_SOURCE_DIR}/apps/mvm/SubtitlePanel.qml"

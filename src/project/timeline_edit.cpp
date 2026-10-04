@@ -828,7 +828,10 @@ TimelineValidationResult validateTimeline(const Project& project) {
             (clip.kind == TimelineClipKind::Audio &&
              (!clip.effects.opacityKeys.empty() || clip.effects.opacityPercent != 100.0)) ||
             (clip.kind != TimelineClipKind::Audio &&
-             (!clip.effects.volumeKeys.empty() || clip.effects.volumePercent != 100.0))) {
+             (!clip.effects.volumeKeys.empty() || clip.effects.volumePercent != 100.0 ||
+              clip.effects.normalizationGainDb != 0 || clip.effects.duckingDb != 0 ||
+              !clip.effects.duckingKeys.empty() || !clip.effects.audioAdjustmentSettings.empty() ||
+              !clip.effects.audioAdjustmentFingerprint.empty()))) {
             result.error = clip.name + ": キーフレームが clip の種別または尺に合いません";
             return result;
         }
@@ -3435,7 +3438,7 @@ ClipKeyEditPreview previewClipKeyEdit(const Project& project, const std::string&
     }
     const auto& clip = project.timelineClips[static_cast<std::size_t>(index)];
     if (!effectChannel(kind) ||
-        (kind == ClipKeyKind::Volume) != (clip.kind == TimelineClipKind::Audio) ||
+        isAudioEffectChannel(kind) != (clip.kind == TimelineClipKind::Audio) ||
         !std::isfinite(requestedPercent)) {
         result.error = "キーフレームの種別または値が不正です";
         return result;
@@ -3507,7 +3510,7 @@ TimelineEditResult deleteClipKey(Project& project, const std::string& clipId, Cl
     Project candidate = project;
     auto& clip = candidate.timelineClips[static_cast<std::size_t>(index)];
     if (!effectChannel(kind) ||
-        (kind == ClipKeyKind::Volume) != (clip.kind == TimelineClipKind::Audio))
+        isAudioEffectChannel(kind) != (clip.kind == TimelineClipKind::Audio))
         return {false, -1, "キーフレームの種別が不正です"};
     auto& keys = clip.effects.*effectChannel(kind)->keys;
     const auto found = std::find_if(keys.begin(), keys.end(),
@@ -4018,7 +4021,7 @@ TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, 
         return result;
     }
     for (const auto& channel : effectChannels()) {
-        if (channel.kind == ClipKeyKind::Opacity || channel.kind == ClipKeyKind::Volume)
+        if (channel.kind == ClipKeyKind::Opacity || isAudioEffectChannel(channel.kind))
             continue;
         right->effects.*channel.keys = original.effects.*channel.keys;
         reframeClipKeys(right->effects.*channel.keys, end - start, end - frame,
@@ -4050,7 +4053,7 @@ TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, 
         FrameHold{sourceFrame.frame,         original.sourceFpsNum, original.sourceFpsDen,
                   original.sourceFrameCount, original.speedNum,     original.speedDen};
     for (const auto& channel : effectChannels()) {
-        if (channel.kind == ClipKeyKind::Opacity || channel.kind == ClipKeyKind::Volume)
+        if (channel.kind == ClipKeyKind::Opacity || isAudioEffectChannel(channel.kind))
             continue;
         hold.effects.*channel.keys = original.effects.*channel.keys;
         reframeClipKeys(hold.effects.*channel.keys, end - start, holdFrames, frame - start);

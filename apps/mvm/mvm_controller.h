@@ -3,6 +3,7 @@
 
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
+#include "audio_adjustment_job.h"
 #include "media/audio_preview/audio_mixer_bus.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
 #include "media/transcribe/transcribe.h"
@@ -61,6 +62,22 @@ class MvmController : public QObject {
     QML_UNCREATABLE("アプリが生成したコントローラーを使用してください")
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY stateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
+    Q_PROPERTY(bool audioAdjusting READ audioAdjusting NOTIFY audioAdjustmentChanged)
+    Q_PROPERTY(
+        int audioAdjustmentProgress READ audioAdjustmentProgress NOTIFY audioAdjustmentChanged)
+    Q_PROPERTY(QVariantList audioAdjustmentResults READ audioAdjustmentResults NOTIFY
+                   audioAdjustmentResultsChanged)
+    Q_PROPERTY(QVariantList audioAdjustmentRanges READ audioAdjustmentRanges NOTIFY
+                   audioAdjustmentResultsChanged)
+    Q_PROPERTY(QString audioAdjustmentError READ audioAdjustmentError NOTIFY audioAdjustmentChanged)
+    Q_PROPERTY(
+        bool canApplyAudioAdjustment READ canApplyAudioAdjustment NOTIFY audioAdjustmentChanged)
+    Q_PROPERTY(bool audioAdjustmentAuditioning READ audioAdjustmentAuditioning NOTIFY
+                   audioAdjustmentChanged)
+    Q_PROPERTY(bool audioAdjustmentNeedsRegeneration READ audioAdjustmentNeedsRegeneration NOTIFY
+                   stateChanged)
+    Q_PROPERTY(QVariantMap savedAudioAdjustmentSettings READ savedAudioAdjustmentSettings NOTIFY
+                   stateChanged)
     Q_PROPERTY(QString currentClipName READ currentClipName NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipPath READ currentClipPath NOTIFY stateChanged)
     Q_PROPERTY(bool transcribing READ transcribing NOTIFY stateChanged)
@@ -181,6 +198,25 @@ class MvmController : public QObject {
     Q_PROPERTY(qint64 effectFadeOut READ effectFadeOut NOTIFY stateChanged)
 
 public:
+    bool audioAdjusting() const { return audioAdjustmentJob_ != nullptr; }
+
+    int audioAdjustmentProgress() const;
+    QVariantList audioAdjustmentResults() const;
+    QVariantList audioAdjustmentRanges() const;
+
+    QString audioAdjustmentError() const { return audioAdjustmentError_; }
+
+    bool canApplyAudioAdjustment() const;
+
+    bool audioAdjustmentAuditioning() const { return audioAdjustmentAudition_ != nullptr; }
+
+    bool audioAdjustmentNeedsRegeneration() const;
+    QVariantMap savedAudioAdjustmentSettings() const;
+    Q_INVOKABLE bool startAudioAdjustment(const QVariantMap& settings);
+    Q_INVOKABLE void cancelAudioAdjustment();
+    Q_INVOKABLE bool auditionAudioAdjustment();
+    Q_INVOKABLE void stopAudioAdjustmentAudition();
+    Q_INVOKABLE bool applyAudioAdjustment();
     using ExportRunner =
         std::function<TimelineExportResult(const project::Project&, const TimelineExportRequest&)>;
     using ExportThreadFactory = std::function<std::thread(std::function<void()>)>;
@@ -846,6 +882,8 @@ public Q_SLOTS:
     void revalidateMedia();
 
 Q_SIGNALS:
+    void audioAdjustmentChanged();
+    void audioAdjustmentResultsChanged();
     void stateChanged();
     void timelineTransitionsChanged();
     void selectedTransitionChanged();
@@ -855,6 +893,16 @@ Q_SIGNALS:
     void externalCanonicalChangeOnSave();
 
 private:
+    void pollAudioAdjustment();
+    QString audioAdjustmentFingerprint(const project::Project& source) const;
+    std::unique_ptr<AudioAdjustmentJob> audioAdjustmentJob_;
+    std::optional<AudioAdjustmentResult> audioAdjustmentResult_;
+    std::optional<project::Project> audioAdjustmentSource_;
+    QVariantMap audioAdjustmentOptions_;
+    QString audioAdjustmentInputFingerprint_;
+    QString audioAdjustmentError_;
+    QTimer audioAdjustmentTimer_;
+    std::unique_ptr<ShuttleAudioPlayback> audioAdjustmentAudition_;
     bool startTimelineExport(const QUrl& outputUrl, int videoCrf);
 
     struct TrackPreviewSource {

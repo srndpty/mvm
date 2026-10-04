@@ -141,7 +141,7 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
     bool animatedMotion = false;
     for (const auto& channel : project::effectChannels())
         animatedMotion = animatedMotion || (channel.kind != project::ClipKeyKind::Opacity &&
-                                            channel.kind != project::ClipKeyKind::Volume &&
+                                            !project::isAudioEffectChannel(channel.kind) &&
                                             !(clip.effects.*channel.keys).empty());
     if (animatedMotion)
         output.motionFrames.reserve(static_cast<std::size_t>(timelineDuration));
@@ -612,6 +612,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
                 return exportRequest->progress && exportRequest->progress(completed, total) ? 1 : 0;
             },
         .progress_opaque = const_cast<TimelineExportRequest*>(&request),
+        .lossless_audio = request.losslessAudio ? 1 : 0,
     };
 
     // 一時ファイルへ書き、検証を通ってから正規名へ rename する。

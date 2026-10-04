@@ -207,7 +207,7 @@ int main(int argc, char** argv) {
     {
         auto original = projectWithClip();
         for (const auto& channel : effectChannels()) {
-            if (channel.kind == ClipKeyKind::Volume)
+            if (isAudioEffectChannel(channel.kind))
                 continue;
             const double from = channel.kind >= ClipKeyKind::CropLeft ? 2 : 10;
             const double to = channel.kind >= ClipKeyKind::CropLeft ? 12 : 80;
@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
                   .success,
               "モーションをレートストレッチできない");
         for (const auto& channel : effectChannels()) {
-            if (channel.kind == ClipKeyKind::Volume)
+            if (isAudioEffectChannel(channel.kind))
                 continue;
             const auto& keys = edited.timelineClips[0].effects.*channel.keys;
             check(keys.size() == 2 && keys.back().frame == 199 &&
@@ -432,10 +432,10 @@ int main(int argc, char** argv) {
               "拡大率の負例の対照群を読み込めません");
         // 旧 schema (10) と、縦横共通の拡大率 (scale_percent) は読み替えずに拒否する。
         auto oldSchema = originalJson;
-        const auto versionAt = oldSchema.find("\"schema_version\": 16");
+        const auto versionAt = oldSchema.find("\"schema_version\": 17");
         check(versionAt != std::string::npos, "負例のschema_version位置が保存されていません");
         if (versionAt != std::string::npos) {
-            oldSchema.replace(versionAt, std::string("\"schema_version\": 16").size(),
+            oldSchema.replace(versionAt, std::string("\"schema_version\": 17").size(),
                               "\"schema_version\": 14");
             check(!loadVariant("scale-schema12.mvm", oldSchema).success, "schema 14を拒否する");
         }

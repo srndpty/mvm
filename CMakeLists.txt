@@ -111,6 +111,7 @@ endif()
 # UCRT64 の libav* だけを使う。ホストの C:\tools 版・winget 版へは落ちない。
 pkg_check_modules(MVM_FFMPEG REQUIRED IMPORTED_TARGET
     libavformat libavcodec libavutil libswresample)
+pkg_check_modules(MVM_AVFILTER REQUIRED IMPORTED_TARGET libavfilter)
 message(STATUS "[mvm] FFmpeg: libavcodec ${MVM_FFMPEG_libavcodec_VERSION}")
 # 画素形式の変換 (静止画素材の decode) だけが使う。他の target へは渡さない。
 pkg_check_modules(MVM_SWSCALE REQUIRED IMPORTED_TARGET libswscale)

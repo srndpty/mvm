@@ -1,3 +1,12 @@
+# 自動調整のジョブと GUI 連携を全 controller 試験でも同じ実装で使う。
+add_library(mvm_audio_adjustment STATIC audio_adjustment_job.cpp audio_adjustment_controller.cpp)
+set_target_properties(mvm_audio_adjustment PROPERTIES AUTOMOC OFF)
+target_include_directories(mvm_audio_adjustment PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_audio_adjustment PUBLIC mvm::audio_analysis mvm::project
+    mvm::audio_preview mvm::timeline_preview_mapping Qt6::Core Qt6::Quick Qt6::Qml
+    PRIVATE mvm::warnings)
+add_library(mvm::audio_adjustment ALIAS mvm_audio_adjustment)
+
 qt_add_executable(mvm
     main.cpp
     image_raster_cache.cpp
@@ -59,6 +68,7 @@ qt_add_qml_module(mvm
         AudioPanKnob.qml
         AudioMixerStrip.qml
         AudioMixerPanel.qml
+        AutoAudioDialog.qml
         MediaKindIcon.qml
         TimelineGestures.js
         PreviewTransform.js
@@ -81,6 +91,7 @@ qt_add_qml_module(mvm
 target_include_directories(mvm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm PRIVATE
     mvm::core
+    mvm::audio_adjustment
     mvm::project
     mvm::util
     mvm::transcribe mvm::manim_clip_workflow
@@ -166,6 +177,7 @@ qt_add_qml_module(mvm_test_text_ui_input
         AudioPanKnob.qml
         AudioMixerStrip.qml
         AudioMixerPanel.qml
+        AutoAudioDialog.qml
         MediaKindIcon.qml
         TimelineGestures.js
         PreviewTransform.js
@@ -186,6 +198,7 @@ qt_add_qml_module(mvm_test_text_ui_input
 )
 target_include_directories(mvm_test_text_ui_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_test_text_ui_input PRIVATE
+    mvm::audio_adjustment
     mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::text_raster mvm::audio_waveform mvm::still_image mvm::mlt mvm::preview_engine

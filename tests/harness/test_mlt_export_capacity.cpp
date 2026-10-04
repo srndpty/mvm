@@ -50,7 +50,7 @@ MvmExportClip videoClip(const char* path, int track, long long producerFrames,
 void requireRejected(const MvmExportClip* clips, int count, long long totalDuration,
                      const std::filesystem::path& output, const char* expected,
                      const char* message) {
-    const MvmExportSpec spec{320, 240, 60, 1, 23, 10000, 4, 0, nullptr, nullptr};
+    const MvmExportSpec spec{320, 240, 60, 1, 23, 10000, 4, 0, nullptr, nullptr, 0};
     char error[512] = {};
     const auto outputUtf8 = output.u8string();
     const int status = mvm_mlt_export_two_track(clips, count, totalDuration, &spec,

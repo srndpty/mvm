@@ -207,6 +207,10 @@ std::optional<double> renderSegmentGain(const TimelineRenderSegment& segment,
         return std::nullopt;
     double gain = evaluateClipVolume(segment.original.effects, at->local, at->sourceLocal,
                                      at->sourceDuration);
+    const auto& effects = segment.original.effects;
+    gain *= std::pow(10.0, (effects.normalizationGainDb +
+                            evaluateClipKeys(effects.duckingKeys, effects.duckingDb, at->local)) /
+                               20.0);
     // 等パワー: 重なった 2 clip の gain の二乗和が 1 になる。
     if (segment.fadeIn)
         gain *= std::sin(transitionProgress(*segment.fadeIn, timelineFrame) * kHalfPi);

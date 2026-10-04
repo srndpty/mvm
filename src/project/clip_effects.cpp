@@ -24,6 +24,8 @@ const std::vector<EffectChannel>& effectChannels() {
          0, 100},
         {ClipKeyKind::Volume, "volume", &ClipEffects::volumePercent, &ClipEffects::volumeKeys, 0,
          200},
+        {ClipKeyKind::Ducking, "ducking", &ClipEffects::duckingDb, &ClipEffects::duckingKeys, -60,
+         0},
         {ClipKeyKind::PositionX, "positionX", &ClipEffects::positionXPercent,
          &ClipEffects::positionXKeys, -1000, 1000},
         {ClipKeyKind::PositionY, "positionY", &ClipEffects::positionYPercent,
@@ -50,6 +52,10 @@ const EffectChannel* effectChannel(ClipKeyKind kind) {
         if (channel.kind == kind)
             return &channel;
     return nullptr;
+}
+
+bool isAudioEffectChannel(ClipKeyKind kind) {
+    return kind == ClipKeyKind::Volume || kind == ClipKeyKind::Ducking;
 }
 
 const EffectChannel* effectChannel(const std::string& name) {
@@ -112,6 +118,9 @@ ClipEffects evaluateClipEffects(const ClipEffects& effects, std::int64_t localFr
     ClipEffects result;
     result.fadeInFrames = effects.fadeInFrames;
     result.fadeOutFrames = effects.fadeOutFrames;
+    result.normalizationGainDb = effects.normalizationGainDb;
+    result.audioAdjustmentSettings = effects.audioAdjustmentSettings;
+    result.audioAdjustmentFingerprint = effects.audioAdjustmentFingerprint;
     for (const auto& channel : effectChannels()) {
         result.*channel.base =
             evaluateClipKeys(effects.*channel.keys, effects.*channel.base, localFrame);
@@ -171,7 +180,7 @@ bool validateEffectKeys(const ClipEffects& effects, std::int64_t duration, bool 
     for (const auto& channel : effectChannels()) {
         std::int64_t previous = -1;
         const auto& keys = effects.*channel.keys;
-        if (!keys.empty() && ((channel.kind == ClipKeyKind::Volume) != audio)) {
+        if (!keys.empty() && (isAudioEffectChannel(channel.kind) != audio)) {
             error = "素材種別に適用できないキーフレームです";
             return false;
         }
@@ -248,6 +257,10 @@ bool clipEffectsAreDefault(const ClipEffects& effects) {
 
 bool validateClipEffects(const ClipEffects& effects, std::int64_t sourceNativeDuration,
                          std::string& error) {
+    if (!inRange(effects.normalizationGainDb, -96, 60)) {
+        error = "ラウドネス補正は −96〜60 dB の範囲で指定してください";
+        return false;
+    }
     for (const auto& channel : effectChannels()) {
         if (!validChannelValue(channel, effects.*channel.base)) {
             error = std::string("エフェクトの固定値が範囲外です: ") + channel.name;

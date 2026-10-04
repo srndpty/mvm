@@ -14,6 +14,7 @@ enum class KeyInterpolation { Linear, EaseIn, EaseOut, EaseInOut, Spline };
 enum class ClipKeyKind {
     Opacity,
     Volume,
+    Ducking,
     PositionX,
     PositionY,
     ScaleX,
@@ -47,6 +48,12 @@ struct ClipEffects {
     double rotationDegrees = 0.0;
     double opacityPercent = 100.0;
     double volumePercent = 100.0;
+    double normalizationGainDb = 0.0;
+    double duckingDb = 0.0;
+    std::vector<ClipKeyframe> duckingKeys;
+    // 生成時の設定と入力の識別情報。再解析の必要性を判断するために保存する。
+    std::string audioAdjustmentSettings;
+    std::string audioAdjustmentFingerprint;
     std::vector<ClipKeyframe> opacityKeys;
     std::vector<ClipKeyframe> volumeKeys;
     std::vector<ClipKeyframe> positionXKeys;
@@ -95,6 +102,7 @@ struct EffectChannel {
 };
 
 const std::vector<EffectChannel>& effectChannels();
+bool isAudioEffectChannel(ClipKeyKind kind);
 const EffectChannel* effectChannel(ClipKeyKind kind);
 const EffectChannel* effectChannel(const std::string& name);
 ClipEffects evaluateClipEffects(const ClipEffects& effects, std::int64_t localFrame);

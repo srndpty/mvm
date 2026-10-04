@@ -108,7 +108,7 @@ ColumnLayout {
     }
     spacing: 2
     Repeater {
-        model: ["positionX", "positionY", "scaleX", "scaleY", "rotation", "cropLeft", "cropRight", "cropTop", "cropBottom", "opacity", "volume"]
+        model: ["positionX", "positionY", "scaleX", "scaleY", "rotation", "cropLeft", "cropRight", "cropTop", "cropBottom", "opacity", "volume", "ducking"]
         delegate: ColumnLayout {
             id: row
             required property string modelData
@@ -178,7 +178,7 @@ ColumnLayout {
                     value: row.channel ? row.channel.value : 0
                     minimumValue: row.channel ? row.channel.minimum : 0
                     maximumValue: row.channel ? row.channel.maximum : 100
-                    suffix: row.modelData === "rotation" ? " °" : " %"
+                    suffix: row.modelData === "rotation" ? " °" : row.modelData === "ducking" ? " dB" : " %"
                     enabled: row.channel ? row.channel.editable : false
                     MouseArea {
                         objectName: "channelLabel_" + row.modelData

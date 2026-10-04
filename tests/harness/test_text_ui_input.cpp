@@ -528,6 +528,28 @@ int checkAudioMixerPanel(const std::filesystem::path& projectPath) {
               findVisualItem(window, QStringLiteral("audioMixerMaster")) &&
               findVisualItem(window, QStringLiteral("previewMasterMixer")),
           "製品のミキサーと共通マスターを表示できません");
+    auto* editMenu = window->findChild<QObject*>(QStringLiteral("editMenu"));
+    auto* autoAudio = window->findChild<QObject*>(QStringLiteral("autoAudioDialog"));
+    check(editMenu && autoAudio && !window->findChild<QObject*>(QStringLiteral("autoAudioOpen")),
+          "自動音量調整の入口が編集メニューへ移動していません");
+    if (editMenu && autoAudio) {
+        check(QMetaObject::invokeMethod(editMenu, "open"), "編集メニューを開けません");
+        pump(100);
+        auto* menuItem = findVisualItem(window, QStringLiteral("autoAudioMenuItem"));
+        check(menuItem && menuItem->isVisible(), "編集メニューに自動音量調整がありません");
+        if (menuItem)
+            QTest::mouseClick(
+                window, Qt::LeftButton, Qt::NoModifier,
+                menuItem->mapToScene(QPointF(menuItem->width() / 2, menuItem->height() / 2))
+                    .toPoint());
+        check(pumpUntil([&] { return autoAudio->property("opened").toBool(); }),
+              "メニュー選択で自動音量調整の画面が開きません");
+        check(window->property("activeModalDialogs").toInt() == 1,
+              "自動音量調整の表示中に背面の入力を遮断できません");
+        check(QMetaObject::invokeMethod(autoAudio, "close"), "自動音量調整を閉じられません");
+        check(pumpUntil([&] { return window->property("activeModalDialogs").toInt() == 0; }),
+              "自動音量調整を閉じても背面の入力が戻りません");
+    }
     const auto role = [&](const char* name) {
         auto* model = controller.audioTrackModel();
         const auto names = model->roleNames();
@@ -627,15 +649,18 @@ int checkAudioMixerPanel(const std::filesystem::path& projectPath) {
           "ミキサー音量をUndoできません");
     check(controller.redoLastEdit() && role("mixerGainDb").toDouble() == 15,
           "ミキサー音量をRedoできません");
-    check(pumpUntil([&] {
-              return controller.previewEngineForTest()->status().state ==
-                     mvm::preview::PreviewEngineState::ReadyPaused;
-          }) &&
+    // 状態名だけでは直前の seek の ReadyPaused を拾う。最新の提示を待ってから操作する。
+    check(pumpUntil([&] { return controller.previewPresentedLatest(); }) &&
               controller.seekTimelineFrame(0) && pumpUntil([&] {
-                  return controller.previewEngineForTest()->status().state ==
-                         mvm::preview::PreviewEngineState::ReadyPaused;
+                  return controller.previewPresentedLatest() &&
+                         controller.previewEngineForTest()->status().position.outputFrame == 0;
               }) &&
-              controller.shuttleRight() && controller.shuttleRight(),
+              controller.shuttleRight() && pumpUntil([&] {
+                  return controller.playing() &&
+                         controller.previewEngineForTest()->status().state ==
+                             mvm::preview::PreviewEngineState::Playing;
+              }) &&
+              controller.shuttleRight(),
           "no-op検査の2倍シャトルを開始できません");
     if (controller.shuttleRate() != 2)
         std::fprintf(stderr, "シャトル開始時の状態: %s\n",
