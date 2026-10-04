@@ -125,10 +125,10 @@ Outcome failed(math::MathRenderStatus status, const std::string& message,
     return outcome;
 }
 
-Outcome renderJob(const std::filesystem::path& directory, const QString& key,
-                  const math::MathRenderSpec& spec, const math::MathRenderBackend& backend,
-                  std::chrono::milliseconds timeout, std::uint64_t ticket,
-                  const std::atomic<bool>* cancel) {
+Outcome renderJob(const std::filesystem::path& directory, const std::filesystem::path& jobs,
+                  const QString& key, const math::MathRenderSpec& spec,
+                  const math::MathRenderBackend& backend, std::chrono::milliseconds timeout,
+                  std::uint64_t ticket, const std::atomic<bool>* cancel) {
     if (auto mask = loadArtifact(directory, key, backend.fingerprint)) {
         Outcome outcome;
         outcome.entry.state = State::Ready;
@@ -143,8 +143,7 @@ Outcome renderJob(const std::filesystem::path& directory, const QString& key,
     math::MathStaticRenderRequest request;
     request.spec = spec;
     request.timeout = timeout;
-    request.jobDirectory =
-        directory / L"jobs" / (key.toStdWString() + L"-" + std::to_wstring(ticket));
+    request.jobDirectory = jobs / (key.toStdWString() + L"-" + std::to_wstring(ticket));
     std::error_code error;
     std::filesystem::remove_all(request.jobDirectory, error);
     std::filesystem::create_directories(request.jobDirectory, error);
@@ -197,10 +196,9 @@ Outcome renderJob(const std::filesystem::path& directory, const QString& key,
 
 } // namespace
 
-MathRasterCache::MathRasterCache(std::filesystem::path cacheDirectory, PreflightFunction preflight,
+MathRasterCache::MathRasterCache(std::string sessionId, PreflightFunction preflight,
                                  QObject* parent)
-    : QObject(parent), cacheDirectory_(std::move(cacheDirectory)),
-      preflight_(std::move(preflight)) {
+    : QObject(parent), sessionId_(std::move(sessionId)), preflight_(std::move(preflight)) {
     // Manim / LaTeX を同時に走らせない。preflight と描画もこの順に並ぶ。
     pool_.setMaxThreadCount(1);
 }
@@ -229,17 +227,44 @@ void MathRasterCache::setPreflight(PreflightFunction preflight) {
     preflight_ = std::move(preflight);
 }
 
-void MathRasterCache::setCacheDirectory(std::filesystem::path cacheDirectory) {
-    if (cacheDirectory == cacheDirectory_)
-        return;
-    cacheDirectory_ = std::move(cacheDirectory);
+std::filesystem::path MathRasterCache::jobsDirectory() const {
+    return cacheDirectory_ / L"jobs" / QString::fromStdString(sessionId_).toStdWString();
+}
+
+void MathRasterCache::becomeUnavailable(QString reason) {
+    // 世代を進めて、進行中の確認の結果を捨てる。
+    ++preflightGeneration_;
     cancelAll();
     records_.clear();
+    backend_ = {};
+    backendState_ = BackendState::Unavailable;
+    backendMessage_ = std::move(reason);
     Q_EMIT entryChanged(QString());
+}
+
+void MathRasterCache::setAuthority(std::filesystem::path cacheDirectory, bool authorized,
+                                   QString reason) {
+    if (shutDown_)
+        return;
+    // 置き場所や権限の変更は世代の変更として扱う。進行中の確認を捨てるだけにせず、
+    // 許可があれば必ず次の確認を始める (Checking のまま止まらない)。
+    cacheDirectory_ = std::move(cacheDirectory);
+    authorized_ = authorized && !cacheDirectory_.empty();
+    if (!authorized_) {
+        becomeUnavailable(reason.isEmpty()
+                              ? QStringLiteral("数式の cache を変更する権限がありません")
+                              : std::move(reason));
+        return;
+    }
+    startPreflight();
 }
 
 void MathRasterCache::startPreflight() {
     if (shutDown_)
+        return;
+    // 権限が無い間は、cache directory の掃除も外部 renderer の起動もしない。状態は
+    // setAuthority が理由付きの Unavailable にしてある。
+    if (!authorized_)
         return;
     cancelAll();
     records_.clear();
@@ -256,12 +281,14 @@ void MathRasterCache::startPreflight() {
         return;
     }
     pool_.start([this, generation, preflight = preflight_, cancel = preflightCancel_,
-                 directory = cacheDirectory_] {
-        // 前回の作業 directory の残り (強制終了など) を消す。Project lock があるので、
-        // 同じ cache を別の mvm が使っていることはない。
+                 directory = cacheDirectory_, jobs = jobsDirectory()] {
+        if (cancel->load())
+            return;
+        // 前回の作業 directory の残り (強制終了など) を消す。この cache directory は Project
+        // ごとに分けてあり、権限 (Project lock) があるので、他の instance が使っていない。
         std::error_code error;
         std::filesystem::remove_all(directory / L"jobs", error);
-        auto result = preflight(directory / L"jobs" / L"preflight", cancel.get());
+        auto result = preflight(jobs / L"preflight", cancel.get());
         if (cancel->load())
             return;
         QMetaObject::invokeMethod(
@@ -327,10 +354,12 @@ MathRasterCache::Entry MathRasterCache::request(const math::MathRenderSpec& spec
     record.cancel = std::make_shared<std::atomic<bool>>(false);
     records_.insert(key, record);
     pool_.start([this, key, spec, ticket = record.ticket, cancel = record.cancel,
-                 backend = backend_, directory = cacheDirectory_, timeout = renderTimeout_] {
+                 backend = backend_, directory = cacheDirectory_, jobs = jobsDirectory(),
+                 timeout = renderTimeout_] {
         if (cancel->load())
             return;
-        Outcome outcome = renderJob(directory, key, spec, backend, timeout, ticket, cancel.get());
+        Outcome outcome =
+            renderJob(directory, jobs, key, spec, backend, timeout, ticket, cancel.get());
         if (outcome.cancelled)
             return;
         // this は destructor が waitForDone するまで生きている。queued call は this の

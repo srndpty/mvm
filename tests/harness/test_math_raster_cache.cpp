@@ -17,8 +17,10 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -60,9 +62,10 @@ math::MathRenderSpec spec(const std::string& source) {
 }
 
 std::unique_ptr<MathRasterCache> readyCache(const std::filesystem::path& directory,
-                                            const FakeBackend& backend) {
-    auto cache = std::make_unique<MathRasterCache>(directory, backend.preflight());
-    cache->startPreflight();
+                                            const FakeBackend& backend,
+                                            const std::string& session = "session-a") {
+    auto cache = std::make_unique<MathRasterCache>(session, backend.preflight());
+    cache->setAuthority(directory, true);
     check(
         waitUntil([&] { return cache->backendState() != MathRasterCache::BackendState::Checking; }),
         "preflight が終わる");
@@ -79,11 +82,11 @@ MathRasterCache::Entry waitForResult(MathRasterCache& cache, const math::MathRen
 }
 
 void testUnavailable(const std::filesystem::path& root) {
-    MathRasterCache cache(root / L"unavailable",
+    MathRasterCache cache("session-a",
                           FakeBackend::unavailable("LaTeX (latex.exe) が PATH に見つかりません"));
-    check(cache.request(spec("x")).state == MathRasterCache::State::Pending,
-          "preflight 前は Pending (描かない)");
-    cache.startPreflight();
+    check(cache.request(spec("x")).state == MathRasterCache::State::Unavailable,
+          "権限を受け取る前は Unavailable (描かない)");
+    cache.setAuthority(root / L"unavailable", true);
     check(waitUntil(
               [&] { return cache.backendState() == MathRasterCache::BackendState::Unavailable; }),
           "使えない backend は Unavailable");
@@ -116,7 +119,9 @@ void testRenderAndDisk(const std::filesystem::path& root) {
               "PNG を cache directory の <key>.png に置く");
         check(std::filesystem::is_regular_file(directory / (key.toStdWString() + L".txt")),
               "provenance を <key>.txt に置く");
-        check(!std::filesystem::exists(directory / L"jobs" / (key.toStdWString() + L"-1")),
+        check(cache->jobsDirectory() == directory / L"jobs" / L"session-a",
+              "作業 directory は instance (session) ごとに分ける");
+        check(!std::filesystem::exists(cache->jobsDirectory() / (key.toStdWString() + L"-1")),
               "作業 directory を残さない");
         check(!cache->readyArtifact(spec("other")), "未要求の key に artifact は無い");
     }
@@ -208,6 +213,85 @@ void testRetainOnlyCancels(const std::filesystem::path& root) {
     check(cache->recordCount() == 1, "要求されなくなった key の record を残さない");
 }
 
+// 権限が無い間は、確認 (外部 renderer の起動) も cache directory の掃除もしない。
+void testWithoutAuthority(const std::filesystem::path& root) {
+    const auto directory = root / L"no authority";
+    // 他の instance の作業中の directory に見立てる。
+    const auto foreignJob = directory / L"jobs" / L"other-session" / L"key-1";
+    std::filesystem::create_directories(foreignJob);
+    auto preflights = std::make_shared<std::atomic<int>>(0);
+    FakeBackend backend;
+    MathRasterCache cache(
+        "session-b", [preflights, inner = backend.preflight()](const std::filesystem::path& work,
+                                                               const std::atomic<bool>* cancel) {
+            ++*preflights;
+            return inner(work, cancel);
+        });
+    cache.setAuthority(directory, false, QStringLiteral("他のプロセスが編集中です"));
+    cache.startPreflight();
+    waitUntil([] { return false; }, 200);
+    check(*preflights == 0, "権限が無ければ確認 (外部 renderer) を始めない");
+    check(std::filesystem::exists(foreignJob), "権限が無ければ cache directory を掃除しない");
+    check(cache.backendState() == MathRasterCache::BackendState::Unavailable &&
+              cache.backendMessage() == QStringLiteral("他のプロセスが編集中です"),
+          "権限が無いことを理由付きの Unavailable で示す");
+    const auto entry = cache.request(spec("x"));
+    check(entry.state == MathRasterCache::State::Unavailable && *backend.renders == 0,
+          "権限が無ければ描かない");
+
+    // 対照: 権限を受け取ると確認を始め、前回の作業 directory の残りを掃除する。
+    cache.setAuthority(directory, true);
+    check(
+        waitUntil([&] { return cache.backendState() == MathRasterCache::BackendState::Available; }),
+        "権限を受け取ると確認して Available");
+    check(*preflights == 1 && !std::filesystem::exists(foreignJob),
+          "対照: 権限があれば確認し、残った作業 directory を消す");
+}
+
+// 確認の途中で置き場所が変わっても、必ず次の確認が Available / Unavailable に着く。
+void testDirectoryChangeDuringPreflight(const std::filesystem::path& root) {
+    auto calls = std::make_shared<std::atomic<int>>(0);
+    auto firstEntered = std::make_shared<std::atomic<bool>>(false);
+    auto releaseFirst = std::make_shared<std::atomic<bool>>(false);
+    auto workDirectories = std::make_shared<std::vector<std::filesystem::path>>();
+    auto workMutex = std::make_shared<std::mutex>();
+    FakeBackend backend;
+    MathRasterCache cache(
+        "session-c", [=, inner = backend.preflight()](const std::filesystem::path& work,
+                                                      const std::atomic<bool>* cancel) {
+            const int call = ++*calls;
+            {
+                std::lock_guard lock(*workMutex);
+                workDirectories->push_back(work);
+            }
+            if (call == 1) {
+                firstEntered->store(true);
+                // 試験が離すまで (取消を見ずに) 待つ。置き場所の変更がこの確認の途中で起きる。
+                while (!releaseFirst->load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            auto result = inner(work, cancel);
+            result.backend.fingerprint.canonical = call == 1 ? "first\n" : "second\n";
+            return result;
+        });
+    cache.setAuthority(root / L"directory old", true);
+    check(waitUntil([&] { return firstEntered->load(); }), "最初の確認が始まる");
+    cache.setAuthority(root / L"directory new", true);
+    check(cache.backendState() == MathRasterCache::BackendState::Checking,
+          "置き場所の変更で確認をやり直す");
+    releaseFirst->store(true);
+    check(
+        waitUntil([&] { return cache.backendState() != MathRasterCache::BackendState::Checking; }),
+        "置き場所を変えても Checking のまま止まらない");
+    check(cache.backendState() == MathRasterCache::BackendState::Available &&
+              cache.toolchainText() == QStringLiteral("second\n"),
+          "後の確認の結果を使い、途中で捨てた確認の結果は使わない");
+    std::lock_guard lock(*workMutex);
+    check(*calls == 2 && workDirectories->size() == 2 &&
+              workDirectories->back().wstring().find(L"directory new") != std::wstring::npos,
+          "後の確認は新しい置き場所で行う");
+}
+
 void testDestroyWhileRendering(const std::filesystem::path& root) {
     FakeBackend backend;
     auto cache = readyCache(root / L"destroy", backend);
@@ -238,6 +322,8 @@ int main(int argc, char** argv) {
     testRenderAndDisk(root);
     testFailures(root);
     testRetainOnlyCancels(root);
+    testWithoutAuthority(root);
+    testDirectoryChangeDuringPreflight(root);
     testDestroyWhileRendering(root);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);

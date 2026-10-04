@@ -419,16 +419,32 @@ MvmController::MvmController(std::filesystem::path projectPath,
         if (!playing_)
             refreshTextPreview();
     });
+    sessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    QString lockError;
+    void* acquiredLock = nullptr;
+    const bool locked = acquireProjectLock(projectPath_, acquiredLock, lockError);
+    if (locked)
+        adoptProjectLock(acquiredLock, projectPath_);
+
     // 数式の backend は Manim (MathTex)。確認 (preflight) は worker で行い、使えるかは
     // 起動を待たずに後から分かる。Project には backend を保存しない (docs/math-clips.md)。
+    // cache の変更と外部 renderer の起動は Project lock を取った後でだけ許可する
+    // (syncMathCacheAuthority)。lock を取れない instance は数式の作業を何も始めない。
     mathRasters_ = std::make_unique<MathRasterCache>(
-        mathCacheDirectory(),
+        sessionId_,
         [manimExecutable = manimExecutablePath_](const std::filesystem::path& workDirectory,
                                                  const std::atomic<bool>* cancel) {
             return mvm::manim::preflightManimMathTex({manimExecutable, workDirectory}, cancel);
         });
     connect(mathRasters_.get(), &MathRasterCache::entryChanged, this, [this](const QString& key) {
         if (shutdownStarted_)
+            return;
+        // 数式 clip が無ければ描き直すものは無い。起動時の backend の確認が終わった時点など、
+        // 利用者の操作と無関係な時刻に preview を組み直さない (フレーム送りの途中に割り込む)。
+        if (std::none_of(project_.timelineClips.begin(), project_.timelineClips.end(),
+                         [](const auto& clip) {
+                             return clip.kind == project::TimelineClipKind::Math;
+                         }))
             return;
         // backend の状態が変わった (key が計算できるようになった) ら、すべての数式を要求し直す。
         if (key.isEmpty())
@@ -437,13 +453,7 @@ MvmController::MvmController(std::filesystem::path projectPath,
             refreshTextPreview();
         Q_EMIT stateChanged();
     });
-    mathRasters_->startPreflight();
-    sessionId_ =QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-    QString lockError;
-    void* acquiredLock = nullptr;
-    const bool locked = acquireProjectLock(projectPath_, acquiredLock, lockError);
-    if (locked)
-        adoptProjectLock(acquiredLock, projectPath_);
+    syncMathCacheAuthority();
 
     recoveryDebounceTimer_.setSingleShot(true);
     recoveryDebounceTimer_.setInterval(2000);
@@ -3409,7 +3419,20 @@ void MvmController::revalidateMedia() {
 std::filesystem::path MvmController::mathCacheDirectory() const {
     std::error_code error;
     const auto absolute = std::filesystem::absolute(projectPath_, error);
-    return (error ? projectPath_ : absolute).parent_path() / L"cache" / L"math";
+    const auto project = error ? projectPath_ : absolute;
+    // 同じ directory の別の .mvm とは cache を分ける。Project lock は file ごとなので、
+    // cache を共有すると他の Project の作業 directory を消しうる。
+    return project.parent_path() / L"cache" / L"math" / project.filename();
+}
+
+void MvmController::syncMathCacheAuthority() {
+    if (!mathRasters_)
+        return;
+    mathRasters_->setAuthority(
+        mathCacheDirectory(), projectLockHeld_,
+        projectLockHeld_
+            ? QString()
+            : QStringLiteral("この Project は他のプロセスが編集中のため、数式を描画しません"));
 }
 
 project::MathClipData MvmController::effectiveMathData(const project::TimelineClip& clip) const {
@@ -3675,10 +3698,11 @@ void MvmController::cancelMathPreview() {
     refreshTextPreview();
 }
 
-void MvmController::rerenderMathClips() {
+void MvmController::retryMathRendering() {
     if (!mathRasters_)
         return;
-    // backend を確かめ直す。終わったら entryChanged (空) ですべての数式を要求し直す。
+    // backend を確かめ直し、失敗を忘れる。終わったら entryChanged (空) ですべての数式を
+    // 要求し直す。描けている式は disk の結果を使い続ける (強制の描き直しではない)。
     mathRasters_->startPreflight();
     Q_EMIT stateChanged();
 }
@@ -7086,8 +7110,7 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     audioMixerBuses_.clear();
     audioMixerPeaks_.clear();
     projectPath_ = std::move(path);
-    if (mathRasters_)
-        mathRasters_->setCacheDirectory(mathCacheDirectory());
+    syncMathCacheAuthority();
     savedProject_ = project_;
     if (!rememberCanonicalBase())
         statusText_ = QStringLiteral("Project fileの基準hashを記録できません");
@@ -7236,9 +7259,8 @@ bool MvmController::saveProjectAs(const QUrl& fileUrl) {
         removedRecovery = removeRecoveryBeside(previousPath, recoveryError);
     adoptProjectLock(acquiredLock, path);
     projectPath_ = path;
-    // 数式の描画は保存先の cache/math に置く。保存先が変われば描き直す (cache を移さない)。
-    if (mathRasters_)
-        mathRasters_->setCacheDirectory(mathCacheDirectory());
+    // 数式の描画は保存先の cache/math/<file 名> に置く。保存先が変われば描き直す (cache を移さない)。
+    syncMathCacheAuthority();
     savedProject_ = project_;
     savedRevision_ = currentRevision_;
     const bool rememberedBase = rememberCanonicalBase();

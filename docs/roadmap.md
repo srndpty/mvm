@@ -59,7 +59,14 @@ clip の編集で字幕を置き直すとき、毎回 timeline の frame から�
   直後に producer と checker を組で 3 回回すと 3/3 通過した。
   `mvm_preview_spike` は `gpu_preview` と `preview_qt` だけに依存し、これらはこの時点で変更していない。
   [推測] 提示の数え方に、まれに 1 回多く数える競合がある。
-  [未検証] 再現条件。同じ run で `transition_preview` も 1 回落ち、再実行で通過した。
+  [未検証] 再現条件。
+- [事実] 2026-10-05、release の通常 CTest で `preview_engine_p5c_product_smoke` が 1 回だけ
+  `0xC0000409` で異常終了し、単独で 3 回回すと 3/3 通過した。`mvm_p5c_preview_smoke` は controller を含まず、
+  preview engine はこの時点で変更していない。[未検証] 再現条件と原因。
+- (解決済み) 同じ時期の `transition_preview` の失敗 (フレーム送りで mapping と違う frame を提示) は、
+  数式 clip の cache が起動時の backend 確認の完了を通知した時刻に、数式 clip の無い Project でも
+  preview を組み直していたためと推測した [推測]。数式 clip が無ければ組み直さないよう直した後、
+  通常 CTest 1447/1447 で通過した。
 
 - [未検証] 利用者から、長尺のスピーチと BGM を含む Project
   (`build/ucrt64-debug/m6a-gui/project.mvm`) で、縮小時のホイール応答が重いとの報告がある。

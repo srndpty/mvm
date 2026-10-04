@@ -17,9 +17,11 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <QElapsedTimer>
 #include <QGuiApplication>
@@ -363,6 +365,74 @@ int main(int argc, char** argv) {
         check(std::chrono::steady_clock::now() - started < std::chrono::seconds(3),
               "描画中の shutdown が速やかに返る");
         check(*slow.slowSawCancel, "shutdown は描画を cancel する");
+    }
+
+    {
+        // 排他: 同じ Project の 2 つ目の instance と、同じ directory の別の Project が、
+        // 作業中の数式の job を乱さない。
+        const auto shared = std::filesystem::path(temp.filePath("共有 project.mvm").toStdWString());
+        check(project::saveProjectJson(initial, shared).success, "共有 project の保存");
+        FakeMathBackend ownerBackend;
+        auto owner = makeController(shared, initial, captured);
+        owner->setMathPreflightForTest(ownerBackend.preflight());
+        check(pump([&] {
+                  return owner->mathRastersForTest().backendState() ==
+                         mvm::app::MathRasterCache::BackendState::Available;
+              }),
+              "所有者の backend が使える");
+        check(owner->createMathClip(QStringLiteral("SLOW")), "所有者が時間のかかる式を作る");
+        check(pump([&] { return ownerBackend.slowStarted->load(); }), "所有者の描画が始まる");
+        const auto ownerJobs = owner->mathRastersForTest().jobsDirectory();
+        const auto ownerJobsAlive = [&] {
+            std::error_code error;
+            return std::filesystem::is_directory(ownerJobs, error) &&
+                   !std::filesystem::is_empty(ownerJobs, error) && !*ownerBackend.slowSawCancel;
+        };
+        check(ownerJobsAlive(), "所有者の作業 directory がある (検査の対照)");
+
+        {
+            auto preflights = std::make_shared<std::atomic<int>>(0);
+            auto intruder = makeController(shared, initial, captured);
+            check(!intruder->mathRastersForTest().authorized(),
+                  "Project lock を取れない instance は数式の cache の権限を持たない");
+            intruder->setMathPreflightForTest(
+                [preflights](const std::filesystem::path&, const std::atomic<bool>*) {
+                    ++*preflights;
+                    return mvm::math::MathPreflightResult{};
+                });
+            settle(300);
+            check(*preflights == 0,
+                  "lock を持たない instance は数式の確認 (外部 renderer) を始めない");
+            check(intruder->mathRastersForTest().backendState() ==
+                          mvm::app::MathRasterCache::BackendState::Unavailable &&
+                      intruder->mathRastersForTest().backendMessage().contains(
+                          QStringLiteral("他のプロセス")),
+                  "lock を持たない理由を Unavailable で示す");
+            check(ownerJobsAlive(), "2 つ目の instance は所有者の作業 directory を消さない");
+            intruder->shutdown();
+        }
+        check(ownerJobsAlive(), "2 つ目の instance の終了も所有者の描画を止めない");
+
+        {
+            const auto other =
+                std::filesystem::path(temp.filePath("別 project.mvm").toStdWString());
+            check(project::saveProjectJson(initial, other).success, "別の project の保存");
+            FakeMathBackend otherBackend;
+            auto neighbor = makeController(other, initial, captured);
+            neighbor->setMathPreflightForTest(otherBackend.preflight());
+            check(pump([&] {
+                      return neighbor->mathRastersForTest().backendState() ==
+                             mvm::app::MathRasterCache::BackendState::Available;
+                  }),
+                  "別の project の backend が使える (確認と掃除が終わった)");
+            check(neighbor->mathRastersForTest().cacheDirectory() !=
+                      owner->mathRastersForTest().cacheDirectory(),
+                  "同じ directory の別の project とは cache を分ける");
+            check(ownerJobsAlive(), "別の project の確認は所有者の作業 directory を消さない");
+            neighbor->shutdown();
+        }
+        owner->shutdown();
+        check(*ownerBackend.slowSawCancel, "所有者の終了は自分の描画を止める");
     }
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);

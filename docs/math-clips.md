@@ -9,7 +9,8 @@
 
 - **正は Project の `MathClipData`** (`syntax` / `source` / `fontSize` / 色 / 背景)。何で描くか (backend) と
   どこに置くか (位置・拡大・回転) は持たない。配置は画像 clip と同じく既存の `ClipEffects` に任せる。
-- **描画結果は派生物。** `<project>/cache/math/<key>.png` に置き、Project JSON には path も状態も保存しない。
+- **描画結果は派生物。** `<project の directory>/cache/math/<project の file 名>/<key>.png` に置き、
+  Project JSON には path も状態も保存しない。
   key は「描画に効く field (`syntax` / `source` / `fontSize`)」と「toolchain fingerprint」の SHA-256。
   色・背景・ClipEffects・尺・clip ID は key に入れない (白一色の mask を mvm 側で着色・配置する)。
 - **toolchain fingerprint** は backend id、mvm の描画 template の版、Manim / latex / dvisvgm の版の 1 行目からなる。
@@ -41,12 +42,24 @@
 | 場所 | 責務 |
 |---|---|
 | `src/app/math_clip_render.h` | `MathClipData` → `MathRenderSpec`、mask への着色と配置 (preview と書き出しが共有) |
-| `apps/mvm/math_raster_cache.h` | 描画結果の cache (key 単位、worker 1 本、disk は `<project>/cache/math`) |
+| `apps/mvm/math_raster_cache.h` | 描画結果の cache (key 単位、worker 1 本、disk は `cache/math/<project の file 名>`) |
 | `MvmController` | 数式 clip の作成・確定・入力中の preview・last-good・書き出しの可否 |
 
 - **cache の disk の形:** `<key>.png` (白い glyph の mask) と `<key>.txt` (provenance: 版・key・大きさ・
   toolchain)。PNG を先に、provenance を後に atomic に書く。provenance・大きさ・toolchain が合わないものは消して描き直す。
-  作業 directory は `cache/math/jobs` で、backend の確認の前に前回の残りを消す (Project lock があるので安全)。
+  作業 directory は `<cache>/jobs/<session>/` で、backend の確認の前に `<cache>/jobs/` の残り (強制終了など) を消す。
+- **権限 (P0-4.1):** cache の変更 (掃除・PNG の書き込み) と外部 renderer の起動は、controller が
+  Project lock を取った後でだけ許可する (`MathRasterCache::setAuthority`)。
+  - lock を取れない instance は数式の作業を何も始めず、`unavailable` (「他のプロセスが編集中」) を示す。
+  - cache は Project の file ごとに分ける。lock は file ごとなので、同じ directory の別の `.mvm` と
+    cache を共有すると、相手の作業 directory を消しうるため。
+  - 保存先・lock が変わるたびに世代を変え、進行中の確認を捨てて確認をやり直す
+    (必ず `Available` / `Unavailable` に着き、`Checking` のまま止まらない)。
+- **再試行 (`retryMathRendering`):** backend を確かめ直し、覚えている失敗を忘れて描き直す。
+  描けている式は disk の結果を使い続ける。強制の描き直し (artifact の無効化) ではない。
+  UI では「再試行」と呼ぶ (MiKTeX の導入後や、一時的な失敗の後に使う)。
+  - 帰結: TeX の package 単位の更新 (fingerprint に入らない) で glyph が変わっても、P0 には描き直させる操作が無い。
+    [回避策] `cache/math/<project の file 名>` を消す。必要なら artifact を無効化する操作を P0.5 で足す。
 - **描画の順:** 入力中の式 → 再生位置に掛かる clip → 残り。要求されなくなった式の描画は process ごと止める。
   Project を変えるたびに、すべての数式 clip の描画を要求する (書き出しの前に揃えておくため)。
 - **状態** (`mathClipData` の `state`。Project には保存しない):

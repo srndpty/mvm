@@ -636,8 +636,9 @@ public:
     // 入力中の式・書式を Project を変えずに描かせて preview する。取り消しは cancelMathPreview。
     Q_INVOKABLE bool previewMathClip(const QString& clipId, const QVariantMap& values);
     Q_INVOKABLE void cancelMathPreview();
-    // backend を確かめ直し、覚えている失敗を忘れて描き直す。
-    Q_INVOKABLE void rerenderMathClips();
+    // 再試行: backend を確かめ直し、覚えている失敗を忘れて描き直す。描けている式は disk の
+    // 結果を使い続ける (強制の描き直しではない。MiKTeX の導入後や一時的な失敗の後に使う)。
+    Q_INVOKABLE void retryMathRendering();
     // clipId / source / fontSize / color / backgroundColor と描画の状態
     // (state: checking / rendering / stale / ready / error / unavailable、message、log、toolchain)。
     Q_INVOKABLE QVariantMap mathClipData(const QString& clipId) const;
@@ -1194,7 +1195,10 @@ private:
     project::MathClipData effectiveMathData(const project::TimelineClip& clip) const;
     // 現在の数式 clip がすべて描かれるよう要求し、使わなくなった描画を止める。
     void requestMathRenders();
+    // <project の directory>/cache/math/<project の file 名>。同じ directory の別の Project と分ける。
     std::filesystem::path mathCacheDirectory() const;
+    // cache の場所と権限 (Project lock を持つか) を cache へ伝える。lock か保存先が変わるたびに呼ぶ。
+    void syncMathCacheAuthority();
     // 再生中、frame の clip を今の source のまま表示できれば source を引き継いで true。
     // 引き継げなければ何も変更せず false (呼び出し側が一時停止して組み直す)。
     // 引き継げなかったら reason に理由を入れる。

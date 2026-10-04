@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 
 namespace mvm::app {
 
@@ -30,6 +31,11 @@ namespace mvm::app {
 // - preflight (backend の確認) と描画は worker 1 本で順に行う。Manim / LaTeX は重く、
 //   同時に走らせない。要求されなくなった key の描画は process ごと止める
 // - 失敗した key は覚えておき、自動では描き直さない (forgetFailures で解除する)
+// - **権限:** cache directory の変更 (job の掃除・PNG の書き込み) と外部 renderer の起動は、
+//   setAuthority で許可されている間だけ行う。controller は Project lock を持つときだけ許可する。
+//   許可が無い間は何も始めず、Unavailable (理由付き) を返す
+// - 作業 directory は cacheDirectory/jobs/<session>/。確認の前に jobs/ の残り (強制終了など) を
+//   消すのは、許可がある (= この cache directory を他の instance が使っていない) ときだけ
 class MathRasterCache : public QObject {
     Q_OBJECT
 
@@ -49,16 +55,20 @@ public:
     using PreflightFunction = std::function<math::MathPreflightResult(
         const std::filesystem::path& workDirectory, const std::atomic<bool>* cancel)>;
 
-    MathRasterCache(std::filesystem::path cacheDirectory, PreflightFunction preflight,
-                    QObject* parent = nullptr);
+    // 作った時点では権限が無く、何もしない (Unavailable)。setAuthority で始める。
+    // sessionId は作業 directory の名前に使う (instance ごとに違う値)。
+    MathRasterCache(std::string sessionId, PreflightFunction preflight, QObject* parent = nullptr);
     // 描画中の process を止め、worker が終わるまで待つ。
     ~MathRasterCache() override;
 
-    // backend を確かめ直す (起動時と「再描画」)。覚えている失敗も忘れる。
+    // cache の置き場所と、そこを変更してよいか (Project lock を持つか) を設定する。
+    // 呼ぶたびに世代が変わる: 持っている結果・進行中の確認と描画を捨て、許可があれば
+    // 確認をやり直す (必ず Available / Unavailable に着く)。許可が無ければ reason で Unavailable。
+    void setAuthority(std::filesystem::path cacheDirectory, bool authorized, QString reason = {});
+    // backend を確かめ直し、覚えている失敗を忘れる (許可がある場合だけ)。描けている式の
+    // disk の結果は使い続ける (強制の描き直しではない)。
     void startPreflight();
     void setPreflight(PreflightFunction preflight);
-    // cache の置き場所を変える (Project の保存先が変わったとき)。持っている結果は捨てる。
-    void setCacheDirectory(std::filesystem::path cacheDirectory);
 
     BackendState backendState() const { return backendState_; }
     QString backendMessage() const { return backendMessage_; }
@@ -79,6 +89,9 @@ public:
 
     void setRenderTimeout(std::chrono::milliseconds timeout) { renderTimeout_ = timeout; }
     const std::filesystem::path& cacheDirectory() const { return cacheDirectory_; }
+    // この instance の作業 directory (cacheDirectory/jobs/<session>)。
+    std::filesystem::path jobsDirectory() const;
+    bool authorized() const { return authorized_; }
     int recordCount() const { return static_cast<int>(records_.size()); }
 
     // provenance file の 1 行目。形を変えたら上げる。
@@ -101,15 +114,19 @@ private:
                       std::filesystem::path artifact);
     void cancelAll();
 
+    void becomeUnavailable(QString reason);
+
+    std::string sessionId_;
     std::filesystem::path cacheDirectory_;
+    bool authorized_ = false;
     PreflightFunction preflight_;
     QThreadPool pool_;
     QHash<QString, Record> records_;
     std::uint64_t nextTicket_ = 1;
     std::uint64_t preflightGeneration_ = 0;
     std::shared_ptr<std::atomic<bool>> preflightCancel_;
-    BackendState backendState_ = BackendState::Checking;
-    QString backendMessage_;
+    BackendState backendState_ = BackendState::Unavailable;
+    QString backendMessage_ = QStringLiteral("数式の cache が設定されていません");
     math::MathRenderBackend backend_;
     std::chrono::milliseconds renderTimeout_{60000};
     bool shutDown_ = false;
