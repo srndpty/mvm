@@ -38,6 +38,7 @@
 #include <QObject>
 #include <QRect>
 #include <QRectF>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -208,6 +209,11 @@ public:
     // 取消した worker の破棄まで終わっている。中止そのものは待たない。
     // 100 ms の poll が動いているか。待機中に常駐しないことの試験用。
     bool audioAdjustmentPollingForTest() const { return audioAdjustmentTimer_.isActive(); }
+    bool audioWatchFallbackActiveForTest() const { return audioWatchFallbackTimer_.isActive(); }
+    // watcher が通知を取りこぼして path を外した状態を作る。
+    void dropAudioFileWatchForTest();
+    // 5 秒の取りこぼし確認を 1 回だけ実行する (timer の発火と同じ処理)。
+    void runAudioWatchFallbackForTest() { checkAudioWatchFallback(); }
 
     bool audioAdjustmentWorkersIdle() const {
         return audioAdjustmentJob_ == nullptr && audioAdjustmentRetired_.empty() &&
@@ -917,6 +923,7 @@ private:
     void reapAudioAdjustmentJobs();
     void refreshAudioFileCacheCheap();
     void checkAudioWatchFallback();
+    void invalidateAudioFile(const std::string& key);
     void scheduleAudioContentRecheck();
     void finishAudioContentRecheck();
     bool commitAudioAdjustment();
@@ -946,6 +953,8 @@ private:
     QTimer audioAdjustmentTimer_;
     QTimer audioWatchFallbackTimer_;
     QFileSystemWatcher audioFileWatcher_;
+    // 一度でも監視に載せた path。外れていた path の再登録を判別する。
+    QSet<QString> audioWatchedPaths_;
     std::unique_ptr<ShuttleAudioPlayback> audioAdjustmentAudition_;
     bool startTimelineExport(const QUrl& outputUrl, int videoCrf);
 

@@ -64,6 +64,13 @@ clip の編集で字幕を置き直すとき、毎回 timeline の frame から�
   波形だけでなく字幕 delegate の生成と scene graph 更新を切り分け、画面の密度に応じた
   字幕表示を検討する。性能判定は release で行う。
 
+- [事実] 2026-10-04、保存済みの自動音量調整の素材を監視中に、中央の 1 byte を書き換えて
+  size と更新時刻を元へ戻すと、`QFileSystemWatcher` の `fileChanged` が 30 秒以内に来なかった
+  (`audio_adjustment_contract` の作成中に観測)。[推測] Qt の Windows 実装が stat の変化で通知を
+  判定している。待機中の再生成の案内はこの変更を見逃す。解析結果の適用は保護した素材の
+  内容 hash で照合するので、この経路では古い解析を適用しない。待機中も検出が必要なら、
+  低頻度の内容 hash か OS の変更 journal を検討する。
+
 - [事実] 2026-10-04、自動音量調整の検証で release の `transition_preview` が、
   23.976 fps の初期提示の準備と `stale-engine-seek` の先読み要求の前提で失敗する回があった。
   debug の全体検査では通過した。変更前 HEAD (`91eda91`) と変更後の release を固定回数で

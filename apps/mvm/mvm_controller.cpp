@@ -7985,6 +7985,11 @@ void MvmController::shutdown() {
     if (shutdownStarted_)
         return;
     shutdownStarted_ = true;
+    // shutdown 後に素材の stat・内容 hash を始めない。cancel が再開した poll もここで止める。
+    audioWatchFallbackTimer_.stop();
+    audioAdjustmentTimer_.stop();
+    if (const auto watched = audioFileWatcher_.files(); !watched.isEmpty())
+        audioFileWatcher_.removePaths(watched);
     if (projectLockHeld_ && dirty())
         startRecoveryWrite(true);
     settleRecoveryWrite();

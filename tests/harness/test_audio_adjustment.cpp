@@ -405,8 +405,9 @@ int main(int argc, char** argv) {
             auto& clip = cut.timelineClips[index];
             clip.effects.audioAdjustmentFingerprint = cutResult.fingerprintText;
             clip.effects.audioAdjustmentSettings =
-                QJsonDocument(QJsonObject{{"bgmTrack", 1},
-                                          {"voiceTracks", QJsonArray{0}},
+                // 半数は BGM と声の役割を入れ替える。対象 track の集合は同じなので射影も同じ。
+                QJsonDocument(QJsonObject{{"bgmTrack", index % 2 == 0 ? 1 : 0},
+                                          {"voiceTracks", QJsonArray{index % 2 == 0 ? 0 : 1}},
                                           {"voiceLufs", -10.0 - static_cast<double>(index)}})
                     .toJson(QJsonDocument::Compact)
                     .toStdString();
@@ -433,12 +434,79 @@ int main(int argc, char** argv) {
         require(!cutController.audioAdjustmentPollingForTest(),
                 "素材に関係しない編集では poll を再開しない");
 
+        // 中央の 1 byte を反転し、size と更新時刻を元に戻す。2 回で元の内容に戻る。
+        const auto flipKeepingStat = [&](const QString& target) {
+            const auto wide = reinterpret_cast<const wchar_t*>(target.utf16());
+            HANDLE handle =
+                CreateFileW(wide, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            FILETIME written{};
+            require(handle != INVALID_HANDLE_VALUE &&
+                        GetFileTime(handle, nullptr, nullptr, &written),
+                    "置き換え前の更新時刻を読む");
+            CloseHandle(handle);
+            QFile flipped(target);
+            require(flipped.open(QIODevice::ReadWrite), "内容だけ変える素材を開く");
+            auto contents = flipped.readAll();
+            require(contents.size() > 8, "内容比較の素材が短すぎる");
+            contents[contents.size() / 2] =
+                static_cast<char>(contents.at(contents.size() / 2) ^ 0x5a);
+            require(flipped.seek(0) && flipped.write(contents) == contents.size(),
+                    "中央の 1 byte を書き換える");
+            flipped.close();
+            handle = CreateFileW(wide, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            require(handle != INVALID_HANDLE_VALUE &&
+                        SetFileTime(handle, nullptr, nullptr, &written),
+                    "size を保ったまま更新時刻を戻す");
+            CloseHandle(handle);
+        };
+        // watcher が通知を取りこぼして path を外した間の置き換え。取りこぼし確認だけで検出する。
+        cutController.dropAudioFileWatchForTest();
+        flipKeepingStat(bgmCopy);
+        const auto rechecks = app::audioContentHashJobsStartedForTest();
+        cutController.runAudioWatchFallbackForTest();
+        require(pump([&] {
+                    return app::audioContentHashJobsStartedForTest() > rechecks &&
+                           cutController.audioAdjustmentWorkersIdle() &&
+                           !cutController.audioAdjustmentPollingForTest();
+                }) &&
+                    cutController.audioAdjustmentNeedsRegeneration(),
+                "監視が外れていた間に同じ size・更新時刻の別内容へ置き換えた素材を照合し直す");
+        // 監視中でも size・更新時刻が同じ変更は fileChanged にならない
+        // (実測)。戻すときも同じ経路を通す。
+        cutController.dropAudioFileWatchForTest();
+        flipKeepingStat(bgmCopy);
+        cutController.runAudioWatchFallbackForTest();
+        require(pump([&] {
+                    return !cutController.audioAdjustmentNeedsRegeneration() &&
+                           cutController.audioAdjustmentWorkersIdle();
+                }),
+                "元の内容に戻した素材を照合し直し、保存済み調整を再び有効にする");
+
         QFile voiceFile(voiceCopy);
         require(voiceFile.open(QIODevice::Append) && voiceFile.write("x", 1) == 1,
                 "待機中に素材を書き換える");
         voiceFile.close();
         require(pump([&] { return cutController.audioAdjustmentNeedsRegeneration(); }),
                 "poll を止めていても素材の変更を検知して再生成を案内する");
+
+        cutController.shutdown();
+        require(!cutController.audioAdjustmentPollingForTest() &&
+                    !cutController.audioWatchFallbackActiveForTest(),
+                "shutdown で自動音量調整の timer をすべて止める");
+        const auto afterShutdown = app::audioContentHashJobsStartedForTest();
+        require(voiceFile.open(QIODevice::Append) && voiceFile.write("y", 1) == 1,
+                "shutdown 後に素材を書き換える");
+        voiceFile.close();
+        cutController.runAudioWatchFallbackForTest();
+        QElapsedTimer quiet;
+        quiet.start();
+        require(pump([&] { return quiet.elapsed() >= 500; }) &&
+                    !cutController.audioAdjustmentPollingForTest() &&
+                    !cutController.audioWatchFallbackActiveForTest() &&
+                    app::audioContentHashJobsStartedForTest() == afterShutdown,
+                "shutdown 後は取りこぼし確認も素材の照合も始めない");
     }
     std::atomic<bool> running{true};
     std::atomic<int> progress{0};

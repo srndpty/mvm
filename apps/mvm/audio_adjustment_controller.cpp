@@ -12,6 +12,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 #include <QStringList>
 
 namespace mvm::app {
@@ -25,13 +26,15 @@ project::AudioAdjustmentSettings targetSettings(const std::string& text) {
     return settings;
 }
 
-// 解析入力の射影が依存するのは対象 track の集合だけ。目標値などが違う設定は同じ key になる。
+// 解析入力の射影が依存するのは対象 track の集合だけ。BGM・声の役割や目標値が違う設定も、
+// 対象 track の和集合が同じなら同じ key になる。
 std::string targetScopeKey(const project::AudioAdjustmentSettings& settings) {
-    auto voices = settings.voiceTracks;
-    std::sort(voices.begin(), voices.end());
-    voices.erase(std::unique(voices.begin(), voices.end()), voices.end());
-    std::string key = std::to_string(settings.bgmTrack) + ":";
-    for (int track : voices)
+    auto tracks = settings.voiceTracks;
+    tracks.push_back(settings.bgmTrack);
+    std::sort(tracks.begin(), tracks.end());
+    tracks.erase(std::unique(tracks.begin(), tracks.end()), tracks.end());
+    std::string key;
+    for (int track : tracks)
         key += std::to_string(track) + ",";
     return key;
 }
@@ -48,20 +51,25 @@ bool MvmController::audioAdjustmentNeedsRegeneration() const {
 void MvmController::connectAudioFileWatch() {
     connect(&audioFileWatcher_, &QFileSystemWatcher::fileChanged, this,
             [this](const QString& path) {
-                const auto key = path.toUtf8().toStdString();
-                audioFileCache_[key].hashed = false;
-                audioContentDirty_ = true;
-                if (audioAdjustmentResult_ &&
-                    std::any_of(audioAdjustmentResult_->files.begin(),
-                                audioAdjustmentResult_->files.end(),
-                                [&](const auto& file) { return file.key == key; }))
-                    audioContentConfirmed_ = false;
+                if (shutdownStarted_)
+                    return;
+                invalidateAudioFile(path.toUtf8().toStdString());
                 updateAudioAdjustmentRegeneration(true);
                 emit audioAdjustmentChanged();
                 if (!audioFileWatcher_.files().contains(path))
                     audioFileWatcher_.addPath(path);
                 ensureAudioAdjustmentTimer();
             });
+}
+
+void MvmController::invalidateAudioFile(const std::string& key) {
+    // 内容が変わったかもしれない素材。size と更新時刻が同じでも保存済み SHA-256 を信用しない。
+    audioFileCache_[key].hashed = false;
+    audioContentDirty_ = true;
+    if (audioAdjustmentResult_ &&
+        std::any_of(audioAdjustmentResult_->files.begin(), audioAdjustmentResult_->files.end(),
+                    [&](const auto& file) { return file.key == key; }))
+        audioContentConfirmed_ = false;
 }
 
 void MvmController::refreshAudioInputAuthority(bool notify) {
@@ -90,7 +98,9 @@ void MvmController::refreshAudioInputAuthority(bool notify) {
             audioContentDirty_ = true;
     updateAudioAdjustmentRegeneration(notify);
     // 待機中の変更検知は watcher が担う。取りこぼし用の確認だけを低頻度で回す。
-    if (projectHasAudioAdjustmentFingerprint()) {
+    if (shutdownStarted_) {
+        audioWatchFallbackTimer_.stop();
+    } else if (projectHasAudioAdjustmentFingerprint()) {
         if (!audioWatchFallbackTimer_.isActive())
             audioWatchFallbackTimer_.start(5000);
     } else {
@@ -101,7 +111,10 @@ void MvmController::refreshAudioInputAuthority(bool notify) {
 }
 
 void MvmController::checkAudioWatchFallback() {
+    if (shutdownStarted_)
+        return;
     // QFileSystemWatcher は削除・rename で path を外し、作り直された素材を通知しない。
+    // 外れていた path は syncAudioFileWatch が再登録時に内容照合へ回す。
     syncAudioFileWatch();
     refreshAudioFileCacheCheap();
     if (audioContentDirty_)
@@ -183,17 +196,47 @@ QStringList MvmController::audioWatchPaths() const {
 }
 
 void MvmController::syncAudioFileWatch() {
+    if (shutdownStarted_)
+        return;
     const auto wanted = audioWatchPaths();
-    const auto current = audioFileWatcher_.files();
+    const QSet<QString> wantedSet(wanted.begin(), wanted.end());
+    const auto list = audioFileWatcher_.files();
+    const QSet<QString> current(list.begin(), list.end());
     for (const auto& path : current)
-        if (!wanted.contains(path))
+        if (!wantedSet.contains(path)) {
             audioFileWatcher_.removePath(path);
-    for (const auto& path : wanted)
-        if (!audioFileWatcher_.files().contains(path))
-            audioFileWatcher_.addPath(path);
+            audioWatchedPaths_.remove(path);
+        }
+    for (auto watched = audioWatchedPaths_.begin(); watched != audioWatchedPaths_.end();)
+        watched = wantedSet.contains(*watched) ? std::next(watched)
+                                               : audioWatchedPaths_.erase(watched);
+    bool invalidated = false;
+    for (const auto& path : wanted) {
+        if (current.contains(path) || !audioFileWatcher_.addPath(path))
+            continue;
+        // 監視が外れていた間の変更は通知されない。置き換えた素材が同じ size・更新時刻でも
+        // 古い SHA-256 を使わないよう、再登録した素材は内容を照合し直す。
+        if (audioWatchedPaths_.contains(path)) {
+            invalidateAudioFile(path.toUtf8().toStdString());
+            invalidated = true;
+        }
+        audioWatchedPaths_.insert(path);
+    }
+    if (invalidated) {
+        updateAudioAdjustmentRegeneration(true);
+        ensureAudioAdjustmentTimer();
+    }
+}
+
+void MvmController::dropAudioFileWatchForTest() {
+    const auto paths = audioFileWatcher_.files();
+    if (!paths.isEmpty())
+        audioFileWatcher_.removePaths(paths);
 }
 
 void MvmController::ensureAudioAdjustmentTimer() {
+    if (shutdownStarted_)
+        return;
     if (!audioAdjustmentTimer_.isActive())
         audioAdjustmentTimer_.start(100);
 }
