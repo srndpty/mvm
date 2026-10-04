@@ -49,6 +49,10 @@ struct AudioAdjustmentResult {
 // を中断する。
 bool inspectAudioFile(const std::filesystem::path& path, AudioFileIdentity& identity,
                       bool hashContent, const std::atomic<bool>* running, std::string& error);
+// inspectAudioFile が identity の key にする正規化した絶対 path。
+std::string audioFileKey(const std::filesystem::path& path);
+// key が同じ path を 1 件にまとめ、key の順に並べる。
+std::vector<std::filesystem::path> uniqueAudioFiles(std::vector<std::filesystem::path> paths);
 std::string audioProjectionHash(const project::Project& project);
 std::string audioProjectionHash(const project::Project& project,
                                 const project::AudioAdjustmentSettings& settings);
@@ -61,6 +65,11 @@ bool parseAudioInputFingerprint(const std::string& text, std::string& projection
 void setAudioAdjustmentOpenGateForTest(std::atomic<bool>* gate);
 int audioAdjustmentOpenGateWaitersForTest();
 int audioContentHashJobsStartedForTest();
+// 内容 SHA-256 を始めた回数と、保護 handle を開いた回数 (素材単位であることの試験用)。
+int audioFullHashesStartedForTest();
+int audioFileLocksOpenedForTest();
+// 対象 track を指定した射影 hash を計算した回数 (全 clip を走査する処理の回数の試験用)。
+int audioProjectionHashesForTest();
 
 struct AudioContentHashResult {
     enum class Status { Complete, Cancelled, Missing, ReadError };

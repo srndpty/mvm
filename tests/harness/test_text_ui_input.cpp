@@ -614,19 +614,35 @@ QtObject {
         {{QStringLiteral("observed"), QVariant::fromValue(rulerRepeater)}}));
     check(observer != nullptr, "ズーム中の目盛り生成数を監視できません");
     for (const int seconds : {1800, 3600}) {
+        // 最大行数だけでは「80 行作って捨てる」を繰り返す churn を見逃す。delegate の生成・
+        // 破棄に対応する行の挿入・削除の累計も数える。
+        int peakSubtitleRows = 0;
+        int insertedSubtitleRows = 0;
+        int removedSubtitleRows = 0;
+        const auto connection =
+            QObject::connect(controller.subtitleWindow(), &QAbstractItemModel::rowsInserted, window,
+                             [&](const QModelIndex&, int first, int last) {
+                                 insertedSubtitleRows += last - first + 1;
+                                 peakSubtitleRows = std::max(
+                                     peakSubtitleRows, controller.subtitleWindow()->rowCount());
+                             });
+        const auto removal =
+            QObject::connect(controller.subtitleWindow(), &QAbstractItemModel::rowsRemoved, window,
+                             [&](const QModelIndex&, int first, int last) {
+                                 removedSubtitleRows += last - first + 1;
+                             });
         panel->setProperty("zoomIndex", 8);
         flick->setProperty("contentX", seconds * 60 * panel->property("pixelsPerFrame").toDouble() -
                                            flick->width() / 2);
         pump(100);
+        // 別の時刻への移動では行が入れ替わる。数え漏れで churn 0 と誤認していないことの対照。
+        check(insertedSubtitleRows > 0 && removedSubtitleRows > 0,
+              "字幕行の挿入・削除を実際に数えられていません");
         if (observer)
             observer->setProperty("peak", rulerRepeater->property("count"));
-        int peakSubtitleRows = controller.subtitleWindow()->rowCount();
-        const auto connection =
-            QObject::connect(controller.subtitleWindow(), &QAbstractItemModel::rowsInserted, window,
-                             [&](const QModelIndex&, int, int) {
-                                 peakSubtitleRows = std::max(
-                                     peakSubtitleRows, controller.subtitleWindow()->rowCount());
-                             });
+        peakSubtitleRows = controller.subtitleWindow()->rowCount();
+        insertedSubtitleRows = 0;
+        removedSubtitleRows = 0;
         for (const int delta : {120, -120, 120, -120}) {
             QWheelEvent event(position, window->mapToGlobal(position.toPoint()), {},
                               QPoint(0, delta), Qt::NoButton, Qt::AltModifier, Qt::NoScrollPhase,
@@ -640,12 +656,16 @@ QtObject {
                   "後半ズームの中心時刻が変わり、同じ場所を比較できていません");
         }
         QObject::disconnect(connection);
+        QObject::disconnect(removal);
         const int peakTicks = observer ? observer->property("peak").toInt() : -1;
-        std::printf("後半ズーム %d 秒: 目盛り最大 %d、字幕行最大 %d\n", seconds, peakTicks,
-                    peakSubtitleRows);
+        std::printf("後半ズーム %d 秒: 目盛り最大 %d、字幕行最大 %d、字幕行の挿入 %d・削除 %d\n",
+                    seconds, peakTicks, peakSubtitleRows, insertedSubtitleRows,
+                    removedSubtitleRows);
         check(peakTicks > 0 && peakTicks <= static_cast<int>(std::ceil(flick->width() / 70)) + 4,
               "後半のズーム中に画面外の目盛りを一時的に大量生成しています");
         check(peakSubtitleRows < 100, "後半のズーム中に字幕の絞り込み範囲が一時的に広がります");
+        check(insertedSubtitleRows < 150 && removedSubtitleRows < 150,
+              "後半のズーム中に字幕 delegate を大量に生成・破棄しています");
     }
     controller.shutdown();
     return failures == 0 ? 0 : 1;

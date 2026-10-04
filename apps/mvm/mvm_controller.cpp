@@ -500,6 +500,8 @@ MvmController::MvmController(std::filesystem::path projectPath,
     slipPreviewTimer_.setInterval(16);
     connect(&slipPreviewTimer_, &QTimer::timeout, this, &MvmController::applySlipPreview);
     connect(&audioAdjustmentTimer_, &QTimer::timeout, this, &MvmController::pollAudioAdjustment);
+    connect(&audioWatchFallbackTimer_, &QTimer::timeout, this,
+            &MvmController::checkAudioWatchFallback);
     connectAudioFileWatch();
     refreshAudioInputAuthority(false);
 }

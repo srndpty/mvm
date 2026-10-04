@@ -206,6 +206,9 @@ public:
     bool audioAdjustmentApplying() const { return audioApplyPending_; }
 
     // 取消した worker の破棄まで終わっている。中止そのものは待たない。
+    // 100 ms の poll が動いているか。待機中に常駐しないことの試験用。
+    bool audioAdjustmentPollingForTest() const { return audioAdjustmentTimer_.isActive(); }
+
     bool audioAdjustmentWorkersIdle() const {
         return audioAdjustmentJob_ == nullptr && audioAdjustmentRetired_.empty() &&
                audioContentJob_ == nullptr && audioContentRetired_.empty();
@@ -913,6 +916,7 @@ private:
     bool computeAudioAdjustmentNeedsRegeneration() const;
     void reapAudioAdjustmentJobs();
     void refreshAudioFileCacheCheap();
+    void checkAudioWatchFallback();
     void scheduleAudioContentRecheck();
     void finishAudioContentRecheck();
     bool commitAudioAdjustment();
@@ -940,6 +944,7 @@ private:
     QVariantMap audioAdjustmentOptions_;
     QString audioAdjustmentError_;
     QTimer audioAdjustmentTimer_;
+    QTimer audioWatchFallbackTimer_;
     QFileSystemWatcher audioFileWatcher_;
     std::unique_ptr<ShuttleAudioPlayback> audioAdjustmentAudition_;
     bool startTimelineExport(const QUrl& outputUrl, int videoCrf);

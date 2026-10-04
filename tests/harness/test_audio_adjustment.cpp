@@ -352,6 +352,94 @@ int main(int argc, char** argv) {
                     scopedResult.files.size() == 2,
                 "対象外の offline 素材を開かず選択した声と BGM だけを解析する");
     }
+    {
+        // 長尺素材を細かく切った構成。保護と内容照合の単位は clip ではなく素材にする。
+        const auto voiceCopy = temp.filePath("cut-voice.wav");
+        const auto bgmCopy = temp.filePath("cut-bgm.wav");
+        require(QFile::copy(temp.filePath("voice.wav"), voiceCopy) &&
+                    QFile::copy(temp.filePath("bgm.wav"), bgmCopy),
+                "多数 clip 試験の素材を作る");
+        constexpr int kCuts = 60;
+        auto cut = project::createDefaultProject();
+        cut.audioTracks.resize(2);
+        cut.audioTracks[0].name = "声";
+        cut.audioTracks[1].name = "BGM";
+        for (int index = 0; index < kCuts; ++index)
+            addAudio(cut, std::filesystem::path(voiceCopy.toStdWString()),
+                     ("cut-" + std::to_string(index)).c_str(), 0, index * 4, index * 4,
+                     index * 4 + 4);
+        addAudio(cut, std::filesystem::path(bgmCopy.toStdWString()), "cut-bgm", 1);
+        // Project の素材は 1 ファイル 1 件。切った clip はすべて同じ素材を参照する。
+        cut.mediaItems = {cut.mediaItems.front(), cut.mediaItems.back()};
+        for (auto& clip : cut.timelineClips)
+            if (clip.track.index == 0)
+                clip.mediaItemId = cut.mediaItems.front().id;
+        project::AudioAdjustmentSettings cutSettings;
+        cutSettings.voiceTracks = {0};
+        cutSettings.bgmTrack = 1;
+        const auto cutValid = project::validateTimeline(cut);
+        if (!cutValid.success)
+            std::fprintf(stderr, "%s\n", cutValid.error.c_str());
+        require(cutValid.success, "多数 clip 試験の timeline が有効である");
+        const auto locks = app::audioFileLocksOpenedForTest();
+        const auto hashes = app::audioFullHashesStartedForTest();
+        std::atomic<bool> cutRunning{true};
+        std::atomic<int> cutProgress{0};
+        const auto cutResult =
+            app::analyzeAudioAdjustment(cut, cutSettings, cutRunning, cutProgress);
+        if (!cutResult.success)
+            std::fprintf(stderr, "%s\n", cutResult.error.c_str());
+        require(cutResult.success && cutResult.clips.size() == kCuts + 1,
+                "同じ素材を参照する多数の clip を実際に解析する");
+        std::printf("多数 clip の解析: 保護 handle %d、内容 hash %d\n",
+                    app::audioFileLocksOpenedForTest() - locks,
+                    app::audioFullHashesStartedForTest() - hashes);
+        require(app::audioFileLocksOpenedForTest() - locks == 2,
+                "保護 handle は clip 数ではなく素材数だけ開く");
+        require(app::audioFullHashesStartedForTest() - hashes == 2 * 2,
+                "内容 SHA-256 は開始時と終了時に素材数だけ計算する");
+        require(cutResult.files.size() == 2, "出自は素材ごとに 1 件だけ記録する");
+
+        // 目標値だけ違う過去の調整が clip ごとに残っていても、対象 track が同じなら射影は 1 回。
+        for (std::size_t index = 0; index < cut.timelineClips.size(); ++index) {
+            auto& clip = cut.timelineClips[index];
+            clip.effects.audioAdjustmentFingerprint = cutResult.fingerprintText;
+            clip.effects.audioAdjustmentSettings =
+                QJsonDocument(QJsonObject{{"bgmTrack", 1},
+                                          {"voiceTracks", QJsonArray{0}},
+                                          {"voiceLufs", -10.0 - static_cast<double>(index)}})
+                    .toJson(QJsonDocument::Compact)
+                    .toStdString();
+        }
+        const auto cutPath = file("cut-project.mvm");
+        const auto cutSaved = project::saveProjectJson(cut, cutPath);
+        if (!cutSaved.success)
+            std::fprintf(stderr, "%s\n", cutSaved.error.c_str());
+        require(cutSaved.success, "多数 clip 試験の Project を保存");
+        app::MvmController cutController(cutPath, {}, cut);
+        require(pump([&] {
+                    return !cutController.audioAdjustmentNeedsRegeneration() &&
+                           cutController.audioAdjustmentWorkersIdle();
+                }),
+                "多数 clip の保存済み調整は読込時の照合で有効になる");
+        require(pump([&] { return !cutController.audioAdjustmentPollingForTest(); }),
+                "保存済み調整の待機中は 100 ms の poll を止める");
+        const auto projections = app::audioProjectionHashesForTest();
+        require(cutController.addTimelineMarker(), "射影の計算回数を測る編集");
+        const auto projected = app::audioProjectionHashesForTest() - projections;
+        std::printf("設定 %d 種類の編集 1 回: 射影 %d 回\n", kCuts + 1, projected);
+        require(projected >= 1 && projected <= 2,
+                "設定値だけ違う保存済み調整の射影を対象 track の集合ごとに 1 回だけ計算する");
+        require(!cutController.audioAdjustmentPollingForTest(),
+                "素材に関係しない編集では poll を再開しない");
+
+        QFile voiceFile(voiceCopy);
+        require(voiceFile.open(QIODevice::Append) && voiceFile.write("x", 1) == 1,
+                "待機中に素材を書き換える");
+        voiceFile.close();
+        require(pump([&] { return cutController.audioAdjustmentNeedsRegeneration(); }),
+                "poll を止めていても素材の変更を検知して再生成を案内する");
+    }
     std::atomic<bool> running{true};
     std::atomic<int> progress{0};
     {

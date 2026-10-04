@@ -24,6 +24,9 @@ namespace {
 std::atomic<bool>* openGate = nullptr;
 std::atomic<int> openGateWaiters{0};
 std::atomic<int> contentHashJobsStarted{0};
+std::atomic<int> fullHashesStarted{0};
+std::atomic<int> fileLocksOpened{0};
+std::atomic<int> projectionHashes{0};
 
 struct FileHandle {
     HANDLE value = INVALID_HANDLE_VALUE;
@@ -40,6 +43,7 @@ std::shared_ptr<FileLocks> lockAudioFiles(const std::vector<std::filesystem::pat
     auto locks = std::make_shared<FileLocks>();
     for (const auto& path : paths) {
         auto file = std::make_unique<FileHandle>();
+        fileLocksOpened.fetch_add(1);
         file->value = CreateFileW(path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file->value == INVALID_HANDLE_VALUE)
@@ -61,39 +65,59 @@ bool identitiesMatch(const std::vector<AudioFileIdentity>& start,
     return true;
 }
 
-bool collectAudioIdentities(const project::Project& project,
-                            const project::AudioAdjustmentSettings& settings,
+// 解析対象 track の有効な音声 clip が参照する素材。同じ素材を何 clip が参照しても 1 件にする。
+std::vector<std::filesystem::path> targetAudioFiles(const project::Project& project,
+                                                    const project::AudioAdjustmentSettings& settings) {
+    std::vector<std::filesystem::path> paths;
+    for (const auto& clip : project.timelineClips)
+        if (clip.enabled && clip.kind == project::TimelineClipKind::Audio &&
+            project::audioAdjustmentTargetsTrack(settings, clip.track.index))
+            paths.push_back(clip.mediaPath);
+    return uniqueAudioFiles(std::move(paths));
+}
+
+bool collectAudioIdentities(const std::vector<std::filesystem::path>& paths,
                             std::vector<AudioFileIdentity>& files, const std::atomic<bool>& running,
                             std::string& error) {
-    std::map<std::string, AudioFileIdentity> unique;
-    for (const auto& clip : project.timelineClips) {
+    files.clear();
+    for (const auto& path : paths) {
         if (!running) {
             error.clear();
             return false;
         }
-        if (!clip.enabled || clip.kind != project::TimelineClipKind::Audio ||
-            !project::audioAdjustmentTargetsTrack(settings, clip.track.index))
-            continue;
         AudioFileIdentity identity;
-        if (!inspectAudioFile(clip.mediaPath, identity, true, &running, error))
+        if (!inspectAudioFile(path, identity, true, &running, error))
             return false;
-        unique.insert_or_assign(identity.key, identity);
-    }
-    files.clear();
-    for (auto& [key, identity] : unique) {
-        (void)key;
         files.push_back(std::move(identity));
     }
     return true;
 }
 } // namespace
 
+std::string audioFileKey(const std::filesystem::path& path) {
+    return QFileInfo(QString::fromStdWString(path.wstring())).absoluteFilePath().toUtf8().toStdString();
+}
+
+std::vector<std::filesystem::path> uniqueAudioFiles(std::vector<std::filesystem::path> paths) {
+    // 照合・保護の単位は clip ではなく素材。表記の違う同じ path も identity の key で 1 件にする。
+    std::map<std::string, std::filesystem::path> unique;
+    for (auto& path : paths) {
+        auto key = audioFileKey(path);
+        unique.try_emplace(std::move(key), std::move(path));
+    }
+    paths.clear();
+    for (auto& [key, path] : unique) {
+        (void)key;
+        paths.push_back(std::move(path));
+    }
+    return paths;
+}
+
 bool inspectAudioFile(const std::filesystem::path& path, AudioFileIdentity& identity,
                       bool hashContent, const std::atomic<bool>* running, std::string& error) {
     identity = {};
-    const QFileInfo info(QString::fromStdWString(path.wstring()));
-    const auto absolute = info.absoluteFilePath().toStdWString();
-    identity.key = QString::fromStdWString(absolute).toUtf8().toStdString();
+    identity.key = audioFileKey(path);
+    const auto absolute = QString::fromUtf8(identity.key).toStdWString();
     if (identity.key.find('\n') != std::string::npos ||
         identity.key.find('\r') != std::string::npos) {
         error = "解析する素材の path を識別できません";
@@ -122,6 +146,7 @@ bool inspectAudioFile(const std::filesystem::path& path, AudioFileIdentity& iden
     identity.mtime100ns = mtime.QuadPart;
     if (!hashContent)
         return true;
+    fullHashesStarted.fetch_add(1);
     QCryptographicHash hash(QCryptographicHash::Sha256);
     std::vector<char> buffer(1024 * 1024);
     for (;;) {
@@ -153,6 +178,7 @@ std::string audioProjectionHash(const project::Project& project) {
 
 std::string audioProjectionHash(const project::Project& project,
                                 const project::AudioAdjustmentSettings& settings) {
+    projectionHashes.fetch_add(1);
     return QCryptographicHash::hash(QByteArray::fromStdString(
                                         project::audioAdjustmentInputProjection(project, settings)),
                                     QCryptographicHash::Sha256)
@@ -226,10 +252,21 @@ int audioContentHashJobsStartedForTest() {
     return contentHashJobsStarted.load();
 }
 
+int audioFullHashesStartedForTest() {
+    return fullHashesStarted.load();
+}
+
+int audioFileLocksOpenedForTest() {
+    return fileLocksOpened.load();
+}
+
+int audioProjectionHashesForTest() {
+    return projectionHashes.load();
+}
+
 AudioContentHashJob::AudioContentHashJob(std::vector<std::filesystem::path> paths, bool lockFiles) {
     contentHashJobsStarted.fetch_add(1);
-    std::sort(paths.begin(), paths.end());
-    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+    paths = uniqueAudioFiles(std::move(paths));
     future_ = std::async(std::launch::async, [this, paths = std::move(paths), lockFiles] {
         AudioContentHashResult result;
         if (lockFiles) {
@@ -245,7 +282,6 @@ AudioContentHashJob::AudioContentHashJob(std::vector<std::filesystem::path> path
                 return result;
             }
         }
-        std::map<std::string, AudioFileIdentity> unique;
         for (const auto& path : paths) {
             if (!running_.load(std::memory_order_acquire))
                 return result;
@@ -262,17 +298,13 @@ AudioContentHashJob::AudioContentHashJob(std::vector<std::filesystem::path> path
                         ? AudioContentHashResult::Status::Missing
                         : AudioContentHashResult::Status::ReadError;
                 identity.hashed = false;
-                unique.insert_or_assign(identity.key, std::move(identity));
+                result.files.push_back(std::move(identity));
                 continue;
             }
-            unique.insert_or_assign(identity.key, std::move(identity));
+            result.files.push_back(std::move(identity));
         }
         if (!running_.load(std::memory_order_acquire))
             return result;
-        for (auto& [key, identity] : unique) {
-            (void)key;
-            result.files.push_back(std::move(identity));
-        }
         if (result.status == AudioContentHashResult::Status::Cancelled)
             result.status = AudioContentHashResult::Status::Complete;
         return result;
@@ -305,18 +337,14 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
     combined.candidate = source;
     combined.settings = settings;
     combined.projectionHash = audioProjectionHash(combined.candidate, settings);
-    std::vector<std::filesystem::path> paths;
-    for (const auto& clip : source.timelineClips)
-        if (clip.enabled && clip.kind == project::TimelineClipKind::Audio &&
-            project::audioAdjustmentTargetsTrack(settings, clip.track.index))
-            paths.push_back(clip.mediaPath);
+    // 自動調整は effects だけを変えるので、開始時と終了時の照合対象は同じ素材の集合になる。
+    const auto paths = targetAudioFiles(source, settings);
     const auto locks = lockAudioFiles(paths);
     if (!locks) {
         combined.error = "解析する素材を読み取り専用で保護できません";
         return combined;
     }
-    if (!collectAudioIdentities(combined.candidate, settings, combined.files, running,
-                                combined.error)) {
+    if (!collectAudioIdentities(paths, combined.files, running, combined.error)) {
         combined.cancelled = !running && combined.error.empty();
         if (combined.error.empty() && !combined.cancelled)
             combined.error = "解析する素材の内容を確認できません";
@@ -562,8 +590,7 @@ AudioAdjustmentResult analyzeAudioAdjustment(project::Project source,
         return combined;
     }
     std::vector<AudioFileIdentity> filesAtEnd;
-    if (!collectAudioIdentities(combined.candidate, settings, filesAtEnd, running,
-                                combined.error)) {
+    if (!collectAudioIdentities(paths, filesAtEnd, running, combined.error)) {
         combined.cancelled = !running && combined.error.empty();
         if (combined.error.empty() && !combined.cancelled)
             combined.error = "解析する素材の内容を確認できません";

@@ -2772,3 +2772,9 @@ Project が変わった後の境界、23.976fps の準備) がまれに落ちる
 中心時刻を保ったまま同じ場所で比較していることも検査する。
 変更前後のログは `build/ucrt64-release/tests/long-audio-zoom-before-coalescing.log` と
 `long-audio-zoom-after-coalescing.log` に保存する。値はそれぞれの試験が出力する。
+
+`[事実]` 2026-10-04、最大行数だけでは「数十行を作って捨てる」の繰り返しを見逃すため、往復ズーム中の
+字幕 model の `rowsInserted`・`rowsRemoved` の累計 (delegate の生成・破棄の数) も 150 未満と検査する。
+現在の実装では 30 分・60 分とも挿入 0・削除 0 だった。字幕の `updateWindow` を同期の
+`setVisibleRange` に戻すと、挿入・削除が 30 分で各 1976、60 分で各 2904 になり試験が落ちる。
+数え漏れで 0 と誤認しないよう、別の時刻へ移動したときに挿入・削除が 1 以上あることも確かめる。

@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <QJsonArray>
@@ -20,6 +23,17 @@ project::AudioAdjustmentSettings targetSettings(const std::string& text) {
     for (const auto& value : object.value("voiceTracks").toArray())
         settings.voiceTracks.push_back(value.toInt(-1));
     return settings;
+}
+
+// 解析入力の射影が依存するのは対象 track の集合だけ。目標値などが違う設定は同じ key になる。
+std::string targetScopeKey(const project::AudioAdjustmentSettings& settings) {
+    auto voices = settings.voiceTracks;
+    std::sort(voices.begin(), voices.end());
+    voices.erase(std::unique(voices.begin(), voices.end()), voices.end());
+    std::string key = std::to_string(settings.bgmTrack) + ":";
+    for (int track : voices)
+        key += std::to_string(track) + ",";
+    return key;
 }
 
 std::filesystem::path pathFromIdentityKey(const std::string& key) {
@@ -53,19 +67,44 @@ void MvmController::connectAudioFileWatch() {
 void MvmController::refreshAudioInputAuthority(bool notify) {
     // ファイル内容はここでは読まない。音声入力の射影が同じ編集でも、保存した fingerprint は
     // 変わるので再生成フラグだけ更新する。
-    audioProjectionHash_ = audioProjectionHash(project_, audioAuthoritySettings_);
+    // 射影は全 clip を走査するので、対象 track の集合ごとに 1 回だけ計算する。
+    std::map<std::string, std::string> byScope;
+    const auto projection = [&](const project::AudioAdjustmentSettings& settings) {
+        auto key = targetScopeKey(settings);
+        auto found = byScope.find(key);
+        if (found == byScope.end())
+            found = byScope.emplace(std::move(key), audioProjectionHash(project_, settings)).first;
+        return found->second;
+    };
+    audioProjectionHash_ = projection(audioAuthoritySettings_);
     audioSavedProjectionHashes_.clear();
     for (const auto& clip : project_.timelineClips)
         if (!clip.effects.audioAdjustmentFingerprint.empty() &&
             !audioSavedProjectionHashes_.contains(clip.effects.audioAdjustmentSettings))
             audioSavedProjectionHashes_[clip.effects.audioAdjustmentSettings] =
-                audioProjectionHash(project_, targetSettings(clip.effects.audioAdjustmentSettings));
+                projection(targetSettings(clip.effects.audioAdjustmentSettings));
+    syncAudioFileWatch();
     for (const auto& path : audioWatchPaths())
         if (const auto cached = audioFileCache_.find(path.toUtf8().toStdString());
             cached == audioFileCache_.end() || !cached->second.hashed)
             audioContentDirty_ = true;
     updateAudioAdjustmentRegeneration(notify);
-    if (projectHasAudioAdjustmentFingerprint() || audioAdjustmentResult_ || audioAdjustmentJob_)
+    // 待機中の変更検知は watcher が担う。取りこぼし用の確認だけを低頻度で回す。
+    if (projectHasAudioAdjustmentFingerprint()) {
+        if (!audioWatchFallbackTimer_.isActive())
+            audioWatchFallbackTimer_.start(5000);
+    } else {
+        audioWatchFallbackTimer_.stop();
+    }
+    if (audioContentDirty_ || audioAdjustmentResult_ || audioAdjustmentJob_)
+        ensureAudioAdjustmentTimer();
+}
+
+void MvmController::checkAudioWatchFallback() {
+    // QFileSystemWatcher は削除・rename で path を外し、作り直された素材を通知しない。
+    syncAudioFileWatch();
+    refreshAudioFileCacheCheap();
+    if (audioContentDirty_)
         ensureAudioAdjustmentTimer();
 }
 
@@ -206,9 +245,9 @@ void MvmController::scheduleAudioContentRecheck() {
         for (const auto& path : audioWatchPaths())
             paths.push_back(std::filesystem::path(path.toStdWString()));
     }
+    audioContentDirty_ = false;
     if (paths.empty())
         return;
-    audioContentDirty_ = false;
     audioContentConfirmed_ = false;
     audioContentJob_ = std::make_unique<AudioContentHashJob>(std::move(paths));
     ensureAudioAdjustmentTimer();
@@ -289,17 +328,19 @@ QVariantList MvmController::audioAdjustmentResults() const {
     QVariantList rows;
     if (!audioAdjustmentResult_)
         return rows;
+    std::unordered_map<std::string_view, const project::TimelineClip*> candidates;
+    for (const auto& clip : audioAdjustmentResult_->candidate.timelineClips)
+        candidates.try_emplace(clip.id, &clip);
     for (const auto& item : audioAdjustmentResult_->clips) {
         QVariantList keys;
-        for (const auto& clip : audioAdjustmentResult_->candidate.timelineClips)
-            if (clip.id == item.clipId)
-                for (const auto& key : clip.effects.duckingKeys)
-                    keys.append(
-                        QVariantMap{{"frame", QVariant::fromValue<qlonglong>(key.frame)},
-                                    {"seconds", static_cast<double>(key.frame) *
-                                                    static_cast<double>(project_.timelineFpsDen) /
-                                                    static_cast<double>(project_.timelineFpsNum)},
-                                    {"db", key.value}});
+        if (const auto found = candidates.find(item.clipId); found != candidates.end())
+            for (const auto& key : found->second->effects.duckingKeys)
+                keys.append(
+                    QVariantMap{{"frame", QVariant::fromValue<qlonglong>(key.frame)},
+                                {"seconds", static_cast<double>(key.frame) *
+                                                static_cast<double>(project_.timelineFpsDen) /
+                                                static_cast<double>(project_.timelineFpsNum)},
+                                {"db", key.value}});
         rows.append(QVariantMap{{"clipId", QString::fromStdString(item.clipId)},
                                 {"name", QString::fromStdString(item.name)},
                                 {"measurable", item.measurement.measurable},
@@ -497,9 +538,10 @@ void MvmController::pollAudioAdjustment() {
             changed = true;
         }
     }
+    // 保存済み調整の待機中は止め、watcher の通知か取りこぼし確認で dirty になったら再開する。
     if (!audioAdjustmentJob_ && audioAdjustmentRetired_.empty() && !audioAdjustmentResult_ &&
         !audioAdjustmentAudition_ && !audioContentJob_ && audioContentRetired_.empty() &&
-        !projectHasAudioAdjustmentFingerprint())
+        !audioContentDirty_)
         audioAdjustmentTimer_.stop();
     if (changed)
         emit audioAdjustmentChanged();
@@ -526,8 +568,7 @@ void MvmController::cancelAudioAdjustment() {
         audioContentJob_->cancel();
         audioContentRetired_.push_back(std::move(audioContentJob_));
     }
-    if (!audioAdjustmentRetired_.empty() || !audioContentRetired_.empty() ||
-        projectHasAudioAdjustmentFingerprint())
+    if (!audioAdjustmentRetired_.empty() || !audioContentRetired_.empty() || audioContentDirty_)
         ensureAudioAdjustmentTimer();
     else
         audioAdjustmentTimer_.stop();
@@ -587,25 +628,31 @@ bool MvmController::applyAudioAdjustment() {
 }
 
 bool MvmController::commitAudioAdjustment() {
-    auto candidate = project_;
-    for (auto& clip : candidate.timelineClips)
-        for (const auto& measured : audioAdjustmentResult_->candidate.timelineClips)
-            if (clip.id == measured.id && project::audioAdjustmentTargetsTrack(
-                                              audioAdjustmentResult_->settings, clip.track.index)) {
-                clip.effects.normalizationGainDb = measured.effects.normalizationGainDb;
-                clip.effects.duckingDb = measured.effects.duckingDb;
-                clip.effects.duckingKeys = measured.effects.duckingKeys;
-            }
+    // 最終照合の直後に GUI thread で走るので、clip 数の二乗にしない。
+    std::unordered_map<std::string_view, const project::TimelineClip*> measuredById;
+    for (const auto& measured : audioAdjustmentResult_->candidate.timelineClips)
+        measuredById.try_emplace(measured.id, &measured);
+    std::unordered_set<std::string_view> measuredClipIds;
+    for (const auto& measured : audioAdjustmentResult_->clips)
+        measuredClipIds.insert(measured.clipId);
     const auto serialized = QJsonDocument(QJsonObject::fromVariantMap(audioAdjustmentOptions_))
                                 .toJson(QJsonDocument::Compact)
                                 .toStdString();
+    auto candidate = project_;
     candidate.lastAudioAdjustmentSettings = serialized;
-    for (auto& clip : candidate.timelineClips)
-        for (const auto& measured : audioAdjustmentResult_->clips)
-            if (clip.id == measured.clipId) {
-                clip.effects.audioAdjustmentSettings = serialized;
-                clip.effects.audioAdjustmentFingerprint = audioAdjustmentResult_->fingerprintText;
+    for (auto& clip : candidate.timelineClips) {
+        if (project::audioAdjustmentTargetsTrack(audioAdjustmentResult_->settings,
+                                                 clip.track.index))
+            if (const auto found = measuredById.find(clip.id); found != measuredById.end()) {
+                clip.effects.normalizationGainDb = found->second->effects.normalizationGainDb;
+                clip.effects.duckingDb = found->second->effects.duckingDb;
+                clip.effects.duckingKeys = found->second->effects.duckingKeys;
             }
+        if (measuredClipIds.contains(clip.id)) {
+            clip.effects.audioAdjustmentSettings = serialized;
+            clip.effects.audioAdjustmentFingerprint = audioAdjustmentResult_->fingerprintText;
+        }
+    }
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("自動音量調整を適用できません: ")))
         return false;
     cancelAudioAdjustment();
