@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
     auto loaded = parseProjectJsonText(json.json, "subtitles.mvm");
     require(loaded.success && loaded.project == p, "字幕JSONの往復比較");
     auto old = json.json;
-    old.replace(old.find("schema_version\": 16"), 19, "schema_version\": 15");
+    old.replace(old.find("schema_version\": 17"), 19, "schema_version\": 15");
     require(!parseProjectJsonText(old, "subtitles.mvm").success, "旧schemaを拒否");
     std::string srt;
     require(writeSrt(p, srt, error), "SRT書出し");

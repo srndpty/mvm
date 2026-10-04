@@ -52,14 +52,19 @@ static void configure_mp4_consumer(mlt_consumer consumer, const char* out_path,
                                    const MvmExportSpec* spec, int with_audio) {
     mlt_properties cp = MLT_CONSUMER_PROPERTIES(consumer);
     mlt_properties_set(cp, "target", out_path);
-    mlt_properties_set(cp, "f", "mp4");
+    mlt_properties_set(cp, "f", spec->lossless_audio ? "matroska" : "mp4");
     mlt_properties_set(cp, "vcodec", "libx264");
     mlt_properties_set(cp, "preset", "medium");
     mlt_properties_set_int(cp, "crf", spec->video_crf);
     mlt_properties_set(cp, "pix_fmt", "yuv420p");
-    mlt_properties_set(cp, "movflags", "+faststart");
+    if (!spec->lossless_audio)
+        mlt_properties_set(cp, "movflags", "+faststart");
     if (with_audio) {
-        mlt_properties_set(cp, "acodec", "aac");
+        mlt_properties_set(cp, "acodec", spec->lossless_audio ? "pcm_f32le" : "aac");
+        if (spec->lossless_audio) {
+            mlt_properties_set(cp, "sample_fmt", "flt");
+            mlt_properties_set(cp, "mlt_audio_format", "f32le");
+        }
         mlt_properties_set(cp, "ab", "192k");
         mlt_properties_set_int(cp, "ar", 48000);
     } else {
@@ -505,6 +510,13 @@ static int attach_tractor_clip_filters(mlt_profile profile, mlt_producer cut,
         mlt_filter_set_in_and_out(filter, (mlt_position)filter_in,
                                   (mlt_position)(filter_in + clip->timeline_duration_frames - 1));
         mlt_properties properties = MLT_FILTER_PROPERTIES(filter);
+        /* 正規化済みの補正を MLT 既定の +20 dB 上限で黙って切り詰めない。 */
+        mlt_properties_set_double(properties, "max_gain", 0.0);
+        if (mlt_properties_get_double(properties, "max_gain") != 0.0) {
+            mlt_filter_close(filter);
+            set_err(err, err_size, "音量フィルターのゲイン上限を解除できません");
+            return 1;
+        }
         if (constant) {
             mlt_properties_set_double(properties, "gain", first_gain);
             if (fabs(mlt_properties_get_double(properties, "gain") - first_gain) > 1e-9) {
@@ -617,7 +629,8 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     }
     if (spec->width <= 0 || spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0 ||
         spec->video_crf < 0 || spec->video_crf > 51 || spec->render_threads <= 0 ||
-        spec->render_threads > 16 || spec->encoder_threads < 0 || spec->encoder_threads > 16) {
+        spec->render_threads > 16 || spec->encoder_threads < 0 || spec->encoder_threads > 16 ||
+        spec->lossless_audio < 0 || spec->lossless_audio > 1) {
         set_err(err, err_size, "出力 profile の指定が不正です: %dx%d @ %d/%d", spec->width,
                 spec->height, spec->fps_num, spec->fps_den);
         return 1;
@@ -957,7 +970,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         !*out_path || clip_count < 0 || total_duration <= 0 || spec->width <= 0 ||
         spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0 || spec->video_crf < 0 ||
         spec->video_crf > 51 || spec->timeout_ms <= 0 || spec->render_threads <= 0 ||
-        spec->render_threads > 16 || spec->encoder_threads < 0 || spec->encoder_threads > 16) {
+        spec->render_threads > 16 || spec->encoder_threads < 0 || spec->encoder_threads > 16 ||
+        spec->lossless_audio < 0 || spec->lossless_audio > 1) {
         set_err(err, err_size, "M7b tractor export引数が不正です");
         return 1;
     }
@@ -1032,7 +1046,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             for (int key_index = 0; key_index < clip->gain_keyframe_count; ++key_index) {
                 const MvmExportGainKeyframe* key = &clip->gain_keyframes[key_index];
                 if (key->local_frame != key_index || !isfinite(key->gain) || key->gain < 0.0 ||
-                    key->gain > 2.0 * 5.623414) {
+                    key->gain > 2.0 * 5.623414 * 1000.0) {
                     set_err(err, err_size, "audio clip %dのgain keyが不正です", index);
                     goto cleanup;
                 }

@@ -53,6 +53,36 @@ clip の編集で字幕を置き直すとき、毎回 timeline の frame から�
 
 ## 既知の未解決の問題
 
+- [未検証] 利用者から、長尺のスピーチと BGM を含む Project
+  (`build/ucrt64-debug/m6a-gui/project.mvm`) で、縮小時のホイール応答が重いとの報告がある。
+  画面外の目盛り・音量線・キーの生成を抑え、長尺波形を使う回帰試験で検査した
+  (`docs/premiere-like-editing.md` §26)。初回の対策後も、30 分以降を中心にしたズームで重いとの報告があった。
+  [事実] 再現試験では、倍率とスクロール補正の途中に広い表示範囲で字幕を大量生成していた。
+  更新をまとめる修正と操作途中の件数の回帰試験を追加した (§26.1)。
+  [未検証] この Project での修正後の体感改善と残る負荷。
+  [推測] 全体表示で多数の字幕を一度に生成する負荷は残る。改善が不足する場合は、
+  波形だけでなく字幕 delegate の生成と scene graph 更新を切り分け、画面の密度に応じた
+  字幕表示を検討する。性能判定は release で行う。
+
+- [事実] 2026-10-04、保存済みの自動音量調整の素材を監視中に、中央の 1 byte を書き換えて
+  size と更新時刻を元へ戻すと、`QFileSystemWatcher` の `fileChanged` が 30 秒以内に来なかった
+  (`audio_adjustment_contract` の作成中に観測)。[推測] Qt の Windows 実装が stat の変化で通知を
+  判定している。待機中の再生成の案内はこの変更を見逃す。解析結果の適用は保護した素材の
+  内容 hash で照合するので、この経路では古い解析を適用しない。待機中も検出が必要なら、
+  低頻度の内容 hash か OS の変更 journal を検討する。
+
+- [事実] 2026-10-04、自動音量調整の検証で release の `transition_preview` が、
+  23.976 fps の初期提示の準備と `stale-engine-seek` の先読み要求の前提で失敗する回があった。
+  debug の全体検査では通過した。変更前 HEAD (`91eda91`) と変更後の release を固定回数で
+  比較すると、変更前は通過し、変更後にも通過する回があった。原因と新機能との因果関係は
+  未特定であり、全体検査を合格とは扱わない。新機能の解析・試聴・編集・書き出しの関連追試は
+  修正後に通過している。比較ログは `build/audio-adjustment-baseline/baseline-transition*.xml`、
+  `build/ucrt64-release/audio-adjustment-final.xml` と `audio-adjustment-transition-*.xml` に保存した。
+  入口移動・音声解析の最適化後の `scripts/test.ps1 -Fast` では release は 1434/1434 通過し、
+  debug は `transition_preview` だけ失敗した (frame 110 の incoming 不透明度が −1、期待 0.025)。
+  この形は下記の単独検証でも観測されている。新機能の解析・試聴・製品メニュー操作は両構成で通過。
+  ログは `build/audio-adjustment-optimized-tests.log` に保存した。
+
 - [事実] 2026-10-04、release の通常テスト一式 (並列 8) の 1 回で
   `preview_engine_p5e_remove_fatal_event_order` が SEGFAULT で落ちた。単独では 5/5 通過。
   preview engine は字幕の作業で変更していない。再現条件と原因は未確認。

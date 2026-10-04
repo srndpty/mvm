@@ -143,7 +143,7 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 16;
+inline constexpr int kProjectSchemaVersion = 17;
 
 struct SubtitleCue {
     std::string id;
@@ -229,6 +229,9 @@ struct Project {
     std::vector<MediaFolder> mediaFolders;
     std::vector<MediaItem> mediaItems;
     std::optional<SubtitleTrack> subtitles;
+    // 自動音量調整ダイアログが次に開くときへ出す、最後に適用した設定。
+    // clip ごとの記録は適用対象の履歴であり、ダイアログの authority はこちら。
+    std::string lastAudioAdjustmentSettings;
     bool operator==(const Project&) const = default;
 };
 

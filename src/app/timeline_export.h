@@ -20,6 +20,8 @@ struct TimelineExportRequest {
     // libx264 の constant rate factor。UI が提示する3段階の実値を明示して渡す。
     int videoCrf = 23;
     bool burnSubtitles = true;
+    // 音声の比較用に Matroska / PCM を明示選択できる。通常の製品出力は MP4 / AAC。
+    bool losslessAudio = false;
     int timeoutMs = 600000;
     int renderThreads = 4;
     int encoderThreads = 0;

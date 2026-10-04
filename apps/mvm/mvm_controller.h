@@ -3,6 +3,7 @@
 
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
+#include "audio_adjustment_job.h"
 #include "media/audio_preview/audio_mixer_bus.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
 #include "media/transcribe/transcribe.h"
@@ -31,11 +32,13 @@
 
 #include <QAbstractItemModel>
 #include <QElapsedTimer>
+#include <QFileSystemWatcher>
 #include <QHash>
 #include <QImage>
 #include <QObject>
 #include <QRect>
 #include <QRectF>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -61,6 +64,24 @@ class MvmController : public QObject {
     QML_UNCREATABLE("アプリが生成したコントローラーを使用してください")
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY stateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
+    Q_PROPERTY(bool audioAdjusting READ audioAdjusting NOTIFY audioAdjustmentChanged)
+    Q_PROPERTY(
+        bool audioAdjustmentApplying READ audioAdjustmentApplying NOTIFY audioAdjustmentChanged)
+    Q_PROPERTY(
+        int audioAdjustmentProgress READ audioAdjustmentProgress NOTIFY audioAdjustmentChanged)
+    Q_PROPERTY(QVariantList audioAdjustmentResults READ audioAdjustmentResults NOTIFY
+                   audioAdjustmentResultsChanged)
+    Q_PROPERTY(QVariantList audioAdjustmentRanges READ audioAdjustmentRanges NOTIFY
+                   audioAdjustmentResultsChanged)
+    Q_PROPERTY(QString audioAdjustmentError READ audioAdjustmentError NOTIFY audioAdjustmentChanged)
+    Q_PROPERTY(
+        bool canApplyAudioAdjustment READ canApplyAudioAdjustment NOTIFY audioAdjustmentChanged)
+    Q_PROPERTY(bool audioAdjustmentAuditioning READ audioAdjustmentAuditioning NOTIFY
+                   audioAdjustmentChanged)
+    Q_PROPERTY(bool audioAdjustmentNeedsRegeneration READ audioAdjustmentNeedsRegeneration NOTIFY
+                   stateChanged)
+    Q_PROPERTY(QVariantMap savedAudioAdjustmentSettings READ savedAudioAdjustmentSettings NOTIFY
+                   stateChanged)
     Q_PROPERTY(QString currentClipName READ currentClipName NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipPath READ currentClipPath NOTIFY stateChanged)
     Q_PROPERTY(bool transcribing READ transcribing NOTIFY stateChanged)
@@ -181,6 +202,42 @@ class MvmController : public QObject {
     Q_PROPERTY(qint64 effectFadeOut READ effectFadeOut NOTIFY stateChanged)
 
 public:
+    bool audioAdjusting() const { return audioAdjustmentJob_ != nullptr; }
+
+    bool audioAdjustmentApplying() const { return audioApplyPending_; }
+
+    // 取消した worker の破棄まで終わっている。中止そのものは待たない。
+    // 100 ms の poll が動いているか。待機中に常駐しないことの試験用。
+    bool audioAdjustmentPollingForTest() const { return audioAdjustmentTimer_.isActive(); }
+    bool audioWatchFallbackActiveForTest() const { return audioWatchFallbackTimer_.isActive(); }
+    // watcher が通知を取りこぼして path を外した状態を作る。
+    void dropAudioFileWatchForTest();
+    // 5 秒の取りこぼし確認を 1 回だけ実行する (timer の発火と同じ処理)。
+    void runAudioWatchFallbackForTest() { checkAudioWatchFallback(); }
+
+    bool audioAdjustmentWorkersIdle() const {
+        return audioAdjustmentJob_ == nullptr && audioAdjustmentRetired_.empty() &&
+               audioContentJob_ == nullptr && audioContentRetired_.empty();
+    }
+
+    int audioAdjustmentProgress() const;
+    QVariantList audioAdjustmentResults() const;
+    QVariantList audioAdjustmentRanges() const;
+
+    QString audioAdjustmentError() const { return audioAdjustmentError_; }
+
+    bool canApplyAudioAdjustment() const;
+
+    bool audioAdjustmentAuditioning() const { return audioAdjustmentAudition_ != nullptr; }
+
+    bool audioAdjustmentNeedsRegeneration() const;
+    QVariantMap savedAudioAdjustmentSettings() const;
+    Q_INVOKABLE bool startAudioAdjustment(const QVariantMap& settings);
+    Q_INVOKABLE void cancelAudioAdjustment();
+    Q_INVOKABLE bool auditionAudioAdjustment();
+    Q_INVOKABLE void stopAudioAdjustmentAudition();
+    // 非同期照合の開始時は false。確定時に audioAdjustmentApplied を通知する。
+    Q_INVOKABLE bool applyAudioAdjustment();
     using ExportRunner =
         std::function<TimelineExportResult(const project::Project&, const TimelineExportRequest&)>;
     using ExportThreadFactory = std::function<std::thread(std::function<void()>)>;
@@ -846,6 +903,9 @@ public Q_SLOTS:
     void revalidateMedia();
 
 Q_SIGNALS:
+    void audioAdjustmentChanged();
+    void audioAdjustmentApplied();
+    void audioAdjustmentResultsChanged();
     void stateChanged();
     void timelineTransitionsChanged();
     void selectedTransitionChanged();
@@ -855,6 +915,47 @@ Q_SIGNALS:
     void externalCanonicalChangeOnSave();
 
 private:
+    void connectAudioFileWatch();
+    void pollAudioAdjustment();
+    void refreshAudioInputAuthority(bool notify);
+    void updateAudioAdjustmentRegeneration(bool notify);
+    bool computeAudioAdjustmentNeedsRegeneration() const;
+    void reapAudioAdjustmentJobs();
+    void refreshAudioFileCacheCheap();
+    void checkAudioWatchFallback();
+    void invalidateAudioFile(const std::string& key);
+    void scheduleAudioContentRecheck();
+    void finishAudioContentRecheck();
+    bool commitAudioAdjustment();
+    void dropAudioAdjustmentResult(const QString& error);
+    void syncAudioFileWatch();
+    void ensureAudioAdjustmentTimer();
+    bool audioCheapIdentityMatches(const std::vector<AudioFileIdentity>& files) const;
+    bool projectHasAudioAdjustmentFingerprint() const;
+    QStringList audioWatchPaths() const;
+
+    std::string audioProjectionHash_;
+    std::map<std::string, std::string> audioSavedProjectionHashes_;
+    bool audioAdjustmentNeedsRegeneration_ = false;
+    bool audioContentConfirmed_ = false;
+    bool audioContentDirty_ = false;
+    bool audioApplyPending_ = false;
+    project::AudioAdjustmentSettings audioAuthoritySettings_;
+    int audioAdjustmentLastProgress_ = -1;
+    std::map<std::string, AudioFileIdentity> audioFileCache_;
+    std::unique_ptr<AudioAdjustmentJob> audioAdjustmentJob_;
+    std::vector<std::unique_ptr<AudioAdjustmentJob>> audioAdjustmentRetired_;
+    std::unique_ptr<AudioContentHashJob> audioContentJob_;
+    std::vector<std::unique_ptr<AudioContentHashJob>> audioContentRetired_;
+    std::optional<AudioAdjustmentResult> audioAdjustmentResult_;
+    QVariantMap audioAdjustmentOptions_;
+    QString audioAdjustmentError_;
+    QTimer audioAdjustmentTimer_;
+    QTimer audioWatchFallbackTimer_;
+    QFileSystemWatcher audioFileWatcher_;
+    // 一度でも監視に載せた path。外れていた path の再登録を判別する。
+    QSet<QString> audioWatchedPaths_;
+    std::unique_ptr<ShuttleAudioPlayback> audioAdjustmentAudition_;
     bool startTimelineExport(const QUrl& outputUrl, int videoCrf);
 
     struct TrackPreviewSource {

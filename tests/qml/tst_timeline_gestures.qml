@@ -205,6 +205,46 @@ TestCase {
         compare(Gestures.penLineYAt(points, 900), Gestures.penY(video, 100));
     }
 
+    function test_visibleAutomationKeepsSlopeAndSamples() {
+        const geometry = penGeometry(100, 1);
+        const keys = [{ frame: 10, value: 0, samples: [{ frame: 15, value: 100 }] },
+                      { frame: 20, value: 0 }];
+        const points = Gestures.penVisibleLinePoints(keys, 50, geometry, 12, 18);
+        compare(points.length, 3);
+        compare(points[0].x, 12);
+        compare(points[1].x, 15);
+        compare(points[1].y, 4);
+        compare(points[2].x, 18);
+        verify(Math.abs(points[0].y - 31.6) < 0.000001);
+        verify(Math.abs(points[2].y - 31.6) < 0.000001);
+        compare(Gestures.penVisibleLinePoints(keys, 50, geometry, 18, 12).length, 0);
+        compare(Gestures.penVisibleKeys(keys, geometry, 900, 1000).length, 0);
+        const flat = Gestures.penVisibleLinePoints([], 50, geometry, 200, 300);
+        compare(flat.length, 2);
+        compare(flat[0].x, 200);
+        compare(flat[1].x, 300);
+        compare(flat[0].y, 27);
+    }
+
+    function test_longAutomationDrawsOnlyVisibleRange() {
+        const geometry = penGeometry(200, 0.5);
+        geometry.width = 150000;
+        const keys = [];
+        for (let index = 0; index < 600; ++index)
+            keys.push({ frame: index * 500, value: index % 2 ? 40 : 100 });
+        const visible = Gestures.penVisibleKeys(keys, geometry, 70000, 70900);
+        verify(visible.length > 0 && visible.length <= 5);
+        const points = Gestures.penVisibleLinePoints(keys, 100, geometry, 70000, 70900);
+        verify(points.length <= 6);
+        compare(points[0].x, 70000);
+        compare(points[points.length - 1].x, 70900);
+        // 縮小して全体を見た場合も元のキーを捨てず、表示範囲に入れば再び描く。
+        geometry.pixelsPerFrame = 0.002;
+        geometry.width = 600;
+        compare(Gestures.penVisibleKeys(keys, geometry, 0, 600).length, keys.length);
+        compare(keys.length, 600);
+    }
+
     function test_penLineHitFollowsSlopedLineBetweenFrames() {
         // frame 10 = 0%、frame 11 = 100%、1 frame = 32px。frame 10.5 (x = 336) の線は 50%。
         // frame へ丸めて線の値を評価すると 100% になり、見えている線を押しても選択になる。

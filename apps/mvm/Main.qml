@@ -28,6 +28,10 @@ ApplicationWindow {
         id: clipTranscribeDialog
         mvmController: root.mvmController
     }
+    AutoAudioDialog {
+        id: autoAudioDialog
+        mvmController: root.mvmController
+    }
     function openClipTranscription(clipId) {
         root.mvmController.selectTimelineClip(clipId, false);
         clipTranscribeDialog.openForClip(clipId);
@@ -312,6 +316,7 @@ ApplicationWindow {
             }
         }
         CompactMenu {
+            objectName: "editMenu"
             title: "編集"
             CompactMenuItem {
                 action: undoAction
@@ -325,6 +330,12 @@ ApplicationWindow {
             CompactMenuItem { action: pasteClipsAction }
             CompactMenuItem { action: duplicateClipsAction }
             CompactMenuItem { action: speedDurationAction }
+            CompactMenuItem {
+                objectName: "autoAudioMenuItem"
+                text: "自動音量調整…"
+                enabled: !root.mvmController.busy
+                onTriggered: autoAudioDialog.open()
+            }
             CompactMenuSeparator {}
             CompactMenuItem { action: splitAtPlayheadAction }
             CompactMenuItem { action: splitAllTracksAction }
@@ -1560,6 +1571,14 @@ ApplicationWindow {
             function frameAtContentX(contentX) {
                 return Math.max(0, Math.round(contentX / pixelsPerFrame));
             }
+            // 倍率、カーソル位置の補正、表示範囲の左右が揃ってから一度だけ絞り直す。
+            // 個別の binding の途中で絞ると、後半ほど一時的な区間が広がり字幕を大量生成する。
+            function refreshVisibleWindows() {
+                root.mvmController.subtitleWindow.setVisibleRange(subtitleCues.visibleStartFrame,
+                                                                  subtitleCues.visibleEndFrame);
+                root.mvmController.timelineClipWindow.setVisibleRange(timelineClips.visibleStartFrame,
+                                                                      timelineClips.visibleEndFrame);
+            }
             function setZoom(direction, anchorItemX) {
                 const nextIndex = Math.max(minimumZoomIndex, Math.min(zoomLevels.length - 1,
                                                        zoomIndex + direction));
@@ -2137,8 +2156,7 @@ ApplicationWindow {
                             onVisibleEndFrameChanged: updateWindow()
                             Component.onCompleted: updateWindow()
                             function updateWindow() {
-                                root.mvmController.subtitleWindow.setVisibleRange(visibleStartFrame,
-                                                                                  visibleEndFrame);
+                                Qt.callLater(timelinePanel.refreshVisibleWindows);
                             }
                             delegate: Item {
                                 id: subtitleItem
@@ -2273,17 +2291,21 @@ ApplicationWindow {
                         z: 100
 
                         Repeater {
-                            model: {
-                                const nominalFps = Math.max(1, Math.round(root.mvmController.timelineFpsNum / root.mvmController.timelineFpsDen));
-                                const framesPerTick = timelinePanel.tickSeconds * nominalFps;
-                                return Math.ceil(timelineContent.width / (framesPerTick * timelinePanel.pixelsPerFrame)) + 1;
-                            }
+                            id: visibleRulerTicks
+                            objectName: "timelineRulerTicks"
+                            readonly property real tickWidth: timelinePanel.tickSeconds
+                                * Math.max(1, Math.round(root.mvmController.timelineFpsNum / root.mvmController.timelineFpsDen))
+                                * timelinePanel.pixelsPerFrame
+                            readonly property int firstTick: Math.max(0, Math.floor(timelineFlick.contentX / tickWidth) - 1)
+                            model: Math.max(0, Math.ceil((timelineFlick.contentX + timelineFlick.width) / tickWidth)
+                                              - firstTick + 1)
 
                             Item {
                                 id: rulerTick
+                                objectName: "timelineRulerTick"
                                 required property int index
-                                readonly property int nominalFps: Math.max(1, Math.round(root.mvmController.timelineFpsNum / root.mvmController.timelineFpsDen))
-                                x: index * timelinePanel.tickSeconds * nominalFps * timelinePanel.pixelsPerFrame
+                                readonly property int tickIndex: visibleRulerTicks.firstTick + index
+                                x: tickIndex * visibleRulerTicks.tickWidth
                                 width: 1
                                 height: ruler.height
 
@@ -2297,7 +2319,7 @@ ApplicationWindow {
                                     x: 4
                                     y: 1
                                     text: {
-                                        const seconds = rulerTick.index * timelinePanel.tickSeconds;
+                                        const seconds = rulerTick.tickIndex * timelinePanel.tickSeconds;
                                         const minutes = Math.floor(seconds / 60);
                                         const rest = seconds % 60;
                                         return minutes + ":" + (rest < 10 ? "0" : "") + rest;
@@ -2650,8 +2672,7 @@ ApplicationWindow {
                             onVisibleEndFrameChanged: updateWindow()
                             Component.onCompleted: updateWindow()
                             function updateWindow() {
-                                root.mvmController.timelineClipWindow.setVisibleRange(visibleStartFrame,
-                                                                                      visibleEndFrame);
+                                Qt.callLater(timelinePanel.refreshVisibleWindows);
                             }
 
                             delegate: Rectangle {
@@ -2704,8 +2725,12 @@ ApplicationWindow {
                                 }
                                 // 自動化の線の頂点 (clip 内の座標)。ペンの当たり判定と同じ頂点を使う。
                                 readonly property var automationPoints:
-                                    Gestures.penLinePoints(shownKeys, automationBase, penGeometry)
-                                        .map(point => Qt.point(point.x, point.y))
+                                    Gestures.penVisibleLinePoints(shownKeys, automationBase, penGeometry,
+                                                                 clipWaveform.visibleLeft, clipWaveform.visibleRight)
+                                        .map(point => Qt.point(point.x - clipWaveform.visibleLeft, point.y))
+                                readonly property var visibleAutomationKeys:
+                                    Gestures.penVisibleKeys(shownKeys, penGeometry,
+                                                           clipWaveform.visibleLeft, clipWaveform.visibleRight)
 
                                 function penFrameAt(x) {
                                     return Math.max(0, Math.min(clipItem.timelineDurationFrames - 1,
@@ -2825,6 +2850,8 @@ ApplicationWindow {
                                         anchors.leftMargin: 12
                                         anchors.rightMargin: 12
                                         anchors.topMargin: 5
+                                        visible: clipItem.width >= 40
+                                        clip: true
                                         text: clipItem.displayName
                                         color: "white"
                                         font.bold: true
@@ -2929,6 +2956,10 @@ ApplicationWindow {
                                 }
 
                                 Column {
+                                    objectName: "timelineClipName"
+                                    // 幅が余白より狭いと elide が効かず、名前が clip の外へ描かれる。
+                                    visible: clipItem.width >= 40
+                                    clip: true
                                     anchors.fill: parent
                                     anchors.leftMargin: 12
                                     anchors.rightMargin: 12
@@ -3062,7 +3093,11 @@ ApplicationWindow {
                                 // 急な傾きの線がぼやける。線は Shape (CurveRenderer) でベクタ描画する。
                                 Shape {
                                     id: automationShape
-                                    anchors.fill: parent
+                                    objectName: "timelineAutomationShape"
+                                    x: clipWaveform.visibleLeft
+                                    width: Math.max(0, clipWaveform.visibleRight - clipWaveform.visibleLeft)
+                                    height: parent.height
+                                    visible: width > 0
                                     z: 30
                                     preferredRendererType: Shape.CurveRenderer
                                     // 波形や clip の色と同系色にしない。暗い縁取りで明るい波形の上でも読める。
@@ -3086,8 +3121,9 @@ ApplicationWindow {
 
                                 // キーは塗りつぶした青い四角。ドラッグ中・ポイント中のキーは白く大きくする。
                                 Repeater {
-                                    model: clipItem.shownKeys
+                                    model: clipItem.visibleAutomationKeys
                                     delegate: Rectangle {
+                                        objectName: "timelineAutomationKey"
                                         required property var modelData
                                         readonly property bool active:
                                             modelData.frame === (clipItem.previewKeys ? clipItem.penFrame
@@ -3567,16 +3603,21 @@ ApplicationWindow {
                                 readonly property bool selected:
                                     modelData.transitionId === root.mvmController.selectedTransitionId
                                 objectName: "timelineTransition_" + modelData.transitionId
+                                readonly property real spanPixels:
+                                    (modelData.end - modelData.start) * timelinePanel.pixelsPerFrame
                                 x: modelData.start * timelinePanel.pixelsPerFrame
                                 // Premiere と同じく clip の中央に低い帯で描く。上下に残した clip の部分で
                                 // cut の端を掴んで trim できる (離れればトランジションは消える)。
+                                // 極限まで縮小して帯が数 px になると、最低幅や斜線が隣の clip へはみ出す。
+                                // そのときは描かない。
+                                visible: spanPixels >= 8
                                 y: timelinePanel.rowY(modelData.trackKind, modelData.trackIndex)
                                    - timelinePanel.tracksTop + 3
                                    + Math.round((timelinePanel.trackHeight - 6 - height) / 2)
-                                width: Math.max(4, (modelData.end - modelData.start)
-                                                   * timelinePanel.pixelsPerFrame)
+                                width: spanPixels
                                 height: Math.round((timelinePanel.trackHeight - 6) * 0.55)
                                 radius: 2
+                                clip: true
                                 color: selected ? "#c0e0b040" : "#80c89a3c"
                                 border.color: selected ? "#ffe08a" : "#d8b35a"
                                 border.width: selected ? 2 : 1
@@ -3599,8 +3640,9 @@ ApplicationWindow {
                                     onHeightChanged: requestPaint()
                                 }
                                 Label {
+                                    objectName: "timelineTransitionLabel"
                                     anchors.centerIn: parent
-                                    visible: parent.width > 70
+                                    visible: implicitWidth + 8 <= parent.width
                                     text: transitionItem.modelData.trackKind === "audio"
                                           ? "クロスフェード" : "クロスディゾルブ"
                                     color: "white"

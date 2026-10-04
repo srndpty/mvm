@@ -227,9 +227,12 @@ std::size_t approximateProjectBytes(const Project& project) {
         bytes += heapBytes(clip.text.content) + heapBytes(clip.text.fontFamily) +
                  heapBytes(clip.text.color) + heapBytes(clip.text.alignment) +
                  heapBytes(clip.text.outlineColor) + heapBytes(clip.text.backgroundColor);
+        bytes += heapBytes(clip.effects.audioAdjustmentSettings) +
+                 heapBytes(clip.effects.audioAdjustmentFingerprint);
         for (const auto& channel : effectChannels())
             bytes += (clip.effects.*channel.keys).size() * sizeof(ClipKeyframe);
     }
+    bytes += heapBytes(project.lastAudioAdjustmentSettings);
     bytes += project.timelineTransitions.size() * sizeof(TimelineTransition);
     for (const auto& transition : project.timelineTransitions)
         bytes += heapBytes(transition.id) + heapBytes(transition.outgoingClipId) +

@@ -499,9 +499,15 @@ MvmController::MvmController(std::filesystem::path projectPath,
     // slip preview も scrub と同じく最新の位置だけを反映し、Seeking 中は次の tick で再試行する。
     slipPreviewTimer_.setInterval(16);
     connect(&slipPreviewTimer_, &QTimer::timeout, this, &MvmController::applySlipPreview);
+    connect(&audioAdjustmentTimer_, &QTimer::timeout, this, &MvmController::pollAudioAdjustment);
+    connect(&audioWatchFallbackTimer_, &QTimer::timeout, this,
+            &MvmController::checkAudioWatchFallback);
+    connectAudioFileWatch();
+    refreshAudioInputAuthority(false);
 }
 
 MvmController::~MvmController() {
+    cancelAudioAdjustment();
     shutdown();
 }
 
@@ -1033,6 +1039,7 @@ bool MvmController::commitProjectEdit(project::Project candidate, const QString&
     UndoEntry undo{std::move(project_), selectedClipIds_, std::move(currentId), playheadFrame_,
                    currentRevision_};
     project_ = std::move(candidate);
+    refreshAudioInputAuthority(true);
     pushUndoEntry(std::move(undo));
     currentRevision_ = nextRevision_++;
     refreshTimelineModel(invalidation);
@@ -1452,6 +1459,7 @@ bool MvmController::restoreRecovery() {
     if (busy_ || !projectLockHeld_ || !recoveryProject_ || !pauseTimeline())
         return false;
     project_ = *recoveryProject_;
+    refreshAudioInputAuthority(true);
     audioMixerBuses_.clear();
     audioMixerPeaks_.clear();
     // 復元した作業状態の基準は、今のdiskではなくrecoveryに記録されたcanonical。
@@ -3441,7 +3449,7 @@ bool MvmController::textClipHasMotion(const QString& clipId) const {
     const project::ClipEffects defaults;
     for (const auto& channel : project::effectChannels())
         if (channel.kind != project::ClipKeyKind::Opacity &&
-            channel.kind != project::ClipKeyKind::Volume &&
+            !project::isAudioEffectChannel(channel.kind) &&
             (effects.*channel.base != defaults.*channel.base || !(effects.*channel.keys).empty()))
             return true;
     return false;
@@ -6437,6 +6445,7 @@ bool MvmController::stepEditHistory(std::vector<UndoEntry>& from, std::vector<Un
     // refreshTimelineModel が、戻した Project に無い字幕を選択から外す。
     selectedSubtitleIds_ = entry.selectedSubtitleIds;
     project_ = std::move(entry.project);
+    refreshAudioInputAuthority(true);
     playheadFrame_ = entry.playheadFrame;
     currentRevision_ = entry.revision;
     from.pop_back();
@@ -6748,7 +6757,11 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     settleRecoveryWrite();
     if (!pauseTimeline())
         return false;
+    cancelAudioAdjustment();
+    audioFileCache_.clear();
+    audioContentDirty_ = true;
     project_ = std::move(loaded);
+    refreshAudioInputAuthority(false);
     ++projectGeneration_;
     selectedSubtitleId_.clear();
     selectedSubtitleIds_.clear();
@@ -7000,6 +7013,7 @@ bool MvmController::discardUnsavedChanges() {
     }
     const std::string selectedId = currentClipId();
     project_ = savedProject_;
+    refreshAudioInputAuthority(true);
     audioMixerBuses_.clear();
     audioMixerPeaks_.clear();
     clearEditHistory();
@@ -7513,15 +7527,16 @@ QVariantList MvmController::keyframeChannels() const {
     }
     const auto local = effectEditFrame(clip);
     const auto evaluated = project::evaluateClipEffects(effects, local);
-    const QStringList labels{
-        QStringLiteral("不透明度"),    QStringLiteral("音量"),        QStringLiteral("位置 X"),
-        QStringLiteral("位置 Y"),      QStringLiteral("拡大率 X"),    QStringLiteral("拡大率 Y"),
-        QStringLiteral("回転"),        QStringLiteral("クロップ 左"), QStringLiteral("クロップ 上"),
-        QStringLiteral("クロップ 右"), QStringLiteral("クロップ 下")};
+    const QStringList labels{QStringLiteral("不透明度"),        QStringLiteral("音量"),
+                             QStringLiteral("ダッキング (dB)"), QStringLiteral("位置 X"),
+                             QStringLiteral("位置 Y"),          QStringLiteral("拡大率 X"),
+                             QStringLiteral("拡大率 Y"),        QStringLiteral("回転"),
+                             QStringLiteral("クロップ 左"),     QStringLiteral("クロップ 上"),
+                             QStringLiteral("クロップ 右"),     QStringLiteral("クロップ 下")};
     std::size_t index = 0;
     for (const auto& channel : project::effectChannels()) {
         const auto label = labels[static_cast<qsizetype>(index++)];
-        if ((channel.kind == project::ClipKeyKind::Volume) !=
+        if (project::isAudioEffectChannel(channel.kind) !=
             (clip.kind == project::TimelineClipKind::Audio))
             continue;
         const auto& keys = keyframeDisplayKeys_.at(channel.name);
@@ -7552,7 +7567,7 @@ bool MvmController::setEffectAnimation(const QString& name, bool enabled) {
         return false;
     auto candidate = project_;
     auto& clip = candidate.timelineClips[static_cast<std::size_t>(currentClipIndex_)];
-    if ((channel->kind == project::ClipKeyKind::Volume) !=
+    if (project::isAudioEffectChannel(channel->kind) !=
         (clip.kind == project::TimelineClipKind::Audio))
         return false;
     const auto duration = project::timelineClipDuration(candidate, clip);
@@ -7578,7 +7593,7 @@ bool MvmController::toggleEffectKey(const QString& name) {
         return false;
     auto candidate = project_;
     auto& clip = candidate.timelineClips[static_cast<std::size_t>(currentClipIndex_)];
-    if ((channel->kind == project::ClipKeyKind::Volume) !=
+    if (project::isAudioEffectChannel(channel->kind) !=
         (clip.kind == project::TimelineClipKind::Audio))
         return false;
     const auto duration = project::timelineClipDuration(candidate, clip);
@@ -7631,7 +7646,7 @@ bool MvmController::editEffectKey(const QString& name, qint64 from, qint64 to, d
               [](const auto& a, const auto& b) { return a.frame < b.frame; });
     std::string error;
     if (!project::validateEffectKeys(effects, duration.frame,
-                                     channel->kind == project::ClipKeyKind::Volume, error)) {
+                                     project::isAudioEffectChannel(channel->kind), error)) {
         setStatus(QString::fromStdString(error));
         return failEffectEdit(commit);
     }
@@ -7962,6 +7977,7 @@ bool MvmController::failEffectEdit(bool commit) {
 }
 
 void MvmController::shutdown() {
+    cancelAudioAdjustment();
     transcriptionCancel_.store(true);
     if (transcriptionThread_.joinable())
         transcriptionThread_.join();
@@ -7969,6 +7985,11 @@ void MvmController::shutdown() {
     if (shutdownStarted_)
         return;
     shutdownStarted_ = true;
+    // shutdown 後に素材の stat・内容 hash を始めない。cancel が再開した poll もここで止める。
+    audioWatchFallbackTimer_.stop();
+    audioAdjustmentTimer_.stop();
+    if (const auto watched = audioFileWatcher_.files(); !watched.isEmpty())
+        audioFileWatcher_.removePaths(watched);
     if (projectLockHeld_ && dirty())
         startRecoveryWrite(true);
     settleRecoveryWrite();

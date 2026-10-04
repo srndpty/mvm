@@ -199,6 +199,46 @@ function penLineYAt(points, x) {
     return points[points.length - 1].y;
 }
 
+// 時刻順のキーを二分探索する。描画範囲だけを取り出し、画面外のキーを毎回列挙しない。
+function penKeyLowerBound(keys, frame) {
+    let left = 0;
+    let right = keys.length;
+    while (left < right) {
+        const middle = Math.floor((left + right) / 2);
+        if (keys[middle].frame < frame)
+            left = middle + 1;
+        else
+            right = middle;
+    }
+    return left;
+}
+
+function penVisibleKeys(keys, geometry, left, right) {
+    if (!(right > left) || !(geometry.pixelsPerFrame > 0))
+        return [];
+    const first = penKeyLowerBound(keys, (left - geometry.keyPixels) / geometry.pixelsPerFrame);
+    const end = penKeyLowerBound(keys, (right + geometry.keyPixels) / geometry.pixelsPerFrame);
+    return keys.slice(first, end);
+}
+
+// 表示端で線を切る。隣のキーと補間 sample を残し、画面外にあるキーへ向かう傾きも保つ。
+// 当たり判定の penLinePoints と同じ折れ線から端の値を求める。
+function penVisibleLinePoints(keys, baseValue, geometry, left, right) {
+    left = Math.max(0, left);
+    right = Math.min(geometry.width, right);
+    if (!(right > left) || !(geometry.pixelsPerFrame > 0))
+        return [];
+    const first = Math.max(0, penKeyLowerBound(keys, left / geometry.pixelsPerFrame) - 1);
+    const end = Math.min(keys.length, penKeyLowerBound(keys, right / geometry.pixelsPerFrame) + 1);
+    const points = penLinePoints(keys.slice(first, end), baseValue, geometry);
+    const visible = [{ "x": left, "y": penLineYAt(points, left) }];
+    for (const point of points)
+        if (point.x > left && point.x < right)
+            visible.push(point);
+    visible.push({ "x": right, "y": penLineYAt(points, right) });
+    return visible;
+}
+
 // 押した位置 (clip 内の x と値) に最も近い、画面上で左右 keyPixels・上下 linePixels 以内の
 // キー。frame へ丸めてから比べると、高倍率で隣の frame のキーまで拾う。無ければ null。
 function penNearestKey(keys, geometry, x, valuePercent) {

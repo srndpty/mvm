@@ -181,6 +181,7 @@ public:
         bool hasMediaFolders = false;
         bool hasMediaItems = false;
         bool hasSubtitles = false;
+        bool hasLastAudioAdjustmentSettings = false;
         std::string format;
         if (!consume('{'))
             return finish(error);
@@ -196,7 +197,7 @@ public:
                     hasSchema = true;
                     // 版が違うファイルは後続の field の形も違うので、ここで止める。
                     // 止めないと「必須 field がありません」など原因の分からないエラーになる。
-                    if (project.schemaVersion != kSchemaVersion)
+                    if (project.schemaVersion != kSchemaVersion && project.schemaVersion != 16)
                         return failAndFinish(unsupportedSchemaMessage(project.schemaVersion),
                                              error);
                 } else if (key == "format") {
@@ -263,6 +264,12 @@ public:
                     if (hasSubtitles || !parseSubtitles(project.subtitles))
                         return failAndFinish("字幕データが重複または不正です", error);
                     hasSubtitles = true;
+                } else if (key == "last_audio_adjustment_settings") {
+                    if (hasLastAudioAdjustmentSettings ||
+                        !parseString(project.lastAudioAdjustmentSettings))
+                        return failAndFinish("last_audio_adjustment_settings が重複または不正です",
+                                             error);
+                    hasLastAudioAdjustmentSettings = true;
                 } else if (!skipValue()) {
                     return finish(error);
                 }
@@ -279,6 +286,10 @@ public:
             return failAndFinish("Project JSON の末尾に余分な値があります", error);
         if (!hasSchema)
             return failAndFinish("schema_version がありません", error);
+        if (project.schemaVersion == kSchemaVersion && missingAudioAdjustmentFields_)
+            return failAndFinish("自動音量調整の必須 field がありません", error);
+        if (project.schemaVersion == 16)
+            project.schemaVersion = kSchemaVersion;
         if (project.schemaVersion != kSchemaVersion)
             return failAndFinish(unsupportedSchemaMessage(project.schemaVersion), error);
         if (!hasFormat || format != kFormatMarker)
@@ -302,6 +313,7 @@ private:
     const std::string& text_;
     std::size_t position_ = 0;
     std::string error_;
+    bool missingAudioAdjustmentFields_ = false;
 
     bool finish(std::string& error) {
         if (error_.empty())
@@ -758,7 +770,7 @@ private:
     }
 
     bool parseClipEffects(ClipEffects& effects) {
-        bool seen[24] = {};
+        bool seen[29] = {};
         if (!consume('{'))
             return false;
         skipWhitespace();
@@ -816,6 +828,16 @@ private:
                     field = 22;
                 else if (key == "crop_bottom_keys")
                     field = 23;
+                else if (key == "normalization_gain_db")
+                    field = 24;
+                else if (key == "ducking_db")
+                    field = 25;
+                else if (key == "ducking_keys")
+                    field = 26;
+                else if (key == "audio_adjustment_settings")
+                    field = 27;
+                else if (key == "audio_adjustment_fingerprint")
+                    field = 28;
 
                 else
                     return fail("effects に未知の field があります: " + key);
@@ -870,6 +892,16 @@ private:
                     return false;
                 if (field == 23 && !parseClipKeys(effects.cropBottomKeys))
                     return false;
+                if (field == 24 && !parseNumber(effects.normalizationGainDb))
+                    return false;
+                if (field == 25 && !parseNumber(effects.duckingDb))
+                    return false;
+                if (field == 26 && !parseClipKeys(effects.duckingKeys))
+                    return false;
+                if (field == 27 && !parseString(effects.audioAdjustmentSettings))
+                    return false;
+                if (field == 28 && !parseString(effects.audioAdjustmentFingerprint))
+                    return false;
 
                 skipWhitespace();
                 if (consumeIf(','))
@@ -879,10 +911,12 @@ private:
         }
         if (!consume('}'))
             return false;
-        for (bool present : seen) {
-            if (!present)
+        for (int index = 0; index < 24; ++index) {
+            if (!seen[index])
                 return fail("effects object の固定fieldが不足しています");
         }
+        for (int index = 24; index < 29; ++index)
+            missingAudioAdjustmentFields_ = missingAudioAdjustmentFields_ || !seen[index];
         return true;
     }
 
@@ -1876,6 +1910,14 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
         writeKeys(clip.effects.opacityKeys);
         json << ",\n        \"volume_keys\": ";
         writeKeys(clip.effects.volumeKeys);
+        json << ",\n        \"normalization_gain_db\": " << clip.effects.normalizationGainDb
+             << ",\n        \"ducking_db\": " << clip.effects.duckingDb
+             << ",\n        \"audio_adjustment_settings\": \""
+             << escapeJson(clip.effects.audioAdjustmentSettings)
+             << "\",\n        \"audio_adjustment_fingerprint\": \""
+             << escapeJson(clip.effects.audioAdjustmentFingerprint)
+             << "\",\n        \"ducking_keys\": ";
+        writeKeys(clip.effects.duckingKeys);
         json << ",\n        \"position_x_keys\": ";
         writeKeys(clip.effects.positionXKeys);
         json << ",\n        \"position_y_keys\": ";
@@ -1957,7 +1999,8 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
     }
     if (!project.mediaItems.empty())
         json << '\n';
-    json << "  ]\n}\n";
+    json << "  ],\n  \"last_audio_adjustment_settings\": \""
+         << escapeJson(project.lastAudioAdjustmentSettings) << "\"\n}\n";
 
     result.json = json.str();
     result.success = true;
