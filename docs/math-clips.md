@@ -64,8 +64,10 @@
   Project を変えるたびに、すべての数式 clip の描画を要求する (書き出しの前に揃えておくため)。
 - **状態** (`mathClipData` の `state`。Project には保存しない):
   `checking` (backend の確認中) / `rendering` / `stale` (描き直し中で、前の描画を出している) / `ready` /
-  `error` (理由は `message`、詳細は `log`) / `unavailable` (backend が無い)。
+  `error` (理由は `message`、詳細は `log`) / `unavailable` (backend または Project の権限が無い)。
   `showingPrevious` は、preview に前に描けた画素 (last-good) を出していることを示す。
+  `unavailableReason` は `backend` / `authority` / 空、`canRetry` はこの instance で確認を
+  やり直せるかを表す。表示文から原因を推測しない。
 - **last-good:** clip ごとに最後に描けた mask を session の間だけ持ち、描き直し中・失敗中の preview に出す。
   書き出しには使わない。開き直した後は対応付けない (派生の state を Project に入れないため)。
 - **書き出し:** 出力する数式 clip (有効で、出力する track にあるもの) は、現在の式の描画が済んでいなければ
@@ -74,8 +76,8 @@
 - **保存先の変更 (別名で保存・開く):** cache の場所が変わるので、新しい場所で描き直す (cache は移さない)。
 - **終了:** `MvmController::shutdown` が描画中の Manim / LaTeX を process ごと止め、worker を待つ。
 
-未実装: 文字サイズを変えている間は、描き直しが済むまで前の大きさの描画を出す
-(計画の「前の描画を拡大縮小して即座に見せる」はまだ作っていない)。
+文字サイズを変えている間は、描き直しが済むまで前の大きさの描画を出す。
+計画との差と今後の改善は [ロードマップ](roadmap.md#数式-clip) に記録する。
 
 ## Project の schema (18)
 
@@ -123,8 +125,9 @@ pwsh scripts/build.ps1 -Target mvm_math_manim_smoke
 
 ## 数式の編集 UI (P0-5)
 
-- ファイルメニューの「数式 clip を追加」で、再生ヘッド位置の overlay track に既定 5 秒の
+- ファイルメニューの「数式 clip を追加」で、再生ヘッド位置の既存 clip より上の空き track に既定 5 秒の
   数式を置く。追加後はエフェクトコントロールの式入力欄を選択する。
+  画像・文字と同じ配置規則なので、V1 が空なら V1、V1 に clip があれば V2 から置く。
 - 式は 600ms 入力が止まると確定前の preview を要求する。Ctrl+Enter、入力欄からの移動、
   clip の選択変更で確定し、Esc で編集前へ戻す。描画通知は未確定の入力を上書きしない。
 - 文字サイズ・文字色・背景色は既存の数値欄と色選択部品で編集する。位置・拡大・回転は
@@ -133,6 +136,60 @@ pwsh scripts/build.ps1 -Target mvm_math_manim_smoke
   「再試行」は描画環境を確認し直す操作であり、成功した disk cache を強制再生成しない。
 - `math_inspector_qml` は確定・取消・選択変更と、通常幅 / 狭幅・低いパネル / 利用不可の
   実描画・最下部へのスクロールを検査する。外部の Manim / MiKTeX は使わない。
+
+### 確定拒否と利用不可の区別 (P0-5.1)
+
+- 空の式など、構造が不正な入力の確定が失敗したら、選択変更後も旧 clip の入力を欄に保持する。
+  保持中の案内を表示し、描画通知・フォーカス移動では置き換えない。修正して Ctrl+Enter で
+  旧 clip へ確定するか、Esc で明示的に取り消すと、選択中の clip の入力欄へ移る。
+  保持中は書式の操作を無効にし、旧入力と新しい選択の書式を取り違えない。
+- backend の不在では導入案内と再試行を表示する。Project lock を取れない instance では
+  lock の理由だけを表示し、Manim / MiKTeX の導入案内と再試行を出さない。
+  直接 `retryMathRendering` を呼んでも、権限が無ければ外部 process の起動や cache の掃除をしない。
+- QML の負例は空欄・空白だけの入力、権限不足、原因区分の欠落。
+  controller の負例は、確定拒否による Project / Undo / artifact の不変と、実際の二重 lock。
+  `math_inspector_product_ui` は実 `Main.qml` と controller を結び、同じ拒否と案内を検査する。
+
+## 受け入れと完了確認 (P0-6)
+
+P0-6 は静止数式 clip の既存経路を検証する段階とし、animation・新しい編集操作・cache の
+可搬性は追加しない。通常試験は偽の backend を使い、実 toolchain の確認は既存の
+`mvm_math_manim_smoke` を別に実行する（CTest に登録しない既存の方針を維持する）。
+
+| 確認対象 | 検証の入口 |
+|---|---|
+| schema 18 の往復、旧版の読み込み、未知・欠落・重複 field と空の式の拒否 | `math_project_json_focused` |
+| 独立な golden key、着色・中央配置・alpha・出力を超える mask の拒否 | `math_render_key_and_layout` |
+| 取消・timeout と孫 process の終了、式を JSON で渡す契約 | `process_runner_focused` / `manim_math_tex_focused` |
+| disk hit、壊れた PNG / provenance、取消・世代の変更・権限・描画中の破棄 | `math_raster_cache_focused` |
+| 作成・Undo / Redo・コピー・カット・貼り付け・複製・保存と開き直し | `math_controller_focused` |
+| 不正式の保存・last-good・未完了 / backend 不在時の書き出し拒否 | `math_controller_focused` |
+| 入力の保持・依存不足 / 権限不足の案内・狭幅と低いパネルの実描画 | `math_inspector_qml` / `math_inspector_product_ui` |
+| ClipEffects と位置 keyframe を付けた数式の実 GPU preview / MP4 の画素分類 | `math_export_focused` |
+| 二次方程式の 5 式・boxed・引用符と改行・TeX の誤りの分類 | `mvm_math_manim_smoke` (実 Manim + MiKTeX) |
+
+書き出しの試験は、独立に決めた矩形の内外を比較する。GPU preview との比較は圧縮による
+色の差を避けて内部画素の色分類を使い、preview の位置をずらした負の対照が不一致になることも
+要求する。対象画素・frame 数が 0 件なら成功にしない。
+
+再現する通常の gate は `pwsh scripts/test.ps1 -Preset ucrt64-release -Group All` と
+`pwsh scripts/lint.ps1`。前者は build と通常 CTest を実行し、`performance|stability` を除外する。
+GUI 試験は入力を透過する背面 window へ合成 event を送り、利用者の操作を止めない。
+実 Manim の手順は上の「実 Manim での smoke」を使う。
+
+### 確認の範囲 (2026-10-05)
+
+- [事実] `scripts/test.ps1 -Preset ucrt64-release -Group All` は通常 1449 / 1449 件が通過。
+  `-Group BuildIndependent` の選定は 1078 / 1078 件が通過（通常全体に含まれる同じ試験）。
+  `performance|stability` は除外した。`scripts/lint.ps1` と整形差分検査も通過した。
+- [事実] Inspector の QML は 11 ケースが通過した（初期化・終了処理を除く）。
+  実 `Main.qml` の試験も、旧入力の保持・修正確定・二重 lock の案内を検査した。
+- [事実] ClipEffects と位置 keyframe を付けた数式は、独立な期待矩形の内部 5824 画素で
+  GPU preview と MP4 の色分類が一致した。位置をずらした対照は不一致を検出した。
+- [事実] 実 Manim 0.21.0 / MiKTeX 26.5 / dvisvgm 3.6 の smoke は終了コード 0。
+  二次方程式の 5 式・boxed・引用符と改行、および不正な TeX の分類を検査した。
+- [未検証] ナレーション付きの二次方程式動画を、手操作で一通り制作する scenario は実施していない。
+  上の自動試験は各契約の確認であり、その制作手順の実施記録ではない。
 
 ## P0-0: Manim MathTex の検証 (2026-10-05)
 

@@ -3972,6 +3972,10 @@ add_test(NAME math_inspector_qml
 set_tests_properties(math_inspector_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QUICK_CONTROLS_STYLE=Basic"
     TIMEOUT 30)
+add_test(NAME math_inspector_product_ui COMMAND mvm_test_text_ui_input --math-inspector)
+set_tests_properties(math_inspector_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 60)
 add_test(NAME audio_mixer_controls_qml
     COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
             -Runner ${MVM_QMLTESTRUNNER}
@@ -4073,11 +4077,12 @@ set_tests_properties(subtitle_controller_contract PROPERTIES LABELS workstation)
 
 add_executable(mvm_test_math_export harness/test_math_export.cpp)
 target_link_libraries(mvm_test_math_export PRIVATE
-    mvm::project mvm::timeline_export mvm::mlt Qt6::Gui mvm::warnings)
+    mvm::project mvm::timeline_export mvm::timeline_preview_mapping mvm::math_clip_render
+    mvm::gpu_preview mvm::mlt Qt6::Gui mvm::warnings)
 target_compile_definitions(mvm_test_math_export PRIVATE ${MVM_MLT_PATH_DEFS})
 mvm_add_test(math_export_focused
     COMMAND mvm_test_math_export "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
-    PROPERTIES TIMEOUT 120)
+    PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
 
 add_executable(mvm_test_subtitle_export harness/test_subtitle_export.cpp)
 target_link_libraries(mvm_test_subtitle_export PRIVATE mvm::project mvm::text_raster mvm::timeline_export mvm::mlt mvm::gpu_preview Qt6::Gui mvm::warnings)

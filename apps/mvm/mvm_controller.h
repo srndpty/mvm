@@ -641,6 +641,7 @@ public:
     Q_INVOKABLE void retryMathRendering();
     // clipId / source / fontSize / color / backgroundColor と描画の状態
     // (state: checking / rendering / stale / ready / error / unavailable、message、log、toolchain)。
+    // unavailableReason: backend / authority / 空、canRetry: この instance で再試行できるか。
     Q_INVOKABLE QVariantMap mathClipData(const QString& clipId) const;
     QVariantMap selectedMathClip() const;
     // 試験用: 数式の backend の確認を差し替えて確かめ直す (偽の backend を注入する)。

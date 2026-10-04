@@ -168,6 +168,29 @@ int main(int argc, char** argv) {
         check(pump([&] { return state(*controller, clipId) == QStringLiteral("ready"); }),
               "描画が終わると ready");
         check(*backend.renders == 1, "1 回描く");
+        check(controller->selectedMathClip()
+                      .value(QStringLiteral("unavailableReason"))
+                      .toString()
+                      .isEmpty() &&
+                  controller->selectedMathClip().value(QStringLiteral("canRetry")).toBool(),
+              "利用可能な描画には利用不可の理由が無く、再試行できる");
+        const auto beforeInvalid = controller->projectForTest();
+        const auto invalidUndo = controller->undoDepthForTest();
+        const auto invalidKey = controller->mathRastersForTest().keyFor({"latex", "x^2", 96});
+        for (const auto& source : {QString(), QStringLiteral(" \n\t")}) {
+            check(!controller->updateMathClip(clipId, {{QStringLiteral("source"), source}}),
+                  "空の構造入力の確定を拒否する");
+            check(controller->projectForTest() == beforeInvalid &&
+                      controller->undoDepthForTest() == invalidUndo &&
+                      controller->selectedMathClip().value(QStringLiteral("clipId")).toString() ==
+                          clipId,
+                  "確定の拒否は Project・Undo・選択を変えない");
+            check(!invalidKey.isEmpty() &&
+                      controller->mathRastersForTest().keyFor({"latex", "x^2", 96}) == invalidKey &&
+                      state(*controller, clipId) == QStringLiteral("ready") &&
+                      *backend.renders == 1,
+                  "確定の拒否は描画済みの要求と画素を無効化しない");
+        }
         check(mathPixel(*controller, frame, kX, kY) ==
                   std::vector<std::uint8_t>{255, 255, 255, 255},
               "preview の合成に白い数式が中央に入る");
@@ -210,6 +233,9 @@ int main(int argc, char** argv) {
         check(mathClips(*controller)[0]->math.source == "x^2", "Undo で前の式に戻る");
         check(pump([&] { return state(*controller, clipId) == QStringLiteral("ready"); }),
               "Undo した式は描画済みなので ready");
+        check(controller->mathRastersForTest().readyArtifact({"latex", "x^2", 96}).has_value() &&
+                  controller->mathRastersForTest().keyFor({"latex", "BAD", 96}) != invalidKey,
+              "Undo で現在の式の artifact が戻り、別の式の key と区別される");
         check(controller->redoLastEdit() && mathClips(*controller)[0]->math.source == "BAD",
               "Redo で描けない式に戻る");
         check(controller->undoLastEdit(), "もう一度 Undo");
@@ -241,6 +267,22 @@ int main(int argc, char** argv) {
               "数式の値を保ち、ID は新しくする");
         settle(200);
         check(*backend.renders == rendersBeforeCopy, "同じ式の複製は描き直さない");
+
+        check(controller->selectClip(index(clipId)) && controller->cutSelectedClips(),
+              "数式 clip をカットする");
+        check(mathClips(*controller).size() == 2 && controller->pasteClips(),
+              "カットした数式 clip を貼り付ける");
+        const auto pastedId =
+            controller->selectedMathClip().value(QStringLiteral("clipId")).toString();
+        check(!pastedId.isEmpty() && pastedId != clipId &&
+                  controller->selectedMathClip().value(QStringLiteral("source")) ==
+                      QStringLiteral("x^2") &&
+                  controller->selectedMathClip().value(QStringLiteral("color")) ==
+                      QStringLiteral("#FFFF0000"),
+              "カット・貼り付けは新しい ID と数式・書式を保つ");
+        check(controller->undoLastEdit() && controller->undoLastEdit() &&
+                  mathClips(*controller).size() == 3,
+              "カットと貼り付けを Undo して元の clip 群へ戻す");
 
         check(exportAndWait(*controller, output), "描画済みなら書き出す");
         {
@@ -337,10 +379,25 @@ int main(int argc, char** argv) {
               "描けたことの無い式は preview に出さない (他の数式 clip だけが合成される)");
 
         // backend が使えない: 利用不可を示し、書き出さない。
+        check(controller->updateMathClip(clipId,
+                                         {{QStringLiteral("source"), QStringLiteral("GONE")}}),
+              "描画中に backend が消える式を確定する");
+        check(pump([&] { return state(*controller, clipId) == QStringLiteral("unavailable"); }),
+              "描画時の backend 不在も利用不可になる");
+        check(controller->mathClipData(clipId)
+                          .value(QStringLiteral("unavailableReason"))
+                          .toString() == QStringLiteral("backend") &&
+                  controller->mathClipData(clipId).value(QStringLiteral("canRetry")).toBool(),
+              "描画時の backend 不在は導入案内と再試行の対象になる");
         controller->setMathPreflightForTest(
             FakeMathBackend::unavailable("LaTeX (latex.exe) が PATH に見つかりません"));
         check(pump([&] { return state(*controller, clipId) == QStringLiteral("unavailable"); }),
               "backend が使えなければ unavailable");
+        check(controller->mathClipData(clipId)
+                          .value(QStringLiteral("unavailableReason"))
+                          .toString() == QStringLiteral("backend") &&
+                  controller->mathClipData(clipId).value(QStringLiteral("canRetry")).toBool(),
+              "確認時の依存不足を権限不足と区別し、再試行できる");
         check(controller->mathClipData(clipId)
                   .value(QStringLiteral("message"))
                   .toString()
@@ -360,6 +417,10 @@ int main(int argc, char** argv) {
                                          {{QStringLiteral("source"), QStringLiteral("SLOW")}}),
               "時間のかかる式を確定する");
         check(pump([&] { return slow.slowStarted->load(); }), "時間のかかる式の描画が始まる");
+        const auto exportCalls = captured->calls;
+        check(!controller->exportTimeline(QUrl::fromLocalFile(temp.filePath("pending.mp4"))) &&
+                  captured->calls == exportCalls,
+              "描画が未完了の式を含む書き出しは runner を呼ばず拒否する");
         const auto started = std::chrono::steady_clock::now();
         controller->shutdown();
         check(std::chrono::steady_clock::now() - started < std::chrono::seconds(3),
@@ -392,7 +453,7 @@ int main(int argc, char** argv) {
 
         {
             auto preflights = std::make_shared<std::atomic<int>>(0);
-            auto intruder = makeController(shared, initial, captured);
+            auto intruder = makeController(shared, owner->projectForTest(), captured);
             check(!intruder->mathRastersForTest().authorized(),
                   "Project lock を取れない instance は数式の cache の権限を持たない");
             intruder->setMathPreflightForTest(
@@ -408,6 +469,20 @@ int main(int argc, char** argv) {
                       intruder->mathRastersForTest().backendMessage().contains(
                           QStringLiteral("他のプロセス")),
                   "lock を持たない理由を Unavailable で示す");
+            const auto blockedId = QString::fromStdString(mathClips(*owner)[0]->id);
+            const auto blocked = intruder->mathClipData(blockedId);
+            check(blocked.value(QStringLiteral("state")).toString() ==
+                          QStringLiteral("unavailable") &&
+                      blocked.value(QStringLiteral("unavailableReason")).toString() ==
+                          QStringLiteral("authority") &&
+                      !blocked.value(QStringLiteral("canRetry")).toBool(),
+                  "2 つ目の instance は権限不足を返し、依存導入・再試行の対象にしない");
+            check(!blocked.value(QStringLiteral("message")).toString().isEmpty(),
+                  "権限不足でも理由の表示文を残す");
+            intruder->retryMathRendering();
+            settle(100);
+            check(*preflights == 0 && ownerJobsAlive(),
+                  "権限不足への再試行は外部 renderer を起動せず所有者の cache を変更しない");
             check(ownerJobsAlive(), "2 つ目の instance は所有者の作業 directory を消さない");
             intruder->shutdown();
         }

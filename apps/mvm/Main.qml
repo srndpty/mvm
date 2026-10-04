@@ -315,8 +315,10 @@ ApplicationWindow {
                 text: "数式 clip を追加"
                 enabled: !root.mvmController.busy
                 onTriggered: {
-                    if (root.mvmController.createMathClip("ax^2 + bx + c = 0"))
+                    if (root.mvmController.createMathClip("ax^2 + bx + c = 0")) {
+                        root.leftPanelTab = 0;
                         Qt.callLater(() => mathClipInspector.focusSource());
+                    }
                 }
             }
             CompactMenuSeparator {}

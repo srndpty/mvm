@@ -3518,12 +3518,11 @@ std::shared_ptr<const preview::PreviewStillImage> MvmController::mathStillImage(
 }
 
 QVariantMap MvmController::mathClipData(const QString& clipId) const {
-    const auto found =
-        std::find_if(project_.timelineClips.begin(), project_.timelineClips.end(),
-                     [&](const auto& clip) {
-                         return clip.kind == project::TimelineClipKind::Math &&
-                                QString::fromStdString(clip.id) == clipId;
-                     });
+    const auto found = std::find_if(project_.timelineClips.begin(), project_.timelineClips.end(),
+                                    [&](const auto& clip) {
+                                        return clip.kind == project::TimelineClipKind::Math &&
+                                               QString::fromStdString(clip.id) == clipId;
+                                    });
     if (found == project_.timelineClips.end() || !mathRasters_)
         return {};
     const project::MathClipData data = effectiveMathData(*found);
@@ -3531,12 +3530,15 @@ QVariantMap MvmController::mathClipData(const QString& clipId) const {
     QString state;
     QString message;
     QString log;
+    QString unavailableReason;
     switch (mathRasters_->backendState()) {
     case MathRasterCache::BackendState::Checking:
         state = QStringLiteral("checking");
         break;
     case MathRasterCache::BackendState::Unavailable:
         state = QStringLiteral("unavailable");
+        unavailableReason =
+            mathRasters_->authorized() ? QStringLiteral("backend") : QStringLiteral("authority");
         message = mathRasters_->backendMessage();
         break;
     case MathRasterCache::BackendState::Available: {
@@ -3549,11 +3551,11 @@ QVariantMap MvmController::mathClipData(const QString& clipId) const {
             break;
         case MathRasterCache::State::Ready:
             state = QStringLiteral("ready");
-            if (entry.mask &&
-                (entry.mask->width > project_.outputWidth ||
-                 entry.mask->height > project_.outputHeight)) {
+            if (entry.mask && (entry.mask->width > project_.outputWidth ||
+                               entry.mask->height > project_.outputHeight)) {
                 state = QStringLiteral("error");
-                message = QStringLiteral("数式が出力サイズを超えています。文字サイズを下げてください");
+                message =
+                    QStringLiteral("数式が出力サイズを超えています。文字サイズを下げてください");
             }
             break;
         case MathRasterCache::State::Failed:
@@ -3561,6 +3563,7 @@ QVariantMap MvmController::mathClipData(const QString& clipId) const {
             break;
         case MathRasterCache::State::Unavailable:
             state = QStringLiteral("unavailable");
+            unavailableReason = QStringLiteral("backend");
             break;
         }
         break;
@@ -3572,6 +3575,10 @@ QVariantMap MvmController::mathClipData(const QString& clipId) const {
             {QStringLiteral("color"), QString::fromStdString(data.color)},
             {QStringLiteral("backgroundColor"), QString::fromStdString(data.backgroundColor)},
             {QStringLiteral("state"), state},
+            {QStringLiteral("unavailableReason"), unavailableReason},
+            {QStringLiteral("canRetry"),
+             mathRasters_->authorized() && !shutdownStarted_ &&
+                 mathRasters_->backendState() != MathRasterCache::BackendState::Checking},
             // 準備中・描き直し中・失敗中で、前に描けた画素を preview に出しているか。
             {QStringLiteral("showingPrevious"), state != QStringLiteral("ready") && hasPrevious},
             {QStringLiteral("message"), message},

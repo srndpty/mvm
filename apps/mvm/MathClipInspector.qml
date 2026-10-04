@@ -11,6 +11,7 @@ ColumnLayout {
     property string editingId: ""
     property string savedSource: ""
     property bool loading: false
+    property bool commitRejected: false
     property bool logExpanded: false
     spacing: 6
     enabled: !root.mvmController.busy && !root.mvmController.playing
@@ -19,16 +20,14 @@ ColumnLayout {
     function synchronize() {
         if (root.loading)
             return;
-        if (root.editingId === root.clipId && sourceEditor.activeFocus)
+        if (root.commitRejected || (root.editingId === root.clipId && sourceEditor.activeFocus))
             return;
-        root.loading = true;
         if (root.editingId && root.editingId !== root.clipId) {
-            previewTimer.stop();
-            if (sourceEditor.text !== root.savedSource)
-                root.mvmController.updateMathClip(root.editingId, {source: sourceEditor.text});
-            else
-                root.mvmController.cancelMathPreview();
+            // 確定できない入力は旧 clip の欄に残す。描画通知で再試行・上書きしない。
+            if (!root.commitSource())
+                return;
         }
+        root.loading = true;
         root.editingId = root.clipId;
         root.savedSource = root.clipData.source || "";
         sourceEditor.text = root.savedSource;
@@ -40,18 +39,24 @@ ColumnLayout {
 
     function commitSource() {
         previewTimer.stop();
-        if (root.editingId !== root.clipId || !root.editingId)
-            return;
+        if (!root.editingId || root.loading)
+            return true;
+        root.loading = true;
         if (sourceEditor.text !== root.savedSource) {
-            if (root.mvmController.updateMathClip(root.editingId, {source: sourceEditor.text})) {
-                root.savedSource = sourceEditor.text.trim();
-                root.loading = true;
-                sourceEditor.text = root.savedSource;
+            if (!root.mvmController.updateMathClip(root.editingId, {source: sourceEditor.text})) {
+                root.commitRejected = true;
                 root.loading = false;
+                root.mvmController.cancelMathPreview();
+                return false;
             }
+            root.savedSource = sourceEditor.text.trim();
+            sourceEditor.text = root.savedSource;
         } else {
             root.mvmController.cancelMathPreview();
         }
+        root.commitRejected = false;
+        root.loading = false;
+        return true;
     }
     function releaseFocus() {
         if (root.Window.window)
@@ -66,6 +71,16 @@ ColumnLayout {
     }
 
     Label { text: "数式（LaTeX）"; color: "#e6e8ec" }
+    Label {
+        objectName: "mathDraftRejection"
+        Layout.fillWidth: true
+        visible: root.commitRejected
+        text: root.editingId !== root.clipId
+              ? "前に選択した数式の入力を確定できず、この欄に保持しています。修正して Ctrl+Enter で確定するか、Esc で取り消すと選択中の数式へ移ります。"
+              : "入力を確定できませんでした。この欄に保持しています。修正して確定するか、Esc で取り消してください。"
+        color: "#f2c66d"
+        wrapMode: Text.Wrap
+    }
     ModernDialogTextArea {
         id: sourceEditor
         objectName: "mathSourceEditor"
@@ -79,21 +94,25 @@ ColumnLayout {
                 previewTimer.restart();
         }
         onActiveFocusChanged: {
-            if (!activeFocus)
-                root.commitSource();
+            if (!activeFocus && !root.loading && root.commitSource() && root.editingId !== root.clipId)
+                root.synchronize();
         }
         Keys.onPressed: event => {
             if ((event.modifiers & Qt.ControlModifier)
                     && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
-                root.commitSource();
-                root.releaseFocus();
+                if (root.commitSource()) {
+                    root.synchronize();
+                    root.releaseFocus();
+                }
                 event.accepted = true;
             } else if (event.key === Qt.Key_Escape) {
                 previewTimer.stop();
                 root.loading = true;
                 sourceEditor.text = root.savedSource;
                 root.loading = false;
+                root.commitRejected = false;
                 root.mvmController.cancelMathPreview();
+                root.synchronize();
                 root.releaseFocus();
                 event.accepted = true;
             }
@@ -115,6 +134,7 @@ ColumnLayout {
         wrapMode: Text.Wrap
     }
     StyleNumberField {
+        enabled: root.editingId === root.clipId && !root.commitRejected
         Layout.fillWidth: true
         styleData: root.clipData
         namePrefix: "math"
@@ -129,6 +149,7 @@ ColumnLayout {
         onCanceled: root.mvmController.cancelMathPreview()
     }
     Flow {
+        enabled: root.editingId === root.clipId && !root.commitRejected
         Layout.fillWidth: true
         spacing: 6
         Repeater {
@@ -170,8 +191,9 @@ ColumnLayout {
         wrapMode: Text.Wrap
     }
     Label {
+        objectName: "mathDependencyGuidance"
         Layout.fillWidth: true
-        visible: root.clipData.state === "unavailable"
+        visible: root.clipData.unavailableReason === "backend"
         text: "Manim と MiKTeX を導入し、latex / dvisvgm が利用できる状態にして再試行してください。MiKTeX の不足パッケージは自動導入を有効にしてください。"
         color: "#aeb4bf"
         wrapMode: Text.Wrap
@@ -181,6 +203,7 @@ ColumnLayout {
         spacing: 6
         ModernDialogButton {
             objectName: "mathRetryButton"
+            visible: root.clipData.canRetry === true
             text: "再試行"
             onClicked: root.mvmController.retryMathRendering()
         }
