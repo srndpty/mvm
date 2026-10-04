@@ -2,17 +2,22 @@
 
 「このアプリの今後の改善策は何か」に答えるための一覧。着手したら該当の文書 (例: `docs/subtitles.md`) へ移し、ここからは消す。記述の印は `docs/phase0-findings.md` と同じ (`[事実]` `[推測]` `[未検証]`)。
 
+## 一般の音声・書き出し
+
+- [事実] P0-6.1 の同条件対照で、Math を含まない通常 Text と通常画像の音声付き MP4 も
+  AAC の `Input contains (near) NaN/+-Inf`、frame 2〜4 の encode error、
+  `tractor出力を検証できません` を再現した。Math Clip を必要条件としない既存の不具合。
+  同じ 48 kHz stereo WAV、3 秒 / 180 frame、60 fps、1920x1080、同じ export 設定と
+  出力 path の規則を使っている。根本原因は未特定で、一般の export/audio として修正する。
+  再現: 実 Manim smoke の対照。証拠は `build/math-p061-attribution-20261004-203505.log` と
+  同名 directory の `audio-text.mvm` / `audio-image.mvm` / `acceptance.mvm`。
+  Math Clip P0 の完了 gate には音声出力の成功を含めない。過去の P0-6 の失敗は保持する。
+
 ## 数式 clip
 
-- [事実] P0-6 の実数式・文字 title・A1 試験音付き MP4 受け入れは AAC encoder の
-  `Input contains (near) NaN/+-Inf` と `tractor出力を検証できません` で失敗する。
-  mono / stereo、空の V1 の対照でも失敗し、映像だけの対照は通過した。
-  原因特定と音声付き受け入れの成立が P0 完了の残件。
-  再現と artifact は [統合受け入れ](math-clips.md#p0-6-の統合受け入れ-2026-10-05) を参照。
-- [事実] 数式間のクロスディゾルブは、全画面の不透明な Video / Manim だけを許可する
-  既存の Project 契約が拒否する。P0 計画の制作 scenario と一致しない。
-  P0-6 で機能を足さず、計画を fade に限定するか、別段階で透過 layer の dissolve を
-  実装するかを決める必要がある。
+- 数式間のクロスディゾルブは P1+ へ延期する。静止数式 P0 の範囲は既存の fade と
+  ClipEffects。既存の generic still-layer 契約も dissolve を許可しておらず、
+  Video / Manim の全画面・不透明な layer に限定している。P0 の機能として追加しない。
 - [事実] 文字サイズの変更中は、次の描画が済むまで last-good を前の大きさで表示する。
   計画の「前の mask を拡大縮小して即座に見せる」は未実装。必要性を P0.5 で判断する。
 - [事実] 配置は画像・文字と同じ空き track の規則を使い、V1 が空なら数式も V1 に置く。

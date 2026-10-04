@@ -26,6 +26,7 @@
 #include <vector>
 
 #include <QGuiApplication>
+#include <QImage>
 #include <QProcess>
 
 namespace {
@@ -81,6 +82,13 @@ void inspectPng(const mvm::math::MathStaticRenderResult& rendered, const std::st
 
 // backend の単体検査だけで終えず、実際の式を既存の Project と書き出しへ通す。
 // 音声はナレーションの代わりの試験音。人が制作する手順の検証とは区別する。
+bool independentAudioFailure(const mvm::app::TimelineExportResult& math,
+                             const mvm::app::TimelineExportResult& text,
+                             const mvm::app::TimelineExportResult& image) {
+    return !math.success && !text.success && !image.success && !math.error.empty() &&
+           text.error == math.error && image.error == math.error;
+}
+
 void acceptScenario(const std::filesystem::path& root, const std::vector<std::string>& sources,
                     const std::vector<std::filesystem::path>& masks) {
     namespace project = mvm::project;
@@ -186,9 +194,82 @@ void acceptScenario(const std::filesystem::path& root, const std::vector<std::st
     const auto rejected = mvm::app::exportTimeline(loaded.project, missing);
     check(!rejected.success && rejected.error.find("描画が完了していません") != std::string::npos,
           "6 式のうち最後の artifact が無くても全体の書き出しを拒否する");
+    // 同じ WAV・尺・FPS・設定を保ち、数式の種別だけを通常の静止 layer に置き換える。
+    const auto imagePath = root / "control.png";
+    QImage image(1920, 1080, QImage::Format_RGBA8888);
+    image.fill(Qt::white);
+    check(image.save(QString::fromStdWString(imagePath.wstring())), "画像対照の素材を作る");
+    const auto control = [&](bool useImage) {
+        auto project = loaded.project;
+        if (useImage) {
+            project::MediaItem media;
+            media.id = "image-source";
+            media.kind = project::MediaKind::Image;
+            media.mediaPath = imagePath;
+            media.name = "対照画像";
+            media.width = 1920;
+            media.height = 1080;
+            project.mediaItems.push_back(media);
+        }
+        for (auto& clip : project.timelineClips) {
+            if (clip.kind != project::TimelineClipKind::Math)
+                continue;
+            clip.math = {};
+            clip.kind =
+                useImage ? project::TimelineClipKind::Image : project::TimelineClipKind::Text;
+            if (useImage) {
+                clip.mediaPath = imagePath;
+                clip.mediaItemId = "image-source";
+            } else {
+                clip.text.content = "通常の文字による対照";
+            }
+        }
+        const std::string name = useImage ? "audio-image" : "audio-text";
+        int mathCount = 0;
+        int audioCount = 0;
+        for (const auto& clip : project.timelineClips) {
+            mathCount += clip.kind == project::TimelineClipKind::Math;
+            audioCount += clip.kind == project::TimelineClipKind::Audio;
+        }
+        check(mathCount == 0 && audioCount == 1 && project.timelineClips.back() == sound,
+              name + ": Math は 0 本で、同じ WAV・尺の A1 が残る");
+        check(project::saveProjectJson(project, root / (name + ".mvm")).success,
+              name + ": Math の無い対照を保存する");
+        auto settings = request;
+        settings.mathArtifacts.clear();
+        settings.outputPath = root / (name + ".mp4");
+        std::fprintf(stderr, "対照開始: %s\n", name.c_str());
+        const auto result = mvm::app::exportTimeline(project, settings);
+        std::fprintf(stderr, "対照終了: %s success=%d frame=%lld error=%s\n", name.c_str(),
+                     result.success, result.frameCount, result.error.c_str());
+        return result;
+    };
+    const auto textControl = control(false);
+    const auto imageControl = control(true);
+    std::fprintf(stderr, "対照開始: audio-math\n");
     const auto exported = mvm::app::exportTimeline(loaded.project, request);
-    check(exported.success && exported.frameCount == 180,
-          "実数式・文字・音声・fade を 180 frame の MP4 に書き出す: " + exported.error);
+    std::fprintf(stderr, "対照終了: audio-math success=%d frame=%lld error=%s\n", exported.success,
+                 exported.frameCount, exported.error.c_str());
+    const bool independent = independentAudioFailure(exported, textControl, imageControl);
+    // 対照が成功した場合や別の失敗の場合を「独立」として閉じない。
+    mvm::app::TimelineExportResult failedControl;
+    failedControl.error = "対照の失敗";
+    auto successfulControl = failedControl;
+    successfulControl.success = true;
+    auto otherFailure = failedControl;
+    otherFailure.error = "別の失敗";
+    check(!independentAudioFailure(failedControl, successfulControl, successfulControl),
+          "Math だけが失敗する負例は独立と分類しない");
+    check(!independentAudioFailure(failedControl, failedControl, successfulControl),
+          "片方の対照だけが失敗する負例は独立と分類しない");
+    check(!independentAudioFailure(failedControl, failedControl, otherFailure),
+          "対照の失敗が異なる負例は独立と分類しない");
+    check(!independentAudioFailure({}, {}, {}), "失敗の根拠が空の負例は独立と分類しない");
+    check((exported.success && exported.frameCount == 180) || independent,
+          "音声付き数式は成立するか、同条件の Text・画像でも独立な失敗が再現される");
+    std::fprintf(stderr, "音声の帰属: %s\n",
+                 independent ? "Math 非依存の既存書き出し不成立"
+                             : (exported.success ? "成立" : "Math P0 の受け入れを保留"));
     // 音声付きの失敗を成功に変えない。映像だけの対照も独立に検査し、原因の範囲を残す。
     auto videoOnly = loaded.project;
     videoOnly.timelineClips.pop_back();

@@ -197,6 +197,8 @@ GUI 試験は入力を透過する背面 window へ合成 event を送り、利�
 
 ### P0-6 の統合受け入れ (2026-10-05)
 
+以下は P0-6.1 の帰属前の実施記録。失敗 run の結果と当時の HOLD 判定を保持する。
+
 既存の実 backend smoke を拡張し、描画した 5 式と boxed の 6 本を V2 に並べ、V1 の文字 title、
 fade、最後の式の位置・拡大・不透明度 keyframe、A1 の試験音を含む Project を作る。
 ナレーションの収録はせず、3 秒の試験音で音声経路を検査する。実 renderer の試験は従来どおり
@@ -220,6 +222,63 @@ CTest の外で行い、新しい依存や製品機能を足さない。
 確認 artifact: `build/math-p06-acceptance-20261004-202534/` と同名の `.log`。
 映像対照は `acceptance-video-only.mp4`、音声を含む Project は `acceptance.mvm`。
 過去の失敗 run は保持する。未解決事項は [roadmap](roadmap.md#数式-clip) に集約する。
+
+### P0-6.1 の帰属と完了範囲 (2026-10-05)
+
+新しい run で同じ WAV を共有し、Math の 6 本を通常 Text、通常画像にそれぞれ置き換える。
+clip の配置・尺・fade・keyframe、文字 title、A1、Project FPS は保持する。
+export request をコピーし、artifact map を空にする以外は、出力ファイル名だけを各ケースで変える。
+すべて新しい同一作業 directory 内の MP4 とし、通常の製品 export を呼ぶ。
+
+| 新しい対照 | Math の有無 | 観測結果 |
+|---|---|---|
+| `audio-text.mvm` | 無し | AAC NaN/Inf、frame 2〜4 の encode error、出力検証失敗 |
+| `audio-image.mvm` | 無し | 同じ AAC NaN/Inf と encode error、出力検証失敗 |
+| `acceptance.mvm` | 有り | 同じ AAC NaN/Inf と encode error、出力検証失敗 |
+| `acceptance-video-only.mvm` | 有り・音声無し | 180 frame の MP4 と 6 区間の glyph 比較が通過 |
+
+- [事実] Math を含まない両対照でも失敗を再現した。音声出力の不具合は Math Clip の必要条件では
+  なく、[一般の音声・書き出し](roadmap.md#一般の音声書き出し) の残件へ移す。根本原因の確定や修正は
+  この帰属試験では行っていない。過去の failed run を成功へ読み替えない。
+- [exit] Math Clip P0 gate は実 Manim の映像のみの出力、既存の focused 契約検査、fade と
+  ClipEffects とする。独立な一般の音声 export の成功は Math P0 gate から外す。
+  新しい同条件対照で Math だけが失敗した場合は、独立とは分類せず HOLD にする。
+- [exit] Math-to-Math dissolve は P1+ の計画とする。generic still-layer の既存契約は
+  dissolve を保証せず、`dissolveClipShapeEligible` も Video / Manim だけを許可する。
+  静止数式 P0 に必要なのは検査済みの既存 fade / effects であり、新機能は追加しない。
+- [事実] 実 smoke は 70 検査中 0 件失敗、終了コード 0。これは新しい Math P0 の gate の結果であり、
+  音声付き MP4 の成功を意味しない。音声の復号・sample 比較は出力が不成立なので未実施。
+- [事実] 帰属の負例を追加した最終版は 76 検査中 0 件失敗、終了コード 0。
+  Math だけが失敗する対照、片方だけが失敗する対照、異なる失敗、空の失敗理由は
+  独立と分類しない。実対照の Math 0 本 / A1 1 本も検査した。
+  最終ログは `build/math-p061-final-20261004-204218.log`、同名 directory に各 Project と
+  実 Manim PNG、180 frame の `acceptance-video-only.mp4` を保持している。
+
+新しい証拠は `build/math-p061-attribution-20261004-203505.log` と同名 directory。
+Project は 60 fps、1920x1080、音声は同一 48 kHz stereo PCM WAV の 144000 sample。
+出力は 180 frame、MP4 / AAC、CRF 23、render threads 4、encoder threads 0 を共通に使った。
+
+- [事実] 入力 WAV を UCRT64 FFmpeg で直接 AAC に変換した対照は終了コード 0。
+  `input-aac-control.m4a` は ffprobe で AAC / 48000 Hz / 2 channel / 3 秒。
+  したがって入力 WAV や AAC encoder の不在を Math の不成立の根拠にはしない。
+  共通 WAV の SHA-256 は `706a1d48e27e58c6af9a969a6566a16f9816a21a2c5e78e10fe6556985728b5b`。
+
+### 最終判定: P0 PASS/CLOSED (2026-10-05)
+
+静止 Math Clip P0 は、上の P0-6.1 の範囲で完了とする。製品機能の追加は無い。
+一般の音声 export の失敗は未解決のまま残し、数式間 dissolve は P1+ へ延期する。
+
+| gate | 最終結果 | 証拠 |
+|---|---|---|
+| 通常 release (`scripts/test.ps1 -Preset ucrt64-release -Group All`) | 1450 / 1450 通過 | `build/math-p061-release-gate.log` |
+| focused Math / process / backend (通常試験にも含まれる) | 10 / 10 通過 | `build/math-p061-focused.log` |
+| `scripts/lint.ps1` | 通過 | 整形・層の隔離・静的検査すべて通過 |
+| 最終の実 Manim smoke | 76 / 76 通過、終了コード 0 | `build/math-p061-final-20261004-204218.log` |
+
+通常 gate と focused は `performance|stability` を除外し、timeout を付けた。
+実 smoke の成功は Math の無い対照でも音声失敗が再現した帰属と、実数式の映像のみの出力を
+確認した結果である。一般の音声付き export を修正した、または成功したという判定ではない。
+P0-6 の失敗記録・artifact と P0-4.1 の authority/cache 設計は保持した。
 
 ## P0-0: Manim MathTex の検証 (2026-10-05)
 
