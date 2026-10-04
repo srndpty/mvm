@@ -21,6 +21,7 @@ add_library(mvm::core ALIAS mvm_core)
 add_library(mvm_project STATIC
     project/audio_adjustment.cpp
     project/clip_effects.cpp
+    project/math_clip.cpp
     project/media_bin.cpp
     project/path_identity.cpp
     project/subtitles.cpp
@@ -42,21 +43,35 @@ add_library(mvm_util STATIC
     util/mvm_win_utf8.c
     util/mvm_reveal_in_explorer.c
     util/mvm_file_identity.c
+    util/mvm_process.c
+    util/mvm_sha256.c
 )
 target_include_directories(mvm_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mvm_util PRIVATE shell32 ole32)
+target_link_libraries(mvm_util PRIVATE shell32 ole32 bcrypt)
 add_library(mvm::util ALIAS mvm_util)
 # Project JSONのatomic置換はWin32 helperに閉じる。QtやMLTはここへ入れない。
 target_link_libraries(mvm_project PRIVATE mvm::util)
 
+# --- 数式 renderer の中立な契約 ---------------------------------------------
+# backend (Manim など) の型も Project の型も含めない。cache key と出力 raster への配置。
+add_library(mvm_math STATIC
+    media/math/math_render.cpp
+    media/math/math_raster_layout.cpp
+)
+target_include_directories(mvm_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_math PUBLIC mvm::util PRIVATE mvm::warnings)
+add_library(mvm::math ALIAS mvm_math)
+
 # --- Manim external renderer ------------------------------------------------
 # Python を埋め込まず、明示された Manim CLI を外部プロセスとして実行する。
+# 依存の向きは manim -> math (中立な契約は manim を知らない)。
 add_library(mvm_manim STATIC
     media/manim/manim_fingerprint.cpp
+    media/manim/manim_math_tex.cpp
     media/manim/manim_renderer.cpp
 )
 target_include_directories(mvm_manim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mvm_manim PUBLIC mvm::util PRIVATE mvm::warnings bcrypt ole32)
+target_link_libraries(mvm_manim PUBLIC mvm::util mvm::math PRIVATE mvm::warnings ole32)
 add_library(mvm::manim ALIAS mvm_manim)
 
 # --- M2: Manim clip orchestration ------------------------------------------
@@ -91,6 +106,14 @@ target_include_directories(mvm_text_raster PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_text_raster PUBLIC mvm::project Qt6::Gui PRIVATE mvm::warnings)
 add_library(mvm::text_raster ALIAS mvm_text_raster)
 
+# 数式 clip (Project) と中立な数式描画をつなぐ。preview と書き出しが共有する。Qt に依存しない。
+add_library(mvm_math_clip_render STATIC app/math_clip_render.cpp)
+target_include_directories(mvm_math_clip_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_math_clip_render
+    PUBLIC mvm::project mvm::math mvm_still_image
+    PRIVATE mvm::warnings)
+add_library(mvm::math_clip_render ALIAS mvm_math_clip_render)
+
 # --- M4: timeline export orchestration --------------------------------------
 # Qt に依存しない。Project の clip 列を解決し、tmp へ書き出して検証してから
 # 正規名へ rename する順序だけを担う。MLT の呼び出しは mvm::mlt に閉じる。
@@ -100,7 +123,8 @@ add_library(mvm_timeline_export STATIC
 target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_timeline_export
     PUBLIC mvm::project
-    PRIVATE mvm::core mvm::mlt mvm::text_raster mvm_still_image mvm::warnings)
+    PRIVATE mvm::core mvm::mlt mvm::text_raster mvm::math_clip_render mvm_still_image
+        mvm::warnings)
 add_library(mvm::timeline_export ALIAS mvm_timeline_export)
 
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------

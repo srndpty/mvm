@@ -2,6 +2,7 @@
 
 #include "app/audio_source_set_transaction.h"
 #include "app/manim_clip_workflow.h"
+#include "app/math_clip_render.h"
 #include "app/preview/preview_engine_rhi_item.h"
 #include "app/text_raster.h"
 #include "app/timeline_export.h"
@@ -14,6 +15,7 @@
 #include "core/timecode.h"
 #include "image_raster_cache.h"
 #include "media_file_filters.h"
+#include "media/manim/manim_math_tex.h"
 #include "media_import.h"
 #include "preview_engine/preview_engine_internal.h"
 #include "project/clip_effects.h"
@@ -417,7 +419,26 @@ MvmController::MvmController(std::filesystem::path projectPath,
         if (!playing_)
             refreshTextPreview();
     });
-    sessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    // 数式の backend は Manim (MathTex)。確認 (preflight) は worker で行い、使えるかは
+    // 起動を待たずに後から分かる。Project には backend を保存しない (docs/math-clips.md)。
+    mathRasters_ = std::make_unique<MathRasterCache>(
+        mathCacheDirectory(),
+        [manimExecutable = manimExecutablePath_](const std::filesystem::path& workDirectory,
+                                                 const std::atomic<bool>* cancel) {
+            return mvm::manim::preflightManimMathTex({manimExecutable, workDirectory}, cancel);
+        });
+    connect(mathRasters_.get(), &MathRasterCache::entryChanged, this, [this](const QString& key) {
+        if (shutdownStarted_)
+            return;
+        // backend の状態が変わった (key が計算できるようになった) ら、すべての数式を要求し直す。
+        if (key.isEmpty())
+            requestMathRenders();
+        if (!playing_)
+            refreshTextPreview();
+        Q_EMIT stateChanged();
+    });
+    mathRasters_->startPreflight();
+    sessionId_ =QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     QString lockError;
     void* acquiredLock = nullptr;
     const bool locked = acquireProjectLock(projectPath_, acquiredLock, lockError);
@@ -933,6 +954,19 @@ void MvmController::refreshTimelineModel(PlaybackInvalidation invalidation) {
                                                      project_.outputHeight));
         imageRasters_->retainOnly(keep);
     }
+    // 数式: 入力中の preview は文字と同じく Project の変更で捨てる。消えた clip の
+    // last-good と合成済みの画素を捨て、現在の数式をすべて要求する。
+    mathPreviewOverride_.reset();
+    {
+        QSet<QString> mathClipIds;
+        for (const auto& clip : project_.timelineClips)
+            if (clip.kind == project::TimelineClipKind::Math)
+                mathClipIds.insert(QString::fromStdString(clip.id));
+        mathLastGood_.removeIf([&](const auto& item) { return !mathClipIds.contains(item.key()); });
+        mathStillImages_.removeIf(
+            [&](const auto& item) { return !mathClipIds.contains(item.key()); });
+    }
+    requestMathRenders();
     textRasterBounds_.clear();
     textRasterUrls_.clear();
     textRasterDirectory_.reset();
@@ -2094,11 +2128,14 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
             const auto& stillMapping = mappedFrame.stillLayers[entry.index];
             const double opacity = std::clamp(stillMapping.opacity, 0.0, 1.0);
             preview::PreviewCompositionLayer layer;
-            if (stillMapping.kind == project::TimelineClipKind::Image) {
+            if (stillMapping.kind == project::TimelineClipKind::Image ||
+                stillMapping.kind == project::TimelineClipKind::Math) {
                 bool pending = false;
-                layer.stillImage = imageStillImage(stillMapping.clipIndex, error, pending);
-                // raster を worker で生成中。できるまではこの画像を合成に入れず、
-                // できたら entryChanged で組み直す。
+                layer.stillImage = stillMapping.kind == project::TimelineClipKind::Image
+                                       ? imageStillImage(stillMapping.clipIndex, error, pending)
+                                       : mathStillImage(stillMapping.clipIndex, pending);
+                // raster を worker で生成中 (数式は描いたことが無い、または描けない)。
+                // できるまではこの画像を合成に入れず、できたら entryChanged で組み直す。
                 if (pending)
                     continue;
                 if (!layer.stillImage)
@@ -2106,7 +2143,7 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
                 const auto& clip =
                     project_.timelineClips[static_cast<std::size_t>(stillMapping.clipIndex)];
                 const project::ClipEffects effects = effectsForPreview(stillMapping.clipIndex);
-                // 画像は全画面の raster なので、位置・拡大・回転・crop は video
+                // 画像・数式は全画面の raster なので、位置・拡大・回転・crop は video
                 // と同じ座標系で効く。
                 if (!project::clipEffectsAreDefault(effects))
                     applyPreviewLayerEffects(
@@ -3367,6 +3404,288 @@ MvmController::imageStillImage(int clipIndex, QString& error, bool& pending) con
 void MvmController::revalidateMedia() {
     if (imageRasters_)
         imageRasters_->revalidateAll();
+}
+
+std::filesystem::path MvmController::mathCacheDirectory() const {
+    std::error_code error;
+    const auto absolute = std::filesystem::absolute(projectPath_, error);
+    return (error ? projectPath_ : absolute).parent_path() / L"cache" / L"math";
+}
+
+project::MathClipData MvmController::effectiveMathData(const project::TimelineClip& clip) const {
+    if (mathPreviewOverride_ && mathPreviewOverride_->first == clip.id)
+        return mathPreviewOverride_->second;
+    return clip.math;
+}
+
+void MvmController::requestMathRenders() {
+    if (!mathRasters_)
+        return;
+    // 入力中の式を最優先にし、次に再生位置に掛かる clip、残りの順に要求する
+    // (worker は 1 本で、要求の順に描く)。
+    std::vector<math::MathRenderSpec> ordered;
+    if (mathPreviewOverride_)
+        ordered.push_back(mathRenderSpecFor(mathPreviewOverride_->second));
+    std::vector<math::MathRenderSpec> later;
+    for (const auto& clip : project_.timelineClips) {
+        if (clip.kind != project::TimelineClipKind::Math)
+            continue;
+        const auto spec = mathRenderSpecFor(clip.math);
+        const bool atPlayhead =
+            clip.timelineStartFrame <= playheadFrame_ &&
+            playheadFrame_ < clip.timelineStartFrame + (clip.sourceOutFrame - clip.sourceInFrame);
+        (atPlayhead ? ordered : later).push_back(spec);
+    }
+    ordered.insert(ordered.end(), later.begin(), later.end());
+    QSet<QString> keys;
+    for (const auto& spec : ordered) {
+        const QString key = mathRasters_->keyFor(spec);
+        if (!key.isEmpty())
+            keys.insert(key);
+    }
+    // 使わなくなった式 (書き換えた前の式など) の描画は process ごと止める。
+    mathRasters_->retainOnly(keys);
+    for (const auto& spec : ordered)
+        mathRasters_->request(spec);
+}
+
+std::shared_ptr<const preview::PreviewStillImage> MvmController::mathStillImage(int clipIndex,
+                                                                                bool& pending) const {
+    pending = false;
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    const project::MathClipData data = effectiveMathData(clip);
+    const QString clipId = QString::fromStdString(clip.id);
+    const auto spec = mathRenderSpecFor(data);
+    const auto entry = mathRasters_->request(spec);
+    std::shared_ptr<const media::StillImage> mask;
+    QString maskKey;
+    if (entry.state == MathRasterCache::State::Ready && entry.mask) {
+        maskKey = mathRasters_->keyFor(spec);
+        mathLastGood_.insert(clipId, {maskKey, entry.mask});
+        mask = entry.mask;
+    } else if (const auto found = mathLastGood_.constFind(clipId);
+               found != mathLastGood_.constEnd()) {
+        // 描き直し中・失敗中は最後に描けた画素を出し続ける (書き出しには使わない)。
+        mask = found->mask;
+        maskKey = found->key;
+    }
+    if (!mask) {
+        pending = true;
+        return nullptr;
+    }
+    const QString memo = maskKey + QLatin1Char('|') + QString::fromStdString(data.color) +
+                         QLatin1Char('|') + QString::fromStdString(data.backgroundColor) +
+                         QStringLiteral("|%1x%2").arg(project_.outputWidth).arg(project_.outputHeight);
+    if (const auto found = mathStillImages_.constFind(clipId);
+        found != mathStillImages_.constEnd() && found->memo == memo)
+        return found->image;
+    auto composed =
+        composeMathClipRaster(*mask, data, project_.outputWidth, project_.outputHeight);
+    if (!composed.success) {
+        // 出力より大きい式など。状態は mathClipData が示す。preview からは外す。
+        pending = true;
+        return nullptr;
+    }
+    auto still = std::make_shared<preview::PreviewStillImage>();
+    still->width = composed.width;
+    still->height = composed.height;
+    still->rgba = std::move(composed.rgba);
+    mathStillImages_.insert(clipId, {memo, still});
+    return still;
+}
+
+QVariantMap MvmController::mathClipData(const QString& clipId) const {
+    const auto found =
+        std::find_if(project_.timelineClips.begin(), project_.timelineClips.end(),
+                     [&](const auto& clip) {
+                         return clip.kind == project::TimelineClipKind::Math &&
+                                QString::fromStdString(clip.id) == clipId;
+                     });
+    if (found == project_.timelineClips.end() || !mathRasters_)
+        return {};
+    const project::MathClipData data = effectiveMathData(*found);
+    const bool hasPrevious = mathLastGood_.contains(clipId);
+    QString state;
+    QString message;
+    QString log;
+    switch (mathRasters_->backendState()) {
+    case MathRasterCache::BackendState::Checking:
+        state = QStringLiteral("checking");
+        break;
+    case MathRasterCache::BackendState::Unavailable:
+        state = QStringLiteral("unavailable");
+        message = mathRasters_->backendMessage();
+        break;
+    case MathRasterCache::BackendState::Available: {
+        const auto entry = mathRasters_->request(mathRenderSpecFor(data));
+        message = entry.message;
+        log = entry.log;
+        switch (entry.state) {
+        case MathRasterCache::State::Pending:
+            state = hasPrevious ? QStringLiteral("stale") : QStringLiteral("rendering");
+            break;
+        case MathRasterCache::State::Ready:
+            state = QStringLiteral("ready");
+            if (entry.mask &&
+                (entry.mask->width > project_.outputWidth ||
+                 entry.mask->height > project_.outputHeight)) {
+                state = QStringLiteral("error");
+                message = QStringLiteral("数式が出力サイズを超えています。文字サイズを下げてください");
+            }
+            break;
+        case MathRasterCache::State::Failed:
+            state = QStringLiteral("error");
+            break;
+        case MathRasterCache::State::Unavailable:
+            state = QStringLiteral("unavailable");
+            break;
+        }
+        break;
+    }
+    }
+    return {{QStringLiteral("clipId"), clipId},
+            {QStringLiteral("source"), QString::fromStdString(data.source)},
+            {QStringLiteral("fontSize"), data.fontSize},
+            {QStringLiteral("color"), QString::fromStdString(data.color)},
+            {QStringLiteral("backgroundColor"), QString::fromStdString(data.backgroundColor)},
+            {QStringLiteral("state"), state},
+            // 準備中・描き直し中・失敗中で、前に描けた画素を preview に出しているか。
+            {QStringLiteral("showingPrevious"), state != QStringLiteral("ready") && hasPrevious},
+            {QStringLiteral("message"), message},
+            {QStringLiteral("log"), log},
+            {QStringLiteral("toolchain"), mathRasters_->toolchainText()}};
+}
+
+QVariantMap MvmController::selectedMathClip() const {
+    if (currentClipIndex_ < 0 ||
+        currentClipIndex_ >= static_cast<int>(project_.timelineClips.size()))
+        return {};
+    return mathClipData(QString::fromStdString(
+        project_.timelineClips[static_cast<std::size_t>(currentClipIndex_)].id));
+}
+
+namespace {
+
+// QML から来た数式の値を MathClipData へ反映する。確定と preview の両方が使う。
+void applyMathValues(project::MathClipData& data, const QVariantMap& values) {
+    if (values.contains(QStringLiteral("source")))
+        data.source = values.value(QStringLiteral("source")).toString().trimmed().toStdString();
+    if (values.contains(QStringLiteral("fontSize")))
+        data.fontSize = values.value(QStringLiteral("fontSize")).toInt();
+    if (values.contains(QStringLiteral("color")))
+        data.color = values.value(QStringLiteral("color")).toString().toStdString();
+    if (values.contains(QStringLiteral("backgroundColor")))
+        data.backgroundColor =
+            values.value(QStringLiteral("backgroundColor")).toString().toStdString();
+}
+
+std::string mathClipName(const project::MathClipData& data) {
+    return QString::fromStdString(data.source).simplified().left(32).toStdString();
+}
+
+} // namespace
+
+bool MvmController::createMathClip(const QString& source) {
+    if (busy_ || source.trimmed().isEmpty() || !pauseTimeline())
+        return false;
+    project::Project candidate = project_;
+    project::TimelineClip clip;
+    clip.kind = project::TimelineClipKind::Math;
+    clip.id = newClipId();
+    clip.sourceFpsNum = candidate.timelineFpsNum;
+    clip.sourceFpsDen = candidate.timelineFpsDen;
+    clip.sourceFrameCount =
+        project::defaultStillClipFrames(candidate.timelineFpsNum, candidate.timelineFpsDen);
+    clip.sourceOutFrame = clip.sourceFrameCount;
+    clip.math.source = source.trimmed().toStdString();
+    clip.math.fontSize = std::min(clip.math.fontSize, candidate.outputHeight);
+    clip.name = mathClipName(clip.math);
+    std::string error;
+    if (!project::validateMathClipData(clip.math, candidate.outputHeight, error)) {
+        setStatus(QString::fromStdString(error));
+        return false;
+    }
+    const auto placed = project::placeStillClipAt(candidate, std::move(clip), playheadFrame_);
+    if (!placed.success) {
+        setStatus(QString::fromStdString(placed.error));
+        return false;
+    }
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("数式 clip を作成できません: ")))
+        return false;
+    Q_EMIT stateChanged();
+    refreshTextPreview();
+    return selectClip(placed.selectedIndex);
+}
+
+bool MvmController::updateMathClip(const QString& clipId, const QVariantMap& values) {
+    if (busy_ || !pauseTimeline())
+        return false;
+    project::Project candidate = project_;
+    const auto id = clipId.toStdString();
+    const auto found = std::find_if(candidate.timelineClips.begin(), candidate.timelineClips.end(),
+                                    [&](const auto& clip) { return clip.id == id; });
+    if (found == candidate.timelineClips.end() || found->kind != project::TimelineClipKind::Math) {
+        setStatus(QStringLiteral("編集する数式 clip がありません"));
+        return false;
+    }
+    applyMathValues(found->math, values);
+    // 値の形だけを確かめる。描けるかどうかでは確定を拒否しない (描けない式も Project の正)。
+    std::string error;
+    if (!project::validateMathClipData(found->math, candidate.outputHeight, error)) {
+        setStatus(QString::fromStdString(error));
+        return false;
+    }
+    found->name = mathClipName(found->math);
+    mathPreviewOverride_.reset();
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("数式 clip を更新できません: ")))
+        return false;
+    // 値が変わらなかった (commit が何もしない) 場合も、preview の上書きを外した状態へ戻す。
+    requestMathRenders();
+    Q_EMIT stateChanged();
+    refreshTextPreview();
+    return true;
+}
+
+bool MvmController::previewMathClip(const QString& clipId, const QVariantMap& values) {
+    if (busy_ || playing_)
+        return false;
+    const int index = indexOfClipId(project_.timelineClips, clipId.toStdString());
+    if (index < 0 || project_.timelineClips[static_cast<std::size_t>(index)].kind !=
+                         project::TimelineClipKind::Math)
+        return false;
+    project::MathClipData data =
+        effectiveMathData(project_.timelineClips[static_cast<std::size_t>(index)]);
+    applyMathValues(data, values);
+    std::string error;
+    if (!project::validateMathClipData(data, project_.outputHeight, error))
+        return false;
+    mathPreviewOverride_ = std::make_pair(clipId.toStdString(), std::move(data));
+    requestMathRenders();
+    Q_EMIT stateChanged();
+    refreshTextPreview();
+    return true;
+}
+
+void MvmController::cancelMathPreview() {
+    if (!mathPreviewOverride_)
+        return;
+    mathPreviewOverride_.reset();
+    requestMathRenders();
+    Q_EMIT stateChanged();
+    refreshTextPreview();
+}
+
+void MvmController::rerenderMathClips() {
+    if (!mathRasters_)
+        return;
+    // backend を確かめ直す。終わったら entryChanged (空) ですべての数式を要求し直す。
+    mathRasters_->startPreflight();
+    Q_EMIT stateChanged();
+}
+
+void MvmController::setMathPreflightForTest(MathRasterCache::PreflightFunction preflight) {
+    mathRasters_->setPreflight(std::move(preflight));
+    mathRasters_->startPreflight();
 }
 
 QUrl MvmController::textRasterUrl(int index) {
@@ -5068,8 +5387,7 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
     std::map<std::pair<project::TrackKind, int>, std::vector<project::TimelineClip>> lanes;
     std::map<std::string, int> linkCounts;
     for (const auto& clip : clips) {
-        if (clip.kind != project::TimelineClipKind::Text &&
-            !std::filesystem::exists(clip.mediaPath)) {
+        if (project::clipKindHasMediaPath(clip.kind) && !std::filesystem::exists(clip.mediaPath)) {
             setStatus(QStringLiteral("コピー元の素材が見つかりません: ") +
                       fromPath(clip.mediaPath));
             return false;
@@ -6768,6 +7086,8 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     audioMixerBuses_.clear();
     audioMixerPeaks_.clear();
     projectPath_ = std::move(path);
+    if (mathRasters_)
+        mathRasters_->setCacheDirectory(mathCacheDirectory());
     savedProject_ = project_;
     if (!rememberCanonicalBase())
         statusText_ = QStringLiteral("Project fileの基準hashを記録できません");
@@ -6916,6 +7236,9 @@ bool MvmController::saveProjectAs(const QUrl& fileUrl) {
         removedRecovery = removeRecoveryBeside(previousPath, recoveryError);
     adoptProjectLock(acquiredLock, path);
     projectPath_ = path;
+    // 数式の描画は保存先の cache/math に置く。保存先が変われば描き直す (cache を移さない)。
+    if (mathRasters_)
+        mathRasters_->setCacheDirectory(mathCacheDirectory());
     savedProject_ = project_;
     savedRevision_ = currentRevision_;
     const bool rememberedBase = rememberCanonicalBase();
@@ -7312,6 +7635,25 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
     request.burnSubtitles = burnSubtitles_;
     request.renderThreads = 4;
     request.encoderThreads = 0;
+    // 出力する数式 clip は、現在の式の描画が済んでいなければ書き出さない。描き直し中に
+    // 見せている古い描画 (last-good) では書き出さない (fail-closed)。
+    for (const auto& clip : project_.timelineClips) {
+        if (clip.kind != project::TimelineClipKind::Math || !clip.enabled ||
+            !project::isTrackOutputEnabled(project_, clip.track))
+            continue;
+        const auto artifact =
+            mathRasters_ ? mathRasters_->readyArtifact(mathRenderSpecFor(clip.math)) : std::nullopt;
+        if (!artifact) {
+            const auto status = mathClipData(QString::fromStdString(clip.id));
+            QString reason = status.value(QStringLiteral("message")).toString();
+            if (reason.isEmpty())
+                reason = QStringLiteral("描画中です。終わってから書き出してください");
+            reportExportFailure(QStringLiteral("数式 clip '") + QString::fromStdString(clip.name) +
+                                QStringLiteral("' の描画が完了していません: ") + reason);
+            return false;
+        }
+        request.mathArtifacts.emplace(clip.id, *artifact);
+    }
 
     if (exportThread_.joinable())
         exportThread_.join();
@@ -7985,6 +8327,9 @@ void MvmController::shutdown() {
     if (shutdownStarted_)
         return;
     shutdownStarted_ = true;
+    // 描画中の Manim / LaTeX を process ごと止め、worker が終わるまで待つ。
+    if (mathRasters_)
+        mathRasters_->shutdown();
     // shutdown 後に素材の stat・内容 hash を始めない。cancel が再開した poll もここで止める。
     audioWatchFallbackTimer_.stop();
     audioAdjustmentTimer_.stop();

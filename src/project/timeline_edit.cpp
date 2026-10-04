@@ -21,10 +21,8 @@ namespace {
 __extension__ using WideInteger = __int128;
 
 bool validTextColor(const std::string& color) {
-    if (color.size() != 9 || color[0] != '#')
-        return false;
-    return std::all_of(color.begin() + 1, color.end(),
-                       [](unsigned char digit) { return std::isxdigit(digit) != 0; });
+    std::uint32_t argb = 0;
+    return parseArgbColor(color, argb);
 }
 
 bool validTextData(const Project& project, const TextClipData& text) {
@@ -757,8 +755,7 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "timeline clip ID が空または重複しています";
             return result;
         }
-        if (((clip.kind == TimelineClipKind::Text) != clip.mediaPath.empty()) ||
-            clip.name.empty()) {
+        if ((clipKindHasMediaPath(clip.kind) == clip.mediaPath.empty()) || clip.name.empty()) {
             result.error = "timeline clip の path または name が空です";
             return result;
         }
@@ -767,10 +764,20 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "text clip のデータが不正です: " + clip.name;
             return result;
         }
+        if (clip.kind == TimelineClipKind::Math) {
+            std::string mathError;
+            if (!validateMathClipData(clip.math, project.outputHeight, mathError)) {
+                result.error = "数式 clip のデータが不正です (" + mathError + "): " + clip.name;
+                return result;
+            }
+        } else if (clip.math != MathClipData{}) {
+            result.error = "数式 clip 以外が数式のデータを持っています: " + clip.name;
+            return result;
+        }
         if (isStillClipKind(clip.kind) &&
             (clip.speedNum != 1 || clip.speedDen != 1 || !clip.linkGroupId.empty() ||
              clip.preservePitch || clip.frameHold)) {
-            result.error = "text / image clip の速度またはリンクが不正です: " + clip.name;
+            result.error = "text / image / math clip の速度またはリンクが不正です: " + clip.name;
             return result;
         }
         // 素材の時間軸を持たないので、素材 frame domain は in = 0・out = 尺。
@@ -778,7 +785,7 @@ TimelineValidationResult validateTimeline(const Project& project) {
         // (尺は clip の fps で換算される)。trim すると現在の timeline の fps へ揃う。
         if (hasSyntheticSourceDomain(clip) &&
             (clip.sourceInFrame != 0 || clip.sourceOutFrame != clip.sourceFrameCount)) {
-            result.error = "text / image clip の素材範囲が尺と一致しません: " + clip.name;
+            result.error = "text / image / math clip の素材範囲が尺と一致しません: " + clip.name;
             return result;
         }
         if (clip.sourceFpsNum <= 0 || clip.sourceFpsDen <= 0 || clip.sourceFrameCount <= 0 ||

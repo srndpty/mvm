@@ -1,41 +1,20 @@
 #include "media/manim/manim_fingerprint.h"
 
+#include "util/mvm_sha256.h"
 #include "util/mvm_win_utf8.h"
 
-#include <windows.h>
 #include <array>
-#include <bcrypt.h>
 #include <fstream>
 #include <iomanip>
+#include <memory>
 #include <sstream>
-#include <vector>
 
 namespace mvm::manim {
 namespace {
 
-class AlgorithmHandle {
-public:
-    ~AlgorithmHandle() {
-        if (handle)
-            BCryptCloseAlgorithmProvider(handle, 0);
-    }
-
-    BCRYPT_ALG_HANDLE handle = nullptr;
+struct Sha256Deleter {
+    void operator()(MvmSha256* hash) const { mvm_sha256_destroy(hash); }
 };
-
-class HashHandle {
-public:
-    ~HashHandle() {
-        if (handle)
-            BCryptDestroyHash(handle);
-    }
-
-    BCRYPT_HASH_HANDLE handle = nullptr;
-};
-
-bool failed(NTSTATUS status) {
-    return status < 0;
-}
 
 std::string pathToUtf8(const std::filesystem::path& path) {
     char* text = mvm_wide_to_utf8(path.c_str());
@@ -44,7 +23,7 @@ std::string pathToUtf8(const std::filesystem::path& path) {
     return result;
 }
 
-std::string statusText(NTSTATUS status) {
+std::string statusText(long status) {
     std::ostringstream text;
     text << "0x" << std::hex << std::setfill('0') << std::setw(8)
          << static_cast<unsigned long>(status);
@@ -66,38 +45,9 @@ ManimFingerprintResult fingerprintManimSource(const std::filesystem::path& scrip
         return result;
     }
 
-    AlgorithmHandle algorithm;
-    NTSTATUS status =
-        BCryptOpenAlgorithmProvider(&algorithm.handle, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
-    if (failed(status)) {
-        result.error = "SHA-256 provider を初期化できません: " + statusText(status);
-        return result;
-    }
-
-    DWORD objectLength = 0;
-    DWORD hashLength = 0;
-    DWORD received = 0;
-    status = BCryptGetProperty(algorithm.handle, BCRYPT_OBJECT_LENGTH,
-                               reinterpret_cast<PUCHAR>(&objectLength), sizeof(objectLength),
-                               &received, 0);
-    if (failed(status)) {
-        result.error = "SHA-256 object length を取得できません: " + statusText(status);
-        return result;
-    }
-    status =
-        BCryptGetProperty(algorithm.handle, BCRYPT_HASH_LENGTH,
-                          reinterpret_cast<PUCHAR>(&hashLength), sizeof(hashLength), &received, 0);
-    if (failed(status) || hashLength != 32) {
-        result.error = "SHA-256 digest length を取得できません";
-        return result;
-    }
-
-    std::vector<unsigned char> hashObject(objectLength);
-    std::vector<unsigned char> digest(hashLength);
-    HashHandle hash;
-    status = BCryptCreateHash(algorithm.handle, &hash.handle, hashObject.data(), objectLength,
-                              nullptr, 0, 0);
-    if (failed(status)) {
+    long status = 0;
+    const std::unique_ptr<MvmSha256, Sha256Deleter> hash(mvm_sha256_create(&status));
+    if (!hash) {
         result.error = "SHA-256 hash を作成できません: " + statusText(status);
         return result;
     }
@@ -107,9 +57,8 @@ ManimFingerprintResult fingerprintManimSource(const std::filesystem::path& scrip
         input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
         const auto count = input.gcount();
         if (count > 0) {
-            status = BCryptHashData(hash.handle, reinterpret_cast<PUCHAR>(buffer.data()),
-                                    static_cast<ULONG>(count), 0);
-            if (failed(status)) {
+            status = mvm_sha256_update(hash.get(), buffer.data(), static_cast<std::size_t>(count));
+            if (status != 0) {
                 result.error = "Manim script の SHA-256 計算に失敗しました: " + statusText(status);
                 return result;
             }
@@ -120,17 +69,13 @@ ManimFingerprintResult fingerprintManimSource(const std::filesystem::path& scrip
         return result;
     }
 
-    status = BCryptFinishHash(hash.handle, digest.data(), hashLength, 0);
-    if (failed(status)) {
+    char digest[MVM_SHA256_HEX_SIZE] = {};
+    status = mvm_sha256_finish_hex(hash.get(), digest);
+    if (status != 0) {
         result.error = "SHA-256 digest を確定できません: " + statusText(status);
         return result;
     }
-
-    std::ostringstream fingerprint;
-    fingerprint << std::hex << std::setfill('0');
-    for (const unsigned char byte : digest)
-        fingerprint << std::setw(2) << static_cast<unsigned>(byte);
-    result.fingerprint = fingerprint.str();
+    result.fingerprint = digest;
     result.success = true;
     return result;
 }

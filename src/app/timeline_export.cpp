@@ -1,5 +1,6 @@
 #include "app/timeline_export.h"
 
+#include "app/math_clip_render.h"
 #include "app/text_raster.h"
 #include "media/mlt/mvm_mlt_export.h"
 #include "media/still_image/static_image.h"
@@ -458,6 +459,28 @@ TimelineExportResult exportTimeline(const project::Project& project,
             }
             std::string staged;
             if (!stagePng(image, QString::number(index) + ".png", staged))
+                return result;
+            clipPaths.emplace(index, std::move(staged));
+            continue;
+        }
+        if (clip.kind == project::TimelineClipKind::Math) {
+            // 描画済みの PNG を preview と同じ合成 (composeMathClipRaster) に通す。
+            // 描画は controller の cache が行い、書き出しは Manim を起動しない。
+            const auto artifact = request.mathArtifacts.find(clip.id);
+            if (artifact == request.mathArtifacts.end()) {
+                result.error = "数式 clip '" + clip.name + "' の描画が完了していません";
+                return result;
+            }
+            const auto composed =
+                composeMathClipFromPng(artifact->second, clip.math, request.width, request.height);
+            if (!composed.success) {
+                result.error = "数式 clip '" + clip.name + "' を書き出せません: " + composed.error;
+                return result;
+            }
+            const QImage image(composed.rgba.data(), composed.width, composed.height,
+                               composed.width * 4, QImage::Format_RGBA8888);
+            std::string staged;
+            if (!stagePng(image, QString::number(index) + "-math.png", staged))
                 return result;
             clipPaths.emplace(index, std::move(staged));
             continue;

@@ -53,6 +53,14 @@ clip の編集で字幕を置き直すとき、毎回 timeline の frame から�
 
 ## 既知の未解決の問題
 
+- [事実] 2026-10-05、release の通常 CTest (1447 件) で `preview_spike_json_contract` が 1 回だけ落ちた。
+  `preview_spike_device_sharing_contract` が書いた `p1/contract-h264.json` で、
+  `displayed=181` が `submitted=180`・`decoded=180` を超えていた (契約違反 3 件 / 検査 80 件)。
+  直後に producer と checker を組で 3 回回すと 3/3 通過した。
+  `mvm_preview_spike` は `gpu_preview` と `preview_qt` だけに依存し、これらはこの時点で変更していない。
+  [推測] 提示の数え方に、まれに 1 回多く数える競合がある。
+  [未検証] 再現条件。同じ run で `transition_preview` も 1 回落ち、再実行で通過した。
+
 - [未検証] 利用者から、長尺のスピーチと BGM を含む Project
   (`build/ucrt64-debug/m6a-gui/project.mvm`) で、縮小時のホイール応答が重いとの報告がある。
   画面外の目盛り・音量線・キーの生成を抑え、長尺波形を使う回帰試験で検査した

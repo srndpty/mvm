@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,9 @@ struct TimelineExportRequest {
     // 音声の比較用に Matroska / PCM を明示選択できる。通常の製品出力は MP4 / AAC。
     bool losslessAudio = false;
     int timeoutMs = 600000;
+    // 数式 clip の ID -> 描画済みの PNG (cache の <key>.png)。書き出しは数式を描かない。
+    // 出力する数式 clip がここに無ければ失敗する (古い描画や描画中の式で書き出さない)。
+    std::map<std::string, std::filesystem::path> mathArtifacts;
     int renderThreads = 4;
     int encoderThreads = 0;
     // trueを返すとキャンセルする。worker threadから呼ばれる。

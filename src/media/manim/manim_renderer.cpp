@@ -1,5 +1,6 @@
 #include "media/manim/manim_renderer.h"
 
+#include "util/mvm_process.h"
 #include "util/mvm_win_utf8.h"
 
 #include <windows.h>
@@ -17,29 +18,6 @@ namespace {
 constexpr wchar_t kOutputBaseName[] = L"mvm_manim_output";
 constexpr wchar_t kOutputFileName[] = L"mvm_manim_output.mp4";
 
-class WinHandle {
-public:
-    explicit WinHandle(HANDLE handle = nullptr) : handle_(handle) {}
-
-    ~WinHandle() { close(); }
-
-    WinHandle(const WinHandle&) = delete;
-    WinHandle& operator=(const WinHandle&) = delete;
-
-    HANDLE get() const { return handle_; }
-
-    bool valid() const { return handle_ && handle_ != INVALID_HANDLE_VALUE; }
-
-    void close() {
-        if (valid())
-            CloseHandle(handle_);
-        handle_ = nullptr;
-    }
-
-private:
-    HANDLE handle_;
-};
-
 std::string pathToUtf8(const std::filesystem::path& path) {
     char* text = mvm_wide_to_utf8(path.c_str());
     std::string result = text ? text : "";
@@ -53,31 +31,6 @@ void appendError(ManimRenderResult& result, const std::string& message) {
     result.stderrText += message;
     if (result.stderrText.empty() || result.stderrText.back() != '\n')
         result.stderrText += '\n';
-}
-
-std::wstring quoteArgument(const std::wstring& argument) {
-    if (!argument.empty() && argument.find_first_of(L" \t\n\v\"") == std::wstring::npos)
-        return argument;
-
-    std::wstring result = L"\"";
-    for (std::size_t index = 0;; ++index) {
-        std::size_t backslashes = 0;
-        while (index < argument.size() && argument[index] == L'\\') {
-            ++index;
-            ++backslashes;
-        }
-        if (index == argument.size()) {
-            result.append(backslashes * 2, L'\\');
-            break;
-        }
-        if (argument[index] == L'\"')
-            result.append(backslashes * 2 + 1, L'\\');
-        else
-            result.append(backslashes, L'\\');
-        result += argument[index];
-    }
-    result += L'\"';
-    return result;
 }
 
 std::string readFile(const std::filesystem::path& path) {
@@ -183,23 +136,6 @@ ManimRenderResult renderManim(const ManimRenderRequest& request) {
     const auto stdoutPath = jobDirectory / L".mvm-stdout.txt";
     const auto stderrPath = jobDirectory / L".mvm-stderr.txt";
 
-    SECURITY_ATTRIBUTES security{};
-    security.nLength = sizeof(security);
-    security.bInheritHandle = TRUE;
-
-    WinHandle stdoutHandle(CreateFileW(stdoutPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
-                                       &security, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY,
-                                       nullptr));
-    WinHandle stderrHandle(CreateFileW(stderrPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
-                                       &security, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY,
-                                       nullptr));
-    WinHandle stdinHandle(CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                      &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-    if (!stdoutHandle.valid() || !stderrHandle.valid() || !stdinHandle.valid()) {
-        appendError(result, "Manim の標準入出力を準備できません");
-        return result;
-    }
-
     const auto resolution = std::to_wstring(request.width) + L"," + std::to_wstring(request.height);
     wchar_t* sceneText = mvm_utf8_to_wide(request.sceneName.c_str());
     if (!sceneText) {
@@ -209,7 +145,6 @@ ManimRenderResult renderManim(const ManimRenderRequest& request) {
     const std::wstring sceneName = sceneText;
     mvm_str_free(sceneText);
     const std::vector<std::wstring> arguments = {
-        request.manimExecutablePath.wstring(),
         L"render",
         L"--format",
         L"mp4",
@@ -227,48 +162,30 @@ ManimRenderResult renderManim(const ManimRenderRequest& request) {
         sceneName,
     };
 
-    std::wstring commandLine;
-    for (const auto& argument : arguments) {
-        if (!commandLine.empty())
-            commandLine += L' ';
-        commandLine += quoteArgument(argument);
-    }
-    std::vector<wchar_t> mutableCommandLine(commandLine.begin(), commandLine.end());
-    mutableCommandLine.push_back(L'\0');
+    std::vector<const wchar_t*> argumentPointers;
+    argumentPointers.reserve(arguments.size());
+    for (const auto& argument : arguments)
+        argumentPointers.push_back(argument.c_str());
 
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    startup.wShowWindow = SW_HIDE;
-    startup.hStdInput = stdinHandle.get();
-    startup.hStdOutput = stdoutHandle.get();
-    startup.hStdError = stderrHandle.get();
-
-    PROCESS_INFORMATION process{};
     const auto workingDirectory = std::filesystem::absolute(request.scriptPath).parent_path();
-    const BOOL started = CreateProcessW(
-        request.manimExecutablePath.c_str(), mutableCommandLine.data(), nullptr, nullptr, TRUE,
-        CREATE_NO_WINDOW, nullptr, workingDirectory.c_str(), &startup, &process);
-    if (!started) {
-        const DWORD errorCode = GetLastError();
-        char* message = mvm_win_error_message(errorCode);
+    MvmProcessRequest process{};
+    process.executable = request.manimExecutablePath.c_str();
+    process.arguments = argumentPointers.data();
+    process.argument_count = argumentPointers.size();
+    process.working_directory = workingDirectory.c_str();
+    process.stdout_path = stdoutPath.c_str();
+    process.stderr_path = stderrPath.c_str();
+    MvmProcessResult ran{};
+    mvm_process_run(&process, &ran);
+    if (ran.status == MVM_PROCESS_START_FAILED) {
+        char* message = mvm_win_error_message(ran.win32_error);
         appendError(result, "Manim process を起動できません (Win32 error " +
-                                std::to_string(errorCode) + "): " + (message ? message : ""));
+                                std::to_string(ran.win32_error) + "): " + (message ? message : ""));
         mvm_str_free(message);
         return result;
     }
-
-    WinHandle processHandle(process.hProcess);
-    WinHandle threadHandle(process.hThread);
-    stdoutHandle.close();
-    stderrHandle.close();
-    stdinHandle.close();
-
-    WaitForSingleObject(processHandle.get(), INFINITE);
-    DWORD exitCode = 1;
-    if (!GetExitCodeProcess(processHandle.get(), &exitCode))
-        exitCode = static_cast<DWORD>(INT_MAX);
-    result.exitCode = exitCode > static_cast<DWORD>(INT_MAX) ? INT_MAX : static_cast<int>(exitCode);
+    // timeout も取消も指定していないので、残るのは終了か待機の失敗だけである。
+    result.exitCode = ran.status == MVM_PROCESS_EXITED ? ran.exit_code : INT_MAX;
 
     result.stdoutText = readFile(stdoutPath);
     result.stderrText = readFile(stderrPath);

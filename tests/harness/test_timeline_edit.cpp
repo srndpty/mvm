@@ -3122,10 +3122,10 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
             }
         }
         auto oldSchema = serialized.json;
-        const auto schema = oldSchema.find("\"schema_version\": 17");
-        check(schema != std::string::npos, "schema 14 が出力されません");
+        const auto schema = oldSchema.find("\"schema_version\": 18");
+        check(schema != std::string::npos, "schema 18 が出力されません");
         if (schema != std::string::npos) {
-            oldSchema.replace(schema, std::string("\"schema_version\": 17").size(),
+            oldSchema.replace(schema, std::string("\"schema_version\": 18").size(),
                               "\"schema_version\": 13");
             check(!mvm::project::parseProjectJsonText(oldSchema, projectFile).success,
                   "schema 13 を受理しました");

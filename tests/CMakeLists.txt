@@ -338,7 +338,7 @@ qt_add_executable(mvm_test_controller_export
 target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_controller_export PRIVATE
     mvm::audio_adjustment
-    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
+    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
@@ -363,7 +363,7 @@ target_include_directories(mvm_test_sourceless_timeline_playback PRIVATE
     ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_sourceless_timeline_playback PRIVATE
     mvm::audio_adjustment
-    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
+    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
@@ -397,7 +397,7 @@ target_include_directories(mvm_test_transition_preview PRIVATE
     ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_transition_preview PRIVATE
     mvm::audio_adjustment
-    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
+    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
@@ -657,7 +657,7 @@ target_compile_definitions(mvm_manim_project_smoke PRIVATE ${MVM_MLT_PATH_DEFS})
 
 add_executable(mvm_test_manim_clip_workflow harness/test_manim_clip_workflow.cpp)
 target_link_libraries(mvm_test_manim_clip_workflow PRIVATE
-    mvm::transcribe mvm::manim_clip_workflow mvm::util mvm::warnings)
+    mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render mvm::util mvm::warnings)
 add_dependencies(mvm_test_manim_clip_workflow mvm_fake_manim_cli)
 add_test(NAME m2_manim_clip_workflow_focused
     COMMAND mvm_test_manim_clip_workflow
@@ -758,6 +758,54 @@ target_link_libraries(mvm_test_atomic_write PRIVATE mvm::util mvm::warnings)
 mvm_add_test(atomic_write_retries_shared_target
     COMMAND mvm_test_atomic_write "${CMAKE_CURRENT_BINARY_DIR}/atomic-write"
     PROPERTIES TIMEOUT 60)
+
+# 外部 process の起動・timeout・取消 (孫 process まで終わらせること)。
+add_executable(mvm_fake_process_child harness/fake_process_child.cpp)
+target_link_libraries(mvm_fake_process_child PRIVATE mvm::util mvm::warnings)
+add_executable(mvm_test_process core/test_process.cpp)
+target_link_libraries(mvm_test_process PRIVATE mvm::util mvm::warnings)
+add_dependencies(mvm_test_process mvm_fake_process_child)
+mvm_add_test(process_runner_focused
+    COMMAND mvm_test_process "$<TARGET_FILE:mvm_fake_process_child>"
+        "${CMAKE_CURRENT_BINARY_DIR}/process-runner"
+    PROPERTIES TIMEOUT 60)
+
+add_executable(mvm_test_sha256 core/test_sha256.cpp)
+target_link_libraries(mvm_test_sha256 PRIVATE mvm::util mvm::warnings)
+mvm_add_test(sha256_known_vectors COMMAND mvm_test_sha256 PROPERTIES TIMEOUT 30)
+
+# --- 数式 clip: renderer の中立な契約と manim-mathtex backend ---------------
+add_executable(mvm_test_project_math harness/test_project_math.cpp)
+target_link_libraries(mvm_test_project_math PRIVATE mvm::project mvm::util mvm::warnings)
+mvm_add_test(math_project_json_focused COMMAND mvm_test_project_math PROPERTIES TIMEOUT 30)
+
+add_executable(mvm_test_math_raster_cache harness/test_math_raster_cache.cpp)
+target_link_libraries(mvm_test_math_raster_cache PRIVATE
+    mvm::math_raster_cache Qt6::Core mvm::warnings)
+mvm_add_test(math_raster_cache_focused
+    COMMAND mvm_test_math_raster_cache "${CMAKE_CURRENT_BINARY_DIR}/math-raster-cache"
+    PROPERTIES TIMEOUT 120)
+
+add_executable(mvm_test_math_render core/test_math_render.cpp)
+target_link_libraries(mvm_test_math_render PRIVATE mvm::math mvm::warnings)
+mvm_add_test(math_render_key_and_layout COMMAND mvm_test_math_render PROPERTIES TIMEOUT 30)
+
+# 実 Manim / LaTeX は使わない。偽の tool は自分の file 名で Manim / latex / dvisvgm を演じる。
+add_executable(mvm_fake_math_tex_cli harness/fake_math_tex_cli.cpp)
+target_link_libraries(mvm_fake_math_tex_cli PRIVATE mvm::util mvm::warnings)
+add_executable(mvm_test_manim_math_tex core/test_manim_math_tex.cpp)
+target_link_libraries(mvm_test_manim_math_tex PRIVATE mvm::manim mvm::util mvm::warnings)
+add_dependencies(mvm_test_manim_math_tex mvm_fake_math_tex_cli)
+mvm_add_test(manim_math_tex_focused
+    COMMAND mvm_test_manim_math_tex "$<TARGET_FILE:mvm_fake_math_tex_cli>"
+        "${CMAKE_CURRENT_BINARY_DIR}/manim-math-tex" "${MVM_UCRT64_ROOT}/bin"
+    PROPERTIES TIMEOUT 120)
+
+# 実 Manim + MiKTeX の smoke。mvm_manim_smoke と同じく CTest には登録しない
+# (Manim と LaTeX の導入を build・通常試験の必須条件にしない)。手順は docs/math-clips.md。
+add_executable(mvm_math_manim_smoke harness/mvm_math_manim_smoke.cpp)
+target_link_libraries(mvm_math_manim_smoke PRIVATE
+    mvm::manim mvm::still_image mvm::util mvm::warnings)
 
 # --- negative test は終了コードを厳密に照合する -----------------------------
 #
@@ -3996,6 +4044,14 @@ set_tests_properties(audio_adjustment_contract PROPERTIES
 add_test(NAME audio_adjustment_audition COMMAND mvm_test_audio_adjustment "${CMAKE_BINARY_DIR}" --audition)
 set_tests_properties(audio_adjustment_audition PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120 LABELS workstation)
+# 数式 clip を controller 経由で検査する (偽の backend、GPU なし)。
+qt_add_executable(mvm_test_math_controller harness/test_math_controller.cpp
+    ${_subtitle_controller_sources})
+target_include_directories(mvm_test_math_controller PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_math_controller PRIVATE ${_subtitle_controller_libraries})
+target_compile_definitions(mvm_test_math_controller PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_test_math_controller PROPERTIES WIN32_EXECUTABLE OFF)
+mvm_add_test(math_controller_focused COMMAND mvm_test_math_controller PROPERTIES TIMEOUT 120)
 target_link_libraries(mvm_test_subtitle_controller PRIVATE ${_subtitle_controller_libraries})
 target_compile_definitions(mvm_test_subtitle_controller PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_SUBTITLE_PANEL_QML="${CMAKE_SOURCE_DIR}/apps/mvm/SubtitlePanel.qml"
@@ -4006,6 +4062,14 @@ set_tests_properties(subtitle_native_preview PROPERTIES ENVIRONMENT "PATH=${MVM_
 set_tests_properties(subtitle_controller_contract PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120 WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 add_dependencies(mvm_subtitle_validation mvm_test_subtitle_controller)
 set_tests_properties(subtitle_controller_contract PROPERTIES LABELS workstation)
+
+add_executable(mvm_test_math_export harness/test_math_export.cpp)
+target_link_libraries(mvm_test_math_export PRIVATE
+    mvm::project mvm::timeline_export mvm::mlt Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_test_math_export PRIVATE ${MVM_MLT_PATH_DEFS})
+mvm_add_test(math_export_focused
+    COMMAND mvm_test_math_export "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
+    PROPERTIES TIMEOUT 120)
 
 add_executable(mvm_test_subtitle_export harness/test_subtitle_export.cpp)
 target_link_libraries(mvm_test_subtitle_export PRIVATE mvm::project mvm::text_raster mvm::timeline_export mvm::mlt mvm::gpu_preview Qt6::Gui mvm::warnings)
