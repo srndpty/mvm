@@ -491,6 +491,7 @@ math::MathPreflightResult preflightManimMathTex(const ManimMathTexConfig& config
                                             const std::atomic<bool>* renderCancel) {
         return renderManimMathWrite(manim, request, renderCancel);
     };
+    result.backend.maximumSequenceFrames = kMaximumMathWriteFrames;
     return result;
 }
 

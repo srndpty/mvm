@@ -298,8 +298,12 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
   `MathRenderSpec` と cache key を変えないため (P0 の cache と golden key がそのまま使える)。
   ClipEffects にも入れない (種別に依らない keyframe の仕組みで、Manim の artifact を要らない)。
 - `intro_frames` は clip の素材 frame (fade と同じ domain) で、clip の見えている先頭から数える。
-  1 から clip の尺と 600 frame (60 fps で 10 秒) の小さい方まで。clip の尺に対する割合にはしない
+  1 から clip の尺まで (時間の意味だけで検証する)。clip の尺に対する割合にはしない
   (末尾を trim すると書く速さが変わり、artifact の key が尺に依存するため)。
+- 描画の方式による上限 (連番の枚数・memory) は Project の値に持ち込まない (P1.1)。backend は
+  描ける最大の枚数を `MathRenderBackend::maximumSequenceFrames` で示し (Manim は 4 桁の連番名に
+  収まる 9999)、超える Write は Project としては正しいまま、描画が理由付きの error
+  (`writeState`) になり、書き出しを拒否する。
 - 編集の規則は fade in に揃える: 分割・上書き・時間編集で分けた右側は Write を持たない。
   trim は縮めた尺に収める (左 trim でも先頭から書き直す)。置いたときと違う fps の timeline で
   trim すると、素材 frame を timeline の fps へ揃えるのと一緒に同じ秒数へ換算する。
@@ -318,8 +322,23 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
   (`mvm-math-sequence-artifact/1`、大きさ・枚数・各 frame の byte 数・script・toolchain)。
   `write/<key>.partial-<ticket>/` へ置いてから rename し、provenance を最後に書く。合わない・
   欠けた・読めない frame の結果は消して描き直す。`.partial-` の残りは確認の前に消す。
-- 静止と同じ worker・権限・世代・取消で扱う。preview は連番の全 frame を 1 画素 1 byte で持つので、
-  256 MB を超える連番は描けても Failed (理由付き) にする (正しい artifact は消さない)。
+- 静止と同じ worker・権限・世代・取消で扱う。連番の Ready は disk に揃っている (書き出しに使える)
+  ことだけを表し、frame を decode しない。
+- **preview 用の mask の memory (P1.1):** preview が合成で要求した連番だけを、別の worker
+  (`residentPool_`) で 1 画素 1 byte の mask に読む (`residentSequence`)。全 clip の合計に上限
+  (既定 256 MB、`setResidentMemoryBudget`) があり、読む前に予約する (`MathResidencyBudget`)。
+  予約は mask が破棄されるときに返るので、cache が手放しても preview engine が持っている分は
+  上限に数え続ける (memory に実際にある量を超えない)。
+  - 足りなければ、cache だけが持つ mask を最も長く使っていないものから外す (LRU)。合成中の
+    animation や engine が使っている mask は外さない (外しても memory は空かず、同じ frame の
+    clip どうしで追い出し合う)。
+  - それでも足りなければ OverBudget: preview は書き終えた式 (静止) を見せ、inspector に理由を
+    出す (`writePreview` = `memory`)。書き出しは disk の連番を使うので影響しない。使用中の mask が
+    手放されると (予約が返ると) 収まらなかった連番の `entryChanged` を出し、もう一度試させる。
+  - controller は、その frame に見える数式 clip の animation だけを持つ (見えない clip の
+    animation が古い mask を memory に残さない)。
+  - disk の大きさは合うが読めない frame は、読むときに見つけて artifact を消し、連番を Failed に
+    する (再試行で描き直す)。
 - 入力中の式の静止がまだ描けていなければ、描きかけ・待ちの連番を止めて先に描かせる
   (`cancelPendingSequences`)。止めた連番は同じ要求で要求し直す。
 
@@ -341,7 +360,11 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
 - Write の区間は timeline の frame ごとに全画面の透過 PNG を stage し、`qimage` の連番
   (`ttl=1`、`MvmExportClip::is_image_sequence`) で開く。書き出しは Manim を起動しない。
 - 連番が渡されていない・足りない数式 clip は書き出さない。controller は Write の状態が ready の
-  ときだけ連番を渡す (静止で代用しない)。
+  ときだけ連番を渡す (静止で代用しない)。preview の memory に置けたかどうかとは無関係。
+- [推測] 費用: Write の区間の timeline frame ごとに出力全面の PNG を合成・encode・disk へ書く
+  (1080p で 1 frame の RGBA は約 8 MB、PNG は透過の余白が多いので小さい)。Write の尺と出力の
+  解像度に比例する。P1 はこのまま残し、mask の矩形だけを stage して MLT 側で配置する方式は
+  P2 の最適化とする ([roadmap](roadmap.md#数式-clip))。
 
 ### 確認 (2026-10-05)
 
@@ -363,6 +386,12 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
 - [事実] `scripts/test.ps1 -Preset ucrt64-release -Group All` は通常 1450 / 1450 件が通過
   (`build/math-p1-release-gate.log`)。`-Group BuildIndependent` は 1078 / 1078 件
   (`build/math-p1-build-independent.log`)。`performance|stability` は除外した。`scripts/lint.ps1` も通過。
+- [事実] P1.1 (Project から描画の上限を外し、preview の mask に全体の上限を設けた) の後:
+  通常 1450 / 1450 (`build/math-p11-release-gate.log`)、BuildIndependent 1078 / 1078
+  (`build/math-p11-build-independent.log`)、lint 通過、`math_raster_cache_focused` 130 件、
+  `math_controller_focused` 151 件。実 Manim の smoke は 95 / 95、終了コード 0
+  (`build/math-p11-write-20261005-081951.log`)。予約の上限検査を無効にする変異では、
+  6 本の連番の memory が最大 24576 byte (上限 10000) になり、cache と controller の試験が落ちた。
 - [未検証] 大きな式・長い Write の preview の再生中の負荷 (render thread での patch の着色と送信)。
   1080p 全面の式では 1 frame の patch が約 8 MB になる。
 - [未検証] Write を付けた解の公式を人が一通り制作する手順 (P0 と同じく自動試験は契約の確認)。

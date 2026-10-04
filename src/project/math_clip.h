@@ -38,10 +38,9 @@ struct MathClipAnimation {
     bool operator==(const MathClipAnimation&) const = default;
 };
 
-// Write の尺の上限 (60 fps で 10 秒)。描画した mask の連番を preview が memory に持つため。
-inline constexpr std::int64_t kMaximumMathIntroFrames = 600;
-
-// 形だけを見る。None なら尺は 0、Write なら 1 から clip の尺 (素材 frame) と上限の小さい方まで。
+// 形と時間の意味だけを見る。None なら尺は 0、Write なら 1 から clip の尺 (素材 frame) まで。
+// 描画の方式 (連番の枚数や memory) による上限は持たない。描けない長さは Project の値としては
+// 正しく、描画 (backend・cache) が「未対応」として失敗する。
 bool validateMathClipAnimation(const MathClipAnimation& animation, std::int64_t clipSourceFrames,
                                std::string& error);
 

@@ -147,6 +147,18 @@ QString writeState(const MvmController& controller, const QString& clipId) {
     return controller.mathClipData(clipId).value(QStringLiteral("writeState")).toString();
 }
 
+// Write の preview 用の mask は合成が要求してから別の worker で読む。読めるまで (Write の
+// animation が付くまで) 合成を作り直す。
+std::optional<mvm::preview::PreviewCompositionLayer>
+waitForWriteLayer(const MvmController& controller, qint64 frame) {
+    std::optional<mvm::preview::PreviewCompositionLayer> layer;
+    pump([&] {
+        layer = mathLayer(controller, frame);
+        return layer && layer->stillAnimation;
+    });
+    return layer;
+}
+
 // Write (clip の先頭で式を書く) の controller の契約。偽の backend の "WIDE" は 64x8 の帯で、
 // Write の frame i は左から 64 * i / frames 列が不透明 (期待値はここで独立に計算する)。
 void testWrite(const QTemporaryDir& temp, const project::Project& initial,
@@ -198,9 +210,15 @@ void testWrite(const QTemporaryDir& temp, const project::Project& initial,
               "連番の描画が終わると writeState は ready");
         check(*backend.sequenceRenders == 1, "連番を 1 回描く");
 
-        const auto layer = mathLayer(*controller, start);
+        const auto first = mathLayer(*controller, start);
+        check(first && !first->stillAnimation,
+              "preview 用の mask を読み終えるまでは書き終えた式 (静止) を見せる");
+        const auto layer = waitForWriteLayer(*controller, start);
         check(layer && layer->stillAnimation,
-              "Write のある clip の still layer に animation を付ける");
+              "mask を読み終えると Write のある clip の still layer に animation を付ける");
+        check(controller->mathClipData(clipId).value(QStringLiteral("writePreview")).toString() ==
+                  QStringLiteral("ready"),
+              "inspector に preview の mask が使えることを返す");
         if (layer && layer->stillAnimation) {
             const auto& animation = *layer->stillAnimation;
             // 64x8 の mask は 1920x1080 の中央 (左上 (1920-64)/2 = 928, (1080-8)/2 = 536)。
@@ -226,7 +244,7 @@ void testWrite(const QTemporaryDir& temp, const project::Project& initial,
               "Write の clip の色を変える");
         const auto red = mathLayer(*controller, start);
         check(red && red->stillAnimation && layer && red->stillAnimation != layer->stillAnimation,
-              "色が変われば別の animation instance");
+              "色が変われば別の animation instance (memory の mask はそのまま使う)");
         if (red && red->stillAnimation) {
             std::vector<std::uint8_t> patch(64U * 8U * 4U, 0);
             red->stillAnimation->fillPatch(29, patch.data());
@@ -318,11 +336,131 @@ void testWrite(const QTemporaryDir& temp, const project::Project& initial,
         check(pump([&] { return writeState(*controller, clipId) == QStringLiteral("ready"); }),
               "開き直すと Write は ready");
         check(*reopened.sequenceRenders == 0, "開き直したときは disk の連番を使い、描かない");
-        const auto layer = mathLayer(*controller, start);
+        const auto layer = waitForWriteLayer(*controller, start);
         check(layer && layer->stillAnimation && layer->stillAnimation->stateAt(start + 1) == 1,
               "開き直した Write も preview に付く");
         controller->shutdown();
     }
+}
+
+// backend が描けない長さの Write: Project の値としては確定・保存でき、描画の状態が未対応の
+// error になり、書き出しは拒否する (静止で代用しない)。
+void testWriteBeyondBackendCapability(const QTemporaryDir& temp, const project::Project& initial,
+                                      const std::shared_ptr<CapturedExport>& captured) {
+    const auto path = std::filesystem::path(temp.filePath("write capability.mvm").toStdWString());
+    check(project::saveProjectJson(initial, path).success, "capability: project の保存");
+    FakeMathBackend backend;
+    backend.maximumSequenceFrames = 10;
+    auto controller = makeController(path, initial, captured);
+    controller->setMathPreflightForTest(backend.preflight());
+    check(pump([&] {
+              return controller->mathRastersForTest().backendState() ==
+                     mvm::app::MathRasterCache::BackendState::Available;
+          }),
+          "capability: 偽の backend が使える");
+    check(controller->createMathClip(QStringLiteral("WIDE long")), "capability: 数式 clip を作る");
+    const auto clipId = QString::fromStdString(mathClips(*controller)[0]->id);
+    check(controller->updateMathClip(clipId, {{QStringLiteral("intro"), QStringLiteral("write")},
+                                              {QStringLiteral("introSeconds"), 0.5}}),
+          "backend の上限 (10 frame) を超える 30 frame の Write も確定できる");
+    check(pump([&] { return writeState(*controller, clipId) == QStringLiteral("error"); }) &&
+              controller->mathClipData(clipId)
+                  .value(QStringLiteral("writeMessage"))
+                  .toString()
+                  .contains(QStringLiteral("10 frame")) &&
+              *backend.sequenceRenders == 0,
+          "描画環境が描けない長さは描かずに理由付きの error");
+    check(pump([&] { return state(*controller, clipId) == QStringLiteral("ready"); }),
+          "capability: 静止の描画は使える");
+    const auto calls = captured->calls;
+    check(!controller->exportTimeline(QUrl::fromLocalFile(temp.filePath("capability.mp4"))) &&
+              captured->calls == calls,
+          "描けない Write を含む書き出しは拒否する");
+    check(controller->saveProject() && project::loadProjectJson(path).success,
+          "描けない長さの Write も Project として保存して読み直せる");
+    controller->shutdown();
+}
+
+// Write のある 2 本が同じ frame に重なり、preview の mask の上限が 1 本分しか無い。
+// 1 本は Write を見せ、もう 1 本は静止で見せて理由を返す。memory の合計は上限を超えず、
+// 書き出しは disk の連番で 2 本とも Write を渡す。
+void testWriteResidencyBudget(const QTemporaryDir& temp, const project::Project& initial,
+                              const std::shared_ptr<CapturedExport>& captured) {
+    const auto path = std::filesystem::path(temp.filePath("write budget.mvm").toStdWString());
+    check(project::saveProjectJson(initial, path).success, "budget: project の保存");
+    FakeMathBackend backend;
+    auto controller = makeController(path, initial, captured);
+    controller->setMathPreflightForTest(backend.preflight());
+    check(pump([&] {
+              return controller->mathRastersForTest().backendState() ==
+                     mvm::app::MathRasterCache::BackendState::Available;
+          }),
+          "budget: 偽の backend が使える");
+    // 各連番は 64 x 8 x 30 = 15360 byte。上限 20000 byte は 1 本分。
+    controller->mathRastersForTest().setResidentMemoryBudget(20000);
+    check(controller->createMathClip(QStringLiteral("WIDE one")) &&
+              controller->createMathClip(QStringLiteral("WIDE two")),
+          "budget: 同じ位置に数式 clip を 2 本作る (V1 と V2)");
+    const auto clips = mathClips(*controller);
+    if (clips.size() != 2) {
+        check(false, "budget: 数式 clip が 2 本");
+        return;
+    }
+    const auto start = clips[0]->timelineStartFrame;
+    std::vector<QString> ids;
+    for (const auto* clip : clips)
+        ids.push_back(QString::fromStdString(clip->id));
+    for (const auto& id : ids)
+        check(controller->updateMathClip(id, {{QStringLiteral("intro"), QStringLiteral("write")},
+                                              {QStringLiteral("introSeconds"), 0.5}}),
+              "budget: Write を付ける");
+    check(pump([&] {
+              return writeState(*controller, ids[0]) == QStringLiteral("ready") &&
+                     writeState(*controller, ids[1]) == QStringLiteral("ready");
+          }),
+          "budget: 2 本の連番が disk に揃う");
+    int animated = 0;
+    pump([&] {
+        QString error;
+        const auto composition = controller->subtitleCompositionForTest(start, error);
+        animated = 0;
+        if (composition)
+            for (const auto& layer : composition->layers)
+                animated += layer.stillImage && layer.stillAnimation ? 1 : 0;
+        return animated == 1 &&
+               controller->mathClipData(ids[0]).value(QStringLiteral("writePreview")) !=
+                   QStringLiteral("loading") &&
+               controller->mathClipData(ids[1]).value(QStringLiteral("writePreview")) !=
+                   QStringLiteral("loading");
+    });
+    check(animated == 1, "上限が 1 本分なら Write を見せるのは 1 本だけ");
+    const auto& cache = controller->mathRastersForTest();
+    check(cache.residentBytes() <= 20000 && cache.residentBytes() == 15360,
+          "preview の mask の合計は上限以下 (15360 byte)");
+    int refused = 0;
+    for (const auto& id : ids) {
+        const auto data = controller->mathClipData(id);
+        if (data.value(QStringLiteral("writePreview")).toString() == QStringLiteral("memory")) {
+            ++refused;
+            check(data.value(QStringLiteral("writePreviewMessage"))
+                          .toString()
+                          .contains(QStringLiteral("memory")) &&
+                      data.value(QStringLiteral("writeState")).toString() ==
+                          QStringLiteral("ready"),
+                  "収まらない clip は理由を返し、Write の状態 (書き出し) は ready のまま");
+        }
+    }
+    check(refused == 1, "収まらなかった 1 本を inspector に示す");
+    const auto output = std::filesystem::path(temp.filePath("budget.mp4").toStdWString());
+    check(exportAndWait(*controller, output), "budget: preview に置けない Write も書き出せる");
+    {
+        std::lock_guard lock(captured->mutex);
+        check(captured->writeFrames.size() == 2 &&
+                  captured->writeFrames[ids[0].toStdString()].size() == 30 &&
+                  captured->writeFrames[ids[1].toStdString()].size() == 30,
+              "書き出しへ 2 本とも disk の連番を渡す (memory に置いたかと無関係)");
+    }
+    controller->shutdown();
 }
 
 } // namespace
@@ -711,6 +849,8 @@ int main(int argc, char** argv) {
     }
 
     testWrite(temp, initial, captured);
+    testWriteResidencyBudget(temp, initial, captured);
+    testWriteBeyondBackendCapability(temp, initial, captured);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;

@@ -139,8 +139,7 @@ bool trimClipBoundary(const Project& project, TimelineClip& clip, TrimEdge edge,
                 }
                 animation.introFrames = std::max<std::int64_t>(1, retimed.frame);
             }
-            animation.introFrames =
-                std::min({animation.introFrames, newEnd - newStart, kMaximumMathIntroFrames});
+            animation.introFrames = std::min(animation.introFrames, newEnd - newStart);
         }
         clip.timelineStartFrame = newStart;
         clip.sourceFpsNum = project.timelineFpsNum;

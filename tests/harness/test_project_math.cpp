@@ -167,14 +167,20 @@ void testValidation() {
     p = base;
     p.timelineClips[0].mathAnimation = {MathIntroKind::Write, 301};
     expectInvalid(p, "clip の尺を超える Write");
+    // 描画の方式 (連番の枚数・memory) の上限は Project の値に持ち込まない。60 fps で 5 分の
+    // Write も Project としては正しい (描けるかは描画が判断し、未対応なら描画が失敗する)。
     p = base;
-    p.timelineClips[0].sourceFrameCount = p.timelineClips[0].sourceOutFrame =
-        kMaximumMathIntroFrames + 100;
-    p.timelineClips[1].timelineStartFrame = kMaximumMathIntroFrames + 100;
-    p.timelineClips[0].mathAnimation = {MathIntroKind::Write, kMaximumMathIntroFrames + 1};
-    expectInvalid(p, "上限を超える Write");
-    p.timelineClips[0].mathAnimation = {MathIntroKind::Write, kMaximumMathIntroFrames};
-    check(validateTimeline(p).success, "上限ちょうどの Write は通る");
+    p.timelineClips[0].sourceFrameCount = p.timelineClips[0].sourceOutFrame = 18000;
+    p.timelineClips[1].timelineStartFrame = 18000;
+    p.timelineClips[0].mathAnimation = {MathIntroKind::Write, 18000};
+    check(validateTimeline(p).success, "描画の上限を超える長さの Write も Project として正しい");
+    {
+        const auto saved = serializeProjectJson(p, kProjectPath);
+        const auto reloaded =
+            saved.success ? parseProjectJsonText(saved.json, kProjectPath) : ProjectLoadResult{};
+        check(saved.success && reloaded.success && reloaded.project == p,
+              "長い Write を保存して変えずに読み直せる");
+    }
     p = base;
     p.timelineClips[0].mathAnimation = {MathIntroKind::Write, 300};
     check(validateTimeline(p).success, "clip の尺ちょうどの Write は通る");

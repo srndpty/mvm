@@ -2167,6 +2167,17 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
     request = preview::PreviewFrameRequest{};
     request.outputFrameNumber = mappedFrame.outputFrameNumber;
     error.clear();
+    // Write の preview の mask は、この frame に見える数式 clip の分だけを参照する。見えない
+    // clip の animation を残すと、cache が追い出した mask が memory に残り、全体の上限
+    // (MathRasterCache の residency) に新しい mask が入らなくなる。
+    {
+        QSet<QString> visibleMath;
+        for (const auto& still : mappedFrame.stillLayers)
+            if (still.kind == project::TimelineClipKind::Math)
+                visibleMath.insert(QString::fromStdString(still.clipId));
+        mathWriteAnimations_.removeIf(
+            [&](const auto& item) { return !visibleMath.contains(item.key()); });
+    }
     // previewLayerStack が video と文字を track 順 (背面 -> 前面) に並べる。
     // この挿入順が engine の z 順の authority になる。
     for (const auto& entry : previewLayerStack(mappedFrame)) {
@@ -3545,17 +3556,24 @@ MvmController::mathWriteAnimation(int clipIndex, const preview::PreviewStillImag
     int left = 0;
     int top = 0;
     if (staticEntry.state != MathRasterCache::State::Ready || !staticEntry.mask ||
-        sequence.state != MathRasterCache::State::Ready || !sequence.frames ||
-        sequence.frames->width != staticEntry.mask->width ||
-        sequence.frames->height != staticEntry.mask->height ||
+        sequence.state != MathRasterCache::State::Ready ||
+        sequence.width != staticEntry.mask->width || sequence.height != staticEntry.mask->height ||
         !mathComposeStyleFor(clip.math, style) ||
-        !math::mathRasterPlacement(sequence.frames->width, sequence.frames->height, still.width,
-                                   still.height, left, top)) {
+        !math::mathRasterPlacement(sequence.width, sequence.height, still.width, still.height,
+                                   left, top)) {
+        mathWriteAnimations_.remove(clipId);
+        return nullptr;
+    }
+    // preview 用の mask は全体の上限の中で memory に置く。読んでいる間・上限に収まらない間は
+    // 静止を見せる (読めたら entryChanged で組み直す)。
+    const auto resident = mathRasters_->residentSequence(*write);
+    if (resident.state != MathRasterCache::Residency::Resident || !resident.frames) {
         mathWriteAnimations_.remove(clipId);
         return nullptr;
     }
     const QString memo =
-        mathRasters_->sequenceKeyFor(*write) + QLatin1Char('|') +
+        mathRasters_->sequenceKeyFor(*write) +
+        QStringLiteral("|%1|").arg(reinterpret_cast<quintptr>(resident.frames.get())) +
         QString::fromStdString(clip.math.color) + QLatin1Char('|') +
         QString::fromStdString(clip.math.backgroundColor) +
         QStringLiteral("|%1x%2|%3|%4/%5|%6/%7|%8-%9")
@@ -3572,8 +3590,8 @@ MvmController::mathWriteAnimation(int clipIndex, const preview::PreviewStillImag
         found != mathWriteAnimations_.constEnd() && found->memo == memo)
         return found->animation;
     auto animation = std::make_shared<MathWritePreviewAnimation>(
-        clip, project_.timelineFpsNum, project_.timelineFpsDen, sequence.frames, style,
-        preview::PreviewPixelRect{left, top, sequence.frames->width, sequence.frames->height});
+        clip, project_.timelineFpsNum, project_.timelineFpsDen, resident.frames, style,
+        preview::PreviewPixelRect{left, top, sequence.width, sequence.height});
     mathWriteAnimations_.insert(clipId, {memo, animation});
     return animation;
 }
@@ -3604,9 +3622,8 @@ std::pair<QString, QString> MvmController::mathWriteState(const project::Timelin
         break;
     }
     const auto staticEntry = mathRasters_->request(mathRenderSpecFor(clip.math));
-    if (staticEntry.state == MathRasterCache::State::Ready && staticEntry.mask && sequence.frames &&
-        (sequence.frames->width != staticEntry.mask->width ||
-         sequence.frames->height != staticEntry.mask->height))
+    if (staticEntry.state == MathRasterCache::State::Ready && staticEntry.mask &&
+        (sequence.width != staticEntry.mask->width || sequence.height != staticEntry.mask->height))
         return {QStringLiteral("error"),
                 QStringLiteral("Write の連番の大きさが静止の描画と違います")};
     return {QStringLiteral("ready"), {}};
@@ -3659,9 +3676,10 @@ std::shared_ptr<const preview::PreviewStillImage> MvmController::mathStillImage(
 
 namespace {
 
-// Write の尺の上限 (clip の素材 frame)。clip の尺と kMaximumMathIntroFrames の小さい方。
+// Write の尺の上限 (clip の素材 frame) は clip の尺。描画の方式による上限は Project の値に
+// 持ち込まず、描画の状態 (writeState) が未対応として示す。
 std::int64_t mathIntroMaximumFrames(const project::TimelineClip& clip) {
-    return std::min(clip.sourceOutFrame - clip.sourceInFrame, project::kMaximumMathIntroFrames);
+    return clip.sourceOutFrame - clip.sourceInFrame;
 }
 
 // clip の素材 frame の数を秒にする (数式 clip の素材 fps は置いたときの timeline の fps)。
@@ -3693,6 +3711,24 @@ QVariantMap MvmController::mathClipData(const QString& clipId) const {
     const project::MathClipData data = effectiveMathData(*found);
     const bool hasPrevious = mathLastGood_.contains(clipId);
     const auto write = mathWriteState(*found);
+    std::pair<QString, QString> writePreview;
+    if (const auto spec = mathSequenceSpecFor(*found); spec && write.first == QStringLiteral("ready")) {
+        const auto residency = mathRasters_->residencyOf(*spec);
+        switch (residency.state) {
+        case MathRasterCache::Residency::Resident:
+            writePreview.first = QStringLiteral("ready");
+            break;
+        case MathRasterCache::Residency::Loading:
+            writePreview.first = QStringLiteral("loading");
+            break;
+        case MathRasterCache::Residency::OverBudget:
+            writePreview = {QStringLiteral("memory"), residency.message};
+            break;
+        case MathRasterCache::Residency::NotReady:
+        case MathRasterCache::Residency::Failed:
+            break;
+        }
+    }
     QString state;
     QString message;
     QString log;
@@ -3760,7 +3796,10 @@ QVariantMap MvmController::mathClipData(const QString& clipId) const {
             {QStringLiteral("introMaxSeconds"),
              mathIntroSeconds(*found, mathIntroMaximumFrames(*found))},
             {QStringLiteral("writeState"), write.first},
-            {QStringLiteral("writeMessage"), write.second}};
+            {QStringLiteral("writeMessage"), write.second},
+            // preview 用の mask を memory に置けたか (書き出しの可否とは別)。"" は未要求。
+            {QStringLiteral("writePreview"), writePreview.first},
+            {QStringLiteral("writePreviewMessage"), writePreview.second}};
 }
 
 QVariantMap MvmController::selectedMathClip() const {

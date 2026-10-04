@@ -54,99 +54,102 @@ struct FakeMathBackend {
     std::string sequenceTemplate = "fake-write/1";
     // false なら連番を描けない backend を真似る (renderSequence を渡さない)。
     bool withSequence = true;
+    // 連番の枚数の上限 (backend の能力)。超える要求は cache が描かずに未対応として失敗させる。
+    std::int64_t maximumSequenceFrames = 9999;
 
     app::MathRasterCache::PreflightFunction preflight() const {
-        return
-            [renders = renders, sequenceRenders = sequenceRenders, started = slowStarted,
-             slow = slowSawCancel, canonical = canonical, sequenceTemplate = sequenceTemplate,
-             withSequence = withSequence](const std::filesystem::path&, const std::atomic<bool>*) {
-                math::MathPreflightResult result;
-                result.status = math::MathPreflightStatus::Available;
-                result.backend.fingerprint = {"fake", canonical};
-                result.backend.render = [renders, started,
-                                         slow](const math::MathStaticRenderRequest& request,
-                                               const std::atomic<bool>* cancel) {
-                    ++*renders;
-                    math::MathStaticRenderResult rendered;
-                    if (request.spec.source == "BAD") {
-                        rendered.status = math::MathRenderStatus::InvalidSource;
-                        rendered.message = "Undefined control sequence.";
-                        rendered.log = "fake log";
-                        return rendered;
-                    }
-                    if (request.spec.source == "GONE") {
-                        rendered.status = math::MathRenderStatus::BackendUnavailable;
-                        rendered.message = "latex が消えました";
-                        return rendered;
-                    }
-                    if (request.spec.source == "SLOW") {
-                        started->store(true);
-                        for (int i = 0; i < 3000 && !cancel->load(); ++i)
-                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                        slow->store(cancel->load());
-                        rendered.status = math::MathRenderStatus::Cancelled;
-                        return rendered;
-                    }
-                    const auto png = request.jobDirectory / L"out.png";
-                    if (request.spec.source.find("WIDE") != std::string::npos) {
-                        writeWidePng(png, kWideMathWidth);
-                        rendered.width = kWideMathWidth;
-                        rendered.height = kWideMathHeight;
-                    } else {
-                        std::ofstream(png, std::ios::binary) << mathTestPngBytes();
-                        rendered.width = kMathTestPngWidth;
-                        rendered.height = kMathTestPngHeight;
-                    }
-                    rendered.status = math::MathRenderStatus::Ok;
-                    rendered.png = png;
+        return [renders = renders, sequenceRenders = sequenceRenders, started = slowStarted,
+                slow = slowSawCancel, canonical = canonical, sequenceTemplate = sequenceTemplate,
+                withSequence = withSequence, maximumSequenceFrames = maximumSequenceFrames](
+                   const std::filesystem::path&, const std::atomic<bool>*) {
+            math::MathPreflightResult result;
+            result.status = math::MathPreflightStatus::Available;
+            result.backend.fingerprint = {"fake", canonical};
+            result.backend.render = [renders, started,
+                                     slow](const math::MathStaticRenderRequest& request,
+                                           const std::atomic<bool>* cancel) {
+                ++*renders;
+                math::MathStaticRenderResult rendered;
+                if (request.spec.source == "BAD") {
+                    rendered.status = math::MathRenderStatus::InvalidSource;
+                    rendered.message = "Undefined control sequence.";
+                    rendered.log = "fake log";
                     return rendered;
-                };
-                if (!withSequence)
-                    return result;
-                result.backend.sequenceTemplate = sequenceTemplate;
-                result.backend.renderSequence =
-                    [sequenceRenders, started, slow](const math::MathSequenceRenderRequest& request,
-                                                     const std::atomic<bool>* cancel) {
-                        ++*sequenceRenders;
-                        math::MathSequenceRenderResult rendered;
-                        const auto& source = request.spec.still.source;
-                        if (source == "BAD") {
-                            rendered.status = math::MathRenderStatus::InvalidSource;
-                            rendered.message = "Undefined control sequence.";
-                            return rendered;
-                        }
-                        if (source == "GONE") {
-                            rendered.status = math::MathRenderStatus::BackendUnavailable;
-                            rendered.message = "latex が消えました";
-                            return rendered;
-                        }
-                        if (source == "SLOW" || source == "SLOW_WRITE") {
-                            started->store(true);
-                            for (int i = 0; i < 3000 && !cancel->load(); ++i)
-                                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                            slow->store(cancel->load());
-                            rendered.status = math::MathRenderStatus::Cancelled;
-                            return rendered;
-                        }
-                        const bool wide = source.find("WIDE") != std::string::npos;
-                        for (std::int64_t index = 0; index < request.spec.frames; ++index) {
-                            wchar_t name[32] = {};
-                            std::swprintf(name, std::size(name), L"f%04lld.png",
-                                          static_cast<long long>(index));
-                            const auto png = request.jobDirectory / name;
-                            if (wide)
-                                writeWidePng(png, wideRevealColumns(index, request.spec.frames));
-                            else
-                                std::ofstream(png, std::ios::binary) << mathTestPngBytes();
-                            rendered.frames.push_back(png);
-                        }
-                        rendered.width = wide ? kWideMathWidth : kMathTestPngWidth;
-                        rendered.height = wide ? kWideMathHeight : kMathTestPngHeight;
-                        rendered.status = math::MathRenderStatus::Ok;
-                        return rendered;
-                    };
-                return result;
+                }
+                if (request.spec.source == "GONE") {
+                    rendered.status = math::MathRenderStatus::BackendUnavailable;
+                    rendered.message = "latex が消えました";
+                    return rendered;
+                }
+                if (request.spec.source == "SLOW") {
+                    started->store(true);
+                    for (int i = 0; i < 3000 && !cancel->load(); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    slow->store(cancel->load());
+                    rendered.status = math::MathRenderStatus::Cancelled;
+                    return rendered;
+                }
+                const auto png = request.jobDirectory / L"out.png";
+                if (request.spec.source.find("WIDE") != std::string::npos) {
+                    writeWidePng(png, kWideMathWidth);
+                    rendered.width = kWideMathWidth;
+                    rendered.height = kWideMathHeight;
+                } else {
+                    std::ofstream(png, std::ios::binary) << mathTestPngBytes();
+                    rendered.width = kMathTestPngWidth;
+                    rendered.height = kMathTestPngHeight;
+                }
+                rendered.status = math::MathRenderStatus::Ok;
+                rendered.png = png;
+                return rendered;
             };
+            if (!withSequence)
+                return result;
+            result.backend.sequenceTemplate = sequenceTemplate;
+            result.backend.maximumSequenceFrames = maximumSequenceFrames;
+            result.backend.renderSequence = [sequenceRenders, started,
+                                             slow](const math::MathSequenceRenderRequest& request,
+                                                   const std::atomic<bool>* cancel) {
+                ++*sequenceRenders;
+                math::MathSequenceRenderResult rendered;
+                const auto& source = request.spec.still.source;
+                if (source == "BAD") {
+                    rendered.status = math::MathRenderStatus::InvalidSource;
+                    rendered.message = "Undefined control sequence.";
+                    return rendered;
+                }
+                if (source == "GONE") {
+                    rendered.status = math::MathRenderStatus::BackendUnavailable;
+                    rendered.message = "latex が消えました";
+                    return rendered;
+                }
+                if (source == "SLOW" || source == "SLOW_WRITE") {
+                    started->store(true);
+                    for (int i = 0; i < 3000 && !cancel->load(); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    slow->store(cancel->load());
+                    rendered.status = math::MathRenderStatus::Cancelled;
+                    return rendered;
+                }
+                const bool wide = source.find("WIDE") != std::string::npos;
+                for (std::int64_t index = 0; index < request.spec.frames; ++index) {
+                    wchar_t name[32] = {};
+                    std::swprintf(name, std::size(name), L"f%04lld.png",
+                                  static_cast<long long>(index));
+                    const auto png = request.jobDirectory / name;
+                    if (wide)
+                        writeWidePng(png, wideRevealColumns(index, request.spec.frames));
+                    else
+                        std::ofstream(png, std::ios::binary) << mathTestPngBytes();
+                    rendered.frames.push_back(png);
+                }
+                rendered.width = wide ? kWideMathWidth : kMathTestPngWidth;
+                rendered.height = wide ? kWideMathHeight : kMathTestPngHeight;
+                rendered.status = math::MathRenderStatus::Ok;
+                return rendered;
+            };
+            return result;
+        };
     }
 
     static app::MathRasterCache::PreflightFunction unavailable(std::string message) {

@@ -38,10 +38,8 @@ bool validateMathClipAnimation(const MathClipAnimation& animation, std::int64_t 
         }
         return true;
     case MathIntroKind::Write:
-        if (animation.introFrames < 1 || animation.introFrames > kMaximumMathIntroFrames ||
-            animation.introFrames > clipSourceFrames) {
-            error = "数式の Write の尺は 1 から clip の尺と " +
-                    std::to_string(kMaximumMathIntroFrames) + " frame の小さい方までです";
+        if (animation.introFrames < 1 || animation.introFrames > clipSourceFrames) {
+            error = "数式の Write の尺は 1 frame から clip の尺までです";
             return false;
         }
         return true;

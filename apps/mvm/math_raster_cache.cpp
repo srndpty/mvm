@@ -273,53 +273,50 @@ SequenceOutcome sequenceFailed(math::MathRenderStatus status, const std::string&
     return outcome;
 }
 
-// 連番の mask を memory に持てるか。持てなければ描けても使わない (preview は全 frame を持つ)。
-std::optional<SequenceOutcome> overBudget(std::size_t count, int width, int height,
-                                          std::size_t budget) {
-    const auto bytes = static_cast<unsigned long long>(count) *
-                       static_cast<unsigned long long>(width) *
-                       static_cast<unsigned long long>(height);
-    if (bytes <= budget)
-        return std::nullopt;
-    return sequenceFailed(math::MathRenderStatus::Failed,
-                          "Write の連番が memory の上限 (" + std::to_string(budget >> 20) +
-                              " MB) を超えます (" + std::to_string(bytes >> 20) +
-                              " MB)。Write を短くするか、文字サイズを下げてください");
-}
-
-// sequence directory の frame を読み、mask と artifact にする。どれか 1 枚でも読めない・
-// 大きさが違えば失敗 (呼び出し側が消す)。
-bool readSequenceFrames(const std::filesystem::path& sequence, std::size_t count, int width,
-                        int height, const std::atomic<bool>* cancel, SequenceOutcome& outcome) {
-    auto coverage = std::make_shared<MathCoverageSequence>();
-    coverage->width = width;
-    coverage->height = height;
-    coverage->frames.reserve(count);
-    outcome.artifact = {};
+// disk に揃った連番 (書き出しに使える状態)。frame は decode しない: preview 用の mask は
+// residentSequence が必要になったときに読む (全 clip の連番を memory に置かない)。
+SequenceOutcome readySequenceOutcome(const std::filesystem::path& sequence, std::size_t count,
+                                     int width, int height) {
+    SequenceOutcome outcome;
     outcome.artifact.width = width;
     outcome.artifact.height = height;
-    for (std::size_t index = 0; index < count; ++index) {
-        if (cancel && cancel->load())
-            return false;
-        const auto frame = sequenceFramePath(sequence, index);
-        auto decoded = decodeCoverage(frame, width, height);
-        if (decoded.empty())
-            return false;
-        coverage->frames.push_back(std::move(decoded));
-        outcome.artifact.frames.push_back(frame);
-    }
+    for (std::size_t index = 0; index < count; ++index)
+        outcome.artifact.frames.push_back(sequenceFramePath(sequence, index));
     outcome.entry.state = State::Ready;
     outcome.entry.status = math::MathRenderStatus::Ok;
-    outcome.entry.frames = std::move(coverage);
-    return true;
+    outcome.entry.width = width;
+    outcome.entry.height = height;
+    return outcome;
 }
 
+// artifact の frame を読み、preview 用の mask にする。どれか 1 枚でも読めない・大きさが違えば
+// nullptr (呼び出し側が artifact を消して描き直させる)。取消なら nullptr で cancelled を立てる。
+std::shared_ptr<MathCoverageSequence> decodeSequence(const MathSequenceArtifact& artifact,
+                                                     const std::atomic<bool>* cancel,
+                                                     bool& cancelled) {
+    cancelled = false;
+    auto coverage = std::make_shared<MathCoverageSequence>();
+    coverage->width = artifact.width;
+    coverage->height = artifact.height;
+    coverage->frames.reserve(artifact.frames.size());
+    for (const auto& frame : artifact.frames) {
+        if (cancel && cancel->load()) {
+            cancelled = true;
+            return nullptr;
+        }
+        auto decoded = decodeCoverage(frame, artifact.width, artifact.height);
+        if (decoded.empty())
+            return nullptr;
+        coverage->frames.push_back(std::move(decoded));
+    }
+    return coverage;
+}
+
+// disk の連番を確かめる (provenance の全体と各 frame の byte 数)。合わなければ消して nullopt。
 std::optional<SequenceOutcome> loadSequenceArtifact(const std::filesystem::path& directory,
                                                     const QString& key,
                                                     const math::MathRenderBackend& backend,
-                                                    std::int64_t expectedFrames,
-                                                    std::size_t memoryBudget,
-                                                    const std::atomic<bool>* cancel) {
+                                                    std::int64_t expectedFrames) {
     const std::string provenance = readFile(sequenceProvenancePath(directory, key));
     if (provenance.empty())
         return std::nullopt;
@@ -360,18 +357,8 @@ std::optional<SequenceOutcome> loadSequenceArtifact(const std::filesystem::path&
         const auto size = std::filesystem::file_size(sequenceFramePath(sequence, index), error);
         valid = !error && size == sizes[index];
     }
-    // 正しい artifact でも持てない大きさなら使わない (消さない: 上限を変えれば使える)。
     if (valid)
-        if (auto rejected = overBudget(sizes.size(), width, height, memoryBudget))
-            return rejected;
-    SequenceOutcome outcome;
-    if (valid && readSequenceFrames(sequence, sizes.size(), width, height, cancel, outcome))
-        return outcome;
-    if (cancel && cancel->load()) {
-        outcome = {};
-        outcome.cancelled = true;
-        return outcome;
-    }
+        return readySequenceOutcome(sequence, sizes.size(), width, height);
     removeSequenceArtifact(directory, key);
     return std::nullopt;
 }
@@ -380,10 +367,9 @@ SequenceOutcome renderSequenceJob(const std::filesystem::path& directory,
                                   const std::filesystem::path& jobs, const QString& key,
                                   const math::MathSequenceSpec& spec,
                                   const math::MathRenderBackend& backend,
-                                  std::chrono::milliseconds timeout, std::size_t memoryBudget,
-                                  std::uint64_t ticket, const std::atomic<bool>* cancel) {
-    if (auto loaded =
-            loadSequenceArtifact(directory, key, backend, spec.frames, memoryBudget, cancel))
+                                  std::chrono::milliseconds timeout, std::uint64_t ticket,
+                                  const std::atomic<bool>* cancel) {
+    if (auto loaded = loadSequenceArtifact(directory, key, backend, spec.frames))
         return std::move(*loaded);
     if (cancel->load()) {
         SequenceOutcome outcome;
@@ -461,23 +447,7 @@ SequenceOutcome renderSequenceJob(const std::filesystem::path& directory,
                               rendered.log);
     }
     cleanup();
-    if (auto rejected = overBudget(sizes.size(), rendered.width, rendered.height, memoryBudget)) {
-        rejected->entry.log = QString::fromStdString(rendered.log);
-        return std::move(*rejected);
-    }
-    SequenceOutcome outcome;
-    if (!readSequenceFrames(sequence, sizes.size(), rendered.width, rendered.height, cancel,
-                            outcome)) {
-        if (cancel->load()) {
-            outcome = {};
-            outcome.cancelled = true;
-            return outcome;
-        }
-        removeSequenceArtifact(directory, key);
-        return sequenceFailed(math::MathRenderStatus::Failed,
-                              "描いた Write の連番を読めないか、大きさが報告と違います",
-                              rendered.log);
-    }
+    auto outcome = readySequenceOutcome(sequence, sizes.size(), rendered.width, rendered.height);
     outcome.entry.log = QString::fromStdString(rendered.log);
     return outcome;
 }
@@ -489,17 +459,48 @@ MathRasterCache::MathRasterCache(std::string sessionId, PreflightFunction prefli
     : QObject(parent), sessionId_(std::move(sessionId)), preflight_(std::move(preflight)) {
     // Manim / LaTeX を同時に走らせない。preflight と描画もこの順に並ぶ。
     pool_.setMaxThreadCount(1);
+    // preview 用の mask の読み込み (PNG の decode だけ) も 1 本で順に行う。
+    residentPool_.setMaxThreadCount(1);
+    notifier_->target = this;
+    residency_ = makeResidencyBudget(kDefaultResidentMemoryBudget);
 }
 
 MathRasterCache::~MathRasterCache() {
+    {
+        // preview engine が後から mask を手放しても、破棄した cache へ知らせない。
+        std::lock_guard lock(notifier_->mutex);
+        notifier_->target = nullptr;
+    }
     shutdown();
+}
+
+std::shared_ptr<MathResidencyBudget>
+MathRasterCache::makeResidencyBudget(std::size_t bytes) const {
+    return std::make_shared<MathResidencyBudget>(bytes, [notifier = notifier_] {
+        std::lock_guard lock(notifier->mutex);
+        if (notifier->target)
+            QMetaObject::invokeMethod(
+                notifier->target, [target = notifier->target] { target->residencyReleased(); },
+                Qt::QueuedConnection);
+    });
+}
+
+void MathRasterCache::residencyReleased() {
+    if (shutDown_ || overBudget_.isEmpty())
+        return;
+    const auto keys = overBudget_.keys();
+    overBudget_.clear();
+    for (const auto& key : keys)
+        Q_EMIT entryChanged(key);
 }
 
 void MathRasterCache::shutdown() {
     shutDown_ = true;
     cancelAll();
     pool_.clear();
+    residentPool_.clear();
     pool_.waitForDone();
+    residentPool_.waitForDone();
 }
 
 void MathRasterCache::cancelAll() {
@@ -513,11 +514,16 @@ void MathRasterCache::cancelAll() {
         if (record.cancel)
             record.cancel->store(true);
     }
+    for (const auto& record : std::as_const(loading_))
+        record.cancel->store(true);
 }
 
 void MathRasterCache::clearRecords() {
     records_.clear();
     sequences_.clear();
+    resident_.clear();
+    loading_.clear();
+    overBudget_.clear();
 }
 
 void MathRasterCache::setPreflight(PreflightFunction preflight) {
@@ -730,11 +736,162 @@ template <typename Records> void forgetFailedRecords(Records& records) {
 void MathRasterCache::retainOnly(const QSet<QString>& keys) {
     retainKeys(records_, keys);
     retainKeys(sequences_, keys);
+    // 連番が要求されなくなれば、preview 用の mask も手放す (読んでいる途中なら止める)。
+    for (const auto& key : resident_.keys() + loading_.keys() + overBudget_.keys())
+        if (!keys.contains(key))
+            dropResident(key);
 }
 
 void MathRasterCache::forgetFailures() {
     forgetFailedRecords(records_);
     forgetFailedRecords(sequences_);
+    overBudget_.clear();
+}
+
+void MathRasterCache::dropResident(const QString& key) {
+    resident_.remove(key);
+    overBudget_.remove(key);
+    if (const auto found = loading_.find(key); found != loading_.end()) {
+        found->cancel->store(true);
+        loading_.erase(found);
+    }
+}
+
+void MathRasterCache::setResidentMemoryBudget(std::size_t bytes) {
+    // 新しい上限は新しい予約から数える。今ある mask は cache から外し、参照が無くなると
+    // 古い予約へ返る (古い予約と新しい予約を混ぜない)。
+    for (const auto& key : resident_.keys() + loading_.keys())
+        dropResident(key);
+    overBudget_.clear();
+    residency_ = makeResidencyBudget(bytes);
+}
+
+MathRasterCache::ResidentSequence
+MathRasterCache::residencyOf(const math::MathSequenceSpec& spec) const {
+    ResidentSequence result;
+    const QString key = sequenceKeyFor(spec);
+    const auto record = sequences_.constFind(key);
+    if (key.isEmpty() || record == sequences_.constEnd() || record->entry.state != State::Ready)
+        return result;
+    if (const auto found = resident_.constFind(key); found != resident_.constEnd()) {
+        result.state = Residency::Resident;
+        result.frames = found->frames;
+    } else if (loading_.contains(key)) {
+        result.state = Residency::Loading;
+    } else if (const auto refused = overBudget_.constFind(key); refused != overBudget_.constEnd()) {
+        result.state = Residency::OverBudget;
+        result.message = *refused;
+    }
+    return result;
+}
+
+MathRasterCache::ResidentSequence
+MathRasterCache::residentSequence(const math::MathSequenceSpec& spec) {
+    ResidentSequence result;
+    const QString key = sequenceKeyFor(spec);
+    const auto record = sequences_.constFind(key);
+    if (key.isEmpty() || record == sequences_.constEnd() || record->entry.state != State::Ready ||
+        shutDown_)
+        return result;
+    if (const auto found = resident_.find(key); found != resident_.end()) {
+        found->lastUse = ++useTick_;
+        result.state = Residency::Resident;
+        result.frames = found->frames;
+        return result;
+    }
+    if (loading_.contains(key)) {
+        result.state = Residency::Loading;
+        return result;
+    }
+    const auto& artifact = record->artifact;
+    const auto bytes = static_cast<std::size_t>(artifact.frames.size()) *
+                       static_cast<std::size_t>(artifact.width) *
+                       static_cast<std::size_t>(artifact.height);
+    // 予約できるまで、最も長く使っていない mask から cache の参照を外す。外すのは cache だけが
+    // 持つ mask に限る。preview (合成中の animation や engine) が使っている mask は外しても
+    // memory に残る (予約も返らない) うえ、次の合成で読み直しになり、同じ frame の clip どうしで
+    // 追い出し合う。
+    auto reserved = residency_->tryReserve(bytes);
+    while (!reserved) {
+        auto oldest = resident_.end();
+        for (auto it = resident_.begin(); it != resident_.end(); ++it)
+            if (it->frames.use_count() == 1 &&
+                (oldest == resident_.end() || it->lastUse < oldest->lastUse))
+                oldest = it;
+        if (oldest == resident_.end())
+            break;
+        resident_.erase(oldest);
+        reserved = residency_->tryReserve(bytes);
+    }
+    if (!reserved) {
+        const auto message =
+            QStringLiteral("Write の preview は memory の上限 (%1 MB) に収まらないため、"
+                           "書き終えた式で表示します (書き出しには影響しません)。"
+                           "必要 %2 MB、使用中 %3 MB")
+                .arg(residency_->limit() >> 20)
+                .arg(bytes >> 20)
+                .arg(residency_->live() >> 20);
+        overBudget_.insert(key, message);
+        result.state = Residency::OverBudget;
+        result.message = message;
+        return result;
+    }
+    overBudget_.remove(key);
+    auto reservation = std::make_shared<const MathResidencyReservation>(residency_, bytes);
+    LoadingRecord loading;
+    loading.ticket = nextTicket_++;
+    loading.cancel = std::make_shared<std::atomic<bool>>(false);
+    loading_.insert(key, loading);
+    ++residentLoads_;
+    residentPool_.start([this, key, artifact, reservation, ticket = loading.ticket,
+                         cancel = loading.cancel]() mutable {
+        if (cancel->load())
+            return;
+        bool cancelled = false;
+        auto decoded = decodeSequence(artifact, cancel.get(), cancelled);
+        if (cancelled)
+            return;
+        if (decoded)
+            decoded->reservation = std::move(reservation);
+        QString error;
+        if (!decoded)
+            error = QStringLiteral("Write の連番の PNG を読めないか、大きさが provenance と"
+                                   "違います。描き直します");
+        QMetaObject::invokeMethod(
+            this,
+            [this, key, ticket, frames = std::shared_ptr<const MathCoverageSequence>(decoded),
+             error]() mutable { finishResident(key, ticket, std::move(frames), error); },
+            Qt::QueuedConnection);
+    });
+    result.state = Residency::Loading;
+    return result;
+}
+
+void MathRasterCache::finishResident(const QString& key, std::uint64_t ticket,
+                                     std::shared_ptr<const MathCoverageSequence> frames,
+                                     QString error) {
+    const auto found = loading_.find(key);
+    // 取り消した (要求されなくなった・上限を変えた) 読み込みの結果は残さない。
+    // frames を捨てると予約も返る。
+    if (found == loading_.end() || found->ticket != ticket || shutDown_)
+        return;
+    loading_.erase(found);
+    if (!frames) {
+        // disk の連番が壊れている。消して、連番を Failed にする (forgetFailures・再試行で描き直す)。
+        // cache directory の変更は権限がある間だけ行う。
+        if (authorized_)
+            removeSequenceArtifact(cacheDirectory_, key);
+        if (auto record = sequences_.find(key); record != sequences_.end()) {
+            record->entry = {};
+            record->entry.state = State::Failed;
+            record->entry.message = error;
+            record->artifact = {};
+        }
+        qWarning("%s", qUtf8Printable(error));
+    } else {
+        resident_.insert(key, {std::move(frames), ++useTick_});
+    }
+    Q_EMIT entryChanged(key);
 }
 
 QString MathRasterCache::sequenceKeyFor(const math::MathSequenceSpec& spec) const {
@@ -768,17 +925,32 @@ MathRasterCache::requestSequence(const math::MathSequenceSpec& spec) {
         return {};
 
     SequenceRecord record;
+    // backend が描けない長さは描かずに未対応として失敗させる (Project の値は正しいまま)。
+    if (!backend_.renderSequence || spec.frames < 1 ||
+        spec.frames > backend_.maximumSequenceFrames) {
+        record.entry.state = State::Failed;
+        record.entry.status = math::MathRenderStatus::Failed;
+        record.entry.message =
+            backend_.renderSequence
+                ? QStringLiteral("この描画環境の Write は %1 frame までです (要求 %2 frame)。"
+                                 "Write を短くしてください")
+                      .arg(backend_.maximumSequenceFrames)
+                      .arg(spec.frames)
+                : QStringLiteral("数式の描画 backend は Write の連番を描けません");
+        sequences_.insert(key, record);
+        return record.entry;
+    }
     record.ticket = nextTicket_++;
     record.cancel = std::make_shared<std::atomic<bool>>(false);
     sequences_.insert(key, record);
     const auto timeout = renderTimeout_ + sequenceTimeoutPerFrame_ * spec.frames;
     pool_.start([this, key, spec, ticket = record.ticket, cancel = record.cancel,
                  backend = backend_, directory = cacheDirectory_, jobs = jobsDirectory(),
-                 timeout, budget = sequenceMemoryBudget_] {
+                 timeout] {
         if (cancel->load())
             return;
         SequenceOutcome outcome = renderSequenceJob(directory, jobs, key, spec, backend, timeout,
-                                                    budget, ticket, cancel.get());
+                                                    ticket, cancel.get());
         if (outcome.cancelled)
             return;
         QMetaObject::invokeMethod(

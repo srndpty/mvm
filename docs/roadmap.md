@@ -30,6 +30,13 @@
   transition として持ち、P1 の連番の artifact (`mvm-math-sequence/1`)・cache・preview の
   `PreviewStillAnimation`・書き出しの区間分けを使う。部分式の同一性は TeX の AST を作らず、
   Manim の `{{ }}` / `substrings_to_isolate` を式の文字列に書く方式から検討する。
+- P2 の最適化: Write の書き出しは Write の区間の timeline frame ごとに出力全面の PNG を
+  合成・encode・stage する (尺と解像度に比例)。mask の矩形だけを stage し、配置を MLT の
+  affine に任せれば減らせる。preview と同じ画素の契約 (`composeMathPatch`) を保つこと。
+- P2: 再生中に次の Write の clip の mask を先に読む (prefetch)。今は合成が要求してから読むので、
+  clip の境で読み終えるまでは書き終えた式を見せる。[推測] controller は再生中に
+  `entryChanged` で合成を組み直さないので、再生中に読み終えた・上限に収まらなかった clip は、
+  次に合成を組み直す (区間の切り替え・一時停止) まで静止のまま。
 - [未検証] Write の preview の再生中の負荷。patch の着色と送信は render thread で行い、
   大きな式 (1080p 全面) では 1 frame あたり約 8 MB になる。重ければ patch を前もって作る、
   または GPU で着色する。Write の後の Unwrite・途中から書く・速さの曲線の指定は未対応。

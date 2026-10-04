@@ -103,6 +103,9 @@ struct MathRenderBackend {
     std::string sequenceTemplate;
     // 連番を描けない backend では空。
     MathSequenceRenderFunction renderSequence;
+    // renderSequence が描ける最大の枚数 (backend の能力)。超える要求は描かずに未対応として
+    // 失敗させる。Project の値の正しさとは別 (Project は時間の意味だけで検証する)。
+    std::int64_t maximumSequenceFrames = 0;
 };
 
 enum class MathPreflightStatus { Available, Unavailable, Cancelled };

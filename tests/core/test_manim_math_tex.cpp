@@ -107,7 +107,8 @@ void testPreflight(const std::filesystem::path& fake, const std::filesystem::pat
               ok.backend.fingerprint.canonical);
     check(static_cast<bool>(ok.backend.render), "Available なら render 関数を束ねる");
     check(ok.backend.sequenceTemplate == "manim-write/1" &&
-              static_cast<bool>(ok.backend.renderSequence),
+              static_cast<bool>(ok.backend.renderSequence) &&
+              ok.backend.maximumSequenceFrames == 9999,
           "Available なら Write の連番の関数と script の識別を束ねる (fingerprint には入れない)");
 
     const auto onlyDvisvgm = root / L"tools latex 無し";

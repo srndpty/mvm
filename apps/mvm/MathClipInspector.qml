@@ -217,8 +217,12 @@ ColumnLayout {
                  ready: "Write: 完了", error: "Write: エラー", unavailable: "Write: 利用不可"})[root.clipData.writeState]
                || "Write: 準備中")
               + (root.clipData.writeMessage ? "\n" + root.clipData.writeMessage : "")
+              // 書き出しには使えるが、preview の memory の上限で Write を表示しない場合。
+              + (root.clipData.writePreview === "loading" ? "（preview を準備中）" : "")
+              + (root.clipData.writePreview === "memory" && root.clipData.writePreviewMessage
+                 ? "\n" + root.clipData.writePreviewMessage : "")
         color: root.clipData.writeState === "error" || root.clipData.writeState === "unavailable"
-               ? "#f2c66d" : "#a8d5a2"
+               || root.clipData.writePreview === "memory" ? "#f2c66d" : "#a8d5a2"
         wrapMode: Text.Wrap
     }
     ModernColorPicker {

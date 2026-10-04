@@ -96,6 +96,14 @@ TestCase {
         controller.selectedMathClip = Object.assign({}, controller.selectedMathClip,
             {writeState: "error", writeMessage: "Write の連番が memory の上限を超えます"});
         verify(state.text.indexOf("エラー") >= 0 && state.text.indexOf("memory") >= 0);
+        // 書き出しには使えるが preview の memory に収まらない場合は、完了と理由を両方出す。
+        controller.selectedMathClip = Object.assign({}, controller.selectedMathClip,
+            {writeState: "ready", writeMessage: "", writePreview: "memory",
+             writePreviewMessage: "Write の preview は memory の上限に収まらないため"});
+        verify(state.text.indexOf("完了") >= 0 && state.text.indexOf("memory の上限") >= 0);
+        controller.selectedMathClip = Object.assign({}, controller.selectedMathClip,
+            {writePreview: "loading", writePreviewMessage: ""});
+        verify(state.text.indexOf("preview を準備中") >= 0);
         // Write を外す。
         panel.contentY = toggle.mapToItem(panel.contentItem, 0, 0).y;
         wait(50);
