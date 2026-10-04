@@ -805,7 +805,17 @@ mvm_add_test(manim_math_tex_focused
 # (Manim と LaTeX の導入を build・通常試験の必須条件にしない)。手順は docs/math-clips.md。
 add_executable(mvm_math_manim_smoke harness/mvm_math_manim_smoke.cpp)
 target_link_libraries(mvm_math_manim_smoke PRIVATE
-    mvm::manim mvm::still_image mvm::util mvm::warnings)
+    mvm::manim mvm::still_image mvm::util mvm::project mvm::timeline_export
+    mvm::timeline_preview_mapping mvm::mlt Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_math_manim_smoke PRIVATE ${MVM_MLT_PATH_DEFS}
+    MVM_MATH_FFMPEG="${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
+# directory の拒否は実 Manim を使わないので通常試験へ入れる。
+mvm_add_test(math_smoke_existing_workspace_rejected
+    COMMAND ${MVM_PWSH} -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/harness/test_math_smoke_workspace.ps1"
+        -Exe $<TARGET_FILE:mvm_math_manim_smoke>
+        -Root "${CMAKE_CURRENT_BINARY_DIR}/math-smoke-workspace"
+    PROPERTIES TIMEOUT 30)
 
 # --- negative test は終了コードを厳密に照合する -----------------------------
 #

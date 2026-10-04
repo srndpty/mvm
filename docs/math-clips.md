@@ -111,6 +111,8 @@
 
 通常の CTest には入れない (Manim と MiKTeX を build・試験の必須条件にしない)。MiKTeX を導入した後に、
 **新しく開いた shell** (PATH に MiKTeX がある) で実行する。
+作業 directory は存在しない新しい path を指定する。既存の結果は削除・上書きせず終了コード 2 で拒否する。
+この試験は画面を表示せず音声 endpoint も使わないので、実行中も通常の PC 操作をしてよい。
 
 ```powershell
 pwsh scripts/build.ps1 -Target mvm_math_manim_smoke
@@ -167,6 +169,8 @@ P0-6 は静止数式 clip の既存経路を検証する段階とし、animation
 | 入力の保持・依存不足 / 権限不足の案内・狭幅と低いパネルの実描画 | `math_inspector_qml` / `math_inspector_product_ui` |
 | ClipEffects と位置 keyframe を付けた数式の実 GPU preview / MP4 の画素分類 | `math_export_focused` |
 | 二次方程式の 5 式・boxed・引用符と改行・TeX の誤りの分類 | `mvm_math_manim_smoke` (実 Manim + MiKTeX) |
+| 実数式の連続配置、文字 title、fade・不透明度と変形 keyframe、A1、保存・再読込・MP4 復号 | `mvm_math_manim_smoke` の受け入れ検査 |
+| 既存の作業 directory を拒否し、保存済みの結果を変更しない | `math_smoke_existing_workspace_rejected` (実 toolchain 不要) |
 
 書き出しの試験は、独立に決めた矩形の内外を比較する。GPU preview との比較は圧縮による
 色の差を避けて内部画素の色分類を使い、preview の位置をずらした負の対照が不一致になることも
@@ -190,6 +194,32 @@ GUI 試験は入力を透過する背面 window へ合成 event を送り、利�
   二次方程式の 5 式・boxed・引用符と改行、および不正な TeX の分類を検査した。
 - [未検証] ナレーション付きの二次方程式動画を、手操作で一通り制作する scenario は実施していない。
   上の自動試験は各契約の確認であり、その制作手順の実施記録ではない。
+
+### P0-6 の統合受け入れ (2026-10-05)
+
+既存の実 backend smoke を拡張し、描画した 5 式と boxed の 6 本を V2 に並べ、V1 の文字 title、
+fade、最後の式の位置・拡大・不透明度 keyframe、A1 の試験音を含む Project を作る。
+ナレーションの収録はせず、3 秒の試験音で音声経路を検査する。実 renderer の試験は従来どおり
+CTest の外で行い、新しい依存や製品機能を足さない。
+
+- [事実] 保存と再読込で Project が一致し、6 区間すべてで preview の mapping に数式がある。
+  最後の式の artifact だけを欠いた負例は書き出しを拒否する。
+- [事実] 映像だけの独立な対照は 180 frame の MP4 を出力し、復号した frame 数と 6 区間の
+  glyph を検査できた。文字 title だけで成功にならないよう、中央の数式領域を比較する。
+- [事実] 音声付きは AAC encoder が `Input contains (near) NaN/+-Inf` を報告し、
+  `tractor出力を検証できません` で失敗した。mono / stereo の fixture と、文字を V3 に移して
+  V1 を空にした対照でも同じ失敗を観測した。原因はまだ特定していない。
+- [事実] 数式間のクロスディゾルブは既存の Project 契約が拒否する。すべての ClipEffects を
+  既定値に戻した負例でも拒否した。計画の dissolve を含む scenario は実装済みとは扱わない。
+- [exit] P0-6 の受け入れ試験を実装したが、**P0 完了の判定は保留**。音声付き出力の不成立と
+  計画の dissolve の扱いが未解決である。映像対照の成功で音声付きの失敗を置き換えず、
+  smoke は非 0 終了を維持する。
+- [事実] 拡張した実 smoke は 67 検査中 1 件失敗（音声付き出力）。音声復号・sample 比較は
+  出力が不成立なので未実施。通常の focused CTest は 10 / 10 件、lint は通過した。
+
+確認 artifact: `build/math-p06-acceptance-20261004-202534/` と同名の `.log`。
+映像対照は `acceptance-video-only.mp4`、音声を含む Project は `acceptance.mvm`。
+過去の失敗 run は保持する。未解決事項は [roadmap](roadmap.md#数式-clip) に集約する。
 
 ## P0-0: Manim MathTex の検証 (2026-10-05)
 

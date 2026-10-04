@@ -9,15 +9,24 @@
 // mvm の静止画 decoder で読み直して、大きさ・透過の余白・白い glyph を確かめる。
 // 不正な式が InvalidSource になり、TeX の error 行が message になることも確かめる。
 
+#include "app/timeline_export.h"
+#include "app/timeline_preview_mapping.h"
 #include "media/manim/manim_math_tex.h"
+#include "media/mlt/mvm_mlt_runtime.h"
 #include "media/still_image/static_image.h"
+#include "project/project_json.h"
 #include "util/mvm_win_utf8.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
+
+#include <QGuiApplication>
+#include <QProcess>
 
 namespace {
 
@@ -70,6 +79,174 @@ void inspectPng(const mvm::math::MathStaticRenderResult& rendered, const std::st
     check(opaqueWhite, label + ": 不透明な画素は白 (色は mvm 側で付ける)");
 }
 
+// backend の単体検査だけで終えず、実際の式を既存の Project と書き出しへ通す。
+// 音声はナレーションの代わりの試験音。人が制作する手順の検証とは区別する。
+void acceptScenario(const std::filesystem::path& root, const std::vector<std::string>& sources,
+                    const std::vector<std::filesystem::path>& masks) {
+    namespace project = mvm::project;
+    check(masks.size() == 7, "受け入れに使う実数式の描画が揃う");
+    if (masks.size() != 7)
+        return;
+    const QString ffmpeg = QStringLiteral(MVM_MATH_FFMPEG);
+    const auto audioPath = root / "acceptance.wav";
+    QProcess audio;
+    audio.start(ffmpeg, {"-v", "error", "-f", "lavfi", "-i",
+                         "sine=frequency=440:sample_rate=48000:duration=3", "-ac", "2", "-c:a",
+                         "pcm_s16le", QString::fromStdWString(audioPath.wstring())});
+    const bool audioGenerated = audio.waitForFinished(30000) &&
+                                audio.exitStatus() == QProcess::NormalExit && audio.exitCode() == 0;
+    check(audioGenerated, "A1 の試験音を UCRT64 FFmpeg で生成する");
+    if (!audioGenerated)
+        return;
+    auto value = project::createDefaultProject();
+    value.videoTracks.resize(2);
+    value.videoTracks[0].name = "V1";
+    value.videoTracks[1].name = "V2";
+    project::TimelineClip title;
+    title.kind = project::TimelineClipKind::Text;
+    title.id = "title";
+    title.name = title.text.content = "二次方程式の解の公式";
+    title.sourceFpsNum = 60;
+    title.sourceFrameCount = title.sourceOutFrame = 180;
+    title.track = {project::TrackKind::Video, 0};
+    title.effects.positionYPercent = -35;
+    value.timelineClips.push_back(title);
+    mvm::app::TimelineExportRequest request;
+    request.outputPath = root / "acceptance.mp4";
+    for (int i = 0; i < 6; ++i) {
+        project::TimelineClip clip;
+        clip.kind = project::TimelineClipKind::Math;
+        clip.id = "math-" + std::to_string(i);
+        clip.name = "式 " + std::to_string(i + 1);
+        clip.math.source = sources[static_cast<std::size_t>(i)];
+        clip.sourceFpsNum = 60;
+        clip.sourceFrameCount = clip.sourceOutFrame = 30;
+        clip.timelineStartFrame = i * 30;
+        clip.track = {project::TrackKind::Video, 1};
+        clip.effects.fadeInFrames = clip.effects.fadeOutFrames = 6;
+        if (i == 5) {
+            clip.effects.fadeOutFrames = 6;
+            clip.effects.scaleXKeys = clip.effects.scaleYKeys = {{0, 100}, {29, 120}};
+            clip.effects.positionYKeys = {{0, -10}, {29, 0}};
+            clip.effects.opacityKeys = {{0, 80}, {29, 100}};
+        }
+        request.mathArtifacts.emplace(clip.id, masks[static_cast<std::size_t>(i)]);
+        value.timelineClips.push_back(clip);
+        if (i > 0)
+            value.timelineTransitions.push_back(
+                {"dissolve-" + std::to_string(i), "math-" + std::to_string(i - 1), clip.id, 3, 3});
+    }
+    project::MediaItem item;
+    item.id = "audio-source";
+    item.name = "ナレーション経路の試験音";
+    item.kind = project::MediaKind::Audio;
+    item.mediaPath = audioPath;
+    item.sampleRate = 48000;
+    item.durationSamples = 144000;
+    value.mediaItems.push_back(item);
+    project::TimelineClip sound;
+    sound.id = "audio";
+    sound.name = item.name;
+    sound.kind = project::TimelineClipKind::Audio;
+    sound.mediaItemId = item.id;
+    sound.mediaPath = audioPath;
+    sound.sourceFpsNum = 60;
+    sound.sourceFrameCount = sound.sourceOutFrame = 180;
+    sound.track = {project::TrackKind::Audio, 0};
+    value.timelineClips.push_back(sound);
+    const auto projectPath = root / "acceptance.mvm";
+    auto dissolve = value;
+    for (auto& clip : dissolve.timelineClips)
+        clip.effects = {};
+    const auto unsupported = project::saveProjectJson(dissolve, root / "unsupported-dissolve.mvm");
+    check(!unsupported.success && unsupported.error.find("クロスディゾルブ") != std::string::npos,
+          "既存契約は数式間の dissolve を拒否する: " + unsupported.error);
+    value.timelineTransitions.clear();
+    const auto saved = project::saveProjectJson(value, projectPath);
+    check(saved.success, "6 式・文字・音声・fade・keyframe の Project を保存する: " + saved.error);
+    const auto loaded = project::loadProjectJson(projectPath);
+    check(loaded.success && loaded.project == value,
+          "受け入れ Project を変更なく開き直す: " + loaded.error);
+    if (!loaded.success)
+        return;
+    for (int i = 0; i < 6; ++i) {
+        const auto mapping = mvm::app::mapTimelinePreviewFrame(loaded.project, i * 30 + 15);
+        std::size_t mathLayers = 0;
+        for (const auto& layer : mapping.stillLayers)
+            mathLayers += layer.kind == project::TimelineClipKind::Math;
+        check(mapping.success && mathLayers == 1, "各区間の preview が実際に 1 式を使う");
+    }
+    const bool initialized = mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) == 0;
+    check(initialized, "受け入れ書き出しの MLT を初期化する");
+    if (!initialized)
+        return;
+    auto missing = request;
+    missing.mathArtifacts.erase("math-5");
+    missing.outputPath = root / "missing.mp4";
+    const auto rejected = mvm::app::exportTimeline(loaded.project, missing);
+    check(!rejected.success && rejected.error.find("描画が完了していません") != std::string::npos,
+          "6 式のうち最後の artifact が無くても全体の書き出しを拒否する");
+    const auto exported = mvm::app::exportTimeline(loaded.project, request);
+    check(exported.success && exported.frameCount == 180,
+          "実数式・文字・音声・fade を 180 frame の MP4 に書き出す: " + exported.error);
+    // 音声付きの失敗を成功に変えない。映像だけの対照も独立に検査し、原因の範囲を残す。
+    auto videoOnly = loaded.project;
+    videoOnly.timelineClips.pop_back();
+    auto videoRequest = request;
+    videoRequest.outputPath = root / "acceptance-video-only.mp4";
+    check(project::saveProjectJson(videoOnly, root / "acceptance-video-only.mvm").success,
+          "映像だけの対照 Project を保存する");
+    const auto videoExported = mvm::app::exportTimeline(videoOnly, videoRequest);
+    check(videoExported.success && videoExported.frameCount == 180,
+          "映像だけの対照は 180 frame を書き出す: " + videoExported.error);
+    mvm_mlt_runtime_shutdown();
+    if (!videoExported.success)
+        return;
+    QProcess video;
+    video.start(ffmpeg,
+                {"-v", "error", "-i", QString::fromStdWString(videoRequest.outputPath.wstring()),
+                 "-an", "-vf", "scale=320:180", "-f", "rawvideo", "-pix_fmt", "rgba", "-"});
+    const bool decoded = video.waitForFinished(30000) &&
+                         video.exitStatus() == QProcess::NormalExit && video.exitCode() == 0;
+    const auto pixels = video.readAllStandardOutput();
+    constexpr int frameBytes = 320 * 180 * 4;
+    check(decoded && pixels.size() == frameBytes * 180, "MP4 の実 frame 数を復号して比較する");
+    if (pixels.size() == frameBytes * 180) {
+        for (int i = 0; i < 6; ++i) {
+            std::size_t glyphs = 0;
+            const auto* frame = reinterpret_cast<const unsigned char*>(pixels.constData()) +
+                                (i * 30 + 15) * frameBytes;
+            for (int y = 55; y < 130; ++y)
+                for (int x = 10; x < 310; ++x) {
+                    const auto* p = frame + (y * 320 + x) * 4;
+                    glyphs += p[0] > 100 && p[1] > 100 && p[2] > 100;
+                }
+            check(glyphs > 30, "各区間に数式の glyph があり、文字 title だけで通っていない");
+        }
+    }
+    if (!exported.success) {
+        std::fprintf(stderr,
+                     "音声付き出力が不成立のため、音声の復号・sample 比較は実施できません\n");
+        return;
+    }
+    QProcess pcm;
+    pcm.start(ffmpeg, {"-v", "error", "-i", QString::fromStdWString(request.outputPath.wstring()),
+                       "-vn", "-ac", "1", "-ar", "48000", "-f", "f32le", "-"});
+    const bool audioDecoded = pcm.waitForFinished(30000) &&
+                              pcm.exitStatus() == QProcess::NormalExit && pcm.exitCode() == 0;
+    const auto samples = pcm.readAllStandardOutput();
+    double energy = 0;
+    for (qsizetype at = 0; at + 4 <= samples.size(); at += 4) {
+        float sample = 0;
+        std::memcpy(&sample, samples.constData() + at, 4);
+        const double amplitude = static_cast<double>(sample);
+        energy += amplitude * amplitude;
+    }
+    check(audioDecoded && samples.size() >= 144000 * 4 && samples.size() < 146000 * 4 &&
+              std::isfinite(energy) && energy > 100,
+          "A1 が MP4 に残り、3 秒の実音声 sample と非無音を比較する");
+}
+
 } // namespace
 
 int main() {
@@ -83,9 +260,15 @@ int main() {
     }
     const auto manimExe = std::filesystem::absolute(fromUtf8(argv[1]));
     const auto root = std::filesystem::absolute(fromUtf8(argv[2]));
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    QGuiApplication application(argc, argv);
     std::error_code error;
-    std::filesystem::remove_all(root, error);
-    std::filesystem::create_directories(root);
+    if (!std::filesystem::create_directories(root, error)) {
+        std::fprintf(stderr, "新しい作業 directory を指定してください: %s\n",
+                     error.message().c_str());
+        mvm_win_free_utf8_args(argv, argc);
+        return 2;
+    }
 
     namespace math = mvm::math;
     const auto preflight =
@@ -109,6 +292,7 @@ int main() {
         "\\text{\"quoted\"}\n+ 1",
     };
     int index = 0;
+    std::vector<std::filesystem::path> masks;
     for (const auto& source : sources) {
         math::MathStaticRenderRequest request;
         request.spec = {"latex", source, 96};
@@ -124,8 +308,10 @@ int main() {
                     static_cast<long long>(elapsed));
         check(rendered.status == math::MathRenderStatus::Ok,
               label + " を描ける: " + rendered.message + "\n" + rendered.log);
-        if (rendered.status == math::MathRenderStatus::Ok)
+        if (rendered.status == math::MathRenderStatus::Ok) {
             inspectPng(rendered, label);
+            masks.push_back(rendered.png);
+        }
         ++index;
     }
 
@@ -138,6 +324,11 @@ int main() {
     check(invalid.status == math::MathRenderStatus::InvalidSource, "不正な式は InvalidSource");
     check(invalid.message.find("Undefined control sequence") != std::string::npos,
           "message は TeX の error 行");
+
+    if (failures == 0)
+        acceptScenario(root, sources, masks);
+    else
+        std::fprintf(stderr, "backend の検査が不成立のため、統合受け入れは実施できません\n");
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     mvm_win_free_utf8_args(argv, argc);
