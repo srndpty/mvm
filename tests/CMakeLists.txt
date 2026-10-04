@@ -3964,6 +3964,14 @@ add_test(NAME audio_mixer_pcm_and_project COMMAND mvm_test_audio_mixer)
 set_tests_properties(audio_mixer_pcm_and_project PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 30)
+add_test(NAME math_inspector_qml
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_math_inspector.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/math-inspector-qml.txt)
+set_tests_properties(math_inspector_qml PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QUICK_CONTROLS_STYLE=Basic"
+    TIMEOUT 30)
 add_test(NAME audio_mixer_controls_qml
     COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
             -Runner ${MVM_QMLTESTRUNNER}

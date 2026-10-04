@@ -88,6 +88,7 @@ qt_add_qml_module(mvm
         SubtitlePanel.qml
         TranscribeDialog.qml
         TextClipInspector.qml
+        MathClipInspector.qml
         KeyframeInspector.qml
         TransitionInspector.qml
         TransitionEditorMath.js
@@ -197,6 +198,7 @@ qt_add_qml_module(mvm_test_text_ui_input
         SubtitlePanel.qml
         TranscribeDialog.qml
         TextClipInspector.qml
+        MathClipInspector.qml
         KeyframeInspector.qml
         TransitionInspector.qml
         TransitionEditorMath.js

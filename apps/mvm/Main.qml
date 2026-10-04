@@ -305,10 +305,19 @@ ApplicationWindow {
                 onTriggered: mediaDialog.open()
             }
             CompactMenuItem {
-                text: "Manim clip"
+                text: "Manim script clip…"
                 visible: !root.mvmController.hasManimAsset
                 enabled: root.mvmController.previewReady && !root.mvmController.busy
                 onTriggered: scriptDialog.open()
+            }
+            CompactMenuItem {
+                objectName: "addMathClipMenuItem"
+                text: "数式 clip を追加"
+                enabled: !root.mvmController.busy
+                onTriggered: {
+                    if (root.mvmController.createMathClip("ax^2 + bx + c = 0"))
+                        Qt.callLater(() => mathClipInspector.focusSource());
+                }
             }
             CompactMenuSeparator {}
             CompactMenuItem {
@@ -959,6 +968,13 @@ ApplicationWindow {
                                     TextClipInspector {
                                         Layout.fillWidth: true
                                         visible: root.mvmController.selectedTextClip.clipId !== undefined
+                                        mvmController: root.mvmController
+                                    }
+
+                                    MathClipInspector {
+                                        id: mathClipInspector
+                                        Layout.fillWidth: true
+                                        visible: root.mvmController.selectedMathClip.clipId !== undefined
                                         mvmController: root.mvmController
                                     }
 
@@ -4521,7 +4537,7 @@ ApplicationWindow {
         width: Math.min(root.width - 40, 660)
         modal: true
         closePolicy: Popup.CloseOnEscape
-        title: "Add Manim Clip"
+        title: "Manim script clip を追加"
 
         contentItem: ColumnLayout {
             spacing: 12

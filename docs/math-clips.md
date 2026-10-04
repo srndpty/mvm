@@ -121,6 +121,19 @@ pwsh scripts/build.ps1 -Target mvm_math_manim_smoke
   PNG は mvm の静止画 decoder で読め、四隅は透明、不透明な画素はすべて白だった。
   `\fracc{a}{b}` は `InvalidSource` で、message は `Undefined control sequence.`。
 
+## 数式の編集 UI (P0-5)
+
+- ファイルメニューの「数式 clip を追加」で、再生ヘッド位置の overlay track に既定 5 秒の
+  数式を置く。追加後はエフェクトコントロールの式入力欄を選択する。
+- 式は 600ms 入力が止まると確定前の preview を要求する。Ctrl+Enter、入力欄からの移動、
+  clip の選択変更で確定し、Esc で編集前へ戻す。描画通知は未確定の入力を上書きしない。
+- 文字サイズ・文字色・背景色は既存の数値欄と色選択部品で編集する。位置・拡大・回転は
+  clip 共通のエフェクトを使う。式中の `\color` は反映されない。
+- 準備中・描画中・完了・古い表示・エラー・利用不可を表示し、ログは展開して読む。
+  「再試行」は描画環境を確認し直す操作であり、成功した disk cache を強制再生成しない。
+- `math_inspector_qml` は確定・取消・選択変更と、通常幅 / 狭幅・低いパネル / 利用不可の
+  実描画・最下部へのスクロールを検査する。外部の Manim / MiKTeX は使わない。
+
 ## P0-0: Manim MathTex の検証 (2026-10-05)
 
 環境: Manim Community v0.21.0 (`~/.local/bin/manim.exe`)、MiKTeX 26.5 (ユーザー単位の導入、
