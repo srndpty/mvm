@@ -76,6 +76,44 @@ void testKey() {
           "field の境界をずらした入力は別の key になる");
 }
 
+void testSequenceKey() {
+    using mvm::math::MathAnimationKind;
+    using mvm::math::MathSequenceSpec;
+    const MathSequenceSpec base{baseSpec(), MathAnimationKind::Write, 90};
+    const std::string templateId = "manim-write/1";
+    // printf 'mvm-math-sequence/1\nanimation=5:write\nframes=90\nsyntax=5:latex\nsource=3:x^2\n
+    //   font_size=96\nbackend=13:manim-mathtex\ntoolchain=59:backend=manim-mathtex\ntemplate=1\n
+    //   manim=M\nlatex=L\ndvisvgm=D\n\nsequence_template=13:manim-write/1\n' | sha256sum
+    const std::string golden = "faaebed9736f840408dab117e3f386d82f997da0199bbf7628ca2a0d5b45e784";
+    const std::string key = mvm::math::mathSequenceKey(base, baseToolchain(), templateId);
+    check(key == golden, "連番の key が独立に計算した golden 値と一致する: " + key);
+    check(key != mvm::math::mathRenderKey(baseSpec(), baseToolchain()),
+          "連番の key は同じ式の静止の key と別");
+    check(mvm::math::mathRenderKey(baseSpec(), baseToolchain()) ==
+              "1451b35693b81e1a4b69677e48f4e487bc94c29c7c19280d473c14015170bf6b",
+          "連番を足しても静止の key は P0 の golden 値のまま");
+
+    auto differs = [&](MathSequenceSpec spec, const std::string& templateText,
+                       const std::string& what) {
+        check(mvm::math::mathSequenceKey(spec, baseToolchain(), templateText) != key,
+              what + " を変えると連番の key が変わる");
+    };
+    auto spec = base;
+    spec.frames = 91;
+    differs(spec, templateId, "frame 数");
+    spec = base;
+    spec.still.source = "x^3";
+    differs(spec, templateId, "式");
+    spec = base;
+    spec.still.fontSize = 97;
+    differs(spec, templateId, "文字サイズ");
+    differs(base, "manim-write/2", "連番の script の識別");
+    auto toolchain = baseToolchain();
+    toolchain.canonical += "x";
+    check(mvm::math::mathSequenceKey(base, toolchain, templateId) != key,
+          "toolchain を変えると連番の key が変わる");
+}
+
 std::vector<std::uint8_t> mask(int width, int height, std::vector<std::uint8_t> alphas) {
     std::vector<std::uint8_t> rgba;
     for (const auto alpha : alphas) {
@@ -137,11 +175,51 @@ void testLayout() {
     check(!composeMathRaster(full.data(), 1, 1, {}, 0, 3).success, "出力の大きさが 0 なら失敗する");
 }
 
+// Write の patch は静止の合成の mask 矩形と同じ画素になる (preview は patch、書き出しは全面)。
+void testPatch() {
+    using P = std::vector<std::uint8_t>;
+    const std::vector<std::uint8_t> coverage = {0, 64, 128, 255, 32, 200};
+    std::vector<std::uint8_t> maskRgba;
+    for (const auto value : coverage)
+        maskRgba.insert(maskRgba.end(), {0, 0, 0, value});
+    for (const mvm::math::MathComposeStyle style :
+         {mvm::math::MathComposeStyle{0xFF102030u, 0x00000000u},
+          mvm::math::MathComposeStyle{0x80FF00FFu, 0x8000FF00u}}) {
+        const auto full = mvm::math::composeMathRaster(maskRgba.data(), 3, 2, style, 7, 5);
+        int left = -1;
+        int top = -1;
+        check(mvm::math::mathRasterPlacement(3, 2, 7, 5, left, top) && left == 2 && top == 1,
+              "置く位置は (7-3)/2 = 2、(5-2)/2 = 1");
+        std::vector<std::uint8_t> patch(3U * 2U * 4U, 0xEE);
+        mvm::math::composeMathPatch(coverage.data(), 3, 2, style, patch.data());
+        bool same = full.success;
+        for (int y = 0; y < 2 && same; ++y)
+            for (int x = 0; x < 3 && same; ++x) {
+                const auto at =
+                    (static_cast<std::size_t>(y) * 3U + static_cast<std::size_t>(x)) * 4U;
+                same = pixel(full, left + x, top + y) ==
+                       P{patch[at], patch[at + 1], patch[at + 2], patch[at + 3]};
+            }
+        check(same, "patch は静止の合成の mask 矩形と同じ画素 (透明な所は 0 で上書きする)");
+    }
+    // 手で計算した値: 被覆 0・背景透明は 0 (前の値 0xEE を残さない)。
+    std::vector<std::uint8_t> one(4, 0xEE);
+    const std::uint8_t zero = 0;
+    mvm::math::composeMathPatch(&zero, 1, 1, {0xFFFFFFFFu, 0}, one.data());
+    check(one == P{0, 0, 0, 0}, "被覆 0 で背景も透明なら patch は透明");
+    int left = 0;
+    int top = 0;
+    check(!mvm::math::mathRasterPlacement(5, 1, 4, 3, left, top),
+          "出力より大きい mask には位置を返さない");
+}
+
 } // namespace
 
 int main() {
     testKey();
+    testSequenceKey();
     testLayout();
+    testPatch();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;
 }

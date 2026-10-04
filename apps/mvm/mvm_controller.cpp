@@ -975,6 +975,8 @@ void MvmController::refreshTimelineModel(PlaybackInvalidation invalidation) {
         mathLastGood_.removeIf([&](const auto& item) { return !mathClipIds.contains(item.key()); });
         mathStillImages_.removeIf(
             [&](const auto& item) { return !mathClipIds.contains(item.key()); });
+        mathWriteAnimations_.removeIf(
+            [&](const auto& item) { return !mathClipIds.contains(item.key()); });
     }
     requestMathRenders();
     textRasterBounds_.clear();
@@ -2106,6 +2108,40 @@ private:
     std::int64_t fpsNum_, fpsDen_, duration_;
 };
 
+// 数式 clip の Write の preview。静止の画素 (書き終えた式) の mask 矩形だけを、Write の間は
+// 連番の frame の画素に変える。frame の選び方 (mathIntroFrameAt) と画素の式 (composeMathPatch)
+// は書き出しと同じ。連番の mask は 1 画素 1 byte で持ち、着色は frame が変わったときだけ行う。
+class MathWritePreviewAnimation final : public preview::PreviewStillAnimation {
+public:
+    MathWritePreviewAnimation(project::TimelineClip clip, std::int64_t fpsNum, std::int64_t fpsDen,
+                              std::shared_ptr<const MathCoverageSequence> frames,
+                              math::MathComposeStyle style, preview::PreviewPixelRect rect)
+        : clip_(std::move(clip)), fpsNum_(fpsNum), fpsDen_(fpsDen), frames_(std::move(frames)),
+          style_(style), rect_(rect) {}
+
+    preview::PreviewPixelRect patchRect() const override { return rect_; }
+
+    std::int64_t stateAt(std::int64_t outputFrame) const override {
+        const auto index =
+            mathIntroFrameAt(clip_, fpsNum_, fpsDen_, outputFrame - clip_.timelineStartFrame);
+        if (!index || *index < 0 || *index >= static_cast<std::int64_t>(frames_->frames.size()))
+            return -1;
+        return *index;
+    }
+
+    void fillPatch(std::int64_t state, std::uint8_t* out) const override {
+        math::composeMathPatch(frames_->frames[static_cast<std::size_t>(state)].data(),
+                               frames_->width, frames_->height, style_, out);
+    }
+
+private:
+    project::TimelineClip clip_;
+    std::int64_t fpsNum_, fpsDen_;
+    std::shared_ptr<const MathCoverageSequence> frames_;
+    math::MathComposeStyle style_;
+    preview::PreviewPixelRect rect_;
+};
+
 void attachClipMotion(preview::PreviewCompositionLayer& layer, const project::ClipEffects& effects,
                       const project::TimelineClip& clip, const project::Project& project,
                       double transitionOpacity = 1) {
@@ -2150,6 +2186,9 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
                     continue;
                 if (!layer.stillImage)
                     return nullptr;
+                if (stillMapping.kind == project::TimelineClipKind::Math)
+                    layer.stillAnimation =
+                        mathWriteAnimation(stillMapping.clipIndex, *layer.stillImage);
                 const auto& clip =
                     project_.timelineClips[static_cast<std::size_t>(stillMapping.clipIndex)];
                 const project::ClipEffects effects = effectsForPreview(stillMapping.clipIndex);
@@ -3444,32 +3483,133 @@ project::MathClipData MvmController::effectiveMathData(const project::TimelineCl
 void MvmController::requestMathRenders() {
     if (!mathRasters_)
         return;
-    // 入力中の式を最優先にし、次に再生位置に掛かる clip、残りの順に要求する
-    // (worker は 1 本で、要求の順に描く)。
-    std::vector<math::MathRenderSpec> ordered;
+    // 入力中の式を最優先にし、次に再生位置に掛かる clip の静止と Write、残りの静止、残りの
+    // Write の順に要求する (worker は 1 本で、要求の順に描く)。Write の連番は確定した値だけを
+    // 描く (入力中の式は静止だけを見せる)。
+    std::vector<math::MathRenderSpec> statics;
+    std::vector<math::MathRenderSpec> laterStatics;
+    std::vector<math::MathSequenceSpec> writes;
+    std::vector<math::MathSequenceSpec> laterWrites;
     if (mathPreviewOverride_)
-        ordered.push_back(mathRenderSpecFor(mathPreviewOverride_->second));
-    std::vector<math::MathRenderSpec> later;
+        statics.push_back(mathRenderSpecFor(mathPreviewOverride_->second));
     for (const auto& clip : project_.timelineClips) {
         if (clip.kind != project::TimelineClipKind::Math)
             continue;
-        const auto spec = mathRenderSpecFor(clip.math);
         const bool atPlayhead =
             clip.timelineStartFrame <= playheadFrame_ &&
             playheadFrame_ < clip.timelineStartFrame + (clip.sourceOutFrame - clip.sourceInFrame);
-        (atPlayhead ? ordered : later).push_back(spec);
+        (atPlayhead ? statics : laterStatics).push_back(mathRenderSpecFor(clip.math));
+        if (const auto write = mathSequenceSpecFor(clip))
+            (atPlayhead ? writes : laterWrites).push_back(*write);
     }
-    ordered.insert(ordered.end(), later.begin(), later.end());
     QSet<QString> keys;
-    for (const auto& spec : ordered) {
-        const QString key = mathRasters_->keyFor(spec);
-        if (!key.isEmpty())
-            keys.insert(key);
-    }
+    for (const auto* list : {&statics, &laterStatics})
+        for (const auto& spec : *list)
+            if (const QString key = mathRasters_->keyFor(spec); !key.isEmpty())
+                keys.insert(key);
+    for (const auto* list : {&writes, &laterWrites})
+        for (const auto& spec : *list)
+            if (const QString key = mathRasters_->sequenceKeyFor(spec); !key.isEmpty())
+                keys.insert(key);
     // 使わなくなった式 (書き換えた前の式など) の描画は process ごと止める。
     mathRasters_->retainOnly(keys);
-    for (const auto& spec : ordered)
+    // 入力中の式の静止がまだ描けていなければ、描きかけ・待ちの連番を止めて先に描かせる
+    // (長い連番が入力中の preview を待たせない)。止めた連番はすぐ下で要求し直す。
+    if (mathPreviewOverride_ &&
+        mathRasters_->request(statics.front()).state == MathRasterCache::State::Pending)
+        mathRasters_->cancelPendingSequences();
+    for (const auto& spec : statics)
         mathRasters_->request(spec);
+    for (const auto& spec : writes)
+        mathRasters_->requestSequence(spec);
+    for (const auto& spec : laterStatics)
+        mathRasters_->request(spec);
+    for (const auto& spec : laterWrites)
+        mathRasters_->requestSequence(spec);
+}
+
+std::shared_ptr<const preview::PreviewStillAnimation>
+MvmController::mathWriteAnimation(int clipIndex, const preview::PreviewStillImage& still) const {
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    const QString clipId = QString::fromStdString(clip.id);
+    const auto write = mathSequenceSpecFor(clip);
+    // 入力中の clip は静止だけを見せる (連番は確定した式のもの)。
+    if (!write || !mathRasters_ || (mathPreviewOverride_ && mathPreviewOverride_->first == clip.id)) {
+        mathWriteAnimations_.remove(clipId);
+        return nullptr;
+    }
+    // 下地の still が現在の式の静止の描画であること (last-good の古い式の上に重ねない)。
+    const auto staticEntry = mathRasters_->request(mathRenderSpecFor(clip.math));
+    const auto sequence = mathRasters_->requestSequence(*write);
+    math::MathComposeStyle style;
+    int left = 0;
+    int top = 0;
+    if (staticEntry.state != MathRasterCache::State::Ready || !staticEntry.mask ||
+        sequence.state != MathRasterCache::State::Ready || !sequence.frames ||
+        sequence.frames->width != staticEntry.mask->width ||
+        sequence.frames->height != staticEntry.mask->height ||
+        !mathComposeStyleFor(clip.math, style) ||
+        !math::mathRasterPlacement(sequence.frames->width, sequence.frames->height, still.width,
+                                   still.height, left, top)) {
+        mathWriteAnimations_.remove(clipId);
+        return nullptr;
+    }
+    const QString memo =
+        mathRasters_->sequenceKeyFor(*write) + QLatin1Char('|') +
+        QString::fromStdString(clip.math.color) + QLatin1Char('|') +
+        QString::fromStdString(clip.math.backgroundColor) +
+        QStringLiteral("|%1x%2|%3|%4/%5|%6/%7|%8-%9")
+            .arg(still.width)
+            .arg(still.height)
+            .arg(clip.timelineStartFrame)
+            .arg(project_.timelineFpsNum)
+            .arg(project_.timelineFpsDen)
+            .arg(clip.sourceFpsNum)
+            .arg(clip.sourceFpsDen)
+            .arg(clip.sourceInFrame)
+            .arg(clip.sourceOutFrame);
+    if (const auto found = mathWriteAnimations_.constFind(clipId);
+        found != mathWriteAnimations_.constEnd() && found->memo == memo)
+        return found->animation;
+    auto animation = std::make_shared<MathWritePreviewAnimation>(
+        clip, project_.timelineFpsNum, project_.timelineFpsDen, sequence.frames, style,
+        preview::PreviewPixelRect{left, top, sequence.frames->width, sequence.frames->height});
+    mathWriteAnimations_.insert(clipId, {memo, animation});
+    return animation;
+}
+
+std::pair<QString, QString> MvmController::mathWriteState(const project::TimelineClip& clip) const {
+    const auto write = mathSequenceSpecFor(clip);
+    if (!write)
+        return {QStringLiteral("none"), {}};
+    if (!mathRasters_)
+        return {QStringLiteral("unavailable"), {}};
+    switch (mathRasters_->backendState()) {
+    case MathRasterCache::BackendState::Checking:
+        return {QStringLiteral("checking"), {}};
+    case MathRasterCache::BackendState::Unavailable:
+        return {QStringLiteral("unavailable"), mathRasters_->backendMessage()};
+    case MathRasterCache::BackendState::Available:
+        break;
+    }
+    const auto sequence = mathRasters_->requestSequence(*write);
+    switch (sequence.state) {
+    case MathRasterCache::State::Pending:
+        return {QStringLiteral("rendering"), {}};
+    case MathRasterCache::State::Failed:
+        return {QStringLiteral("error"), sequence.message};
+    case MathRasterCache::State::Unavailable:
+        return {QStringLiteral("unavailable"), sequence.message};
+    case MathRasterCache::State::Ready:
+        break;
+    }
+    const auto staticEntry = mathRasters_->request(mathRenderSpecFor(clip.math));
+    if (staticEntry.state == MathRasterCache::State::Ready && staticEntry.mask && sequence.frames &&
+        (sequence.frames->width != staticEntry.mask->width ||
+         sequence.frames->height != staticEntry.mask->height))
+        return {QStringLiteral("error"),
+                QStringLiteral("Write の連番の大きさが静止の描画と違います")};
+    return {QStringLiteral("ready"), {}};
 }
 
 std::shared_ptr<const preview::PreviewStillImage> MvmController::mathStillImage(int clipIndex,
@@ -3517,6 +3657,31 @@ std::shared_ptr<const preview::PreviewStillImage> MvmController::mathStillImage(
     return still;
 }
 
+namespace {
+
+// Write の尺の上限 (clip の素材 frame)。clip の尺と kMaximumMathIntroFrames の小さい方。
+std::int64_t mathIntroMaximumFrames(const project::TimelineClip& clip) {
+    return std::min(clip.sourceOutFrame - clip.sourceInFrame, project::kMaximumMathIntroFrames);
+}
+
+// clip の素材 frame の数を秒にする (数式 clip の素材 fps は置いたときの timeline の fps)。
+double mathIntroSeconds(const project::TimelineClip& clip, std::int64_t frames) {
+    return clip.sourceFpsNum > 0 ? static_cast<double>(frames) *
+                                       static_cast<double>(clip.sourceFpsDen) /
+                                       static_cast<double>(clip.sourceFpsNum)
+                                 : 0.0;
+}
+
+// 秒を clip の素材 frame にし、1 から上限までに収める。
+std::int64_t mathIntroFramesForSeconds(const project::TimelineClip& clip, double seconds) {
+    const double frames = seconds * static_cast<double>(clip.sourceFpsNum) /
+                          static_cast<double>(std::max<std::int64_t>(1, clip.sourceFpsDen));
+    const auto rounded = std::isfinite(frames) ? std::llround(frames) : 1LL;
+    return std::clamp<std::int64_t>(rounded, 1, std::max<std::int64_t>(1, mathIntroMaximumFrames(clip)));
+}
+
+} // namespace
+
 QVariantMap MvmController::mathClipData(const QString& clipId) const {
     const auto found = std::find_if(project_.timelineClips.begin(), project_.timelineClips.end(),
                                     [&](const auto& clip) {
@@ -3527,6 +3692,7 @@ QVariantMap MvmController::mathClipData(const QString& clipId) const {
         return {};
     const project::MathClipData data = effectiveMathData(*found);
     const bool hasPrevious = mathLastGood_.contains(clipId);
+    const auto write = mathWriteState(*found);
     QString state;
     QString message;
     QString log;
@@ -3583,7 +3749,18 @@ QVariantMap MvmController::mathClipData(const QString& clipId) const {
             {QStringLiteral("showingPrevious"), state != QStringLiteral("ready") && hasPrevious},
             {QStringLiteral("message"), message},
             {QStringLiteral("log"), log},
-            {QStringLiteral("toolchain"), mathRasters_->toolchainText()}};
+            {QStringLiteral("toolchain"), mathRasters_->toolchainText()},
+            // Write (clip の先頭で式を書く)。尺は clip の素材 frame で、秒は表示用。
+            {QStringLiteral("intro"),
+             QString::fromLatin1(project::mathIntroKindName(found->mathAnimation.intro))},
+            {QStringLiteral("introFrames"),
+             static_cast<qint64>(found->mathAnimation.introFrames)},
+            {QStringLiteral("introSeconds"),
+             mathIntroSeconds(*found, found->mathAnimation.introFrames)},
+            {QStringLiteral("introMaxSeconds"),
+             mathIntroSeconds(*found, mathIntroMaximumFrames(*found))},
+            {QStringLiteral("writeState"), write.first},
+            {QStringLiteral("writeMessage"), write.second}};
 }
 
 QVariantMap MvmController::selectedMathClip() const {
@@ -3659,9 +3836,30 @@ bool MvmController::updateMathClip(const QString& clipId, const QVariantMap& val
         return false;
     }
     applyMathValues(found->math, values);
+    // Write: "intro" は "none" / "write"、尺は "introSeconds" (clip の尺と上限に収める)。
+    if (values.contains(QStringLiteral("intro"))) {
+        project::MathIntroKind intro = project::MathIntroKind::None;
+        if (!project::parseMathIntroKind(
+                values.value(QStringLiteral("intro")).toString().toStdString(), intro)) {
+            setStatus(QStringLiteral("数式の intro の種類が不正です"));
+            return false;
+        }
+        if (intro == project::MathIntroKind::None) {
+            found->mathAnimation = {};
+        } else if (found->mathAnimation.intro == project::MathIntroKind::None) {
+            // 既定は 1 秒 (clip が短ければ clip の尺)。
+            found->mathAnimation = {intro, mathIntroFramesForSeconds(*found, 1.0)};
+        }
+    }
+    if (values.contains(QStringLiteral("introSeconds")) &&
+        found->mathAnimation.intro != project::MathIntroKind::None)
+        found->mathAnimation.introFrames = mathIntroFramesForSeconds(
+            *found, values.value(QStringLiteral("introSeconds")).toDouble());
     // 値の形だけを確かめる。描けるかどうかでは確定を拒否しない (描けない式も Project の正)。
     std::string error;
-    if (!project::validateMathClipData(found->math, candidate.outputHeight, error)) {
+    if (!project::validateMathClipData(found->math, candidate.outputHeight, error) ||
+        !project::validateMathClipAnimation(found->mathAnimation,
+                                            found->sourceOutFrame - found->sourceInFrame, error)) {
         setStatus(QString::fromStdString(error));
         return false;
     }
@@ -7682,6 +7880,26 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
             return false;
         }
         request.mathArtifacts.emplace(clip.id, *artifact);
+        // Write の連番も現在の式・尺のものが描けていなければ書き出さない (静止で代用しない)。
+        if (const auto write = mathSequenceSpecFor(clip)) {
+            const auto [writeState, writeMessage] = mathWriteState(clip);
+            const auto sequence =
+                writeState == QStringLiteral("ready") && mathRasters_
+                    ? mathRasters_->readySequence(*write)
+                    : std::nullopt;
+            if (!sequence) {
+                const QString reason =
+                    writeMessage.isEmpty()
+                        ? QStringLiteral("描画中です。終わってから書き出してください")
+                        : writeMessage;
+                reportExportFailure(QStringLiteral("数式 clip '") +
+                                    QString::fromStdString(clip.name) +
+                                    QStringLiteral("' の Write の描画が完了していません: ") +
+                                    reason);
+                return false;
+            }
+            request.mathWriteFrames.emplace(clip.id, sequence->frames);
+        }
     }
 
     if (exportThread_.joinable())

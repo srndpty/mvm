@@ -125,6 +125,31 @@ public:
     virtual PreviewMotionValue evaluate(std::int64_t outputFrame) const = 0;
 };
 
+// 静止画の中の画素の矩形 (左上と大きさ、画素単位)。
+struct PreviewPixelRect {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    bool operator==(const PreviewPixelRect&) const = default;
+};
+
+// 静止画 layer の一部の画素を出力 frame ごとに変える不変の評価器 (数式の Write など)。
+// 変わるのは patchRect の中だけで、外は stillImage のまま。render thread は state が変わった
+// frame でだけ fillPatch を呼び、その矩形だけを GPU へ送る (出力全面を frame ごとに作らない)。
+// 位置・拡大・不透明度は PreviewMotion が別に掛ける。
+class PreviewStillAnimation {
+public:
+    virtual ~PreviewStillAnimation() = default;
+    // stillImage の中の、画素が変わる矩形。instance の間は変わらない。
+    virtual PreviewPixelRect patchRect() const = 0;
+    // 出力 frame で見せる状態。負なら stillImage の画素のまま。同じ値は同じ画素を表す。
+    virtual std::int64_t stateAt(std::int64_t outputFrame) const = 0;
+    // state (0 以上) の patchRect の画素 (RGBA8 straight alpha、行間の余白なし) を out へ書く。
+    // render thread から呼ぶので、I/O や待ちをしないこと。
+    virtual void fillPatch(std::int64_t state, std::uint8_t* out) const = 0;
+};
+
 struct PreviewCompositionLayer {
     // video layer が参照する source。静止画 layer では 0 のまま。
     PreviewSourceId source;
@@ -148,6 +173,8 @@ struct PreviewCompositionLayer {
     std::shared_ptr<const PreviewMotion> motion{};
     // トランジション係数はクリップ自身の不透明度と別に掛ける。
     float motionOpacityMultiplier = 1;
+    // 非 null なら stillImage の一部の画素を出力 frame ごとに変える (stillImage が必須)。
+    std::shared_ptr<const PreviewStillAnimation> stillAnimation{};
     bool operator==(const PreviewCompositionLayer&) const = default;
 };
 

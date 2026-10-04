@@ -94,6 +94,10 @@ typedef struct {
     /* 非0なら素材の余白を不透明な黒で埋めてから上の layer として重ねる (クロスディゾルブの
      * incoming)。余白の所でも下の layer が 1 - 不透明度に減る。video_track > 0 のときだけ使う。 */
     int opaque_backdrop;
+    /* 非0なら path は透過 PNG の連番 ("...%05d.png"、00000 から) で、producer の位置 n に
+     * n 番の PNG を出す (qimage、1 枚 1 frame)。is_still_image と同時に指定する。
+     * 数式の Write に使う (docs/math-clips.md P1-0 で frame 単位の対応を確認した)。 */
+    int is_image_sequence;
 } MvmExportClip;
 
 typedef struct {

@@ -27,6 +27,9 @@ struct TimelineExportRequest {
     // 数式 clip の ID -> 描画済みの PNG (cache の <key>.png)。書き出しは数式を描かない。
     // 出力する数式 clip がここに無ければ失敗する (古い描画や描画中の式で書き出さない)。
     std::map<std::string, std::filesystem::path> mathArtifacts;
+    // 数式 clip の ID -> Write の連番の PNG (cache の write/<key>/、frame 0 から順)。Write のある
+    // 出力する数式 clip がここに無い・枚数が足りなければ失敗する。
+    std::map<std::string, std::vector<std::filesystem::path>> mathWriteFrames;
     int renderThreads = 4;
     int encoderThreads = 0;
     // trueを返すとキャンセルする。worker threadから呼ばれる。
@@ -72,6 +75,9 @@ struct TimelineExportClipMapping {
     double mixerPan = 0.0;
     bool audio = false;
     bool still = false; // 文字・画像。全画面の透過 PNG を stage して qimage で開く
+    // 数式 clip の Write の区間。timeline の frame ごとの全画面の透過 PNG を連番で stage し、
+    // qimage の連番で開く。Write の後は同じ clip の別の mapping (静止) が続く。
+    bool mathWrite = false;
     // MLT の映像 layer (下から 0, 1, ...)。track ごとに lane 0 と、トランジションがあれば
     // lane 1 (incoming を重ねる) を積む。トランジションが無ければ track の index と同じ。
     int videoTrackIndex = 0;

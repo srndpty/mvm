@@ -18,8 +18,27 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mvm::app {
+
+// Write の連番の mask。各 frame は 1 画素 1 byte の被覆 (PNG の alpha)、width * height byte。
+// preview は RGBA ではなくこの形で持つ (出力全面の RGBA を frame ごとに持たない)。
+struct MathCoverageSequence {
+    int width = 0;
+    int height = 0;
+    std::vector<std::vector<std::uint8_t>> frames;
+    std::size_t bytes() const {
+        return frames.size() * static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    }
+};
+
+// 書き出しが読む連番の artifact (cache の PNG、frame 0 から順)。
+struct MathSequenceArtifact {
+    std::vector<std::filesystem::path> frames;
+    int width = 0;
+    int height = 0;
+};
 
 // 数式 clip の描画結果 (白い glyph の mask) を key 単位で持つ (docs/math-clips.md)。
 //
@@ -46,6 +65,15 @@ public:
     struct Entry {
         State state = State::Pending;
         std::shared_ptr<const media::StillImage> mask;
+        math::MathRenderStatus status = math::MathRenderStatus::Failed;
+        QString message;
+        QString log;
+    };
+
+    // Write の連番。状態の意味は Entry と同じ。
+    struct SequenceEntry {
+        State state = State::Pending;
+        std::shared_ptr<const MathCoverageSequence> frames;
         math::MathRenderStatus status = math::MathRenderStatus::Failed;
         QString message;
         QString log;
@@ -82,20 +110,39 @@ public:
     // Ready の key の PNG。書き出しはこれを読む (Manim を起動しない)。
     std::optional<std::filesystem::path> readyArtifact(const math::MathRenderSpec& spec) const;
 
-    // keys に無い record を捨てる (描画中なら止める)。
+    // Write の連番。静止と同じ worker・権限・世代で扱い、key は別の名前空間
+    // (math::mathSequenceKey)。disk は cacheDirectory/write/<key>/ と <key>.txt (provenance)。
+    QString sequenceKeyFor(const math::MathSequenceSpec& spec) const;
+    SequenceEntry requestSequence(const math::MathSequenceSpec& spec);
+    std::optional<MathSequenceArtifact> readySequence(const math::MathSequenceSpec& spec) const;
+    // 描き終えていない連番の要求を取り消して忘れる (描画中なら process ごと止める)。
+    // worker は 1 本なので、長い連番が入力中の式の静止の描画を待たせないために使う。
+    // 取り消した連番は次の requestSequence で要求し直される。
+    void cancelPendingSequences();
+
+    // keys に無い record (静止・連番) を捨てる (描画中なら止める)。
     void retainOnly(const QSet<QString>& keys);
     void forgetFailures();
     void shutdown();
 
     void setRenderTimeout(std::chrono::milliseconds timeout) { renderTimeout_ = timeout; }
+    // 連番の timeout は「静止の timeout + frame ごとの追加」。
+    void setSequenceTimeoutPerFrame(std::chrono::milliseconds perFrame) {
+        sequenceTimeoutPerFrame_ = perFrame;
+    }
+    // 連番の mask (1 画素 1 byte x 枚数) を memory に持てる上限。超える連番は Failed。
+    void setSequenceMemoryBudget(std::size_t bytes) { sequenceMemoryBudget_ = bytes; }
+    static constexpr std::size_t kDefaultSequenceMemoryBudget = std::size_t{256} << 20;
     const std::filesystem::path& cacheDirectory() const { return cacheDirectory_; }
     // この instance の作業 directory (cacheDirectory/jobs/<session>)。
     std::filesystem::path jobsDirectory() const;
     bool authorized() const { return authorized_; }
     int recordCount() const { return static_cast<int>(records_.size()); }
+    int sequenceRecordCount() const { return static_cast<int>(sequences_.size()); }
 
     // provenance file の 1 行目。形を変えたら上げる。
     static constexpr char kArtifactFormat[] = "mvm-math-artifact/1";
+    static constexpr char kSequenceArtifactFormat[] = "mvm-math-sequence-artifact/1";
 
 Q_SIGNALS:
     // key の結果が出た。空なら全体 (backend の状態が変わった)。
@@ -109,10 +156,20 @@ private:
         std::shared_ptr<std::atomic<bool>> cancel;
     };
 
+    struct SequenceRecord {
+        SequenceEntry entry;
+        MathSequenceArtifact artifact;
+        std::uint64_t ticket = 0;
+        std::shared_ptr<std::atomic<bool>> cancel;
+    };
+
     void finishPreflight(std::uint64_t generation, math::MathPreflightResult result);
     void finishRender(const QString& key, std::uint64_t ticket, Entry entry,
                       std::filesystem::path artifact);
+    void finishSequence(const QString& key, std::uint64_t ticket, SequenceEntry entry,
+                        MathSequenceArtifact artifact);
     void cancelAll();
+    void clearRecords();
 
     void becomeUnavailable(QString reason);
 
@@ -122,6 +179,7 @@ private:
     PreflightFunction preflight_;
     QThreadPool pool_;
     QHash<QString, Record> records_;
+    QHash<QString, SequenceRecord> sequences_;
     std::uint64_t nextTicket_ = 1;
     std::uint64_t preflightGeneration_ = 0;
     std::shared_ptr<std::atomic<bool>> preflightCancel_;
@@ -129,6 +187,8 @@ private:
     QString backendMessage_ = QStringLiteral("数式の cache が設定されていません");
     math::MathRenderBackend backend_;
     std::chrono::milliseconds renderTimeout_{60000};
+    std::chrono::milliseconds sequenceTimeoutPerFrame_{500};
+    std::size_t sequenceMemoryBudget_ = kDefaultSequenceMemoryBudget;
     bool shutDown_ = false;
 };
 

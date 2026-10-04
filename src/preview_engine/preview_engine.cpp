@@ -22,6 +22,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <map>
@@ -440,6 +441,22 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
 
     std::set<std::uint64_t> distinctSources;
     for (const PreviewCompositionLayer& layer : snapshot->layers) {
+        if (layer.stillAnimation && !layer.stillImage) {
+            return Result<AcceptedComposition>::failure(
+                compositionError(PreviewErrorCategory::CompositionFailure,
+                                 "静止画のanimationには静止画layerが必要です"));
+        }
+        if (layer.stillAnimation) {
+            // 書き換える矩形は静止画の内側の空でない範囲に限る (render thread で検査しない)。
+            const PreviewPixelRect rect = layer.stillAnimation->patchRect();
+            const PreviewStillImage& image = *layer.stillImage;
+            if (rect.x < 0 || rect.y < 0 || rect.width <= 0 || rect.height <= 0 ||
+                rect.x > image.width - rect.width || rect.y > image.height - rect.height) {
+                return Result<AcceptedComposition>::failure(
+                    compositionError(PreviewErrorCategory::CompositionFailure,
+                                     "静止画のanimationの矩形が静止画の外です"));
+            }
+        }
         if (layer.stillImage) {
             // 静止画 layer は decode source を持たない。画素と配置だけを検査する。
             const PreviewStillImage& image = *layer.stillImage;
@@ -718,6 +735,50 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     };
 
     std::map<const PreviewStillImage*, StillImageEntry> stillImages;
+
+    // 一部の画素を frame ごとに変える静止画 layer (PreviewStillAnimation) の GPU frame。
+    // 画素を書き換えるので、変わらない静止画 (stillImages) と texture を共有しない。
+    // key は animation の pointer で、再利用されないよう animation と image の所有権も持つ。
+    // state は texture に今入っている状態 (負は stillImage のまま)。
+    struct AnimatedStillEntry {
+        std::shared_ptr<const PreviewStillImage> image;
+        std::shared_ptr<const PreviewStillAnimation> animation;
+        gpu::DecodedGpuFrame frame;
+        std::int64_t state = -1;
+        std::vector<std::uint8_t> patch;
+    };
+
+    std::map<const PreviewStillAnimation*, AnimatedStillEntry> animatedStills;
+
+    // entry の texture を state の画素にする。state が負なら stillImage の矩形へ戻す。
+    std::optional<std::string> applyStillAnimationStateLocked(AnimatedStillEntry& entry,
+                                                              std::int64_t state) {
+        if (state == entry.state)
+            return std::nullopt;
+        const PreviewPixelRect rect = entry.animation->patchRect();
+        entry.patch.resize(static_cast<std::size_t>(rect.width) *
+                           static_cast<std::size_t>(rect.height) * 4U);
+        if (state >= 0) {
+            entry.animation->fillPatch(state, entry.patch.data());
+        } else {
+            const std::size_t row = static_cast<std::size_t>(rect.width) * 4U;
+            for (int y = 0; y < rect.height; ++y)
+                std::memcpy(entry.patch.data() + static_cast<std::size_t>(y) * row,
+                            entry.image->rgba.data() +
+                                (static_cast<std::size_t>(rect.y + y) *
+                                     static_cast<std::size_t>(entry.image->width) +
+                                 static_cast<std::size_t>(rect.x)) *
+                                    4U,
+                            row);
+        }
+        std::string error;
+        if (!gpu::updateStillImageRegion(*renderDevice, entry.frame, rect.x, rect.y, rect.width,
+                                         rect.height, entry.patch.data(), entry.patch.size(),
+                                         error))
+            return error;
+        entry.state = state;
+        return std::nullopt;
+    }
 
     // P5-E1: compositionのepoch authority。engineは`CompositionEpoch`を
     // 直書きせず、coordinatorが採番した値をそのまま運ぶ。
@@ -1179,25 +1240,48 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                                                     gpu::ComposedFrame& composed,
                                                     std::int64_t outputFrame) {
         std::set<const PreviewStillImage*> referenced;
+        std::set<const PreviewStillAnimation*> referencedAnimations;
         for (std::size_t i = 0; i < snapshot.layers.size(); ++i) {
             const PreviewCompositionLayer& layer = snapshot.layers[i];
             if (!layer.stillImage)
                 continue;
-            const PreviewStillImage* key = layer.stillImage.get();
-            referenced.insert(key);
-            auto entry = stillImages.find(key);
-            if (entry == stillImages.end()) {
-                StillImageEntry created;
-                created.image = layer.stillImage;
-                std::string error;
-                if (!gpu::makeStillImageFrame(*renderDevice, key->width, key->height,
-                                              key->rgba.data(), key->rgba.size(), gpu::SourceId{},
-                                              created.frame, error))
-                    return error;
-                entry = stillImages.emplace(key, std::move(created)).first;
-            }
             gpu::CompositionLayerFrame still;
-            still.frame = entry->second.frame;
+            if (layer.stillAnimation) {
+                const PreviewStillAnimation* key = layer.stillAnimation.get();
+                referencedAnimations.insert(key);
+                auto entry = animatedStills.find(key);
+                if (entry == animatedStills.end()) {
+                    AnimatedStillEntry created;
+                    created.image = layer.stillImage;
+                    created.animation = layer.stillAnimation;
+                    std::string error;
+                    const PreviewStillImage& image = *layer.stillImage;
+                    if (!gpu::makeUpdatableStillImageFrame(*renderDevice, image.width, image.height,
+                                                           image.rgba.data(), image.rgba.size(),
+                                                           gpu::SourceId{}, created.frame, error))
+                        return error;
+                    entry = animatedStills.emplace(key, std::move(created)).first;
+                }
+                if (auto failure = applyStillAnimationStateLocked(
+                        entry->second, layer.stillAnimation->stateAt(outputFrame)))
+                    return failure;
+                still.frame = entry->second.frame;
+            } else {
+                const PreviewStillImage* key = layer.stillImage.get();
+                referenced.insert(key);
+                auto entry = stillImages.find(key);
+                if (entry == stillImages.end()) {
+                    StillImageEntry created;
+                    created.image = layer.stillImage;
+                    std::string error;
+                    if (!gpu::makeStillImageFrame(*renderDevice, key->width, key->height,
+                                                  key->rgba.data(), key->rgba.size(),
+                                                  gpu::SourceId{}, created.frame, error))
+                        return error;
+                    entry = stillImages.emplace(key, std::move(created)).first;
+                }
+                still.frame = entry->second.frame;
+            }
             still.destination = {layer.destination.x, layer.destination.y, layer.destination.width,
                                  layer.destination.height};
             still.sourceUv = {layer.sourceRect.x, layer.sourceRect.y, layer.sourceRect.width,
@@ -1245,6 +1329,15 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             if (compositor)
                 compositor->retireLayerTexture(entry->second.frame.texture);
             entry = stillImages.erase(entry);
+        }
+        for (auto entry = animatedStills.begin(); entry != animatedStills.end();) {
+            if (referencedAnimations.contains(entry->first)) {
+                ++entry;
+                continue;
+            }
+            if (compositor)
+                compositor->retireLayerTexture(entry->second.frame.texture);
+            entry = animatedStills.erase(entry);
         }
         return std::nullopt;
     }
@@ -4379,6 +4472,7 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
         if (drained) {
             // 静止画の texture は compositor の SRV cache と一緒に手放す。
             engine.impl_->stillImages.clear();
+            engine.impl_->animatedStills.clear();
             engine.impl_->compositor.reset();
             // pairerはbufferをraw pointerで握る。worker本体より先に手放す。
             engine.impl_->pairer.reset();

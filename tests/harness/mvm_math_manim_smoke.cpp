@@ -8,6 +8,7 @@
 // 二次方程式の解の公式の導出 (docs/math-clips.md の受け入れ scenario) の式をすべて描き、
 // mvm の静止画 decoder で読み直して、大きさ・透過の余白・白い glyph を確かめる。
 // 不正な式が InvalidSource になり、TeX の error 行が message になることも確かめる。
+// P1: 解の公式を Write で書く連番を描き、Project の保存・再読込と映像だけの書き出しへ通す。
 
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
@@ -19,6 +20,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -328,6 +330,173 @@ void acceptScenario(const std::filesystem::path& root, const std::vector<std::st
           "A1 が MP4 に残り、3 秒の実音声 sample と非無音を比較する");
 }
 
+// alpha の合計 (glyph の被覆)。
+std::uint64_t alphaSum(const mvm::media::StillImage& image) {
+    std::uint64_t sum = 0;
+    for (std::size_t at = 3; at < image.rgba.size(); at += 4)
+        sum += image.rgba[at];
+    return sum;
+}
+
+// P1 の Write: 二次方程式の解の公式を 1.5 秒 (60 fps で 90 frame) で書く。
+// 実 Manim の連番を mvm の decoder で読み、Project の保存・再読込と映像だけの書き出しへ通す。
+// 式どうしの変形はしない (P2)。
+void writeScenario(const std::filesystem::path& root, const mvm::math::MathRenderBackend& backend,
+                   const std::string& source, const std::filesystem::path& staticMask) {
+    namespace project = mvm::project;
+    namespace math = mvm::math;
+    constexpr int kWrite = 90;
+    constexpr int kClip = 300;
+    const auto staticImage = mvm::media::loadStaticImage(staticMask);
+    check(staticImage.success, "Write: 静止の mask を読める");
+    check(static_cast<bool>(backend.renderSequence) && backend.sequenceTemplate == "manim-write/1",
+          "Write: backend が連番の描画と script の識別を持つ");
+    if (!staticImage.success || !backend.renderSequence)
+        return;
+    math::MathSequenceRenderRequest request;
+    request.spec = {{"latex", source, 96}, math::MathAnimationKind::Write, kWrite};
+    request.jobDirectory = root / L"job write";
+    const auto started = std::chrono::steady_clock::now();
+    const auto rendered = backend.renderSequence(request, nullptr);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+    std::printf("Write: %s %zu 枚 %dx%d %lld ms\n", math::mathRenderStatusName(rendered.status),
+                rendered.frames.size(), rendered.width, rendered.height,
+                static_cast<long long>(elapsed));
+    check(rendered.status == math::MathRenderStatus::Ok && rendered.frames.size() == kWrite,
+          "Write: 90 枚の連番を描ける: " + rendered.message + "\n" + rendered.log);
+    if (rendered.status != math::MathRenderStatus::Ok || rendered.frames.size() != kWrite)
+        return;
+    check(rendered.width == staticImage.image.width && rendered.height == staticImage.image.height,
+          "Write: 連番の大きさは静止の mask と同じ");
+    const auto staticSum = alphaSum(staticImage.image);
+    bool allDecoded = true;
+    bool sameSize = true;
+    bool edgesClear = true;
+    bool opaqueWhite = true;
+    std::vector<std::uint64_t> sums;
+    for (const auto& frame : rendered.frames) {
+        const auto decoded = mvm::media::loadStaticImage(frame);
+        allDecoded = allDecoded && decoded.success;
+        if (!decoded.success)
+            break;
+        const auto& image = decoded.image;
+        sameSize = sameSize && image.width == staticImage.image.width &&
+                   image.height == staticImage.image.height;
+        for (int x = 0; x < image.width; ++x)
+            for (const int y : {0, image.height - 1})
+                edgesClear =
+                    edgesClear &&
+                    image.rgba[(static_cast<std::size_t>(y) * image.width + x) * 4 + 3] == 0;
+        for (int y = 0; y < image.height; ++y)
+            for (const int x : {0, image.width - 1})
+                edgesClear =
+                    edgesClear &&
+                    image.rgba[(static_cast<std::size_t>(y) * image.width + x) * 4 + 3] == 0;
+        for (std::size_t at = 0; at + 3 < image.rgba.size(); at += 4)
+            if (image.rgba[at + 3] == 255)
+                opaqueWhite = opaqueWhite && image.rgba[at] == 255 && image.rgba[at + 1] == 255 &&
+                              image.rgba[at + 2] == 255;
+        sums.push_back(alphaSum(image));
+    }
+    check(allDecoded && sameSize, "Write: 全 frame を mvm の decoder で読め、大きさが揃う");
+    check(edgesClear, "Write: Write の線も外周 1 px に掛からない (余白に収まる)");
+    check(opaqueWhite, "Write: 不透明な画素は白");
+    if (sums.size() == kWrite) {
+        std::printf("Write の被覆 (静止比): frame 0 %.4f / 22 %.3f / 45 %.3f / 67 %.3f / 89 %.3f\n",
+                    static_cast<double>(sums[0]) / static_cast<double>(staticSum),
+                    static_cast<double>(sums[22]) / static_cast<double>(staticSum),
+                    static_cast<double>(sums[45]) / static_cast<double>(staticSum),
+                    static_cast<double>(sums[67]) / static_cast<double>(staticSum),
+                    static_cast<double>(sums[89]) / static_cast<double>(staticSum));
+        check(sums[0] == 0, "Write: frame 0 は空 (進み具合 0)");
+        check(sums[45] > 0 && sums[45] < staticSum, "Write: 途中の frame は書きかけ");
+        check(static_cast<double>(sums[89]) >= 0.9 * static_cast<double>(staticSum),
+              "Write: 最後の frame (89/90) は静止の 90% 以上を覆う");
+    }
+
+    // Project: 5 秒の数式 clip の先頭 1.5 秒を Write、fade in 6 frame。映像だけを書き出す。
+    auto value = project::createDefaultProject();
+    project::TimelineClip clip;
+    clip.kind = project::TimelineClipKind::Math;
+    clip.id = "math-write";
+    clip.name = "解の公式 (Write)";
+    clip.math.source = source;
+    clip.sourceFpsNum = 60;
+    clip.sourceFrameCount = clip.sourceOutFrame = kClip;
+    clip.track = {project::TrackKind::Video, 0};
+    clip.effects.fadeInFrames = 6;
+    clip.mathAnimation = {project::MathIntroKind::Write, kWrite};
+    value.timelineClips.push_back(clip);
+    const auto projectPath = root / "write.mvm";
+    const auto saved = project::saveProjectJson(value, projectPath);
+    check(saved.success, "Write: Project を保存する: " + saved.error);
+    const auto loaded = project::loadProjectJson(projectPath);
+    check(loaded.success && loaded.project == value &&
+              loaded.project.timelineClips[0].mathAnimation ==
+                  project::MathClipAnimation{project::MathIntroKind::Write, kWrite},
+          "Write: Project を変更なく開き直す: " + loaded.error);
+    if (!loaded.success)
+        return;
+    const bool initialized = mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) == 0;
+    check(initialized, "Write: 書き出しの MLT を初期化する");
+    if (!initialized)
+        return;
+    mvm::app::TimelineExportRequest export_;
+    export_.outputPath = root / "write.mp4";
+    export_.mathArtifacts = {{clip.id, staticMask}};
+    auto missing = export_;
+    missing.outputPath = root / "write-missing.mp4";
+    const auto rejected = mvm::app::exportTimeline(loaded.project, missing);
+    check(!rejected.success &&
+              rejected.error.find("Write の描画が完了していません") != std::string::npos,
+          "Write: 連番が無ければ書き出さない: " + rejected.error);
+    export_.mathWriteFrames = {{clip.id, rendered.frames}};
+    // MLT は閉じない (後の P0 の受け入れが同じ初期化を使い、最後に閉じる)。
+    const auto exported = mvm::app::exportTimeline(loaded.project, export_);
+    check(exported.success && exported.frameCount == kClip,
+          "Write: 300 frame を書き出す: " + exported.error);
+    if (!exported.success)
+        return;
+    QProcess video;
+    video.start(QStringLiteral(MVM_MATH_FFMPEG),
+                {"-v", "error", "-i", QString::fromStdWString(export_.outputPath.wstring()), "-an",
+                 "-vf", "scale=320:180", "-f", "rawvideo", "-pix_fmt", "rgba", "-"});
+    const bool decoded = video.waitForFinished(30000) &&
+                         video.exitStatus() == QProcess::NormalExit && video.exitCode() == 0;
+    const auto pixels = video.readAllStandardOutput();
+    constexpr int frameBytes = 320 * 180 * 4;
+    check(decoded && pixels.size() == frameBytes * kClip, "Write: MP4 の実 frame 数を復号する");
+    if (pixels.size() != frameBytes * kClip)
+        return;
+    const auto glyphs = [&](int t) {
+        std::size_t count = 0;
+        const auto* frame = reinterpret_cast<const unsigned char*>(pixels.constData()) +
+                            static_cast<std::size_t>(t) * frameBytes;
+        for (int y = 40; y < 140; ++y)
+            for (int x = 40; x < 280; ++x) {
+                const auto* p = frame + (y * 320 + x) * 4;
+                count += p[0] > 100 && p[1] > 100 && p[2] > 100;
+            }
+        return count;
+    };
+    const auto at10 = glyphs(10);
+    const auto at45 = glyphs(45);
+    const auto at89 = glyphs(89);
+    const auto at150 = glyphs(150);
+    const auto at299 = glyphs(299);
+    std::printf(
+        "Write の書き出しの glyph 画素: frame 10 %zu / 45 %zu / 89 %zu / 150 %zu / 299 %zu\n", at10,
+        at45, at89, at150, at299);
+    // 同じ画素の frame でも H.264 の圧縮で閾値付近の数画素が揺れる (実測 440 と 442)。
+    check(at150 > 30 && (at150 > at299 ? at150 - at299 : at299 - at150) * 50 <= at150,
+          "Write: Write の後は静止の式 (画素数の差は 2% 以内)");
+    check(at10 < at45 && at45 < at150, "Write: 書き出しでも式が順に書かれていく");
+    check(static_cast<double>(at89) >= 0.8 * static_cast<double>(at150),
+          "Write: Write の最後の frame は書き終えた式に近い");
+}
+
 } // namespace
 
 int main() {
@@ -406,10 +575,14 @@ int main() {
     check(invalid.message.find("Undefined control sequence") != std::string::npos,
           "message は TeX の error 行");
 
-    if (failures == 0)
+    if (failures == 0) {
+        // 解の公式 (sources[4]) の Write を別の Project で確かめてから、P0 の受け入れを行う
+        // (MLT の初期化を共有し、P0 の受け入れの最後に閉じる)。
+        writeScenario(root, preflight.backend, sources[4], masks[4]);
         acceptScenario(root, sources, masks);
-    else
+    } else {
         std::fprintf(stderr, "backend の検査が不成立のため、統合受け入れは実施できません\n");
+    }
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     mvm_win_free_utf8_args(argv, argc);

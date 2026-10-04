@@ -28,4 +28,48 @@ bool validateMathClipData(const MathClipData& data, int outputHeight, std::strin
     return true;
 }
 
+bool validateMathClipAnimation(const MathClipAnimation& animation, std::int64_t clipSourceFrames,
+                               std::string& error) {
+    switch (animation.intro) {
+    case MathIntroKind::None:
+        if (animation.introFrames != 0) {
+            error = "数式の intro が無いのに尺があります";
+            return false;
+        }
+        return true;
+    case MathIntroKind::Write:
+        if (animation.introFrames < 1 || animation.introFrames > kMaximumMathIntroFrames ||
+            animation.introFrames > clipSourceFrames) {
+            error = "数式の Write の尺は 1 から clip の尺と " +
+                    std::to_string(kMaximumMathIntroFrames) + " frame の小さい方までです";
+            return false;
+        }
+        return true;
+    }
+    error = "数式の intro の種類が不正です";
+    return false;
+}
+
+const char* mathIntroKindName(MathIntroKind kind) {
+    switch (kind) {
+    case MathIntroKind::None:
+        return "none";
+    case MathIntroKind::Write:
+        return "write";
+    }
+    return "none";
+}
+
+bool parseMathIntroKind(const std::string& name, MathIntroKind& kind) {
+    if (name == "none") {
+        kind = MathIntroKind::None;
+        return true;
+    }
+    if (name == "write") {
+        kind = MathIntroKind::Write;
+        return true;
+    }
+    return false;
+}
+
 } // namespace mvm::project

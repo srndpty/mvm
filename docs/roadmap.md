@@ -26,6 +26,13 @@
   更新で glyph が変わる場合に、artifact を明示的に無効化する操作が必要かを P0.5 で検討する。
 - backend の無い機械での artifact 利用と、session をまたぐ last-good の対応付けは P0 の対象外。
   必要なら provenance と利用者の明示的な判断を使う方式を別途検討する。
+- P2: 式から式への変形 (`TransformMatchingTex` など)。隣り合う 2 つの数式 clip の境に置く
+  transition として持ち、P1 の連番の artifact (`mvm-math-sequence/1`)・cache・preview の
+  `PreviewStillAnimation`・書き出しの区間分けを使う。部分式の同一性は TeX の AST を作らず、
+  Manim の `{{ }}` / `substrings_to_isolate` を式の文字列に書く方式から検討する。
+- [未検証] Write の preview の再生中の負荷。patch の着色と送信は render thread で行い、
+  大きな式 (1080p 全面) では 1 frame あたり約 8 MB になる。重ければ patch を前もって作る、
+  または GPU で着色する。Write の後の Unwrite・途中から書く・速さの曲線の指定は未対応。
 
 ## 自動字幕 (文字起こし) の精度
 

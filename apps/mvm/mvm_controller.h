@@ -1192,6 +1192,13 @@ private:
     // 画素 (last-good) を返す。どれも無ければ nullptr で pending を true にする (合成から外す)。
     std::shared_ptr<const preview::PreviewStillImage> mathStillImage(int clipIndex,
                                                                      bool& pending) const;
+    // 数式 clip の Write の preview (still の mask 矩形を frame ごとに連番の画素へ変える)。
+    // Write が無い・入力中・連番が描けていない・静止の描画が現在の式のものでない間は nullptr
+    // (still のまま、すなわち書き終えた式を見せる)。
+    std::shared_ptr<const preview::PreviewStillAnimation>
+    mathWriteAnimation(int clipIndex, const preview::PreviewStillImage& still) const;
+    // 数式 clip の Write の状態 (mathClipData の writeState / writeMessage)。
+    std::pair<QString, QString> mathWriteState(const project::TimelineClip& clip) const;
     // preview 中の値を反映した数式 clip の値。
     project::MathClipData effectiveMathData(const project::TimelineClip& clip) const;
     // 現在の数式 clip がすべて描かれるよう要求し、使わなくなった描画を止める。
@@ -1434,6 +1441,13 @@ private:
         std::shared_ptr<const preview::PreviewStillImage> image;
     };
     mutable QHash<QString, MathComposed> mathStillImages_;
+    // clip ごとの Write の preview。連番・見た目・時間が同じなら同じ instance を engine へ渡す
+    // (engine は instance ごとに texture を持つ)。
+    struct MathWriteAnimationMemo {
+        QString memo;
+        std::shared_ptr<const preview::PreviewStillAnimation> animation;
+    };
+    mutable QHash<QString, MathWriteAnimationMemo> mathWriteAnimations_;
     // 入力中の数式 (clip ID と、Project へまだ保存していない値)。
     std::optional<std::pair<std::string, project::MathClipData>> mathPreviewOverride_;
     mutable QHash<QString, QRect> textRasterBounds_;

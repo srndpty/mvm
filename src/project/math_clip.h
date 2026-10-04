@@ -1,6 +1,7 @@
 #ifndef MVM_PROJECT_MATH_CLIP_H
 #define MVM_PROJECT_MATH_CLIP_H
 
+#include <cstdint>
 #include <string>
 
 namespace mvm::project {
@@ -22,6 +23,30 @@ struct MathClipData {
 // 値の形だけを見る (空でない式、既知の記法、文字サイズの範囲、色の形式)。
 // 式を描けるかどうかは見ない。描けない式も Project の正として保存できる。
 bool validateMathClipData(const MathClipData& data, int outputHeight, std::string& error);
+
+// clip の先頭で式を出す animation の種類。Write は Manim の Write で式を書いていく。
+enum class MathIntroKind { None, Write };
+
+// 数式 clip の時間の振る舞い (docs/math-clips.md の P1)。式の意味と見た目 (MathClipData) とは
+// 分けて持つ。MathClipData から作る静止の描画 (と cache key) を変えないため。
+// 位置・拡大・不透明度などの動きは ClipEffects が持ち、ここには持たない。
+struct MathClipAnimation {
+    MathIntroKind intro = MathIntroKind::None;
+    // intro の尺。clip の素材 frame (fade と同じ domain) で数え、clip の見えている先頭から始まる。
+    // None のときは 0。
+    std::int64_t introFrames = 0;
+    bool operator==(const MathClipAnimation&) const = default;
+};
+
+// Write の尺の上限 (60 fps で 10 秒)。描画した mask の連番を preview が memory に持つため。
+inline constexpr std::int64_t kMaximumMathIntroFrames = 600;
+
+// 形だけを見る。None なら尺は 0、Write なら 1 から clip の尺 (素材 frame) と上限の小さい方まで。
+bool validateMathClipAnimation(const MathClipAnimation& animation, std::int64_t clipSourceFrames,
+                               std::string& error);
+
+const char* mathIntroKindName(MathIntroKind kind);
+bool parseMathIntroKind(const std::string& name, MathIntroKind& kind);
 
 } // namespace mvm::project
 

@@ -27,8 +27,10 @@ constexpr char kFormatMarker[] = "mvm-project";
 // 読める版: 現行版と、field の追加だけで現行版へ上げられる過去の版。
 //   16 -> 17: 自動音量調整の field (clip の effects と Project の設定) を追加
 //   17 -> 18: 数式 clip (kind "math" と "math" object) を追加
+//   18 -> 19: 数式 clip の時間の振る舞い ("math_animation" object、省略可) を追加
 bool isReadableSchemaVersion(int schemaVersion) {
-    return schemaVersion == kSchemaVersion || schemaVersion == 17 || schemaVersion == 16;
+    return schemaVersion == kSchemaVersion || schemaVersion == 18 || schemaVersion == 17 ||
+           schemaVersion == 16;
 }
 
 std::string unsupportedSchemaMessage(int schemaVersion) {
@@ -306,7 +308,12 @@ public:
             return failAndFinish("schema " + std::to_string(project.schemaVersion) +
                                      " の file に数式 clip があります",
                                  error);
-        // 16 と 17 は field の追加だけなので、値を変えずに現行版として扱う。
+        // 数式の時間の振る舞いは 19 で加わった。
+        if (project.schemaVersion < 19 && sawMathAnimation_)
+            return failAndFinish("schema " + std::to_string(project.schemaVersion) +
+                                     " の file に math_animation があります",
+                                 error);
+        // 16・17・18 は field の追加だけなので、値を変えずに現行版として扱う。
         project.schemaVersion = kSchemaVersion;
         if (!hasFormat || format != kFormatMarker)
             return failAndFinish("mvm project ファイルではありません (format marker 不一致)",
@@ -330,6 +337,8 @@ private:
     std::size_t position_ = 0;
     std::string error_;
     bool missingAudioAdjustmentFields_ = false;
+    // math_animation が 19 より前の版の file に現れたら壊れている (schema の確認は最後に行う)。
+    bool sawMathAnimation_ = false;
 
     bool finish(std::string& error) {
         if (error_.empty())
@@ -1130,6 +1139,47 @@ private:
         return true;
     }
 
+    // 数式 clip の時間の振る舞い。object の中の field はすべて必須で、未知・重複を拒否する。
+    bool parseMathClipAnimation(MathClipAnimation& animation) {
+        bool seen[2] = {};
+        std::string intro;
+        if (!consume('{'))
+            return false;
+        skipWhitespace();
+        if (!peek('}')) {
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                int index = -1;
+                if (key == "intro")
+                    index = 0;
+                else if (key == "intro_frames")
+                    index = 1;
+                if (index < 0)
+                    return fail("math_animation に未知の field があります: " + key);
+                if (seen[index])
+                    return fail("math_animation の field が重複しています: " + key);
+                seen[index] = true;
+                if ((index == 0 && !parseString(intro)) ||
+                    (index == 1 && !parseInteger64(animation.introFrames)))
+                    return false;
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        }
+        if (!consume('}'))
+            return false;
+        for (bool present : seen)
+            if (!present)
+                return fail("math_animation の必須 field がありません");
+        if (!parseMathIntroKind(intro, animation.intro))
+            return fail("math_animation の intro が不正です: " + intro);
+        return true;
+    }
+
     bool parseSubtitleStyle(SubtitleStyle& style) {
         std::unordered_map<std::string, bool> seen;
         if (!consume('{'))
@@ -1283,6 +1333,7 @@ private:
         bool hasFrameHold = false;
         bool hasText = false;
         bool hasMath = false;
+        bool hasMathAnimation = false;
         std::string kind;
         std::string media;
         std::string trackKind;
@@ -1430,6 +1481,11 @@ private:
                     if (hasMath || !parseMathClipData(clip.math))
                         return fail("timeline clip の math が重複または不正です");
                     hasMath = true;
+                } else if (key == "math_animation") {
+                    if (hasMathAnimation || !parseMathClipAnimation(clip.mathAnimation))
+                        return fail("timeline clip の math_animation が重複または不正です");
+                    hasMathAnimation = true;
+                    sawMathAnimation_ = true;
                 } else if (!skipValue()) {
                     return false;
                 }
@@ -1452,6 +1508,9 @@ private:
             return fail("timeline clip の text と kind が一致しません");
         if (hasMath != (clip.kind == TimelineClipKind::Math))
             return fail("timeline clip の math と kind が一致しません");
+        // 省略は intro 無し。数式以外の clip には書けない (書き出しも数式 clip だけが書く)。
+        if (hasMathAnimation && clip.kind != TimelineClipKind::Math)
+            return fail("数式 clip 以外に math_animation は指定できません");
         if (media.empty() && clipKindHasMediaPath(clip.kind))
             return fail("timeline clip の media_path が空です");
         if (!media.empty() && !clipKindHasMediaPath(clip.kind))
@@ -2035,6 +2094,12 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
                  << "        \"color\": \"" << escapeJson(math.color) << "\",\n"
                  << "        \"background_color\": \"" << escapeJson(math.backgroundColor)
                  << "\"\n      }";
+            // intro が無ければ書かない (読み込みは省略を intro 無しとして扱う)。
+            const auto& animation = clip.mathAnimation;
+            if (animation != MathClipAnimation{})
+                json << ",\n      \"math_animation\": { \"intro\": \""
+                     << mathIntroKindName(animation.intro)
+                     << "\", \"intro_frames\": " << animation.introFrames << " }";
         }
         json << "\n    }";
     }

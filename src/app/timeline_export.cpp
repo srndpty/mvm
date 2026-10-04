@@ -328,9 +328,45 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             return project::renderSegmentOpacity(*segment, request.fpsNum, request.fpsDen,
                                                  clip.timelineStartFrame + localFrame);
         };
-        if (!mapExportEffects(segment->original, request, duration.frame,
-                              clip.timelineStartFrame - segment->original.timelineStartFrame,
-                              overlay, opacityAt, mapped, plan.error, plan.cancelled))
+        const std::int64_t localOffset =
+            clip.timelineStartFrame - segment->original.timelineStartFrame;
+        // 数式の Write: 先頭の Write の区間 (連番) と、その後の静止の区間に分ける。
+        // 区間の長さは preview と同じ mathIntroFrameAt で数える。
+        std::int64_t writeFrames = 0;
+        while (writeFrames < duration.frame) {
+            const auto index = mathIntroFrameAt(segment->original, request.fpsNum, request.fpsDen,
+                                                localOffset + writeFrames);
+            if (!index) {
+                plan.error = clip.name + ": Write の frame を換算できません";
+                return plan;
+            }
+            if (*index < 0)
+                break;
+            ++writeFrames;
+        }
+        if (writeFrames > 0) {
+            TimelineExportClipMapping write = mapped;
+            write.mathWrite = true;
+            write.timelineDurationFrames = writeFrames;
+            write.producerInFrame = 0;
+            write.producerOutFrame = writeFrames;
+            write.tailPaddingFrames = 0;
+            if (!mapExportEffects(segment->original, request, writeFrames, localOffset, overlay,
+                                  opacityAt, write, plan.error, plan.cancelled))
+                return plan;
+            plan.clips.push_back(std::move(write));
+            if (writeFrames == duration.frame)
+                continue;
+            mapped.timelineStartFrame += writeFrames;
+            mapped.timelineDurationFrames -= writeFrames;
+            mapped.producerOutFrame = mapped.producerInFrame + mapped.timelineDurationFrames;
+            mapped.tailPaddingFrames = 0;
+        }
+        if (!mapExportEffects(
+                segment->original, request, mapped.timelineDurationFrames,
+                localOffset + writeFrames, overlay,
+                [&](std::int64_t localFrame) { return opacityAt(writeFrames + localFrame); },
+                mapped, plan.error, plan.cancelled))
             return plan;
         mapped.opaqueBackdrop = segment->fadeIn.has_value();
         plan.clips.push_back(std::move(mapped));
@@ -438,6 +474,8 @@ TimelineExportResult exportTimeline(const project::Project& project,
         staged = pathToUtf8(std::filesystem::path(pngPath.toStdWString()));
         return true;
     };
+    // projectClipIndex → 数式の Write の連番の path ("...%05d.png")。
+    std::map<std::size_t, std::string> writePaths;
     for (const auto& planned : plan.clips) {
         if (planned.subtitle)
             continue;
@@ -445,6 +483,63 @@ TimelineExportResult exportTimeline(const project::Project& project,
         if (index >= project.timelineClips.size()) {
             result.error = "書き出し計画の clip 番号が範囲外です";
             return result;
+        }
+        if (planned.mathWrite) {
+            if (writePaths.contains(index))
+                continue;
+            // Write の区間の timeline frame ごとに、preview と同じ frame (mathIntroFrameAt) を
+            // preview と同じ合成 (composeMathClipFromPng) に通して stage する。
+            const auto& clip = project.timelineClips[index];
+            const auto frames = request.mathWriteFrames.find(clip.id);
+            if (frames == request.mathWriteFrames.end()) {
+                result.error = "数式 clip '" + clip.name + "' の Write の描画が完了していません";
+                return result;
+            }
+            const std::int64_t localOffset = planned.timelineStartFrame - clip.timelineStartFrame;
+            std::int64_t composedIndex = -1;
+            QImage composedImage;
+            std::vector<std::uint8_t> composedPixels;
+            for (std::int64_t frame = 0; frame < planned.timelineDurationFrames; ++frame) {
+                if (request.progress && frame % 32 == 0 &&
+                    request.progress(0, planned.timelineDurationFrames)) {
+                    result.cancelled = true;
+                    result.error = "書き出し準備をキャンセルしました";
+                    return result;
+                }
+                const auto writeIndex =
+                    mathIntroFrameAt(clip, request.fpsNum, request.fpsDen, localOffset + frame);
+                if (!writeIndex || *writeIndex < 0 ||
+                    *writeIndex >= static_cast<std::int64_t>(frames->second.size())) {
+                    result.error = "数式 clip '" + clip.name + "' の Write の連番が足りません";
+                    return result;
+                }
+                if (*writeIndex != composedIndex) {
+                    auto composed = composeMathClipFromPng(
+                        frames->second[static_cast<std::size_t>(*writeIndex)], clip.math,
+                        request.width, request.height);
+                    if (!composed.success) {
+                        result.error = "数式 clip '" + clip.name +
+                                       "' の Write を書き出せません: " + composed.error;
+                        return result;
+                    }
+                    composedPixels = std::move(composed.rgba);
+                    composedImage = QImage(composedPixels.data(), composed.width, composed.height,
+                                           composed.width * 4, QImage::Format_RGBA8888);
+                    composedIndex = *writeIndex;
+                }
+                std::string staged;
+                if (!stagePng(composedImage,
+                              QStringLiteral("%1-write-%2.png")
+                                  .arg(index)
+                                  .arg(frame, 5, 10, QLatin1Char('0')),
+                              staged))
+                    return result;
+            }
+            // "%05d" は qimage の連番の書式。QString::arg に通さない。
+            const QString pattern = QString::number(index) + QStringLiteral("-write-%05d.png");
+            writePaths.emplace(index, pathToUtf8(std::filesystem::path(
+                                          stillStaging->filePath(pattern).toStdWString())));
+            continue;
         }
         if (clipPaths.contains(index))
             continue;
@@ -548,8 +643,10 @@ TimelineExportResult exportTimeline(const project::Project& project,
         const auto index = static_cast<std::size_t>(planned.projectClipIndex);
         const auto& clip = planned.renderClip;
         MvmExportClip mapped{};
-        mapped.path = planned.subtitle ? subtitlePaths.at(planned.subtitle->id).c_str()
-                                       : clipPaths.at(index).c_str();
+        mapped.path = planned.subtitle    ? subtitlePaths.at(planned.subtitle->id).c_str()
+                      : planned.mathWrite ? writePaths.at(index).c_str()
+                                          : clipPaths.at(index).c_str();
+        mapped.is_image_sequence = planned.mathWrite ? 1 : 0;
         mapped.source_fps_num = clip.sourceFpsNum;
         mapped.source_fps_den = clip.sourceFpsDen;
         mapped.source_frame_count = clip.sourceFrameCount;

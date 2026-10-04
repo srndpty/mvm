@@ -20,7 +20,8 @@
   preview は最後に描けた画像 (last-good) を古い印付きで出し、書き出しは拒否する。
 - 描画は worker で非同期に行い、取消すると Manim が起動した latex などの子 process まで止める。
 
-部分式の同一性 (変形・強調のため) と animation の artifact の方式は未決定であり、P1 / P2 の着手時に比べて決める。
+animation の artifact は P1 (Write) で Manim の PNG 連番に決めた (下の「Write (P1)」)。
+部分式の同一性 (変形・強調のため) は未決定であり、P2 の着手時に比べて決める。
 
 ## 構成
 
@@ -79,7 +80,9 @@
 文字サイズを変えている間は、描き直しが済むまで前の大きさの描画を出す。
 計画との差と今後の改善は [ロードマップ](roadmap.md#数式-clip) に記録する。
 
-## Project の schema (18)
+## Project の schema (18、Write は 19)
+
+19 で数式 clip の `"math_animation"` を足した (下の「Write (P1)」)。以下は 18 で決めた形で、19 でも変わらない。
 
 - `TimelineClipKind::Math` (JSON の kind は `"math"`)。値は clip の `"math"` object に保存する:
   `syntax` / `source` / `font_size` / `color` / `background_color`。未知の field (例えば `renderer`)・
@@ -279,6 +282,120 @@ Project は 60 fps、1920x1080、音声は同一 48 kHz stereo PCM WAV の 14400
 実 smoke の成功は Math の無い対照でも音声失敗が再現した帰属と、実数式の映像のみの出力を
 確認した結果である。一般の音声付き export を修正した、または成功したという判定ではない。
 P0-6 の失敗記録・artifact と P0-4.1 の authority/cache 設計は保持した。
+
+## Write (P1)
+
+clip の先頭で式を Manim の `Write` で書いていく、最初の時間に沿った数式固有の animation。
+fade・不透明度・位置・拡大・回転は既存の ClipEffects で足りるので、数式専用には作らない。
+式から式への変形 (`TransformMatchingTex`・部分式の同一性) は P2。
+
+### Project (schema 19)
+
+- 値は clip の `"math_animation": {"intro": "write", "intro_frames": N}`。中の field はすべて必須で、
+  未知・重複・欠落を拒否する。省略は intro 無し (書き出しも intro 無しなら書かない)。
+  数式 clip 以外には書けない。18・17・16 の file は 19 として読む (`math_animation` は 19 にだけ現れてよい)。
+- `MathClipData` (式の意味と見た目) とは分けて `TimelineClip::mathAnimation` に持つ。静止の
+  `MathRenderSpec` と cache key を変えないため (P0 の cache と golden key がそのまま使える)。
+  ClipEffects にも入れない (種別に依らない keyframe の仕組みで、Manim の artifact を要らない)。
+- `intro_frames` は clip の素材 frame (fade と同じ domain) で、clip の見えている先頭から数える。
+  1 から clip の尺と 600 frame (60 fps で 10 秒) の小さい方まで。clip の尺に対する割合にはしない
+  (末尾を trim すると書く速さが変わり、artifact の key が尺に依存するため)。
+- 編集の規則は fade in に揃える: 分割・上書き・時間編集で分けた右側は Write を持たない。
+  trim は縮めた尺に収める (左 trim でも先頭から書き直す)。置いたときと違う fps の timeline で
+  trim すると、素材 frame を timeline の fps へ揃えるのと一緒に同じ秒数へ換算する。
+- Write の後 (local frame N 以降) は P0 の静止の描画をそのまま見せる。frame i (< N) は
+  進み具合 i/N の連番の frame。
+
+### artifact・cache
+
+- backend は 1 秒の Write を `config.frame_rate = N` で描き、ちょうど N 枚の PNG にする (P1-0)。
+  artifact は N だけに依存し、timeline の fps に依存しない。script は静止と同じ共通部分
+  (式の読み込みと frame の大きさ合わせ) に scene を足したもの。
+- key は静止と別の名前空間 `mvm-math-sequence/1` (`mathSequenceKey`)。静止の field に animation・
+  frame 数・連番の script の識別 (`manim-write/1`) を足す。script の識別は toolchain fingerprint に
+  入れない (連番の描き方を変えても静止の cache を無効にしない)。
+- disk は `<cache>/write/<key>/00000.png …` と provenance `<cache>/write/<key>.txt`
+  (`mvm-math-sequence-artifact/1`、大きさ・枚数・各 frame の byte 数・script・toolchain)。
+  `write/<key>.partial-<ticket>/` へ置いてから rename し、provenance を最後に書く。合わない・
+  欠けた・読めない frame の結果は消して描き直す。`.partial-` の残りは確認の前に消す。
+- 静止と同じ worker・権限・世代・取消で扱う。preview は連番の全 frame を 1 画素 1 byte で持つので、
+  256 MB を超える連番は描けても Failed (理由付き) にする (正しい artifact は消さない)。
+- 入力中の式の静止がまだ描けていなければ、描きかけ・待ちの連番を止めて先に描かせる
+  (`cancelPendingSequences`)。止めた連番は同じ要求で要求し直す。
+
+### preview
+
+- preview engine に `PreviewStillAnimation` を足した (Math の型を持たない汎用の部品)。静止画 layer の
+  一部の矩形だけを、出力 frame の state が変わったときに `fillPatch` で作り、その矩形だけを
+  GPU へ送る (`UpdateSubresource`)。下地は P0 の静止の画素で、位置・拡大・不透明度は従来どおり
+  `PreviewMotion` が掛ける。持たない layer の経路は変えていない。
+- controller は連番の mask (A8) と色・背景で patch を作る。frame の選び方 (`mathIntroFrameAt`) と
+  画素の式 (`composeMathPatch`) は書き出しと共有する。
+- 入力中の clip、連番の描画中・失敗中、静止の描画が現在の式のもので無い間は Write を付けず、
+  書き終えた式 (静止) を見せる。別の式の古い連番は見せない。
+
+### 書き出し
+
+- Write のある数式 clip は、先頭の Write の区間と、その後の静止の区間の 2 つの mapping にする。
+  ClipEffects は各区間の local frame の位置から評価するので、keyframe は境で途切れない。
+- Write の区間は timeline の frame ごとに全画面の透過 PNG を stage し、`qimage` の連番
+  (`ttl=1`、`MvmExportClip::is_image_sequence`) で開く。書き出しは Manim を起動しない。
+- 連番が渡されていない・足りない数式 clip は書き出さない。controller は Write の状態が ready の
+  ときだけ連番を渡す (静止で代用しない)。
+
+### 確認 (2026-10-05)
+
+- [事実] focused: `math_project_json_focused` 106 件、`math_render_key_and_layout` 38 件、
+  `math_raster_cache_focused` 91 件、`math_controller_focused` 137 件、`math_export_focused` 58 件が
+  通過。`manim_math_tex_focused`・`preview_engine_p5b_unit`・`preview_engine_p5c_native_attach`・
+  `math_inspector_qml` (15 ケース)・`math_inspector_product_ui` も通過。
+- [事実] 書き出しの試験は、Write の frame i が左から 4i 列を覆う mask で、出力 frame ごとの
+  独立な期待矩形 (横位置の keyframe を含む) と比べた。3 frame ずらした期待値、別の frame の
+  preview は不一致になる。静止の区間の keyframe の起点を Write の尺だけずらさない変異では、
+  frame 20・25・29 の比較が落ちることを確かめた。
+- [事実] preview engine の実 D3D11 試験で、矩形の中だけが state の画素になり、外は静止画のまま、
+  state が変わらない frame では `fillPatch` を呼ばず、Write の後は静止画へ戻ることを確かめた。
+- [事実] 実 Manim の smoke (`mvm_math_manim_smoke`) は 95 検査中 0 件失敗、終了コード 0。
+  解の公式の Write (90 枚、854x230) は 1919 ms。被覆は静止比で frame 0 が 0、45 が 0.507、
+  89 が 0.999。5 秒の clip (Write 1.5 秒、fade in 6 frame) を保存・再読込し、映像だけの MP4
+  (300 frame) で glyph の画素が frame 10 / 45 / 89 / 150 / 299 で 35 / 222 / 440 / 440 / 442。
+  ログは `build/math-p1-write-20261005-065908.log` と同名の directory。
+- [事実] `scripts/test.ps1 -Preset ucrt64-release -Group All` は通常 1450 / 1450 件が通過
+  (`build/math-p1-release-gate.log`)。`-Group BuildIndependent` は 1078 / 1078 件
+  (`build/math-p1-build-independent.log`)。`performance|stability` は除外した。`scripts/lint.ps1` も通過。
+- [未検証] 大きな式・長い Write の preview の再生中の負荷 (render thread での patch の着色と送信)。
+  1080p 全面の式では 1 frame の patch が約 8 MB になる。
+- [未検証] Write を付けた解の公式を人が一通り制作する手順 (P0 と同じく自動試験は契約の確認)。
+
+## P1-0: Write の artifact と書き出しの検証 (2026-10-05)
+
+P1 (数式の `Write` animation) の着手前に、artifact の方式 (Manim の PNG 連番) と書き出しの経路
+(MLT `qimage` の連番) が成り立つかを確かめた。製品の code は変えていない。
+環境は P0-0 と同じ (Manim Community v0.21.0、MiKTeX 26.5、dvisvgm 3.6)。
+
+再現: P0 の scene と同じ module level の `MathTex` で frame を式に合わせ、`config.frame_rate = N` とし、
+`self.play(Write(TEX), run_time=1)` を `manim render --format png --transparent --progress_bar none`
+(`-s` なし) で描く。
+
+- [事実] PNG はちょうど N 枚 (`<Scene>0000.png` から 4 桁の連番)。N = 30 / 60 / 90 / 180 / 600 で
+  すべて一致した。mp4 などの動画 file は出さない。
+- [事実] 全 frame が静止の mask (`-s`) と同じ大きさで、不透明な画素はすべて白。外周 1 px に alpha は無い
+  (二次方程式の 96 px、同じ式の 400 px、`\boxed{x^2 + y^2 = r^2}` の 24 px)。
+  Write の線は静止の glyph の外へ出る (96 px で最大 1989 画素) が、P0 の余白 8 px に収まった。
+- [事実] frame 0 は空 (alpha の合計 0)。frame i は進み具合 i/N で、最後の frame は (N-1)/N。
+  96 px の二次方程式 (N = 90) では、frame 89 と静止の mask の差は 741 画素、alpha の差は最大 50。
+  frame N から静止の mask へ切り替えたときの段差は、Write の 1 frame 分にあたる。
+- [事実] alpha の合計は単調に増えるとは限らない。二次方程式 (96 px) は 2% を超える減少が 0 frame だったが、
+  `\boxed` (24 px) は輪郭を描いてから塗るため、途中で静止の 1.88 倍まで増えてから減った。
+  したがって受け入れでは単調性を一般には要求せず、frame 0 が空であることと、最後の frame が
+  静止に近いことを確かめる。
+- [事実] 所要時間 (二次方程式 96 px): N = 30 で 1653 ms、60 で 1741 ms、90 で 1853 ms、180 で 2207 ms、
+  600 で 4501 ms。静止の描画は 1539 ms。PNG の合計は N = 90 で約 1.0 MB。
+- [事実] MLT 7 (UCRT64) の `qimage` producer は `%05d` の連番を `ttl=1` で 1 frame ずつ開く。
+  位置で番号を符号化した 60 枚に `in=5 out=14` を指定すると、出力の 10 frame は元の 5〜14 と
+  1 対 1 で一致した。書き出しは連番の PNG を stage して `qimage` で開けばよく、可逆の中間動画は要らない。
+- [推測] preview に持つ mask を A8 (1 画素 1 byte) にすれば、96 px の二次方程式 (854x230) は 1 frame
+  約 196 KB、N = 90 で約 18 MB。出力全面の RGBA (1920x1080) を frame ごとに持つ方式の約 1/40。
 
 ## P0-0: Manim MathTex の検証 (2026-10-05)
 

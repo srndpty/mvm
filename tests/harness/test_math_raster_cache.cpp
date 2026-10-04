@@ -6,6 +6,7 @@
 // - 失敗を覚えて自動では描き直さない。forgetFailures / startPreflight で解除する
 // - 要求されなくなった key の描画は止め、その結果を残さない
 // - 描画中に破棄しても、描画を止めて速やかに返る
+// - Write の連番も同じ worker・権限・世代で扱い、静止と別の key と disk の置き場所を持つ
 
 #include "math_fake_backend.h"
 #include "math_raster_cache.h"
@@ -292,6 +293,214 @@ void testDirectoryChangeDuringPreflight(const std::filesystem::path& root) {
           "後の確認は新しい置き場所で行う");
 }
 
+math::MathSequenceSpec writeSpec(const std::string& source, std::int64_t frames) {
+    return {spec(source), math::MathAnimationKind::Write, frames};
+}
+
+MathRasterCache::SequenceEntry waitForSequence(MathRasterCache& cache,
+                                               const math::MathSequenceSpec& s) {
+    MathRasterCache::SequenceEntry entry = cache.requestSequence(s);
+    waitUntil([&] {
+        entry = cache.requestSequence(s);
+        return entry.state != MathRasterCache::State::Pending;
+    });
+    return entry;
+}
+
+std::string readText(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+// Write の連番: 静止と別の key で描き、disk の結果を次の instance が描かずに読む。
+// provenance を最後に書き、合わない・欠けた frame の結果は使わずに描き直す。
+void testSequenceRenderAndDisk(const std::filesystem::path& root) {
+    const auto directory = root / L"sequence 日本語";
+    FakeBackend backend;
+    const auto s = writeSpec("WIDE x", 8);
+    QString key;
+    {
+        auto cache = readyCache(directory, backend);
+        key = cache->sequenceKeyFor(s);
+        check(!key.isEmpty() && key != cache->keyFor(s.still),
+              "連番の key は同じ式の静止の key と別");
+        const auto entry = waitForSequence(*cache, s);
+        check(entry.state == MathRasterCache::State::Ready && entry.frames &&
+                  entry.frames->frames.size() == 8 && entry.frames->width == 64 &&
+                  entry.frames->height == 8,
+              "8 枚の mask (64x8) を返す");
+        // frame i は左から 64 * i / 8 = 8i 列 (偽の backend の定義から手で計算)。
+        bool coded = entry.frames && entry.frames->frames.size() == 8;
+        for (std::size_t index = 0; coded && index < 8; ++index) {
+            const auto& frame = entry.frames->frames[index];
+            coded = frame.size() == 64U * 8U;
+            for (int x = 0; coded && x < 64; ++x)
+                coded = frame[static_cast<std::size_t>(x)] ==
+                        (x < static_cast<int>(8 * index) ? 255 : 0);
+        }
+        check(coded, "mask は frame の順に PNG の alpha を 1 byte ずつ持つ");
+        check(*backend.sequenceRenders == 1 && *backend.renders == 0,
+              "連番だけを 1 回描く (静止の描画は要求しない)");
+        const auto artifact = cache->readySequence(s);
+        check(artifact && artifact->frames.size() == 8 &&
+                  artifact->frames.front() ==
+                      directory / L"write" / key.toStdWString() / L"00000.png" &&
+                  std::filesystem::is_regular_file(artifact->frames.back()),
+              "PNG を write/<key>/00000.png から置く");
+        check(
+            std::filesystem::is_regular_file(directory / L"write" / (key.toStdWString() + L".txt")),
+            "provenance を write/<key>.txt に置く");
+        check(cache->readyArtifact(s.still) == std::nullopt, "連番は静止の artifact にならない");
+    }
+    {
+        auto cache = readyCache(directory, backend);
+        const auto entry = waitForSequence(*cache, s);
+        check(entry.state == MathRasterCache::State::Ready && *backend.sequenceRenders == 1,
+              "開き直した instance は disk の連番を描かずに読む");
+    }
+    {
+        // frame を 1 枚消す: provenance の枚数と合わないので描き直す。
+        std::filesystem::remove(directory / L"write" / key.toStdWString() / L"00005.png");
+        auto cache = readyCache(directory, backend);
+        const auto entry = waitForSequence(*cache, s);
+        check(entry.state == MathRasterCache::State::Ready && *backend.sequenceRenders == 2,
+              "欠けた frame がある連番は使わずに描き直す");
+    }
+    {
+        // frame の中身を壊す (大きさも変わる): provenance の大きさと合わないので描き直す。
+        std::ofstream(directory / L"write" / key.toStdWString() / L"00002.png", std::ios::binary)
+            << "壊れた";
+        auto cache = readyCache(directory, backend);
+        waitForSequence(*cache, s);
+        check(*backend.sequenceRenders == 3, "壊れた frame がある連番は描き直す");
+    }
+    {
+        // provenance が無い (書く前に止まった) 結果は使わない。
+        std::filesystem::remove(directory / L"write" / (key.toStdWString() + L".txt"));
+        auto cache = readyCache(directory, backend);
+        waitForSequence(*cache, s);
+        check(*backend.sequenceRenders == 4, "provenance の無い連番は使わずに描き直す");
+        const auto text = readText(directory / L"write" / (key.toStdWString() + L".txt"));
+        check(text.rfind("mvm-math-sequence-artifact/1\n", 0) == 0 &&
+                  text.find("\nframes=8\n") != std::string::npos &&
+                  text.find("\nsequence_template=fake-write/1\n") != std::string::npos,
+              "provenance に版・枚数・連番の script を書く");
+    }
+    {
+        FakeBackend changed;
+        changed.sequenceTemplate = "fake-write/2";
+        changed.sequenceRenders = backend.sequenceRenders;
+        changed.renders = backend.renders;
+        auto cache = readyCache(directory, changed);
+        check(cache->sequenceKeyFor(s) != key, "連番の script が変われば key が変わる");
+        waitForSequence(*cache, s);
+        waitForResult(*cache, s.still);
+        check(*backend.sequenceRenders == 5, "連番の script が変われば描き直す");
+        check(cache->keyFor(s.still) == readyCache(directory, backend)->keyFor(s.still),
+              "連番の script が変わっても静止の key は変わらない");
+    }
+}
+
+void testSequenceStaleStaging(const std::filesystem::path& root) {
+    const auto directory = root / L"sequence staging";
+    const auto staging = directory / L"write" / L"abc.partial-7";
+    std::filesystem::create_directories(staging);
+    std::ofstream(staging / L"00000.png", std::ios::binary) << "途中";
+    const auto finished = directory / L"write" / L"def";
+    std::filesystem::create_directories(finished);
+    FakeBackend backend;
+    auto cache = readyCache(directory, backend);
+    check(!std::filesystem::exists(staging), "権限があれば連番の staging の残りを消す");
+    check(std::filesystem::exists(finished), "staging でない連番の directory は消さない");
+}
+
+void testSequenceFailuresAndCancel(const std::filesystem::path& root) {
+    FakeBackend backend;
+    auto cache = readyCache(root / L"sequence failures", backend);
+    const auto bad = waitForSequence(*cache, writeSpec("BAD", 4));
+    check(bad.state == MathRasterCache::State::Failed &&
+              bad.status == math::MathRenderStatus::InvalidSource,
+          "連番の式の誤りは Failed");
+    const int afterFailure = *backend.sequenceRenders;
+    cache->requestSequence(writeSpec("BAD", 4));
+    waitUntil([] { return false; }, 100);
+    check(*backend.sequenceRenders == afterFailure, "失敗した連番は自動では描き直さない");
+    cache->forgetFailures();
+    waitForSequence(*cache, writeSpec("BAD", 4));
+    check(*backend.sequenceRenders == afterFailure + 1, "forgetFailures で連番の失敗も忘れる");
+
+    // 長い連番を描いている間に入力中の式の静止が来たら、連番を止めて静止を先に描く。
+    check(cache->requestSequence(writeSpec("SLOW_WRITE", 4)).state ==
+              MathRasterCache::State::Pending,
+          "連番を描き始める");
+    check(waitUntil([&] { return backend.slowStarted->load(); }), "連番の描画が始まる");
+    cache->cancelPendingSequences();
+    check(cache->sequenceRecordCount() == 1, "描き終えていない連番の要求だけを忘れる (BAD は残る)");
+    const auto typed = waitForResult(*cache, spec("typed"));
+    check(*backend.slowSawCancel && typed.state == MathRasterCache::State::Ready,
+          "取り消した連番は止まり、静止が描ける");
+    backend.slowStarted->store(false);
+    backend.slowSawCancel->store(false);
+    check(cache->requestSequence(writeSpec("SLOW_WRITE", 4)).state ==
+              MathRasterCache::State::Pending,
+          "取り消した連番は次の要求で要求し直される");
+    check(waitUntil([&] { return backend.slowStarted->load(); }), "要求し直した連番が始まる");
+
+    // retainOnly は連番の key にも効く。
+    cache->retainOnly({cache->keyFor(spec("typed"))});
+    check(waitUntil([&] { return backend.slowSawCancel->load(); }),
+          "要求されなくなった連番は cancel で止まる");
+    check(cache->sequenceRecordCount() == 0 && cache->recordCount() == 1,
+          "要求されなくなった連番の record を残さない");
+    check(!std::filesystem::exists(
+              root / L"sequence failures" / L"write" /
+              (cache->sequenceKeyFor(writeSpec("SLOW_WRITE", 4)).toStdWString())),
+          "取り消した連番の directory を作らない");
+}
+
+// preview は連番の全 frame を memory に持つので、上限を超える連番は描けても使わない。
+void testSequenceMemoryBudget(const std::filesystem::path& root) {
+    const auto directory = root / L"sequence budget";
+    FakeBackend backend;
+    const auto s = writeSpec("WIDE budget", 8); // 64 x 8 x 8 = 4096 byte
+    {
+        auto cache = readyCache(directory, backend);
+        cache->setSequenceMemoryBudget(4096);
+        const auto fits = waitForSequence(*cache, s);
+        check(fits.state == MathRasterCache::State::Ready, "対照: 上限ちょうどの連番は使える");
+    }
+    {
+        auto cache = readyCache(directory, backend);
+        cache->setSequenceMemoryBudget(4095);
+        const auto over = waitForSequence(*cache, s);
+        check(over.state == MathRasterCache::State::Failed &&
+                  over.message.contains(QStringLiteral("memory")) && !over.frames &&
+                  !cache->readySequence(s),
+              "disk の連番が上限を超えれば Failed (理由付き) で、書き出しにも渡さない");
+        check(*backend.sequenceRenders == 1 &&
+                  std::filesystem::exists(directory / L"write" /
+                                          cache->sequenceKeyFor(s).toStdWString()),
+              "上限を超えた正しい連番は描き直さず、disk から消さない");
+    }
+    {
+        auto cache = readyCache(directory, backend);
+        cache->setSequenceMemoryBudget(100);
+        const auto fresh = waitForSequence(*cache, writeSpec("WIDE fresh", 8));
+        check(fresh.state == MathRasterCache::State::Failed &&
+                  fresh.message.contains(QStringLiteral("memory")),
+              "描いた直後の連番も上限を超えれば Failed");
+    }
+}
+
+void testSequenceWithoutBackendSupport(const std::filesystem::path& root) {
+    FakeBackend backend;
+    backend.withSequence = false;
+    auto cache = readyCache(root / L"sequence unsupported", backend);
+    const auto entry = waitForSequence(*cache, writeSpec("x", 4));
+    check(entry.state == MathRasterCache::State::Failed && !cache->readySequence(writeSpec("x", 4)),
+          "連番を描けない backend では Failed (静止で代用しない)");
+}
+
 void testDestroyWhileRendering(const std::filesystem::path& root) {
     FakeBackend backend;
     auto cache = readyCache(root / L"destroy", backend);
@@ -324,6 +533,11 @@ int main(int argc, char** argv) {
     testRetainOnlyCancels(root);
     testWithoutAuthority(root);
     testDirectoryChangeDuringPreflight(root);
+    testSequenceRenderAndDisk(root);
+    testSequenceStaleStaging(root);
+    testSequenceFailuresAndCancel(root);
+    testSequenceMemoryBudget(root);
+    testSequenceWithoutBackendSupport(root);
     testDestroyWhileRendering(root);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);

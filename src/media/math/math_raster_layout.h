@@ -31,6 +31,18 @@ MathComposeResult composeMathRaster(const std::uint8_t* maskRgba, int maskWidth,
                                     const MathComposeStyle& style, int outputWidth,
                                     int outputHeight);
 
+// mask を出力の中央へ置いたときの左上 (composeMathRaster と同じ位置)。mask が出力より大きい・
+// 大きさが不正なら false。
+bool mathRasterPlacement(int maskWidth, int maskHeight, int outputWidth, int outputHeight,
+                         int& left, int& top);
+
+// mask の領域だけを合成する (Write の連番の 1 frame を preview の該当矩形へ書く)。
+// coverage は 1 画素 1 byte (mask の alpha) で maskWidth * maskHeight byte。
+// out は maskWidth * maskHeight * 4 byte の RGBA8 straight alpha。
+// 結果は composeMathRaster の出力の mathRasterPlacement の矩形と同じ画素になる。
+void composeMathPatch(const std::uint8_t* coverage, int maskWidth, int maskHeight,
+                      const MathComposeStyle& style, std::uint8_t* out);
+
 } // namespace mvm::math
 
 #endif // MVM_MEDIA_MATH_MATH_RASTER_LAYOUT_H
