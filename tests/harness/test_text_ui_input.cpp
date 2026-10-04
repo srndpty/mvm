@@ -9,11 +9,14 @@
 // を確かめる。IME の変換確定は OS の入力方式が要るのでここでは扱わない
 // (docs/premiere-like-editing.md の手動確認手順を参照)。
 #include "app/preview/preview_engine_rhi_item.h"
+#include "app/preview/test_window_mode.h"
 #include "app/text_raster.h"
 #include "focus_release_filter.h"
+#include "math_fake_backend.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "media_import.h"
 #include "mvm_controller.h"
+#include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "test_media_fixture.h"
 #include "test_window_focus.h"
@@ -976,7 +979,117 @@ int checkAudioMixerPanel(const std::filesystem::path& projectPath) {
     return failures ? 1 : 0;
 }
 
+// P0-6: 製品 QML と実 controller の間で、入口・確定拒否・権限による案内を受け入れ検査する。
+int checkMathInspector(const std::filesystem::path& projectPath) {
+    auto project = mvm::project::createDefaultProject();
+    mvm::project::TimelineClip title;
+    title.kind = mvm::project::TimelineClipKind::Text;
+    title.id = "math-title";
+    title.name = "二次方程式の解の公式";
+    title.text.content = "二次方程式の解の公式";
+    title.sourceFpsNum = 60;
+    title.sourceFrameCount = title.sourceOutFrame = 300;
+    project.timelineClips.push_back(title);
+    check(mvm::project::saveProjectJson(project, projectPath).success,
+          "数式 UI 試験の Project を保存できません");
+    mvm::test::FakeMathBackend backend;
+    mvm::app::MvmController controller(projectPath, {}, project);
+    controller.setMathPreflightForTest(backend.preflight());
+    mvm::app::WaveformCache cache;
+    QQmlApplicationEngine engine;
+    auto properties = mvm::app::testFixedWindowInitialProperties();
+    properties.insert(QStringLiteral("mvmController"), QVariant::fromValue(&controller));
+    properties.insert(QStringLiteral("waveformCache"), QVariant::fromValue(&cache));
+    if (!mvm::app::testFixedWindowRequested())
+        properties.insert(QStringLiteral("flags"), mvm::test::backgroundWindowFlags());
+    engine.setInitialProperties(properties);
+    engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
+    auto* window = engine.rootObjects().isEmpty()
+                       ? nullptr
+                       : qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+    if (!window) {
+        controller.shutdown();
+        return 3;
+    }
+    const auto run = [&]() -> int {
+        QString reason;
+        if (!QTest::qWaitForWindowExposed(window) || !mvm::test::focusWithoutForeground(window) ||
+            !mvm::test::isolatedFromUserInput(window, reason)) {
+            std::fprintf(stderr, "PROTOCOL_INVALID: 数式 UI 試験を操作から隔離できません: %s\n",
+                         qUtf8Printable(reason));
+            return 4;
+        }
+        window->setProperty("leftPanelTab", 2);
+        window->setProperty("leftPanelWidth", 500);
+        auto* entry = window->findChild<QObject*>(QStringLiteral("addMathClipMenuItem"));
+        check(entry && QMetaObject::invokeMethod(entry, "triggered"),
+              "ファイルメニューの数式追加を実行できません");
+        auto* editor = window->findChild<QQuickItem*>(QStringLiteral("mathSourceEditor"));
+        if (!editor || !pumpUntil([&] { return editor->hasActiveFocus(); })) {
+            check(false, "追加後に数式入力欄へフォーカスが移りません");
+            return 1;
+        }
+        const auto firstId = controller.selectedMathClip().value("clipId").toString();
+        check(!firstId.isEmpty() && window->property("leftPanelTab").toInt() == 0,
+              "数式の追加後にエフェクトコントロールへ移りません");
+        const auto& first = controller.projectForTest().timelineClips[1];
+        check(first.kind == mvm::project::TimelineClipKind::Math && first.track.index == 1 &&
+                  first.sourceOutFrame - first.sourceInFrame == 300,
+              "数式を V2 に既定 5 秒で置けません");
+        check(pumpUntil([&] { return controller.selectedMathClip().value("state") == "ready"; }),
+              "数式 UI の初期描画が終わりません");
+        const auto undoBefore = controller.undoDepthForTest();
+        editor->setProperty("text", QString());
+        check(controller.createMathClip(QStringLiteral("y=4")), "次の数式を作成できません");
+        const auto nextId = controller.selectedMathClip().value("clipId").toString();
+        pump(100);
+        auto* rejection = window->findChild<QQuickItem*>(QStringLiteral("mathDraftRejection"));
+        check(nextId != firstId && editor->property("text").toString().isEmpty() && rejection &&
+                  rejection->isVisible(),
+              "実 controller の確定拒否で旧入力を保持・表示しません");
+        check(controller.undoDepthForTest() == undoBefore + 1,
+              "旧入力の確定拒否が Undo に混入しました");
+        editor->forceActiveFocus();
+        editor->setProperty("text", QStringLiteral("x=5"));
+        QTest::keyClick(window, Qt::Key_Return, Qt::ControlModifier);
+        pump(100);
+        check(controller.projectForTest().timelineClips[1].math.source == "x=5" &&
+                  controller.mathClipData(nextId).value("source") == "y=4" &&
+                  editor->property("text") == "y=4" && !rejection->isVisible(),
+              "保持した入力の修正を旧 clip へ確定して新しい選択へ移れません");
+
+        controller.setMathPreflightForTest(
+            mvm::test::FakeMathBackend::unavailable("依存不足の試験"));
+        check(pumpUntil(
+                  [&] { return controller.selectedMathClip().value("state") == "unavailable"; }),
+              "依存不足の状態へ移りません");
+        auto* guidance = window->findChild<QQuickItem*>(QStringLiteral("mathDependencyGuidance"));
+        auto* retry = window->findChild<QQuickItem*>(QStringLiteral("mathRetryButton"));
+        check(guidance && retry && guidance->isVisible() && retry->isVisible(),
+              "backend 不在で導入案内と再試行を表示しません");
+        {
+            mvm::app::MvmController intruder(projectPath, {}, controller.projectForTest());
+            check(!intruder.holdsProjectLock() && intruder.selectClip(1),
+                  "2 つ目の instance の権限不足を作れません");
+            window->setProperty("mvmController", QVariant::fromValue(&intruder));
+            pump(100);
+            check(intruder.selectedMathClip().value("unavailableReason") == "authority" &&
+                      !guidance->isVisible() && !retry->isVisible(),
+                  "Project lock の不足に依存導入・再試行を表示しました");
+            window->setProperty("mvmController", QVariant::fromValue(&controller));
+            intruder.shutdown();
+        }
+        return failures ? 1 : 0;
+    };
+    const int result = run();
+    controller.shutdown();
+    if (!result)
+        std::puts("製品の数式追加・確定拒否の入力保持・権限に応じた案内を確認しました");
+    return result;
+}
+
 int main(int argc, char** argv) {
+    mvm::app::prepareTestFixedWindowEnvironment();
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
     QGuiApplication application(argc, argv);
     QQuickStyle::setStyle(QStringLiteral("Basic"));
@@ -995,6 +1108,13 @@ int main(int argc, char** argv) {
     application.setApplicationName(QStringLiteral("project-panel"));
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+
+    if (application.arguments().contains(QStringLiteral("--math-inspector"))) {
+        const int result =
+            checkMathInspector(directory.filePath(QStringLiteral("math-ui.mvm")).toStdWString());
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
 
     if (application.arguments().contains(QStringLiteral("--audio-mixer"))) {
         const int mixerResult =

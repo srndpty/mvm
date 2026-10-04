@@ -51,6 +51,13 @@ Phase 1 で追加した層:
 | ---------------------- | ------------------------------------------------- | ---------------------------------- |
 | `src/media/still_image` | 素材種別の判定 (stream の事実) と静止画の decode | FFmpeg C API。**Qt と MLT は不可** |
 
+数式 clip で追加した層 (`docs/math-clips.md`):
+
+| 層                | 責務                                                     | 依存してよいもの                                |
+| ----------------- | -------------------------------------------------------- | ----------------------------------------------- |
+| `src/media/math`  | 数式 renderer の backend 中立な契約と、出力 raster への配置 | `src/util`。**Manim・Project・Qt は不可**       |
+| `src/media/manim` | Manim の外部 process との唯一の接点 (backend の実装)      | `src/util`、`src/media/math`。Qt は不可         |
+
 素材種別の判定は `apps/mvm/media_import.cpp` の `probeMediaFile` に一本化している。
 画像の画素は preview と書き出しの両方がこの層の decoder から得る (Qt の画像 reader を使わない)。
 

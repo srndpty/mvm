@@ -3,6 +3,7 @@
 
 #include "core/checked_output_timebase.h"
 #include "project/clip_effects.h"
+#include "project/math_clip.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -25,15 +26,22 @@ struct ManimAsset {
     bool operator==(const ManimAsset&) const = default;
 };
 
-enum class TimelineClipKind { Video, Manim, Audio, Text, Image };
+enum class TimelineClipKind { Video, Manim, Audio, Text, Image, Math };
 
-// 素材の時間軸を持たない clip (文字と静止画)。尺は timeline 上で自由に伸縮し、
+// 素材の時間軸を持たない clip (文字・静止画・数式)。尺は timeline 上で自由に伸縮し、
 // 素材 frame domain は in = 0・out = 尺 の合成値にする (fps は置いたときの timeline の値)。
 // 速度・リンク・スリップ・レート調整を持たない。
 bool isStillClipKind(TimelineClipKind kind);
 
 // プロジェクトパネルの素材から作る clip か (動画・音声・画像)。これらは mediaItemId が必須。
 bool clipUsesMediaItem(TimelineClipKind kind);
+
+// mediaPath (実ファイル) を持つ clip か。文字と数式は Project のデータだけから描くので持たない。
+// 検証・JSON の読み書き・path の解決はすべてこれで判定する。
+bool clipKindHasMediaPath(TimelineClipKind kind);
+
+// "#AARRGGBB" (16 進 8 桁) を 0xAARRGGBB にする。文字・数式の色の形式はこれだけで判定する。
+bool parseArgbColor(const std::string& text, std::uint32_t& argb);
 
 // 文字・静止画を置いたときの既定の尺 (5 秒、最低 1 frame)。
 std::int64_t defaultStillClipFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen);
@@ -97,7 +105,7 @@ struct TimelineClip {
     std::string name;                // UI 表示名
     std::string id;                  // Project 内で一意な永続 ID
     // 素材の出どころ (プロジェクトパネルの MediaItem::id)。動画・音声・画像の clip は必須で、
-    // mediaPath はその素材と同じファイルを指す。文字と Manim の clip は空。
+    // mediaPath はその素材と同じファイルを指す。文字・数式・Manim の clip は空。
     std::string mediaItemId;
     std::int64_t sourceFpsNum = 0;
     std::int64_t sourceFpsDen = 1;
@@ -118,6 +126,8 @@ struct TimelineClip {
     bool preservePitch = false;
     std::optional<FrameHold> frameHold{};
     TextClipData text{};
+    // kind が Math のときだけ意味を持つ。それ以外の kind では既定値のまま。
+    MathClipData math{};
     // 無効にした clip は timeline に残るが、preview・書き出し・音声に出さない (Shift+E)。
     bool enabled = true;
     bool operator==(const TimelineClip&) const = default;
@@ -143,7 +153,8 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 17;
+// 18: 数式 clip (kind "math" と "math" object)。17 と 16 の file は読み込み時に 18 へ上げる。
+inline constexpr int kProjectSchemaVersion = 18;
 
 struct SubtitleCue {
     std::string id;

@@ -7,6 +7,15 @@ target_link_libraries(mvm_audio_adjustment PUBLIC mvm::audio_analysis mvm::proje
     PRIVATE mvm::warnings)
 add_library(mvm::audio_adjustment ALIAS mvm_audio_adjustment)
 
+# 数式 clip の描画結果の cache。backend は preflight 関数で注入する (試験は偽の backend)。
+add_library(mvm_math_raster_cache STATIC math_raster_cache.cpp)
+set_target_properties(mvm_math_raster_cache PROPERTIES AUTOMOC ON)
+target_include_directories(mvm_math_raster_cache PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_math_raster_cache
+    PUBLIC mvm::math mvm::still_image Qt6::Core
+    PRIVATE mvm::util mvm::warnings)
+add_library(mvm::math_raster_cache ALIAS mvm_math_raster_cache)
+
 qt_add_executable(mvm
     main.cpp
     image_raster_cache.cpp
@@ -79,6 +88,7 @@ qt_add_qml_module(mvm
         SubtitlePanel.qml
         TranscribeDialog.qml
         TextClipInspector.qml
+        MathClipInspector.qml
         KeyframeInspector.qml
         TransitionInspector.qml
         TransitionEditorMath.js
@@ -94,7 +104,7 @@ target_link_libraries(mvm PRIVATE
     mvm::audio_adjustment
     mvm::project
     mvm::util
-    mvm::transcribe mvm::manim_clip_workflow
+    mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
     mvm::timeline_playback
     mvm::timeline_preview_mapping
     mvm::timeline_export
@@ -188,6 +198,7 @@ qt_add_qml_module(mvm_test_text_ui_input
         SubtitlePanel.qml
         TranscribeDialog.qml
         TextClipInspector.qml
+        MathClipInspector.qml
         KeyframeInspector.qml
         TransitionInspector.qml
         TransitionEditorMath.js
@@ -199,7 +210,7 @@ qt_add_qml_module(mvm_test_text_ui_input
 target_include_directories(mvm_test_text_ui_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_test_text_ui_input PRIVATE
     mvm::audio_adjustment
-    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow
+    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::text_raster mvm::audio_waveform mvm::still_image mvm::mlt mvm::preview_engine
     mvm::audio_preview

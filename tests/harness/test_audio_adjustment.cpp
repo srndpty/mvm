@@ -732,14 +732,14 @@ int main(int argc, char** argv) {
     oldRoot["timeline_clips"] = oldClips;
     auto old = QJsonDocument(oldRoot).toJson().toStdString();
     auto legacy = project::parseProjectJsonText(old, path);
-    require(legacy.success && legacy.project.schemaVersion == 17 &&
+    require(legacy.success && legacy.project.schemaVersion == project::kProjectSchemaVersion &&
                 legacy.project.timelineClips[0].effects.normalizationGainDb == 0,
             "schema 16 を自動補正なしで読み込み");
     auto bad = json.json;
     const auto keyAt = bad.find("\"normalization_gain_db\"");
     require(keyAt != std::string::npos, "新しい検査の JSON 対照群");
     bad.erase(keyAt, bad.find('\n', keyAt) + 1 - keyAt);
-    require(!project::parseProjectJsonText(bad, path).success, "schema 17 の補正欠落を拒否");
+    require(!project::parseProjectJsonText(bad, path).success, "現行 schema の補正欠落を拒否");
     auto split = result.candidate;
     int ids = 0;
     require(project::splitTimelineClips(

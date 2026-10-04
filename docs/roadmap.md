@@ -2,6 +2,31 @@
 
 「このアプリの今後の改善策は何か」に答えるための一覧。着手したら該当の文書 (例: `docs/subtitles.md`) へ移し、ここからは消す。記述の印は `docs/phase0-findings.md` と同じ (`[事実]` `[推測]` `[未検証]`)。
 
+## 一般の音声・書き出し
+
+- [事実] P0-6.1 の同条件対照で、Math を含まない通常 Text と通常画像の音声付き MP4 も
+  AAC の `Input contains (near) NaN/+-Inf`、frame 2〜4 の encode error、
+  `tractor出力を検証できません` を再現した。Math Clip を必要条件としない既存の不具合。
+  同じ 48 kHz stereo WAV、3 秒 / 180 frame、60 fps、1920x1080、同じ export 設定と
+  出力 path の規則を使っている。根本原因は未特定で、一般の export/audio として修正する。
+  再現: 実 Manim smoke の対照。証拠は `build/math-p061-attribution-20261004-203505.log` と
+  同名 directory の `audio-text.mvm` / `audio-image.mvm` / `acceptance.mvm`。
+  Math Clip P0 の完了 gate には音声出力の成功を含めない。過去の P0-6 の失敗は保持する。
+
+## 数式 clip
+
+- 数式間のクロスディゾルブは P1+ へ延期する。静止数式 P0 の範囲は既存の fade と
+  ClipEffects。既存の generic still-layer 契約も dissolve を許可しておらず、
+  Video / Manim の全画面・不透明な layer に限定している。P0 の機能として追加しない。
+- [事実] 文字サイズの変更中は、次の描画が済むまで last-good を前の大きさで表示する。
+  計画の「前の mask を拡大縮小して即座に見せる」は未実装。必要性を P0.5 で判断する。
+- [事実] 配置は画像・文字と同じ空き track の規則を使い、V1 が空なら数式も V1 に置く。
+  計画の「常に V2 を既定にする」とは異なる。専用規則を足すかは別の改善として判断する。
+- [事実] 再試行は成功した disk cache を使い続ける。fingerprint に含めない TeX package の
+  更新で glyph が変わる場合に、artifact を明示的に無効化する操作が必要かを P0.5 で検討する。
+- backend の無い機械での artifact 利用と、session をまたぐ last-good の対応付けは P0 の対象外。
+  必要なら provenance と利用者の明示的な判断を使う方式を別途検討する。
+
 ## 自動字幕 (文字起こし) の精度
 
 2026-10-03 時点の方針: 認識モデルは whisper.cpp + `ggml-large-v3.bin` (Vulkan、ビーム探索) のまま保留する。モデルの変更だけでは意味の誤り (「衆参」→「中3」) を解消しきれないため、下の順で進める。比較の実測値は `docs/subtitles.md` の「large-v3 以外のモデルの比較」にある。
@@ -52,6 +77,21 @@ clip の編集で字幕を置き直すとき、毎回 timeline の frame から�
 認識の前後は内容全体の hash で素材の差し替えを検出するが、候補を確認している間の差し替えは実体・size・更新時刻だけで検出している (適用時に GUI thread で数 GB を読まないため)。更新時刻まで偽装した差し替えも検出するなら、適用の操作を非同期にして worker で hash を取り直す。
 
 ## 既知の未解決の問題
+
+- [事実] 2026-10-05、release の通常 CTest (1447 件) で `preview_spike_json_contract` が 1 回だけ落ちた。
+  `preview_spike_device_sharing_contract` が書いた `p1/contract-h264.json` で、
+  `displayed=181` が `submitted=180`・`decoded=180` を超えていた (契約違反 3 件 / 検査 80 件)。
+  直後に producer と checker を組で 3 回回すと 3/3 通過した。
+  `mvm_preview_spike` は `gpu_preview` と `preview_qt` だけに依存し、これらはこの時点で変更していない。
+  [推測] 提示の数え方に、まれに 1 回多く数える競合がある。
+  [未検証] 再現条件。
+- [事実] 2026-10-05、release の通常 CTest で `preview_engine_p5c_product_smoke` が 1 回だけ
+  `0xC0000409` で異常終了し、単独で 3 回回すと 3/3 通過した。`mvm_p5c_preview_smoke` は controller を含まず、
+  preview engine はこの時点で変更していない。[未検証] 再現条件と原因。
+- (解決済み) 同じ時期の `transition_preview` の失敗 (フレーム送りで mapping と違う frame を提示) は、
+  数式 clip の cache が起動時の backend 確認の完了を通知した時刻に、数式 clip の無い Project でも
+  preview を組み直していたためと推測した [推測]。数式 clip が無ければ組み直さないよう直した後、
+  通常 CTest 1447/1447 で通過した。
 
 - [未検証] 利用者から、長尺のスピーチと BGM を含む Project
   (`build/ucrt64-debug/m6a-gui/project.mvm`) で、縮小時のホイール応答が重いとの報告がある。

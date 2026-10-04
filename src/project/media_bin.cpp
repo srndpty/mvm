@@ -123,7 +123,7 @@ MediaBinEditResult validateMediaReferences(const Project& project) {
     for (const auto& clip : project.timelineClips) {
         if (!clipUsesMediaItem(clip.kind)) {
             if (!clip.mediaItemId.empty())
-                return failure("文字・Manim の clip は素材を参照できません: " + clip.name);
+                return failure("文字・数式・Manim の clip は素材を参照できません: " + clip.name);
             continue;
         }
         const auto indexed = items.find(clip.mediaItemId);

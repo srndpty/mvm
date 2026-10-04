@@ -24,6 +24,13 @@ constexpr int kSchemaVersion = kProjectSchemaVersion;
 // .mvm ファイルであることを識別する marker。拡張子だけを根拠にしない。
 constexpr char kFormatMarker[] = "mvm-project";
 
+// 読める版: 現行版と、field の追加だけで現行版へ上げられる過去の版。
+//   16 -> 17: 自動音量調整の field (clip の effects と Project の設定) を追加
+//   17 -> 18: 数式 clip (kind "math" と "math" object) を追加
+bool isReadableSchemaVersion(int schemaVersion) {
+    return schemaVersion == kSchemaVersion || schemaVersion == 17 || schemaVersion == 16;
+}
+
 std::string unsupportedSchemaMessage(int schemaVersion) {
     return "対応していない schema_version です: " + std::to_string(schemaVersion) + "。schema " +
            std::to_string(kSchemaVersion) + " の .mvm を開いてください";
@@ -197,7 +204,7 @@ public:
                     hasSchema = true;
                     // 版が違うファイルは後続の field の形も違うので、ここで止める。
                     // 止めないと「必須 field がありません」など原因の分からないエラーになる。
-                    if (project.schemaVersion != kSchemaVersion && project.schemaVersion != 16)
+                    if (!isReadableSchemaVersion(project.schemaVersion))
                         return failAndFinish(unsupportedSchemaMessage(project.schemaVersion),
                                              error);
                 } else if (key == "format") {
@@ -286,12 +293,21 @@ public:
             return failAndFinish("Project JSON の末尾に余分な値があります", error);
         if (!hasSchema)
             return failAndFinish("schema_version がありません", error);
-        if (project.schemaVersion == kSchemaVersion && missingAudioAdjustmentFields_)
-            return failAndFinish("自動音量調整の必須 field がありません", error);
-        if (project.schemaVersion == 16)
-            project.schemaVersion = kSchemaVersion;
-        if (project.schemaVersion != kSchemaVersion)
+        if (!isReadableSchemaVersion(project.schemaVersion))
             return failAndFinish(unsupportedSchemaMessage(project.schemaVersion), error);
+        // 自動音量調整の field は 17 で加わった。16 の file だけが欠けていてよい。
+        if (project.schemaVersion >= 17 && missingAudioAdjustmentFields_)
+            return failAndFinish("自動音量調整の必須 field がありません", error);
+        // 数式 clip は 18 で加わった。それより前の版の file に現れたら壊れている。
+        if (project.schemaVersion < 18 &&
+            std::any_of(
+                project.timelineClips.begin(), project.timelineClips.end(),
+                [](const auto& clip) { return clip.kind == TimelineClipKind::Math; }))
+            return failAndFinish("schema " + std::to_string(project.schemaVersion) +
+                                     " の file に数式 clip があります",
+                                 error);
+        // 16 と 17 は field の追加だけなので、値を変えずに現行版として扱う。
+        project.schemaVersion = kSchemaVersion;
         if (!hasFormat || format != kFormatMarker)
             return failAndFinish("mvm project ファイルではありません (format marker 不一致)",
                                  error);
@@ -764,6 +780,8 @@ private:
             kind = TimelineClipKind::Text;
         else if (text == "image")
             kind = TimelineClipKind::Image;
+        else if (text == "math")
+            kind = TimelineClipKind::Math;
         else
             return fail("未知の timeline clip kind です: " + text);
         return true;
@@ -1064,6 +1082,54 @@ private:
         return true;
     }
 
+    // 数式 clip の値。backend (renderer) の識別子は数式の意味ではないので持たない
+    // (未知の field として拒否する)。
+    bool parseMathClipData(MathClipData& data) {
+        bool seen[5] = {};
+        if (!consume('{'))
+            return false;
+        skipWhitespace();
+        if (!peek('}')) {
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                int index = -1;
+                if (key == "syntax")
+                    index = 0;
+                else if (key == "source")
+                    index = 1;
+                else if (key == "font_size")
+                    index = 2;
+                else if (key == "color")
+                    index = 3;
+                else if (key == "background_color")
+                    index = 4;
+                if (index < 0)
+                    return fail("math clip に未知の field があります: " + key);
+                if (seen[index])
+                    return fail("math clip の field が重複しています: " + key);
+                seen[index] = true;
+                if ((index == 0 && !parseString(data.syntax)) ||
+                    (index == 1 && !parseString(data.source)) ||
+                    (index == 2 && !parseInteger(data.fontSize)) ||
+                    (index == 3 && !parseString(data.color)) ||
+                    (index == 4 && !parseString(data.backgroundColor)))
+                    return false;
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        }
+        if (!consume('}'))
+            return false;
+        for (bool present : seen)
+            if (!present)
+                return fail("math clip の必須 field がありません");
+        return true;
+    }
+
     bool parseSubtitleStyle(SubtitleStyle& style) {
         std::unordered_map<std::string, bool> seen;
         if (!consume('{'))
@@ -1216,6 +1282,7 @@ private:
         bool hasEnabled = false;
         bool hasFrameHold = false;
         bool hasText = false;
+        bool hasMath = false;
         std::string kind;
         std::string media;
         std::string trackKind;
@@ -1359,6 +1426,10 @@ private:
                     if (hasText || !parseTextClipData(clip.text))
                         return fail("timeline clip の text が重複または不正です");
                     hasText = true;
+                } else if (key == "math") {
+                    if (hasMath || !parseMathClipData(clip.math))
+                        return fail("timeline clip の math が重複または不正です");
+                    hasMath = true;
                 } else if (!skipValue()) {
                     return false;
                 }
@@ -1375,16 +1446,18 @@ private:
             !hasTrackKind || !hasTrackIndex || !hasSpeedNum || !hasSpeedDen || !hasMediaItemId ||
             !hasPreservePitch || !hasEnabled || !hasFrameHold)
             return fail("timeline clip の必須 field がありません");
-        if (hasText != (kind == "text"))
-            return fail("timeline clip の text と kind が一致しません");
-        if (media.empty() && kind != "text")
-            return fail("timeline clip の media_path が空です");
-        if (!media.empty() && kind == "text")
-            return fail("text clip に media_path は指定できません");
-        if (clip.name.empty())
-            return fail("timeline clip の name が空です");
         if (!parseClipKind(kind, clip.kind))
             return false;
+        if (hasText != (clip.kind == TimelineClipKind::Text))
+            return fail("timeline clip の text と kind が一致しません");
+        if (hasMath != (clip.kind == TimelineClipKind::Math))
+            return fail("timeline clip の math と kind が一致しません");
+        if (media.empty() && clipKindHasMediaPath(clip.kind))
+            return fail("timeline clip の media_path が空です");
+        if (!media.empty() && !clipKindHasMediaPath(clip.kind))
+            return fail(kind + " clip に media_path は指定できません");
+        if (clip.name.empty())
+            return fail("timeline clip の name が空です");
         if (!parseTrackKind(trackKind, clip.track.kind))
             return false;
         if (!media.empty())
@@ -1847,8 +1920,7 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
     };
     for (std::size_t index = 0; index < project.timelineClips.size(); ++index) {
         const auto& clip = project.timelineClips[index];
-        if ((clip.mediaPath.empty() && clip.kind != TimelineClipKind::Text) ||
-            (!clip.mediaPath.empty() && clip.kind == TimelineClipKind::Text) || clip.name.empty()) {
+        if ((clipKindHasMediaPath(clip.kind) == clip.mediaPath.empty()) || clip.name.empty()) {
             result.error = "timeline clip の media_path または name が空です";
             return result;
         }
@@ -1860,9 +1932,9 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
         json << (index == 0 ? "\n" : ",\n") << "    {\n"
              << "      \"kind\": \"" << kindName << "\",\n"
              << "      \"media_path\": \""
-             << (clip.kind == TimelineClipKind::Text
-                     ? std::string{}
-                     : escapeJson(persistedSourcePath(clip.mediaPath, projectDirectory)))
+             << (clipKindHasMediaPath(clip.kind)
+                     ? escapeJson(persistedSourcePath(clip.mediaPath, projectDirectory))
+                     : std::string{})
              << "\",\n"
              << "      \"name\": \"" << escapeJson(clip.name) << "\",\n"
              << "      \"id\": \"" << escapeJson(clip.id) << "\",\n"
@@ -1952,6 +2024,16 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
                  << "        \"outline_color\": \"" << escapeJson(text.outlineColor) << "\",\n"
                  << "        \"outline_width\": " << text.outlineWidth << ",\n"
                  << "        \"background_color\": \"" << escapeJson(text.backgroundColor)
+                 << "\"\n      }";
+        }
+        if (clip.kind == TimelineClipKind::Math) {
+            const auto& math = clip.math;
+            json << ",\n      \"math\": {\n"
+                 << "        \"syntax\": \"" << escapeJson(math.syntax) << "\",\n"
+                 << "        \"source\": \"" << escapeJson(math.source) << "\",\n"
+                 << "        \"font_size\": " << math.fontSize << ",\n"
+                 << "        \"color\": \"" << escapeJson(math.color) << "\",\n"
+                 << "        \"background_color\": \"" << escapeJson(math.backgroundColor)
                  << "\"\n      }";
         }
         json << "\n    }";
@@ -2112,7 +2194,7 @@ ProjectLoadResult parseProjectJsonText(const std::string& jsonText,
     }
 
     for (auto& clip : parsed.timelineClips)
-        if (clip.kind != TimelineClipKind::Text)
+        if (clipKindHasMediaPath(clip.kind))
             clip.mediaPath = resolveSourcePath(clip.mediaPath, projectDirectory);
     for (auto& item : parsed.mediaItems)
         item.mediaPath = resolveSourcePath(item.mediaPath, projectDirectory);

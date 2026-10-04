@@ -95,6 +95,8 @@ const char* timelineClipKindName(TimelineClipKind kind) {
         return "text";
     case TimelineClipKind::Image:
         return "image";
+    case TimelineClipKind::Math:
+        return "math";
     }
     return "";
 }
@@ -104,8 +106,28 @@ bool clipUsesMediaItem(TimelineClipKind kind) {
            kind == TimelineClipKind::Image;
 }
 
+bool clipKindHasMediaPath(TimelineClipKind kind) {
+    return kind != TimelineClipKind::Text && kind != TimelineClipKind::Math;
+}
+
+bool parseArgbColor(const std::string& text, std::uint32_t& argb) {
+    if (text.size() != 9 || text[0] != '#')
+        return false;
+    std::uint32_t value = 0;
+    for (std::size_t index = 1; index < text.size(); ++index) {
+        const auto digit = static_cast<unsigned char>(text[index]);
+        if (!std::isxdigit(digit))
+            return false;
+        const int nibble = std::isdigit(digit) ? digit - '0' : std::tolower(digit) - 'a' + 10;
+        value = (value << 4) | static_cast<std::uint32_t>(nibble);
+    }
+    argb = value;
+    return true;
+}
+
 bool isStillClipKind(TimelineClipKind kind) {
-    return kind == TimelineClipKind::Text || kind == TimelineClipKind::Image;
+    return kind == TimelineClipKind::Text || kind == TimelineClipKind::Image ||
+           kind == TimelineClipKind::Math;
 }
 
 namespace {
@@ -227,6 +249,8 @@ std::size_t approximateProjectBytes(const Project& project) {
         bytes += heapBytes(clip.text.content) + heapBytes(clip.text.fontFamily) +
                  heapBytes(clip.text.color) + heapBytes(clip.text.alignment) +
                  heapBytes(clip.text.outlineColor) + heapBytes(clip.text.backgroundColor);
+        bytes += heapBytes(clip.math.syntax) + heapBytes(clip.math.source) +
+                 heapBytes(clip.math.color) + heapBytes(clip.math.backgroundColor);
         bytes += heapBytes(clip.effects.audioAdjustmentSettings) +
                  heapBytes(clip.effects.audioAdjustmentFingerprint);
         for (const auto& channel : effectChannels())

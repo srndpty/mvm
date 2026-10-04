@@ -4,6 +4,7 @@
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
 #include "audio_adjustment_job.h"
+#include "math_raster_cache.h"
 #include "media/audio_preview/audio_mixer_bus.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
 #include "media/transcribe/transcribe.h"
@@ -102,6 +103,7 @@ class MvmController : public QObject {
     Q_PROPERTY(bool subtitlesVisible READ subtitlesVisible NOTIFY stateChanged)
     Q_PROPERTY(bool burnSubtitles MEMBER burnSubtitles_ NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap selectedTextClip READ selectedTextClip NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap selectedMathClip READ selectedMathClip NOTIFY stateChanged)
     Q_PROPERTY(bool previewVideoAtPlayhead READ previewVideoAtPlayhead NOTIFY stateChanged)
     Q_PROPERTY(QString textOverlayClip READ textOverlayClip NOTIFY stateChanged)
     // プレビューで移動・拡縮できる選択中の素材 (画像・動画が 1 つだけ選ばれているとき)。
@@ -625,6 +627,26 @@ public:
     // テロップの定位置へ置く (textPresetPlacement)。揃えも同じ値にする。
     Q_INVOKABLE bool placeTextClip(const QString& clipId, const QString& alignment);
     Q_INVOKABLE void cancelTextPreview();
+
+    // 数式 clip (docs/math-clips.md)。確定は描けるかどうかと無関係に行い、描けない式も
+    // Project に残す。描画は MathRasterCache が worker で行う。
+    Q_INVOKABLE bool createMathClip(const QString& source);
+    // values の key: source / fontSize / color / backgroundColor。Undo 1 回分。
+    Q_INVOKABLE bool updateMathClip(const QString& clipId, const QVariantMap& values);
+    // 入力中の式・書式を Project を変えずに描かせて preview する。取り消しは cancelMathPreview。
+    Q_INVOKABLE bool previewMathClip(const QString& clipId, const QVariantMap& values);
+    Q_INVOKABLE void cancelMathPreview();
+    // 再試行: backend を確かめ直し、覚えている失敗を忘れて描き直す。描けている式は disk の
+    // 結果を使い続ける (強制の描き直しではない。MiKTeX の導入後や一時的な失敗の後に使う)。
+    Q_INVOKABLE void retryMathRendering();
+    // clipId / source / fontSize / color / backgroundColor と描画の状態
+    // (state: checking / rendering / stale / ready / error / unavailable、message、log、toolchain)。
+    // unavailableReason: backend / authority / 空、canRetry: この instance で再試行できるか。
+    Q_INVOKABLE QVariantMap mathClipData(const QString& clipId) const;
+    QVariantMap selectedMathClip() const;
+    // 試験用: 数式の backend の確認を差し替えて確かめ直す (偽の backend を注入する)。
+    void setMathPreflightForTest(MathRasterCache::PreflightFunction preflight);
+    MathRasterCache& mathRastersForTest() { return *mathRasters_; }
 
     int textPreviewSerial() const { return textPreviewSerial_; }
 
@@ -1166,6 +1188,18 @@ private:
     // nullptr を返して pending を true にする (error は空)。読めなければ error を入れる。
     std::shared_ptr<const preview::PreviewStillImage> imageStillImage(int clipIndex, QString& error,
                                                                       bool& pending) const;
+    // 数式 clip の画素 (出力解像度へ置いて着色したもの)。描画中・失敗中は最後に描けた
+    // 画素 (last-good) を返す。どれも無ければ nullptr で pending を true にする (合成から外す)。
+    std::shared_ptr<const preview::PreviewStillImage> mathStillImage(int clipIndex,
+                                                                     bool& pending) const;
+    // preview 中の値を反映した数式 clip の値。
+    project::MathClipData effectiveMathData(const project::TimelineClip& clip) const;
+    // 現在の数式 clip がすべて描かれるよう要求し、使わなくなった描画を止める。
+    void requestMathRenders();
+    // <project の directory>/cache/math/<project の file 名>。同じ directory の別の Project と分ける。
+    std::filesystem::path mathCacheDirectory() const;
+    // cache の場所と権限 (Project lock を持つか) を cache へ伝える。lock か保存先が変わるたびに呼ぶ。
+    void syncMathCacheAuthority();
     // 再生中、frame の clip を今の source のまま表示できれば source を引き継いで true。
     // 引き継げなければ何も変更せず false (呼び出し側が一時停止して組み直す)。
     // 引き継げなかったら reason に理由を入れる。
@@ -1385,6 +1419,23 @@ private:
     // 画像 clip の preview 用 raster。decode が重いので Project の変更では捨てず、
     // 現在の画像 clip と出力解像度が使わない key だけを refreshTimelineModel で捨てる。
     std::unique_ptr<ImageRasterCache> imageRasters_;
+    // 数式 clip の描画結果 (key 単位、<project>/cache/math)。
+    std::unique_ptr<MathRasterCache> mathRasters_;
+    // clip ごとの最後に描けた mask。式を直して描き直している間・失敗した間はこれを出す。
+    // 派生物なので Project には入れず、session の間だけ持つ。
+    struct MathLastGood {
+        QString key;
+        std::shared_ptr<const media::StillImage> mask;
+    };
+    mutable QHash<QString, MathLastGood> mathLastGood_;
+    // clip ごとの合成済みの画素。同じ見た目なら同じ instance を engine へ渡す。
+    struct MathComposed {
+        QString memo;
+        std::shared_ptr<const preview::PreviewStillImage> image;
+    };
+    mutable QHash<QString, MathComposed> mathStillImages_;
+    // 入力中の数式 (clip ID と、Project へまだ保存していない値)。
+    std::optional<std::pair<std::string, project::MathClipData>> mathPreviewOverride_;
     mutable QHash<QString, QRect> textRasterBounds_;
     QHash<QString, QUrl> textRasterUrls_;
     QString textOverlayClipId_;
