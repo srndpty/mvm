@@ -21,6 +21,19 @@ std::optional<math::MathSequenceSpec> mathSequenceSpecFor(const project::Timelin
                                   clip.mathAnimation.introFrames};
 }
 
+std::optional<math::MathTransformSpec>
+mathTransformSpecFor(const project::TimelineTransition& transition,
+                     const project::TimelineClip& outgoing, const project::TimelineClip& incoming) {
+    if (transition.kind != project::TransitionKind::MathTransform ||
+        outgoing.kind != project::TimelineClipKind::Math ||
+        incoming.kind != project::TimelineClipKind::Math ||
+        outgoing.id != transition.outgoingClipId || incoming.id != transition.incomingClipId)
+        return std::nullopt;
+    return math::MathTransformSpec{mathRenderSpecFor(outgoing.math),
+                                   mathRenderSpecFor(incoming.math),
+                                   transition.framesBeforeCut + transition.framesAfterCut};
+}
+
 bool mathComposeStyleFor(const project::MathClipData& data, math::MathComposeStyle& style) {
     return project::parseArgbColor(data.color, style.colorArgb) &&
            project::parseArgbColor(data.backgroundColor, style.backgroundArgb);

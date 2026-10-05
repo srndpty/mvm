@@ -7,6 +7,7 @@
 
 #include "media/math/math_raster_layout.h"
 #include "media/math/math_render.h"
+#include "media/math/math_transform.h"
 #include "media/still_image/still_image_decoder.h"
 #include "project/math_clip.h"
 #include "project/project.h"
@@ -23,6 +24,14 @@ math::MathRenderSpec mathRenderSpecFor(const project::MathClipData& data);
 
 // clip の Write の連番の描画要求。Write が無ければ nullopt。
 std::optional<math::MathSequenceSpec> mathSequenceSpecFor(const project::TimelineClip& clip);
+
+// 変形のトランジションの描画要求。端点の式は両 clip を参照して得る (写さない)。
+// frame 数はトランジションの区間 (前 + 後) の timeline frame 数。
+// 種類が変形でない、clip が数式でない、または clip が transition の参照する ID でなければ nullopt。
+// 隣接・Write・ClipEffects の条件は見ない (validateTimelineTransitions が決める)。
+std::optional<math::MathTransformSpec>
+mathTransformSpecFor(const project::TimelineTransition& transition,
+                     const project::TimelineClip& outgoing, const project::TimelineClip& incoming);
 
 // 数式 clip の色・背景 (preview の patch と書き出しの合成が共有する)。形式が不正なら false。
 bool mathComposeStyleFor(const project::MathClipData& data, math::MathComposeStyle& style);

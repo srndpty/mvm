@@ -531,6 +531,46 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
   - `m5_timeline_edit_focused`、`m7a_1_clip_effects_focused`、`subtitles_contract`、
     `math_raster_cache_focused`
 
+### 変形の中立な契約 (P2-2)
+
+renderer・cache・preview・書き出し・UI はまだ無い。Project の schema と P2-1 の意味は変えていない。
+
+- 分け方 `segmentMathTex` (`src/media/math/math_tex_segments.h`、版 `mvm-tex-segments/1`)
+  - P2-0 の spike の規則 (深さ 0 の関係子と、項の後の二項演算子で分ける) を基にした。
+  - spike との違い:
+    - 空白を捨てず、演算子の前後の空白を演算子の部分に含める。部分を連結すると入力と byte 単位で一致する。
+    - `^`・`_`・`
+ot` の直後 (`x^-1`・`
+ot=`)、`%` の comment の中では分けない。
+    - `
+e` を関係子に足した。
+  - 照合の値 (key) は部分の前後の空白を除いた文字列。
+- 照合 `matchMathTexSegments` (版 `mvm-tex-match/1`)
+  - key が等しい部分を「source の n 番目の出現 → target の n 番目の出現」で対応させる。
+  - 余った source の部分は消え、余った target の部分は現れる。対応は Project に保存しない。
+- 描画要求 `MathTransformSpec` (`math_transform.h`): 両端の `MathRenderSpec` と frame 数だけを持つ。
+  - frame i は進み具合 i/N。frame 0 は source の静止と同じで、進み具合 1 (target の静止) は含めない (Write と同じ数え方)。
+  - app 層の `mathTransformSpecFor` が、トランジションと両 clip から作る (frame 数は前 + 後)。
+- cache key `mathTransformKey` (名前空間 `mvm-math-transform/1`)
+  - 材料: 分け方と照合の版、frame 数、両端の式・記法・文字サイズ、backend、toolchain、変形の script の識別。
+  - 色・背景・ClipEffects・clip とトランジションの ID・timeline の位置と fps は含めない。
+- 端点の配置 `mathEndpointPlacement` / `mathTransformPlacement`
+  - 整数の位置は静止の `mathRasterPlacement` と同じ (中央、余りは左上寄せ)。
+  - 補正 shift は `left + W/2 − W_C/2` で、0 または −0.5 px になる。
+    backend は式を canvas の中心に置き、shift だけ動かして描く。
+  - spike の位置 `ceil(W_C/2) − ceil(W/2)` とは、canvas の幅が奇数のときに 1 px 違う。
+    補正をその位置から計算するので、どちらでも端点は静止と画素で一致する。
+  - canvas の大きさ (全 frame の alpha の実測) はまだ決めない。
+- 文字色 `mathTransformColorAt`: straight ARGB の各成分を i/N で線形に補間し、0.5 は切り上げる。
+  frame 0 は A、frame N (参照の終状態) は B にちょうど一致する。
+- 試験 (いずれも期待値は手で数えた値、または `printf | sha256sum` の値)
+  - `math_transform_contract` (新規、290 検査): 分け方の golden (E1・E2・E3・重複項と規則の境界)、
+    可逆性、照合、決定性、key の golden と変異、偶奇 16 通りの配置、色。
+  - `math_transform_timeline_focused` の `testTransformSpec` (16 検査を追加): 描画要求の内容。
+    色・ClipEffects・ID・fps・timeline の位置で key が変わらないこと、
+    対照として式・文字サイズ・frame 数で変わること。
+  - [事実] 実装に 13 種の変異を 1 つずつ入れると、`math_transform_contract` はすべてで失敗した (1〜22 件)。
+
 ### P2-1 の gate (2026-10-05)
 
 - [事実] 通常の release gate (`build/math-p21-release-gate.log`) は 1452 件中 1444 件が通過し、

@@ -565,6 +565,106 @@ void testSharedWriteBoundary() {
 
 } // namespace
 
+// 変形の描画要求と cache key (P2-2) は両端の式・文字サイズと区間の frame 数だけで決まる。
+// 色・背景・ClipEffects・clip / トランジションの ID・timeline の fps は合成の側の値で、key
+// を変えない。
+std::string transformKeyOf(const Project& project) {
+    const auto& transition = project.timelineTransitions.at(0);
+    const auto outgoing = indexOf(project, transition.outgoingClipId);
+    const auto incoming = indexOf(project, transition.incomingClipId);
+    if (outgoing < 0 || incoming < 0)
+        return "(clip が無い)";
+    const auto spec = mvm::app::mathTransformSpecFor(
+        transition, project.timelineClips[static_cast<std::size_t>(outgoing)],
+        project.timelineClips[static_cast<std::size_t>(incoming)]);
+    if (!spec)
+        return "(描画要求が無い)";
+    const mvm::math::MathToolchainFingerprint toolchain{"manim-mathtex", "manim=M\n"};
+    return mvm::math::mathTransformKey(*spec, toolchain, "manim-transform/1");
+}
+
+void testTransformSpec() {
+    const auto project = withTransform(12, 18);
+    const auto& transition = project.timelineTransitions[0];
+    const auto spec = mvm::app::mathTransformSpecFor(transition, project.timelineClips[0],
+                                                     project.timelineClips[1]);
+    check(spec &&
+              spec->source ==
+                  mvm::math::MathRenderSpec{"latex", project.timelineClips[0].math.source, 96} &&
+              spec->target ==
+                  mvm::math::MathRenderSpec{"latex", project.timelineClips[1].math.source, 96} &&
+              spec->frames == 30,
+          "変形の描画要求は両 clip の式・文字サイズと区間の 12 + 18 frame");
+
+    const std::string key = transformKeyOf(project);
+    check(key.size() == 64, "変形の key を作れる: " + key);
+    auto same = [&](const Project& changed, const std::string& what) {
+        check(transformKeyOf(changed) == key, what + " を変えても変形の key は変わらない");
+    };
+    auto changed = project;
+    clipOf(changed, "A").math.color = "#FF00FF00";
+    clipOf(changed, "B").math.color = "#8000FFFF";
+    same(changed, "両端の文字色");
+    changed = project;
+    clipOf(changed, "A").math.backgroundColor = "#FF000000";
+    same(changed, "背景色");
+    changed = project;
+    for (auto& clip : changed.timelineClips) {
+        clip.effects.positionXPercent = 10.0;
+        clip.effects.scaleXPercent = 150.0;
+        clip.effects.rotationDegrees = 30.0;
+        clip.effects.opacityPercent = 50.0;
+    }
+    same(changed, "ClipEffects");
+    changed = project;
+    clipOf(changed, "A").id = "A-renamed";
+    clipOf(changed, "B").id = "B-renamed";
+    changed.timelineTransitions[0].outgoingClipId = "A-renamed";
+    changed.timelineTransitions[0].incomingClipId = "B-renamed";
+    same(changed, "clip の ID");
+    changed = project;
+    changed.timelineTransitions[0].id = "t-other";
+    same(changed, "トランジションの ID");
+    changed = project;
+    changed.timelineFpsNum = 30;
+    for (auto& clip : changed.timelineClips)
+        clip.sourceFpsNum = 30;
+    same(changed, "timeline の fps (frame 数は同じ)");
+    changed = project;
+    changed.timelineTransitions[0].framesBeforeCut = 0;
+    changed.timelineTransitions[0].framesAfterCut = 30;
+    same(changed, "cut に対する区間の位置 (frame 数は同じ)");
+    changed = project;
+    for (auto& clip : changed.timelineClips)
+        clip.timelineStartFrame += 600;
+    same(changed, "timeline の位置");
+
+    // 対照: 描画を変える値は key を変える (上の「変わらない」が空振りでないこと)。
+    changed = project;
+    clipOf(changed, "A").math.source = "x^2 = 1";
+    check(transformKeyOf(changed) != key, "前の clip の式を変えると変形の key が変わる");
+    changed = project;
+    clipOf(changed, "B").math.fontSize = 97;
+    check(transformKeyOf(changed) != key, "後ろの clip の文字サイズを変えると変形の key が変わる");
+    changed = project;
+    changed.timelineTransitions[0].framesAfterCut = 19;
+    check(transformKeyOf(changed) != key, "区間の frame 数を変えると変形の key が変わる");
+
+    // 描画要求を作らない入力。
+    auto blend = transition;
+    blend.kind = TransitionKind::Blend;
+    check(
+        !mvm::app::mathTransformSpecFor(blend, project.timelineClips[0], project.timelineClips[1]),
+        "Blend のトランジションには変形の描画要求を作らない");
+    check(!mvm::app::mathTransformSpecFor(transition, project.timelineClips[1],
+                                          project.timelineClips[0]),
+          "トランジションの参照と違う clip には作らない");
+    auto video = project.timelineClips[1];
+    video.kind = TimelineClipKind::Video;
+    check(!mvm::app::mathTransformSpecFor(transition, project.timelineClips[0], video),
+          "数式でない clip には作らない");
+}
+
 int main() {
     testCreateAndRender();
     testApplyRejects();
@@ -574,6 +674,7 @@ int main() {
     testEditsThatRemove();
     testSplit();
     testSharedWriteBoundary();
+    testTransformSpec();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;
 }

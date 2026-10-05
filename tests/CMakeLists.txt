@@ -799,6 +799,9 @@ mvm_add_test(math_raster_cache_focused
 add_executable(mvm_test_math_render core/test_math_render.cpp)
 target_link_libraries(mvm_test_math_render PRIVATE mvm::math mvm::warnings)
 mvm_add_test(math_render_key_and_layout COMMAND mvm_test_math_render PROPERTIES TIMEOUT 30)
+add_executable(mvm_test_math_transform core/test_math_transform.cpp)
+target_link_libraries(mvm_test_math_transform PRIVATE mvm::math mvm::warnings)
+mvm_add_test(math_transform_contract COMMAND mvm_test_math_transform PROPERTIES TIMEOUT 30)
 
 # 実 Manim / LaTeX は使わない。偽の tool は自分の file 名で Manim / latex / dvisvgm を演じる。
 add_executable(mvm_fake_math_tex_cli harness/fake_math_tex_cli.cpp)
