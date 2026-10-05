@@ -780,8 +780,9 @@ target_link_libraries(mvm_test_project_math PRIVATE mvm::project mvm::util mvm::
 mvm_add_test(math_project_json_focused COMMAND mvm_test_project_math PROPERTIES TIMEOUT 30)
 
 add_executable(mvm_test_math_raster_cache harness/test_math_raster_cache.cpp)
+# Qt6::Gui は偽の backend が Write の連番の PNG を QImage で書くために使う。
 target_link_libraries(mvm_test_math_raster_cache PRIVATE
-    mvm::math_raster_cache Qt6::Core mvm::warnings)
+    mvm::math_raster_cache Qt6::Core Qt6::Gui mvm::warnings)
 mvm_add_test(math_raster_cache_focused
     COMMAND mvm_test_math_raster_cache "${CMAKE_CURRENT_BINARY_DIR}/math-raster-cache"
     PROPERTIES TIMEOUT 120)
@@ -4074,6 +4075,11 @@ target_link_libraries(mvm_test_math_controller PRIVATE ${_subtitle_controller_li
 target_compile_definitions(mvm_test_math_controller PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_math_controller PROPERTIES WIN32_EXECUTABLE OFF)
 mvm_add_test(math_controller_focused COMMAND mvm_test_math_controller PROPERTIES TIMEOUT 120)
+# 実 D3D11 の preview で再生し、Write の mask が再生中に届いたときの表示を確かめる。
+add_test(NAME math_write_native_playback COMMAND mvm_test_math_controller --native-write)
+set_tests_properties(math_write_native_playback PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
 target_link_libraries(mvm_test_subtitle_controller PRIVATE ${_subtitle_controller_libraries})
 target_compile_definitions(mvm_test_subtitle_controller PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_SUBTITLE_PANEL_QML="${CMAKE_SOURCE_DIR}/apps/mvm/SubtitlePanel.qml"

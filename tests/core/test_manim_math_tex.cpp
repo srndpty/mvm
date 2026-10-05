@@ -7,7 +7,9 @@
 #include <windows.h>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -75,6 +77,10 @@ void testRequestJson() {
     const math::MathRenderSpec python{"latex", "\"\"\"\nimport os\n\"\"\"", 85};
     check(manim::manimMathTexRequestJson(python).find('\n') == std::string::npos,
           "改行を含む式でも request.json に生の改行を出さない");
+    check(manim::manimMathWriteRequestJson({spec, math::MathAnimationKind::Write, 90}) ==
+              "{\"source\": \"a\\\"b\\\\c\\u000a\\u0009日本\", \"manim_font_size\": 60, "
+              "\"intro_frames\": 90}",
+          "Write の request.json は静止の内容に intro_frames を足す");
 }
 
 math::MathPreflightResult preflight(const std::filesystem::path& manimExe,
@@ -100,6 +106,10 @@ void testPreflight(const std::filesystem::path& fake, const std::filesystem::pat
           "fingerprint は各 tool の標準出力の最初の行から作る (標準エラーを混ぜない): " +
               ok.backend.fingerprint.canonical);
     check(static_cast<bool>(ok.backend.render), "Available なら render 関数を束ねる");
+    check(ok.backend.sequenceTemplate == "manim-write/1" &&
+              static_cast<bool>(ok.backend.renderSequence) &&
+              ok.backend.maximumSequenceFrames == 9999,
+          "Available なら Write の連番の関数と script の識別を束ねる (fingerprint には入れない)");
 
     const auto onlyDvisvgm = root / L"tools latex 無し";
     install(fake, onlyDvisvgm, L"dvisvgm.exe");
@@ -206,6 +216,76 @@ void testRender(const std::filesystem::path& fake, const std::filesystem::path& 
           "空の式は描かない");
 }
 
+math::MathSequenceRenderResult
+renderWrite(const std::filesystem::path& manimExe, const std::filesystem::path& job,
+            const std::string& source, std::int64_t frames,
+            std::chrono::milliseconds timeout = std::chrono::seconds(20),
+            const std::atomic<bool>* cancel = nullptr) {
+    math::MathSequenceRenderRequest request;
+    request.spec = {{"latex", source, 96}, math::MathAnimationKind::Write, frames};
+    request.jobDirectory = job;
+    request.timeout = timeout;
+    return manim::renderManimMathWrite(manimExe, request, cancel);
+}
+
+void testRenderWrite(const std::filesystem::path& fake, const std::filesystem::path& root) {
+    const auto manimExe = install(fake, root / L"manim bin", L"manim.exe");
+    const auto jobs = root / L"write jobs 日本語";
+
+    const auto ok = renderWrite(manimExe, jobs / L"ok", "x^2", 12);
+    check(ok.status == math::MathRenderStatus::Ok, "Write の連番は Ok: " + ok.message);
+    check(ok.frames.size() == 12 && ok.width == 3 && ok.height == 2,
+          "intro_frames 枚の PNG と、静止と同じ info.txt の大きさを返す");
+    bool ordered = ok.frames.size() == 12;
+    for (std::size_t index = 0; ordered && index < ok.frames.size(); ++index) {
+        wchar_t expected[64] = {};
+        std::swprintf(expected, std::size(expected), L"MvmMathWrite%04zu.png", index);
+        ordered = ok.frames[index].filename() == expected;
+    }
+    check(ordered, "frame は名前の順 (0000 から) に並べる (偽の Manim は逆順に書く)");
+    check(readFile(jobs / L"ok" / L"request.json") ==
+              manim::manimMathWriteRequestJson(
+                  {{"latex", "x^2", 96}, math::MathAnimationKind::Write, 12}),
+          "Write の式と枚数は request.json で渡す");
+    const std::string script = readFile(jobs / L"ok" / L"mvm_math_tex.py");
+    check(script.find("class MvmMathWrite") != std::string::npos &&
+              script.find("x^2") == std::string::npos,
+          "Write の scene を書き、式を Python の source へ埋め込まない");
+    const std::string staticScript = readFile(root / L"jobs 日本語" / L"ok" / L"mvm_math_tex.py");
+    check(!staticScript.empty() &&
+              script.compare(0, script.find("\ntry:\n    from manim import Write"), staticScript, 0,
+                             staticScript.find("\n\nclass MvmMathTex")) == 0,
+          "Write と静止は frame の大きさを決める共通部分が同じ");
+
+    const auto shortRun = renderWrite(manimExe, jobs / L"short", "FAKE_WRITE_SHORT", 12);
+    check(shortRun.status == math::MathRenderStatus::Failed && shortRun.frames.empty(),
+          "PNG が 1 枚足りなければ Failed (詰めたり補ったりしない)");
+    const auto latex = renderWrite(manimExe, jobs / L"latex", "\\fracc FAKE_LATEX_ERROR", 12);
+    check(latex.status == math::MathRenderStatus::InvalidSource &&
+              latex.message == "Undefined control sequence.",
+          "Write でも TeX の error は InvalidSource で、message は ! 行");
+
+    std::atomic<bool> cancel{false};
+    std::thread canceller([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        cancel = true;
+    });
+    const auto cancelled =
+        renderWrite(manimExe, jobs / L"cancel", "FAKE_HANG", 12, std::chrono::seconds(30), &cancel);
+    canceller.join();
+    check(cancelled.status == math::MathRenderStatus::Cancelled, "Write の取消は Cancelled");
+    const auto timedOut =
+        renderWrite(manimExe, jobs / L"hang", "FAKE_HANG", 12, std::chrono::milliseconds(400));
+    check(timedOut.status == math::MathRenderStatus::TimedOut, "終わらない Write は TimedOut");
+
+    check(renderWrite(manimExe, jobs / L"zero", "x", 0).status == math::MathRenderStatus::Failed,
+          "0 枚の Write は描かない");
+    check(
+        renderWrite(manimExe, jobs / L"too many", "x", manim::kMaximumMathWriteFrames + 1).status ==
+            math::MathRenderStatus::Failed,
+        "4 桁の連番に収まらない枚数は描かない");
+}
+
 void testBackendRender(const std::filesystem::path& fake, const std::filesystem::path& root) {
     const auto tools = root / L"tools 全部";
     setPath(tools);
@@ -221,6 +301,12 @@ void testBackendRender(const std::filesystem::path& fake, const std::filesystem:
     const auto rendered = ready.backend.render(request, nullptr);
     check(rendered.status == math::MathRenderStatus::Ok && rendered.width == 3,
           "preflight が束ねた render 関数で描ける");
+    math::MathSequenceRenderRequest sequence;
+    sequence.spec = {{"latex", "y", 96}, math::MathAnimationKind::Write, 5};
+    sequence.jobDirectory = root / L"backend write job";
+    const auto written = ready.backend.renderSequence(sequence, nullptr);
+    check(written.status == math::MathRenderStatus::Ok && written.frames.size() == 5,
+          "preflight が束ねた連番の関数で描ける (-s を付けない)");
 }
 
 } // namespace
@@ -255,6 +341,7 @@ int main() {
     testRequestJson();
     testPreflight(fake, root);
     testRender(fake, root);
+    testRenderWrite(fake, root);
     testBackendRender(fake, root);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);

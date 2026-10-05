@@ -190,6 +190,131 @@ void testMotionRender(ID3D11Device* device, ID3D11DeviceContext* context) {
     require(complete, "モーション検査の解放が完了しません");
 }
 
+// 静止画の矩形 (16, 8)-(48, 24) を frame ごとに塗り替える。frame 0 は赤、1 は緑、20 以降は
+// 元の静止画 (白) に戻す。fillPatch を呼んだ回数を数える (state が変わった時だけ呼ぶこと)。
+class TestStillAnimation final : public PreviewStillAnimation {
+public:
+    PreviewPixelRect patchRect() const override { return {16, 8, 32, 16}; }
+
+    std::int64_t stateAt(std::int64_t frame) const override { return frame >= 20 ? -1 : frame % 2; }
+
+    void fillPatch(std::int64_t state, std::uint8_t* out) const override {
+        ++fills;
+        for (int index = 0; index < 32 * 16; ++index) {
+            out[index * 4 + 0] = state == 0 ? 255 : 0;
+            out[index * 4 + 1] = state == 0 ? 0 : 255;
+            out[index * 4 + 2] = 0;
+            out[index * 4 + 3] = 255;
+        }
+    }
+
+    mutable int fills = 0;
+};
+
+void testStillAnimationRender(ID3D11Device* device, ID3D11DeviceContext* context) {
+    D3D11_TEXTURE2D_DESC descriptor{};
+    descriptor.Width = 64;
+    descriptor.Height = 32;
+    descriptor.MipLevels = descriptor.ArraySize = 1;
+    descriptor.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    descriptor.SampleDesc.Count = 1;
+    descriptor.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ID3D11Texture2D* rawTarget = nullptr;
+    require(SUCCEEDED(device->CreateTexture2D(&descriptor, nullptr, &rawTarget)),
+            "静止画animation検査の描画先を作れません");
+    ComPointer<ID3D11Texture2D> target(rawTarget);
+    ID3D11RenderTargetView* rawView = nullptr;
+    require(SUCCEEDED(device->CreateRenderTargetView(target.get(), nullptr, &rawView)),
+            "静止画animation検査の描画先viewを作れません");
+    ComPointer<ID3D11RenderTargetView> view(rawView);
+    descriptor.BindFlags = 0;
+    descriptor.Usage = D3D11_USAGE_STAGING;
+    descriptor.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D* rawStaging = nullptr;
+    require(SUCCEEDED(device->CreateTexture2D(&descriptor, nullptr, &rawStaging)),
+            "静止画animation検査の読み戻し先を作れません");
+    ComPointer<ID3D11Texture2D> staging(rawStaging);
+
+    PreviewEngine engine;
+    const auto releaseEngine = [](PreviewEngine* value) {
+        if (value->status().state == PreviewEngineState::Shutdown ||
+            value->status().state == PreviewEngineState::Error)
+            return;
+        value->requestShutdown();
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            const auto completed = PreviewRenderPort::completeRuntimeTeardown(*value);
+            if (completed && completed.value())
+                break;
+        }
+    };
+    std::unique_ptr<PreviewEngine, decltype(releaseEngine)> cleanup(&engine, releaseEngine);
+    require(engine.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+            "静止画animation検査のengineを初期化できません");
+    require(PreviewRenderPort::bindRenderThread(engine),
+            "静止画animationの描画threadを登録できません");
+    require(PreviewRenderPort::attachNativeD3D11Device(engine, device, context),
+            "静止画animation検査のdeviceを接続できません");
+    auto image = std::make_shared<PreviewStillImage>();
+    image->width = 64;
+    image->height = 32;
+    image->rgba.assign(64 * 32 * 4, 255);
+    auto animation = std::make_shared<TestStillAnimation>();
+    auto composition = std::make_shared<CompositionSnapshot>();
+    PreviewCompositionLayer layer;
+    layer.stillImage = image;
+    layer.stillAnimation = animation;
+    composition->layers.push_back(layer);
+    require(engine.submitComposition(composition), "静止画animationの構成を受理できません");
+
+    struct Expected {
+        int frame;
+        int fillsAfter;
+        unsigned char insideRed;
+        unsigned char insideGreen;
+    };
+
+    // 構成を再送せずに frame だけを変える。同じ state の frame (2) では塗り直さない。
+    for (const Expected expected :
+         {Expected{0, 1, 255, 0}, Expected{1, 2, 0, 255}, Expected{2, 3, 255, 0},
+          Expected{2, 3, 255, 0}, Expected{25, 3, 255, 255}, Expected{3, 4, 0, 255}}) {
+        require(engine.seek({expected.frame}), "静止画animationの指定frameへseekできません");
+        const float background[4] = {0, 0, 0, 1};
+        context->ClearRenderTargetView(view.get(), background);
+        bool presented = false;
+        for (int attempt = 0; attempt < 8 && !presented; ++attempt) {
+            const auto rendered = PreviewRenderPort::renderFrame(engine, view.get(), 64, 32);
+            require(rendered, "静止画animationの指定frameを描画できません");
+            presented = rendered.value().presented;
+        }
+        require(presented, "静止画animationの指定frameを提示できません");
+        context->CopyResource(staging.get(), target.get());
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        require(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)),
+                "静止画animationの描画結果を読み戻せません");
+        const auto* row = static_cast<const unsigned char*>(mapped.pData) + 16 * mapped.RowPitch;
+        const unsigned char insideRed = row[32 * 4], insideGreen = row[32 * 4 + 1];
+        const unsigned char outsideRed = row[4 * 4], outsideGreen = row[4 * 4 + 1];
+        context->Unmap(staging.get(), 0);
+        std::cout << "静止画animation frame " << expected.frame << " 内側 (" << int(insideRed)
+                  << ", " << int(insideGreen) << ") 外側 (" << int(outsideRed) << ", "
+                  << int(outsideGreen) << ") fillPatch " << animation->fills << std::endl;
+        require(insideRed == expected.insideRed && insideGreen == expected.insideGreen,
+                "矩形の中が frame の state の画素になりません");
+        require(outsideRed == 255 && outsideGreen == 255,
+                "矩形の外が静止画の画素のままではありません");
+        require(animation->fills == expected.fillsAfter,
+                "state が変わった frame でだけ fillPatch を呼ぶ契約に反しました");
+    }
+    require(engine.requestShutdown(), "静止画animation検査を終了できません");
+    bool complete = false;
+    for (int attempt = 0; attempt < 8 && !complete; ++attempt) {
+        const auto teardown = PreviewRenderPort::completeRuntimeTeardown(engine);
+        require(teardown, "静止画animation検査の解放に失敗しました");
+        complete = teardown.value();
+    }
+    require(complete, "静止画animation検査の解放が完了しません");
+}
+
 } // namespace
 
 int main() {
@@ -201,6 +326,7 @@ int main() {
         require(createDevice(deviceA, contextA), "D3D11 device Aを作成できません");
         require(createDevice(deviceB, contextB), "D3D11 device Bを作成できません");
         testMotionRender(deviceA.get(), contextA.get());
+        testStillAnimationRender(deviceA.get(), contextA.get());
 
         PreviewEngine failed;
         auto failedSink = std::make_shared<RecordingSink>();

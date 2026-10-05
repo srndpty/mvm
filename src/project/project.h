@@ -128,6 +128,8 @@ struct TimelineClip {
     TextClipData text{};
     // kind が Math のときだけ意味を持つ。それ以外の kind では既定値のまま。
     MathClipData math{};
+    // kind が Math のときだけ意味を持つ時間の振る舞い (Write など)。それ以外の kind では既定値。
+    MathClipAnimation mathAnimation{};
     // 無効にした clip は timeline に残るが、preview・書き出し・音声に出さない (Shift+E)。
     bool enabled = true;
     bool operator==(const TimelineClip&) const = default;
@@ -153,8 +155,10 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-// 18: 数式 clip (kind "math" と "math" object)。17 と 16 の file は読み込み時に 18 へ上げる。
-inline constexpr int kProjectSchemaVersion = 18;
+// 18: 数式 clip (kind "math" と "math" object)。
+// 19: 数式 clip の時間の振る舞い ("math_animation" object、省略は intro 無し)。
+// 18・17・16 の file は読み込み時に 19 へ上げる。
+inline constexpr int kProjectSchemaVersion = 19;
 
 struct SubtitleCue {
     std::string id;

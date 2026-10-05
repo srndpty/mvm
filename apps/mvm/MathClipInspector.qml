@@ -167,6 +167,64 @@ ColumnLayout {
             }
         }
     }
+    // Write: clip の先頭で式を書いていく (Manim の Write)。尺は秒で見せ、clip の尺までに収める。
+    ModernDialogCheckBox {
+        id: writeToggle
+        objectName: "mathWriteToggle"
+        enabled: root.editingId === root.clipId && !root.commitRejected
+        Layout.fillWidth: true
+        text: "Write（先頭で式を書く）"
+        checked: root.clipData.intro === "write"
+        onToggled: {
+            root.setValue("intro", writeToggle.checked ? "write" : "none");
+            // 確定を拒否されたときも Project の値に戻す (クリックで切れた binding を張り直す)。
+            writeToggle.checked = Qt.binding(() => root.clipData.intro === "write");
+        }
+    }
+    DragNumberField {
+        id: writeSeconds
+        objectName: "mathWriteSeconds"
+        property var pending: undefined
+        visible: root.clipData.intro === "write"
+        enabled: root.editingId === root.clipId && !root.commitRejected
+        Layout.fillWidth: true
+        labelText: "Write の長さ"
+        inlineLabelWidth: 92
+        decimals: 2
+        suffix: " 秒"
+        stepPerPixel: 0.01
+        minimumValue: 0.01
+        maximumValue: Math.max(0.01, Number(root.clipData.introMaxSeconds) || 0.01)
+        value: writeSeconds.pending !== undefined ? writeSeconds.pending
+                                                  : (Number(root.clipData.introSeconds) || 0)
+        // 尺を変えると連番を描き直すので、ドラッグ中は表示だけを変え、離したときに確定する。
+        onValueEdited: (newValue, commit) => {
+            if (!commit) {
+                writeSeconds.pending = newValue;
+                return;
+            }
+            writeSeconds.pending = undefined;
+            if (Math.abs(newValue - (Number(root.clipData.introSeconds) || 0)) > 0.0001)
+                root.setValue("introSeconds", newValue);
+        }
+        onEditCanceled: writeSeconds.pending = undefined
+    }
+    Label {
+        objectName: "mathWriteState"
+        Layout.fillWidth: true
+        visible: root.clipData.intro === "write"
+        text: (({checking: "Write: 準備中", rendering: "Write: 描画中（書き終えた式を表示）",
+                 ready: "Write: 完了", error: "Write: エラー", unavailable: "Write: 利用不可"})[root.clipData.writeState]
+               || "Write: 準備中")
+              + (root.clipData.writeMessage ? "\n" + root.clipData.writeMessage : "")
+              // 書き出しには使えるが、preview の memory の上限で Write を表示しない場合。
+              + (root.clipData.writePreview === "loading" ? "（preview を準備中）" : "")
+              + (root.clipData.writePreview === "memory" && root.clipData.writePreviewMessage
+                 ? "\n" + root.clipData.writePreviewMessage : "")
+        color: root.clipData.writeState === "error" || root.clipData.writeState === "unavailable"
+               || root.clipData.writePreview === "memory" ? "#f2c66d" : "#a8d5a2"
+        wrapMode: Text.Wrap
+    }
     ModernColorPicker {
         id: colorPicker
         property string valueKey: "color"
@@ -233,7 +291,7 @@ ColumnLayout {
     Label {
         objectName: "mathInspectorNotes"
         Layout.fillWidth: true
-        text: "式中の \\color は反映されません。色は上の文字色で指定してください。\n鮮明に大きくするには文字サイズを上げてください。位置・拡大・回転は下のエフェクトで調整できます。"
+        text: "式中の \\color は反映されません。色は上の文字色で指定してください。\n鮮明に大きくするには文字サイズを上げてください。位置・拡大・回転・フェードは下のエフェクトで調整できます。\nWrite は確定した式を描いてから表示します。入力中は書き終えた式を表示します。"
         color: "#9aa2ad"
         font.pixelSize: 11
         wrapMode: Text.Wrap

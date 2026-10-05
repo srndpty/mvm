@@ -123,6 +123,24 @@ bool trimClipBoundary(const Project& project, TimelineClip& clip, TrimEdge edge,
         }
         const auto newStart = static_cast<std::int64_t>(newStartWide);
         const auto newEnd = static_cast<std::int64_t>(newEndWide);
+        // 数式の Write は clip の見えている先頭から始まる (左 trim でも先頭から書き直す)。
+        // trim は素材 frame を timeline の fps へ揃え直すので、尺も同じ秒数へ換算し、
+        // 縮めた尺に収める。
+        auto& animation = clip.mathAnimation;
+        if (animation.intro != MathIntroKind::None) {
+            if (clip.sourceFpsNum != project.timelineFpsNum ||
+                clip.sourceFpsDen != project.timelineFpsDen) {
+                const auto retimed = sourceBoundaryToTimelineBoundary(
+                    animation.introFrames, clip.sourceFpsNum, clip.sourceFpsDen,
+                    project.timelineFpsNum, project.timelineFpsDen);
+                if (!retimed.success) {
+                    error = retimed.error;
+                    return false;
+                }
+                animation.introFrames = std::max<std::int64_t>(1, retimed.frame);
+            }
+            animation.introFrames = std::min(animation.introFrames, newEnd - newStart);
+        }
         clip.timelineStartFrame = newStart;
         clip.sourceFpsNum = project.timelineFpsNum;
         clip.sourceFpsDen = project.timelineFpsDen;
@@ -774,6 +792,18 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "数式 clip 以外が数式のデータを持っています: " + clip.name;
             return result;
         }
+        if (clip.kind == TimelineClipKind::Math) {
+            std::string animationError;
+            if (!validateMathClipAnimation(
+                    clip.mathAnimation, clip.sourceOutFrame - clip.sourceInFrame, animationError)) {
+                result.error =
+                    "数式 clip の animation が不正です (" + animationError + "): " + clip.name;
+                return result;
+            }
+        } else if (clip.mathAnimation != MathClipAnimation{}) {
+            result.error = "数式 clip 以外が数式の animation を持っています: " + clip.name;
+            return result;
+        }
         if (isStillClipKind(clip.kind) &&
             (clip.speedNum != 1 || clip.speedDen != 1 || !clip.linkGroupId.empty() ||
              clip.preservePitch || clip.frameHold)) {
@@ -1014,6 +1044,8 @@ bool overwriteTrackRange(Project& candidate, TrackRef track, std::int64_t start,
             if (!trimClipBoundary(candidate, right, TrimEdge::Left, end - clipStart, error))
                 return false;
             right.effects.fadeInFrames = 0;
+            // 分けた右側は式の続きなので、fade in と同じく Write を持たない。
+            right.mathAnimation = {};
             clampFadesToLength(right);
             for (auto& transition : candidate.timelineTransitions) {
                 if (transition.outgoingClipId == clip.id)
@@ -1910,6 +1942,8 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
         left.effects.fadeInFrames =
             std::min(left.effects.fadeInFrames, left.sourceOutFrame - left.sourceInFrame);
         right.effects.fadeInFrames = 0;
+        // 右半分は式の続きなので、fade in と同じく Write を持たない。
+        right.mathAnimation = {};
         right.effects.fadeOutFrames =
             std::min(right.effects.fadeOutFrames, right.sourceOutFrame - right.sourceInFrame);
         right.id = newId();
@@ -2805,6 +2839,7 @@ bool timeEditCandidate(Project& candidate, std::int64_t start, std::int64_t remo
             right.timelineStartFrame = static_cast<std::int64_t>(shifted);
             if (a < end) {
                 right.effects.fadeInFrames = 0;
+                right.mathAnimation = {};
                 clampFadesToLength(right);
             }
             if (right.id != original.id)

@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -17,6 +18,12 @@ namespace mvm::manim {
 inline constexpr char kMathTexBackendId[] = "manim-mathtex";
 // script template を変えたら上げる (fingerprint に入り、古い cache を引かなくなる)。
 inline constexpr int kMathTexTemplateVersion = 1;
+// Write の連番の script。変えたら版を上げる (連番の key だけに入り、静止の cache は変えない)。
+inline constexpr char kMathWriteTemplateId[] = "manim-write";
+inline constexpr int kMathWriteTemplateVersion = 1;
+// Manim は連番を 4 桁 (<Scene>0000.png) で名付ける。名前の順を frame の順として使うので、
+// 桁が増える枚数は描かない。
+inline constexpr std::int64_t kMaximumMathWriteFrames = 9999;
 
 struct ManimMathTexConfig {
     // 明示された Manim executable。PATH から探さない。
@@ -37,8 +44,17 @@ math::MathStaticRenderResult renderManimMathTex(const std::filesystem::path& man
                                                 const math::MathStaticRenderRequest& request,
                                                 const std::atomic<bool>* cancel);
 
+// 式を Write で書く連番を描く (spec.frames 枚、frame i は進み具合 i / frames)。
+// preflight が backend に束ねる関数そのもの。
+math::MathSequenceRenderResult
+renderManimMathWrite(const std::filesystem::path& manimExecutablePath,
+                     const math::MathSequenceRenderRequest& request,
+                     const std::atomic<bool>* cancel);
+
 // script が読む request.json の内容。式は Python の source へ埋め込まず、この JSON で渡す。
 std::string manimMathTexRequestJson(const math::MathRenderSpec& spec);
+// Write の request.json。静止の内容に intro_frames (描く枚数) を足す。
+std::string manimMathWriteRequestJson(const math::MathSequenceSpec& spec);
 
 // mvm の fontSize (1 em の px) を Manim の font_size へ換算する。
 // 1080p 相当の 135 px/unit では 1 em = font_size x 17/12 px (docs/math-clips.md P0-0)。

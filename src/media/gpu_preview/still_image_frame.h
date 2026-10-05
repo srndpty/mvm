@@ -22,6 +22,19 @@ bool makeStillImageFrame(SharedD3D11Device& device, int width, int height,
                          const unsigned char* rgba, std::size_t byteCount, SourceId sourceId,
                          DecodedGpuFrame& out, std::string& err);
 
+// makeStillImageFrame と同じだが、後から updateStillImageRegion で一部の画素を書き換えられる
+// texture (D3D11_USAGE_DEFAULT) を作る。数式の Write のように frame ごとに一部が変わる layer 用。
+bool makeUpdatableStillImageFrame(SharedD3D11Device& device, int width, int height,
+                                  const unsigned char* rgba, std::size_t byteCount,
+                                  SourceId sourceId, DecodedGpuFrame& out, std::string& err);
+
+// makeUpdatableStillImageFrame の texture の矩形 (x, y, width, height) を rgba (RGBA8、行間の
+// 余白なし、width * height * 4 byte) で書き換える。device の lock を取って immediate context で
+// 行うので、既に発行した描画は書き換え前の画素を使う (D3D11 の命令の順序)。
+bool updateStillImageRegion(SharedD3D11Device& device, const DecodedGpuFrame& frame, int x, int y,
+                            int width, int height, const unsigned char* rgba, std::size_t byteCount,
+                            std::string& err);
+
 } // namespace mvm::gpu
 
 #endif

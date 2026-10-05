@@ -137,6 +137,22 @@ static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip*
         }
         return producer;
     }
+    if (clip->is_still_image && clip->is_image_sequence) {
+        mlt_producer producer = mlt_factory_producer(profile, "qimage", clip->path);
+        if (!producer)
+            return NULL;
+        /* 既定は 1 枚を 25 frame 出す。1 枚 1 frame を明示して読み戻す (位置 n が n 番の PNG)。 */
+        mlt_properties properties = MLT_PRODUCER_PROPERTIES(producer);
+        mlt_properties_set_int(properties, "ttl", 1);
+        if (mlt_properties_get_int(properties, "ttl") != 1 ||
+            mlt_producer_get_playtime(producer) < clip->producer_out_frame) {
+            mlt_producer_close(producer);
+            return NULL;
+        }
+        return producer;
+    }
+    if (clip->is_image_sequence)
+        return NULL;
     if (clip->is_still_image)
         return mlt_factory_producer(profile, "qimage", clip->path);
     if (clip->speed_num == 1 && clip->speed_den == 1)
@@ -193,6 +209,31 @@ static int file_exists_utf8(const char* path) {
     DWORD attr = GetFileAttributesW(w);
     mvm_str_free(w);
     return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+/* 連番の path ("...%05d.png") の index 番の file 名。"%" が "%05d" の 1 か所以外にもあれば
+ * (qimage が別の書式として読むので) 0 を返す。 */
+static int sequence_frame_path(const char* pattern, long long index, char* out, size_t size) {
+    const char* at = strstr(pattern, "%05d");
+    if (!at || strchr(pattern, '%') != at || strchr(at + 1, '%') || index < 0 || index > 99999)
+        return 0;
+    const int written =
+        snprintf(out, size, "%.*s%05lld%s", (int)(at - pattern), pattern, index, at + 4);
+    return written > 0 && (size_t)written < size;
+}
+
+/* clip の素材が実在するか。連番なら cut の最初と最後の PNG を確かめる。 */
+static int clip_media_exists(const MvmExportClip* clip) {
+    if (!clip->is_image_sequence)
+        return file_exists_utf8(clip->path);
+    if (!clip->path || !clip->is_still_image)
+        return 0;
+    char first[4096];
+    char last[4096];
+    return sequence_frame_path(clip->path, clip->producer_in_frame, first, sizeof first) &&
+           file_exists_utf8(first) &&
+           sequence_frame_path(clip->path, clip->producer_out_frame - 1, last, sizeof last) &&
+           file_exists_utf8(last);
 }
 
 static int file_size_utf8(const char* path, unsigned long long* size) {
@@ -646,7 +687,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             set_err(err, err_size, "clip %d のパスが空です", i);
             return 1;
         }
-        if (!file_exists_utf8(clips[i].path)) {
+        if (!clip_media_exists(&clips[i])) {
             set_err(err, err_size, "clip %d のファイルがありません: %s", i, clips[i].path);
             return 1;
         }
@@ -1002,7 +1043,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     }
     for (int index = 0; index < clip_count; ++index) {
         const MvmExportClip* clip = &clips[index];
-        if (!clip->path || !clip->path[0] || !file_exists_utf8(clip->path) ||
+        if (!clip->path || !clip->path[0] || !clip_media_exists(clip) ||
             clip->timeline_start_frame < 0 || clip->timeline_duration_frames <= 0 ||
             clip->timeline_start_frame > total_duration - clip->timeline_duration_frames ||
             clip->source_fps_num <= 0 || clip->source_fps_den <= 0 ||

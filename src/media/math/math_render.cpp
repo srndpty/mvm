@@ -14,6 +14,14 @@ void appendField(std::string& material, const char* name, const std::string& val
     material += '\n';
 }
 
+// 失敗 (CNG の失敗) なら空文字列。
+std::string hexDigest(const std::string& material) {
+    char hex[MVM_SHA256_HEX_SIZE] = {};
+    if (mvm_sha256_hex(material.data(), material.size(), hex) != 0)
+        return {};
+    return hex;
+}
+
 } // namespace
 
 const char* mathRenderStatusName(MathRenderStatus status) {
@@ -41,10 +49,29 @@ std::string mathRenderKey(const MathRenderSpec& spec, const MathToolchainFingerp
     material += "font_size=" + std::to_string(spec.fontSize) + "\n";
     appendField(material, "backend", toolchain.backendId);
     appendField(material, "toolchain", toolchain.canonical);
-    char hex[MVM_SHA256_HEX_SIZE] = {};
-    if (mvm_sha256_hex(material.data(), material.size(), hex) != 0)
-        return {};
-    return hex;
+    return hexDigest(material);
+}
+
+const char* mathAnimationKindName(MathAnimationKind kind) {
+    switch (kind) {
+    case MathAnimationKind::Write:
+        return "write";
+    }
+    return "unknown";
+}
+
+std::string mathSequenceKey(const MathSequenceSpec& spec, const MathToolchainFingerprint& toolchain,
+                            const std::string& sequenceTemplate) {
+    std::string material = "mvm-math-sequence/1\n";
+    appendField(material, "animation", mathAnimationKindName(spec.animation));
+    material += "frames=" + std::to_string(spec.frames) + "\n";
+    appendField(material, "syntax", spec.still.syntax);
+    appendField(material, "source", spec.still.source);
+    material += "font_size=" + std::to_string(spec.still.fontSize) + "\n";
+    appendField(material, "backend", toolchain.backendId);
+    appendField(material, "toolchain", toolchain.canonical);
+    appendField(material, "sequence_template", sequenceTemplate);
+    return hexDigest(material);
 }
 
 } // namespace mvm::math

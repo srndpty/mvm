@@ -6,6 +6,7 @@
 // - 失敗を覚えて自動では描き直さない。forgetFailures / startPreflight で解除する
 // - 要求されなくなった key の描画は止め、その結果を残さない
 // - 描画中に破棄しても、描画を止めて速やかに返る
+// - Write の連番も同じ worker・権限・世代で扱い、静止と別の key と disk の置き場所を持つ
 
 #include "math_fake_backend.h"
 #include "math_raster_cache.h"
@@ -292,6 +293,335 @@ void testDirectoryChangeDuringPreflight(const std::filesystem::path& root) {
           "後の確認は新しい置き場所で行う");
 }
 
+math::MathSequenceSpec writeSpec(const std::string& source, std::int64_t frames) {
+    return {spec(source), math::MathAnimationKind::Write, frames};
+}
+
+MathRasterCache::SequenceEntry waitForSequence(MathRasterCache& cache,
+                                               const math::MathSequenceSpec& s) {
+    MathRasterCache::SequenceEntry entry = cache.requestSequence(s);
+    waitUntil([&] {
+        entry = cache.requestSequence(s);
+        return entry.state != MathRasterCache::State::Pending;
+    });
+    return entry;
+}
+
+MathRasterCache::ResidentSequence waitForResident(MathRasterCache& cache,
+                                                  const math::MathSequenceSpec& s) {
+    auto result = cache.residentSequence(s);
+    waitUntil([&] {
+        result = cache.residentSequence(s);
+        return result.state != MathRasterCache::Residency::Loading;
+    });
+    return result;
+}
+
+std::string readText(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+// Write の連番: 静止と別の key で描き、disk の結果を次の instance が描かずに読む。
+// provenance を最後に書き、合わない・欠けた frame の結果は使わずに描き直す。
+void testSequenceRenderAndDisk(const std::filesystem::path& root) {
+    const auto directory = root / L"sequence 日本語";
+    FakeBackend backend;
+    const auto s = writeSpec("WIDE x", 8);
+    QString key;
+    {
+        auto cache = readyCache(directory, backend);
+        key = cache->sequenceKeyFor(s);
+        check(!key.isEmpty() && key != cache->keyFor(s.still),
+              "連番の key は同じ式の静止の key と別");
+        const auto entry = waitForSequence(*cache, s);
+        check(entry.state == MathRasterCache::State::Ready && entry.width == 64 &&
+                  entry.height == 8,
+              "disk に 64x8 の連番が揃う");
+        check(cache->residentBytes() == 0 && cache->residentLoadCount() == 0,
+              "disk に揃っても preview 用の mask は memory に読まない (要求されるまで)");
+        const auto resident = waitForResident(*cache, s);
+        check(resident.state == MathRasterCache::Residency::Resident && resident.frames &&
+                  resident.frames->frames.size() == 8 && resident.frames->width == 64 &&
+                  resident.frames->height == 8 && cache->residentBytes() == 4096,
+              "preview が要求すると 8 枚の mask (64x8、4096 byte) を memory に読む");
+        // frame i は左から 64 * i / 8 = 8i 列 (偽の backend の定義から手で計算)。
+        bool coded = resident.frames && resident.frames->frames.size() == 8;
+        for (std::size_t index = 0; coded && index < 8; ++index) {
+            const auto& frame = resident.frames->frames[index];
+            coded = frame.size() == 64U * 8U;
+            for (int x = 0; coded && x < 64; ++x)
+                coded = frame[static_cast<std::size_t>(x)] ==
+                        (x < static_cast<int>(8 * index) ? 255 : 0);
+        }
+        check(coded, "mask は frame の順に PNG の alpha を 1 byte ずつ持つ");
+        check(*backend.sequenceRenders == 1 && *backend.renders == 0,
+              "連番だけを 1 回描く (静止の描画は要求しない)");
+        const auto artifact = cache->readySequence(s);
+        check(artifact && artifact->frames.size() == 8 &&
+                  artifact->frames.front() ==
+                      directory / L"write" / key.toStdWString() / L"00000.png" &&
+                  std::filesystem::is_regular_file(artifact->frames.back()),
+              "PNG を write/<key>/00000.png から置く");
+        check(
+            std::filesystem::is_regular_file(directory / L"write" / (key.toStdWString() + L".txt")),
+            "provenance を write/<key>.txt に置く");
+        check(cache->readyArtifact(s.still) == std::nullopt, "連番は静止の artifact にならない");
+    }
+    {
+        auto cache = readyCache(directory, backend);
+        const auto entry = waitForSequence(*cache, s);
+        check(entry.state == MathRasterCache::State::Ready && *backend.sequenceRenders == 1,
+              "開き直した instance は disk の連番を描かずに読む");
+    }
+    {
+        // frame を 1 枚消す: provenance の枚数と合わないので描き直す。
+        std::filesystem::remove(directory / L"write" / key.toStdWString() / L"00005.png");
+        auto cache = readyCache(directory, backend);
+        const auto entry = waitForSequence(*cache, s);
+        check(entry.state == MathRasterCache::State::Ready && *backend.sequenceRenders == 2,
+              "欠けた frame がある連番は使わずに描き直す");
+    }
+    {
+        // frame の中身を壊す (大きさも変わる): provenance の大きさと合わないので描き直す。
+        std::ofstream(directory / L"write" / key.toStdWString() / L"00002.png", std::ios::binary)
+            << "壊れた";
+        auto cache = readyCache(directory, backend);
+        waitForSequence(*cache, s);
+        check(*backend.sequenceRenders == 3, "壊れた frame がある連番は描き直す");
+    }
+    {
+        // provenance が無い (書く前に止まった) 結果は使わない。
+        std::filesystem::remove(directory / L"write" / (key.toStdWString() + L".txt"));
+        auto cache = readyCache(directory, backend);
+        waitForSequence(*cache, s);
+        check(*backend.sequenceRenders == 4, "provenance の無い連番は使わずに描き直す");
+        const auto text = readText(directory / L"write" / (key.toStdWString() + L".txt"));
+        check(text.rfind("mvm-math-sequence-artifact/1\n", 0) == 0 &&
+                  text.find("\nframes=8\n") != std::string::npos &&
+                  text.find("\nsequence_template=fake-write/1\n") != std::string::npos,
+              "provenance に版・枚数・連番の script を書く");
+    }
+    {
+        FakeBackend changed;
+        changed.sequenceTemplate = "fake-write/2";
+        changed.sequenceRenders = backend.sequenceRenders;
+        changed.renders = backend.renders;
+        auto cache = readyCache(directory, changed);
+        check(cache->sequenceKeyFor(s) != key, "連番の script が変われば key が変わる");
+        waitForSequence(*cache, s);
+        waitForResult(*cache, s.still);
+        check(*backend.sequenceRenders == 5, "連番の script が変われば描き直す");
+        check(cache->keyFor(s.still) == readyCache(directory, backend)->keyFor(s.still),
+              "連番の script が変わっても静止の key は変わらない");
+    }
+}
+
+void testSequenceFailuresAndCancel(const std::filesystem::path& root) {
+    FakeBackend backend;
+    auto cache = readyCache(root / L"sequence failures", backend);
+    const auto bad = waitForSequence(*cache, writeSpec("BAD", 4));
+    check(bad.state == MathRasterCache::State::Failed &&
+              bad.status == math::MathRenderStatus::InvalidSource,
+          "連番の式の誤りは Failed");
+    const int afterFailure = *backend.sequenceRenders;
+    cache->requestSequence(writeSpec("BAD", 4));
+    waitUntil([] { return false; }, 100);
+    check(*backend.sequenceRenders == afterFailure, "失敗した連番は自動では描き直さない");
+    cache->forgetFailures();
+    waitForSequence(*cache, writeSpec("BAD", 4));
+    check(*backend.sequenceRenders == afterFailure + 1, "forgetFailures で連番の失敗も忘れる");
+
+    // 長い連番を描いている間に入力中の式の静止が来たら、連番を止めて静止を先に描く。
+    check(cache->requestSequence(writeSpec("SLOW_WRITE", 4)).state ==
+              MathRasterCache::State::Pending,
+          "連番を描き始める");
+    check(waitUntil([&] { return backend.slowStarted->load(); }), "連番の描画が始まる");
+    cache->cancelPendingSequences();
+    check(cache->sequenceRecordCount() == 1, "描き終えていない連番の要求だけを忘れる (BAD は残る)");
+    const auto typed = waitForResult(*cache, spec("typed"));
+    check(*backend.slowSawCancel && typed.state == MathRasterCache::State::Ready,
+          "取り消した連番は止まり、静止が描ける");
+    backend.slowStarted->store(false);
+    backend.slowSawCancel->store(false);
+    check(cache->requestSequence(writeSpec("SLOW_WRITE", 4)).state ==
+              MathRasterCache::State::Pending,
+          "取り消した連番は次の要求で要求し直される");
+    check(waitUntil([&] { return backend.slowStarted->load(); }), "要求し直した連番が始まる");
+
+    // retainOnly は連番の key にも効く。
+    cache->retainOnly({cache->keyFor(spec("typed"))});
+    check(waitUntil([&] { return backend.slowSawCancel->load(); }),
+          "要求されなくなった連番は cancel で止まる");
+    check(cache->sequenceRecordCount() == 0 && cache->recordCount() == 1,
+          "要求されなくなった連番の record を残さない");
+    check(!std::filesystem::exists(
+              root / L"sequence failures" / L"write" /
+              (cache->sequenceKeyFor(writeSpec("SLOW_WRITE", 4)).toStdWString())),
+          "取り消した連番の directory を作らない");
+}
+
+// preview 用の mask は全 clip の合計で上限 (residency) を守る。disk の連番 (書き出し) は
+// memory の上限と無関係に Ready のまま。各連番は 64 x 8 x 8 = 4096 byte、上限は 10000 byte
+// (2 本まで)。
+void testSequenceResidency(const std::filesystem::path& root) {
+    const auto directory = root / L"sequence residency";
+    FakeBackend backend;
+    auto cache = readyCache(directory, backend);
+    cache->setResidentMemoryBudget(10000);
+    std::vector<math::MathSequenceSpec> specs;
+    for (const char* name : {"WIDE a", "WIDE b", "WIDE c", "WIDE d", "WIDE e", "WIDE f"})
+        specs.push_back(writeSpec(name, 8));
+    check(cache->residentSequence(specs[0]).state == MathRasterCache::Residency::NotReady,
+          "disk の連番が揃う前は memory に読まない");
+    for (const auto& s : specs) {
+        const auto entry = waitForSequence(*cache, s);
+        check(entry.state == MathRasterCache::State::Ready,
+              "6 本の連番がすべて disk に揃う: " + s.still.source +
+                  " state=" + std::to_string(static_cast<int>(entry.state)) + " " +
+                  entry.message.toStdString());
+    }
+    check(cache->residentBytes() == 0, "6 本が disk に揃っても memory には 1 本も読まない");
+
+    std::size_t peak = 0;
+    const auto use = [&](const math::MathSequenceSpec& s) {
+        const auto result = waitForResident(*cache, s);
+        peak = std::max(peak, cache->residentBytes());
+        return result;
+    };
+    check(use(specs[0]).state == MathRasterCache::Residency::Resident &&
+              use(specs[1]).state == MathRasterCache::Residency::Resident &&
+              cache->residentBytes() == 8192 && cache->residentLoadCount() == 2,
+          "2 本 (8192 byte) は上限に収まり memory に置く");
+    check(use(specs[2]).state == MathRasterCache::Residency::Resident &&
+              cache->residentBytes() == 8192 && cache->residentSequenceCount() == 2,
+          "3 本目は最も長く使っていない a を追い出して置く (合計は 8192 byte のまま)");
+    check(cache->residencyOf(specs[0]).state != MathRasterCache::Residency::Resident &&
+              cache->residencyOf(specs[1]).state == MathRasterCache::Residency::Resident,
+          "追い出すのは最も長く使っていない mask (LRU)");
+    // b を使い直してから a を読み直すと、追い出されるのは c。
+    use(specs[1]);
+    check(use(specs[0]).state == MathRasterCache::Residency::Resident &&
+              cache->residentLoadCount() == 4 &&
+              cache->residencyOf(specs[2]).state != MathRasterCache::Residency::Resident,
+          "追い出した a は disk から読み直し、そのとき最も古い c を追い出す");
+    for (const auto& s : specs)
+        use(s);
+    check(peak <= 10000 && cache->residentBytes() <= 10000 && cache->residentSequenceCount() == 2,
+          "6 本を順に使っても memory の合計は上限 (10000 byte) を超えない (最大 " +
+              std::to_string(peak) + " byte)");
+
+    // preview engine が mask を持ち続けている間は、cache から外しても memory
+    // に残るので上限に数える。
+    auto heldE = cache->residentSequence(specs[4]).frames;
+    auto heldF = cache->residentSequence(specs[5]).frames;
+    check(heldE && heldF, "e と f を使用中として持つ");
+    const auto refused = cache->residentSequence(specs[0]);
+    check(refused.state == MathRasterCache::Residency::OverBudget &&
+              refused.message.contains(QStringLiteral("memory")) && cache->residentBytes() == 8192,
+          "使用中の mask で上限が埋まっていれば新しい mask は読まない (上限を超えない)");
+    check(cache->residencyOf(specs[0]).state == MathRasterCache::Residency::OverBudget,
+          "上限に収まらなかったことを inspector に返せる");
+    check(cache->readySequence(specs[0]).has_value(),
+          "上限に収まらなくても disk の連番は Ready で、書き出しに使える");
+    check(cache->residentSequenceCount() == 2,
+          "使用中の mask は追い出さない (外しても memory は空かず、読み直しになるだけ)");
+    heldE.reset();
+    check(use(specs[0]).state == MathRasterCache::Residency::Resident &&
+              cache->residentBytes() == 8192 &&
+              cache->residencyOf(specs[4]).state != MathRasterCache::Residency::Resident,
+          "使われなくなった e を追い出し、a を memory に置ける");
+    heldF.reset();
+
+    // cache が手放した後も preview が持っている mask: 手放されたら、収まらなかった連番を
+    // もう一度試させる (entryChanged)。
+    auto heldA = cache->residentSequence(specs[0]).frames;
+    auto heldF2 = cache->residentSequence(specs[5]).frames;
+    check(heldA && heldF2, "a と f を使用中として持つ");
+    cache->retainOnly({cache->sequenceKeyFor(specs[0]), cache->sequenceKeyFor(specs[1])});
+    check(cache->residentBytes() == 8192 && cache->residentSequenceCount() == 1,
+          "要求されなくなった f は cache から外れても、使用中なので memory に残る");
+    check(cache->residentSequence(specs[1]).state == MathRasterCache::Residency::OverBudget,
+          "使用中の a と f で上限が埋まり、b は収まらない");
+    QString retried;
+    QObject::connect(cache.get(), &MathRasterCache::entryChanged,
+                     [&](const QString& key) { retried = key; });
+    const auto keyB = cache->sequenceKeyFor(specs[1]);
+    heldF2.reset();
+    check(waitUntil([&] { return retried == keyB; }),
+          "使用中の mask が手放されると、収まらなかった連番をもう一度試させる");
+    check(cache->residentBytes() == 4096 &&
+              use(specs[1]).state == MathRasterCache::Residency::Resident &&
+              cache->residentBytes() == 8192,
+          "手放された分で b を memory に置ける");
+    heldA.reset();
+
+    // 1 本で上限を超える連番は preview に置かず、書き出しには使える。
+    cache->setResidentMemoryBudget(4095);
+    check(cache->residentSequence(specs[1]).state == MathRasterCache::Residency::OverBudget &&
+              cache->readySequence(specs[1]).has_value() && cache->residentBytes() == 0,
+          "上限より大きい連番は memory に読まず、disk の連番は使える");
+    cache->setResidentMemoryBudget(4096);
+    check(use(specs[1]).state == MathRasterCache::Residency::Resident,
+          "対照: 上限ちょうどの連番は memory に置ける");
+
+    // retainOnly は memory の mask も手放す。
+    cache->retainOnly({});
+    check(cache->residentSequenceCount() == 0 && cache->residentBytes() == 0,
+          "要求されなくなった連番の mask を手放す");
+}
+
+// disk の大きさは合うが中身が壊れた frame: preview が読むときに見つけ、artifact を消して
+// 連番を Failed にする。forgetFailures の後は描き直す。
+void testSequenceCorruptResident(const std::filesystem::path& root) {
+    const auto directory = root / L"sequence corrupt";
+    FakeBackend backend;
+    auto cache = readyCache(directory, backend);
+    const auto s = writeSpec("WIDE corrupt", 8);
+    check(waitForSequence(*cache, s).state == MathRasterCache::State::Ready, "連番が揃う");
+    const auto frame =
+        directory / L"write" / cache->sequenceKeyFor(s).toStdWString() / L"00003.png";
+    const auto size = std::filesystem::file_size(frame);
+    std::ofstream(frame, std::ios::binary) << std::string(static_cast<std::size_t>(size), 'x');
+    check(std::filesystem::file_size(frame) == size, "負例の準備: 同じ大きさで中身を壊す");
+    const auto broken = waitForResident(*cache, s);
+    check(broken.state != MathRasterCache::Residency::Resident && cache->residentBytes() == 0,
+          "壊れた frame の連番は memory に置かない (予約も返す)");
+    check(cache->requestSequence(s).state == MathRasterCache::State::Failed &&
+              !cache->readySequence(s) &&
+              !std::filesystem::exists(directory / L"write" /
+                                       (cache->sequenceKeyFor(s).toStdWString() + L".txt")),
+          "連番を Failed にして artifact を消す (書き出しにも渡さない)");
+    cache->forgetFailures();
+    check(waitForSequence(*cache, s).state == MathRasterCache::State::Ready &&
+              *backend.sequenceRenders == 2 &&
+              waitForResident(*cache, s).state == MathRasterCache::Residency::Resident,
+          "forgetFailures の後は描き直して読める");
+}
+
+// backend が描けない長さは、描かずに未対応として失敗する (Project の値は正しいまま)。
+void testSequenceBackendCapability(const std::filesystem::path& root) {
+    FakeBackend backend;
+    backend.maximumSequenceFrames = 4;
+    auto cache = readyCache(root / L"sequence capability", backend);
+    const auto entry = waitForSequence(*cache, writeSpec("WIDE long", 8));
+    check(entry.state == MathRasterCache::State::Failed &&
+              entry.message.contains(QStringLiteral("4 frame")) &&
+              entry.message.contains(QStringLiteral("8 frame")) && *backend.sequenceRenders == 0,
+          "backend の上限 (4) を超える 8 frame の Write は描かずに理由付きで失敗する");
+    check(waitForSequence(*cache, writeSpec("WIDE long", 4)).state == MathRasterCache::State::Ready,
+          "対照: 上限ちょうどの Write は描ける");
+}
+
+void testSequenceWithoutBackendSupport(const std::filesystem::path& root) {
+    FakeBackend backend;
+    backend.withSequence = false;
+    auto cache = readyCache(root / L"sequence unsupported", backend);
+    const auto entry = waitForSequence(*cache, writeSpec("x", 4));
+    check(entry.state == MathRasterCache::State::Failed && !cache->readySequence(writeSpec("x", 4)),
+          "連番を描けない backend では Failed (静止で代用しない)");
+}
+
 void testDestroyWhileRendering(const std::filesystem::path& root) {
     FakeBackend backend;
     auto cache = readyCache(root / L"destroy", backend);
@@ -324,6 +654,12 @@ int main(int argc, char** argv) {
     testRetainOnlyCancels(root);
     testWithoutAuthority(root);
     testDirectoryChangeDuringPreflight(root);
+    testSequenceRenderAndDisk(root);
+    testSequenceFailuresAndCancel(root);
+    testSequenceResidency(root);
+    testSequenceCorruptResident(root);
+    testSequenceBackendCapability(root);
+    testSequenceWithoutBackendSupport(root);
     testDestroyWhileRendering(root);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);

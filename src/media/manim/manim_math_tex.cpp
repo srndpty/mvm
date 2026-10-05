@@ -4,6 +4,7 @@
 #include "util/mvm_win_utf8.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <charconv>
 #include <cstdlib>
 #include <fstream>
@@ -22,7 +23,8 @@ constexpr std::size_t kMaximumLogBytes = 64 * 1024;
 // module level で MathTex を作り、その大きさに frame を合わせる。CLI の --resolution より
 // module level の config が優先される (docs/math-clips.md P0-0)。式は request.json から読み、
 // Python の source には埋め込まない。失敗は error-kind.txt / error.txt に書いて exit 3。
-constexpr char kSceneTemplate[] = R"PY(import json
+// 静止 (kStaticScene) と Write (kWriteScene) はこの共通部分の後に scene を足す。
+constexpr char kSceneCommon[] = R"PY(import json
 import math
 import pathlib
 import sys
@@ -61,12 +63,31 @@ config.pixel_height = HEIGHT
 config.frame_width = WIDTH / PX_PER_UNIT
 config.frame_height = HEIGHT / PX_PER_UNIT
 (HERE / "info.txt").write_text(f"{WIDTH} {HEIGHT}", encoding="utf-8")
+)PY";
 
+constexpr char kStaticScene[] = R"PY(
 
 class MvmMathTex(Scene):
     def construct(self):
         TEX.move_to(ORIGIN)
         self.add(TEX)
+)PY";
+
+// 1 秒の Write を frame_rate = frames で描くので、PNG はちょうど frames 枚で、frame i は進み具合
+// i / frames。frame の大きさは静止と同じ (docs/math-clips.md P1-0)。
+constexpr char kWriteScene[] = R"PY(
+try:
+    from manim import Write
+except Exception as error:
+    fail("other", "manim の Write を import できません: " + repr(error))
+
+config.frame_rate = int(REQUEST["intro_frames"])
+
+
+class MvmMathWrite(Scene):
+    def construct(self):
+        TEX.move_to(ORIGIN)
+        self.play(Write(TEX), run_time=1)
 )PY";
 
 std::string pathToUtf8(const std::filesystem::path& path) {
@@ -208,6 +229,8 @@ std::string texErrorLines(const std::filesystem::path& mediaDirectory) {
     return joined;
 }
 
+// directory の下の PNG を file 名の順に返す。Manim は連番を固定桁 (<Scene>0000.png)
+// で名付けるので、 名前の順が frame の順になる。
 std::vector<std::filesystem::path> findPngs(const std::filesystem::path& directory) {
     std::vector<std::filesystem::path> found;
     std::error_code error;
@@ -218,7 +241,113 @@ std::vector<std::filesystem::path> findPngs(const std::filesystem::path& directo
         if (it->is_regular_file(error) && it->path().extension() == L".png")
             found.push_back(it->path());
     }
+    std::sort(found.begin(), found.end());
     return found;
+}
+
+// scene を 1 回描いた結果。status が Ok なら width / height / pngs が有効。
+struct SceneRun {
+    math::MathRenderStatus status = math::MathRenderStatus::Failed;
+    std::string message;
+    std::string log;
+    int width = 0;
+    int height = 0;
+    std::vector<std::filesystem::path> pngs;
+};
+
+SceneRun sceneFailure(math::MathRenderStatus status, std::string message, std::string log = {}) {
+    SceneRun run;
+    run.status = status;
+    run.message = std::move(message);
+    run.log = std::move(log);
+    return run;
+}
+
+// 共通の scene に sceneText を足した script と request.json を作業 directory へ書き、Manim で描く。
+// 失敗の分類 (TeX の誤り・timeout・取消・起動失敗) は静止と Write で同じ。
+SceneRun runScene(const std::filesystem::path& manimExecutablePath,
+                  const std::filesystem::path& jobDirectory, const char* sceneText,
+                  const std::wstring& sceneName, const std::string& requestJson, bool lastFrameOnly,
+                  std::chrono::milliseconds timeout, const std::atomic<bool>* cancel) {
+    if (jobDirectory.empty())
+        return sceneFailure(math::MathRenderStatus::Failed,
+                            "数式の作業 directory が指定されていません");
+    std::error_code error;
+    std::filesystem::create_directories(jobDirectory, error);
+    if (error)
+        return sceneFailure(math::MathRenderStatus::Failed,
+                            "数式の作業 directory を作成できません: " + pathToUtf8(jobDirectory) +
+                                " (" + error.message() + ")");
+    const auto script = jobDirectory / L"mvm_math_tex.py";
+    if (!writeFile(script, std::string(kSceneCommon) + sceneText) ||
+        !writeFile(jobDirectory / L"request.json", requestJson))
+        return sceneFailure(math::MathRenderStatus::Failed,
+                            "数式の描画 script を書けません: " + pathToUtf8(jobDirectory));
+
+    const auto media = jobDirectory / L"media";
+    std::vector<std::wstring> arguments = {L"render"};
+    if (lastFrameOnly)
+        arguments.push_back(L"-s");
+    for (const wchar_t* argument :
+         {L"--format", L"png", L"--transparent", L"--progress_bar", L"none", L"--media_dir"})
+        arguments.push_back(argument);
+    arguments.push_back(media.wstring());
+    arguments.push_back(script.wstring());
+    arguments.push_back(sceneName);
+    const ToolRun run =
+        runTool(manimExecutablePath, arguments, jobDirectory, jobDirectory / L"stdout.txt",
+                jobDirectory / L"stderr.txt", timeout, cancel);
+    const std::string log = tail(run.stdoutText + run.stderrText, kMaximumLogBytes);
+
+    switch (run.result.status) {
+    case MVM_PROCESS_CANCELLED:
+        return sceneFailure(math::MathRenderStatus::Cancelled, "数式の描画を中断しました", log);
+    case MVM_PROCESS_TIMED_OUT:
+        return sceneFailure(math::MathRenderStatus::TimedOut,
+                            "数式の描画が " + std::to_string(timeout.count() / 1000) +
+                                " 秒で終わりませんでした",
+                            log);
+    case MVM_PROCESS_START_FAILED:
+        return sceneFailure(math::MathRenderStatus::BackendUnavailable,
+                            "Manim を起動できません (Win32 error " +
+                                std::to_string(run.result.win32_error) +
+                                "): " + pathToUtf8(manimExecutablePath),
+                            log);
+    case MVM_PROCESS_WAIT_FAILED:
+        return sceneFailure(math::MathRenderStatus::Failed, "Manim の終了を待てませんでした", log);
+    case MVM_PROCESS_EXITED:
+        break;
+    }
+
+    if (run.result.exit_code != 0) {
+        const std::string kind = trimLine(readFile(jobDirectory / L"error-kind.txt"));
+        if (kind == "latex") {
+            std::string message = texErrorLines(media);
+            if (message.empty())
+                message = "LaTeX が式を処理できませんでした";
+            return sceneFailure(math::MathRenderStatus::InvalidSource, message, log);
+        }
+        std::string message = firstNonEmptyLine(readFile(jobDirectory / L"error.txt"));
+        if (message.empty())
+            message =
+                "Manim が終了コード " + std::to_string(run.result.exit_code) + " で失敗しました";
+        return sceneFailure(math::MathRenderStatus::Failed, message, log);
+    }
+
+    SceneRun result;
+    std::istringstream info(readFile(jobDirectory / L"info.txt"));
+    if (!(info >> result.width >> result.height) || result.width <= 0 || result.height <= 0)
+        return sceneFailure(math::MathRenderStatus::Failed,
+                            "Manim が数式の大きさを出力しませんでした", log);
+    result.pngs = findPngs(media / L"images");
+    for (const auto& png : result.pngs) {
+        const auto size = std::filesystem::file_size(png, error);
+        if (error || size == 0)
+            return sceneFailure(math::MathRenderStatus::Failed, "Manim の PNG が空です", log);
+    }
+    result.status = math::MathRenderStatus::Ok;
+    result.log = log;
+    return result;
 }
 
 math::MathStaticRenderResult failure(math::MathRenderStatus status, std::string message,
@@ -228,6 +357,22 @@ math::MathStaticRenderResult failure(math::MathRenderStatus status, std::string 
     result.message = std::move(message);
     result.log = std::move(log);
     return result;
+}
+
+math::MathSequenceRenderResult sequenceFailure(math::MathRenderStatus status, std::string message,
+                                               std::string log = {}) {
+    math::MathSequenceRenderResult result;
+    result.status = status;
+    result.message = std::move(message);
+    result.log = std::move(log);
+    return result;
+}
+
+std::string numberText(double value) {
+    char number[64] = {};
+    const auto converted = std::to_chars(number, number + sizeof(number) - 1, value);
+    *converted.ptr = '\0';
+    return number;
 }
 
 void appendJsonString(std::string& json, const std::string& text) {
@@ -257,15 +402,18 @@ double manimFontSizeFor(int emPixels) {
 }
 
 std::string manimMathTexRequestJson(const math::MathRenderSpec& spec) {
-    char number[64] = {};
-    const auto converted =
-        std::to_chars(number, number + sizeof(number) - 1, manimFontSizeFor(spec.fontSize));
-    *converted.ptr = '\0';
     std::string json = "{\"source\": ";
     appendJsonString(json, spec.source);
     json += ", \"manim_font_size\": ";
-    json += number;
+    json += numberText(manimFontSizeFor(spec.fontSize));
     json += "}";
+    return json;
+}
+
+std::string manimMathWriteRequestJson(const math::MathSequenceSpec& spec) {
+    std::string json = manimMathTexRequestJson(spec.still);
+    json.pop_back();
+    json += ", \"intro_frames\": " + std::to_string(spec.frames) + "}";
     return json;
 }
 
@@ -337,6 +485,13 @@ math::MathPreflightResult preflightManimMathTex(const ManimMathTexConfig& config
                                     const std::atomic<bool>* renderCancel) {
         return renderManimMathTex(manim, request, renderCancel);
     };
+    result.backend.sequenceTemplate =
+        std::string(kMathWriteTemplateId) + "/" + std::to_string(kMathWriteTemplateVersion);
+    result.backend.renderSequence = [manim](const math::MathSequenceRenderRequest& request,
+                                            const std::atomic<bool>* renderCancel) {
+        return renderManimMathWrite(manim, request, renderCancel);
+    };
+    result.backend.maximumSequenceFrames = kMaximumMathWriteFrames;
     return result;
 }
 
@@ -346,87 +501,54 @@ math::MathStaticRenderResult renderManimMathTex(const std::filesystem::path& man
     const auto& spec = request.spec;
     if (spec.syntax != "latex" || spec.source.empty() || spec.fontSize <= 0)
         return failure(math::MathRenderStatus::Failed, "数式の描画要求が不正です");
-    if (request.jobDirectory.empty())
-        return failure(math::MathRenderStatus::Failed, "数式の作業 directory が指定されていません");
-
-    std::error_code error;
-    std::filesystem::create_directories(request.jobDirectory, error);
-    if (error)
-        return failure(math::MathRenderStatus::Failed, "数式の作業 directory を作成できません: " +
-                                                           pathToUtf8(request.jobDirectory) + " (" +
-                                                           error.message() + ")");
-    const auto script = request.jobDirectory / L"mvm_math_tex.py";
-    if (!writeFile(script, kSceneTemplate) ||
-        !writeFile(request.jobDirectory / L"request.json", manimMathTexRequestJson(spec)))
+    const SceneRun run =
+        runScene(manimExecutablePath, request.jobDirectory, kStaticScene, L"MvmMathTex",
+                 manimMathTexRequestJson(spec), true, request.timeout, cancel);
+    if (run.status != math::MathRenderStatus::Ok)
+        return failure(run.status, run.message, run.log);
+    if (run.pngs.size() != 1)
         return failure(math::MathRenderStatus::Failed,
-                       "数式の描画 script を書けません: " + pathToUtf8(request.jobDirectory));
-
-    const auto media = request.jobDirectory / L"media";
-    const ToolRun run =
-        runTool(manimExecutablePath,
-                {L"render", L"-s", L"--format", L"png", L"--transparent", L"--progress_bar",
-                 L"none", L"--media_dir", media.wstring(), script.wstring(), L"MvmMathTex"},
-                request.jobDirectory, request.jobDirectory / L"stdout.txt",
-                request.jobDirectory / L"stderr.txt", request.timeout, cancel);
-    const std::string log = tail(run.stdoutText + run.stderrText, kMaximumLogBytes);
-
-    switch (run.result.status) {
-    case MVM_PROCESS_CANCELLED:
-        return failure(math::MathRenderStatus::Cancelled, "数式の描画を中断しました", log);
-    case MVM_PROCESS_TIMED_OUT:
-        return failure(math::MathRenderStatus::TimedOut,
-                       "数式の描画が " + std::to_string(request.timeout.count() / 1000) +
-                           " 秒で終わりませんでした",
-                       log);
-    case MVM_PROCESS_START_FAILED:
-        return failure(math::MathRenderStatus::BackendUnavailable,
-                       "Manim を起動できません (Win32 error " +
-                           std::to_string(run.result.win32_error) +
-                           "): " + pathToUtf8(manimExecutablePath),
-                       log);
-    case MVM_PROCESS_WAIT_FAILED:
-        return failure(math::MathRenderStatus::Failed, "Manim の終了を待てませんでした", log);
-    case MVM_PROCESS_EXITED:
-        break;
-    }
-
-    if (run.result.exit_code != 0) {
-        const std::string kind = trimLine(readFile(request.jobDirectory / L"error-kind.txt"));
-        if (kind == "latex") {
-            std::string message = texErrorLines(media);
-            if (message.empty())
-                message = "LaTeX が式を処理できませんでした";
-            return failure(math::MathRenderStatus::InvalidSource, message, log);
-        }
-        std::string message = firstNonEmptyLine(readFile(request.jobDirectory / L"error.txt"));
-        if (message.empty())
-            message =
-                "Manim が終了コード " + std::to_string(run.result.exit_code) + " で失敗しました";
-        return failure(math::MathRenderStatus::Failed, message, log);
-    }
-
-    int width = 0;
-    int height = 0;
-    std::istringstream info(readFile(request.jobDirectory / L"info.txt"));
-    if (!(info >> width >> height) || width <= 0 || height <= 0)
-        return failure(math::MathRenderStatus::Failed, "Manim が数式の大きさを出力しませんでした",
-                       log);
-    const auto pngs = findPngs(media / L"images");
-    if (pngs.size() != 1)
-        return failure(
-            math::MathRenderStatus::Failed,
-            "Manim の PNG がちょうど 1 件ではありません (件数=" + std::to_string(pngs.size()) + ")",
-            log);
-    const auto size = std::filesystem::file_size(pngs.front(), error);
-    if (error || size == 0)
-        return failure(math::MathRenderStatus::Failed, "Manim の PNG が空です", log);
+                       "Manim の PNG がちょうど 1 件ではありません (件数=" +
+                           std::to_string(run.pngs.size()) + ")",
+                       run.log);
 
     math::MathStaticRenderResult result;
     result.status = math::MathRenderStatus::Ok;
-    result.png = pngs.front();
-    result.width = width;
-    result.height = height;
-    result.log = log;
+    result.png = run.pngs.front();
+    result.width = run.width;
+    result.height = run.height;
+    result.log = run.log;
+    return result;
+}
+
+math::MathSequenceRenderResult
+renderManimMathWrite(const std::filesystem::path& manimExecutablePath,
+                     const math::MathSequenceRenderRequest& request,
+                     const std::atomic<bool>* cancel) {
+    const auto& spec = request.spec;
+    if (spec.animation != math::MathAnimationKind::Write || spec.still.syntax != "latex" ||
+        spec.still.source.empty() || spec.still.fontSize <= 0 || spec.frames < 1 ||
+        spec.frames > kMaximumMathWriteFrames)
+        return sequenceFailure(math::MathRenderStatus::Failed, "数式の Write の描画要求が不正です");
+    const SceneRun run =
+        runScene(manimExecutablePath, request.jobDirectory, kWriteScene, L"MvmMathWrite",
+                 manimMathWriteRequestJson(spec), false, request.timeout, cancel);
+    if (run.status != math::MathRenderStatus::Ok)
+        return sequenceFailure(run.status, run.message, run.log);
+    // frame の数が違えば、進み具合と frame 番号の対応が崩れる。黙って詰めたり補ったりしない。
+    if (static_cast<std::int64_t>(run.pngs.size()) != spec.frames)
+        return sequenceFailure(math::MathRenderStatus::Failed,
+                               "Manim の Write の PNG が " + std::to_string(spec.frames) +
+                                   " 枚ではありません (件数=" + std::to_string(run.pngs.size()) +
+                                   ")",
+                               run.log);
+
+    math::MathSequenceRenderResult result;
+    result.status = math::MathRenderStatus::Ok;
+    result.frames = run.pngs;
+    result.width = run.width;
+    result.height = run.height;
+    result.log = run.log;
     return result;
 }
 

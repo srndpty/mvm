@@ -22,10 +22,12 @@ TestCase {
         property int retries: 0
         property string committed: ""
         property string committedId: ""
+        property var lastValues: ({})
         function updateMathClip(id, values) {
             if (values.source !== undefined && !values.source.trim())
                 return false;
-            commits++; committed = values.source || ""; committedId = id; return true;
+            commits++; committed = values.source || ""; committedId = id; lastValues = values;
+            return true;
         }
         function previewMathClip(id, values) { previews++; return true; }
         function cancelMathPreview() {}
@@ -47,10 +49,76 @@ TestCase {
     }
     function init() {
         controller.commits = 0; controller.previews = 0; controller.retries = 0;
-        controller.committedId = "";
+        controller.committedId = ""; controller.lastValues = {};
         controller.selectedMathClip = {clipId: "math1", source: "x=1", fontSize: 96,
             color: "#FFFFFFFF", backgroundColor: "#00000000", state: "ready", log: "", toolchain: "Manim",
-            unavailableReason: "", canRetry: true};
+            unavailableReason: "", canRetry: true, intro: "none", introFrames: 0, introSeconds: 0,
+            introMaxSeconds: 5, writeState: "none", writeMessage: ""};
+    }
+    function test_write_toggle_and_duration() {
+        const panel = createTemporaryObject(panelComponent, test, {height: 400});
+        const toggle = findChild(panel, "mathWriteToggle");
+        const seconds = findChild(panel, "mathWriteSeconds");
+        verify(toggle && seconds);
+        verify(!toggle.checked);
+        verify(!seconds.visible);
+        verify(!findChild(panel, "mathWriteState").visible);
+        panel.contentY = toggle.mapToItem(panel.contentItem, 0, 0).y;
+        wait(50);
+        mouseClick(toggle);
+        compare(controller.commits, 1);
+        compare(controller.lastValues.intro, "write");
+        // controller が Project の値を返すまでは、クリックで切れた binding を Project の値へ戻す。
+        verify(!toggle.checked);
+        controller.selectedMathClip = Object.assign({}, controller.selectedMathClip,
+            {intro: "write", introFrames: 60, introSeconds: 1, writeState: "rendering"});
+        verify(toggle.checked);
+        verify(seconds.visible);
+        const state = findChild(panel, "mathWriteState");
+        verify(state.visible);
+        verify(state.text.indexOf("描画中") >= 0);
+        // 直接入力で 0.5 秒にする (ダブルクリックで入力欄へ)。
+        panel.contentY = seconds.mapToItem(panel.contentItem, 0, 0).y;
+        wait(50);
+        mouseDoubleClickSequence(seconds);
+        keySequence("ctrl+a");
+        keyClick(Qt.Key_0); keyClick(Qt.Key_Period); keyClick(Qt.Key_5);
+        keyClick(Qt.Key_Return);
+        compare(controller.commits, 2);
+        compare(controller.lastValues.introSeconds, 0.5);
+        // 上限 (clip の尺) を超える入力は上限に収めて確定する。
+        mouseDoubleClickSequence(seconds);
+        keySequence("ctrl+a");
+        keyClick(Qt.Key_9); keyClick(Qt.Key_9);
+        keyClick(Qt.Key_Return);
+        compare(controller.commits, 3);
+        compare(controller.lastValues.introSeconds, 5);
+        controller.selectedMathClip = Object.assign({}, controller.selectedMathClip,
+            {writeState: "error", writeMessage: "Write の連番が memory の上限を超えます"});
+        verify(state.text.indexOf("エラー") >= 0 && state.text.indexOf("memory") >= 0);
+        // 書き出しには使えるが preview の memory に収まらない場合は、完了と理由を両方出す。
+        controller.selectedMathClip = Object.assign({}, controller.selectedMathClip,
+            {writeState: "ready", writeMessage: "", writePreview: "memory",
+             writePreviewMessage: "Write の preview は memory の上限に収まらないため"});
+        verify(state.text.indexOf("完了") >= 0 && state.text.indexOf("memory の上限") >= 0);
+        controller.selectedMathClip = Object.assign({}, controller.selectedMathClip,
+            {writePreview: "loading", writePreviewMessage: ""});
+        verify(state.text.indexOf("preview を準備中") >= 0);
+        // Write を外す。
+        panel.contentY = toggle.mapToItem(panel.contentItem, 0, 0).y;
+        wait(50);
+        mouseClick(toggle);
+        compare(controller.lastValues.intro, "none");
+    }
+    function test_write_disabled_while_draft_rejected() {
+        const panel = createTemporaryObject(panelComponent, test);
+        const editor = findChild(panel, "mathSourceEditor");
+        editor.forceActiveFocus(); editor.text = "";
+        controller.selectedMathClip = Object.assign({}, controller.selectedMathClip, {clipId: "math2", source: "y=4"});
+        verify(findChild(panel, "mathDraftRejection").visible);
+        verify(!findChild(panel, "mathWriteToggle").enabled);
+        keyClick(Qt.Key_Escape);
+        verify(findChild(panel, "mathWriteToggle").enabled);
     }
     function test_draft_survives_render_notification_and_cancel() {
         const panel = createTemporaryObject(panelComponent, test);
@@ -154,7 +222,10 @@ TestCase {
         controller.selectedMathClip = Object.assign({}, controller.selectedMathClip,
             {state: data.state, source: data.state === "ready" ? "ax^2 + bx + c = 0" : "x + ".repeat(100), message: "長い説明です。".repeat(40),
              log: "描画失敗\n".repeat(40), showingPrevious: true,
-             unavailableReason: data.state === "unavailable" ? "backend" : ""});
+             unavailableReason: data.state === "unavailable" ? "backend" : "",
+             intro: "write", introSeconds: 1.5, introMaxSeconds: 5,
+             writeState: data.state === "ready" ? "ready" : "error",
+             writeMessage: data.state === "ready" ? "" : "Write の長い説明です。".repeat(20)});
         const panel = createTemporaryObject(panelComponent, test, {width: data.w, height: data.h});
         verify(panel); wait(100);
         grabImage(panel).save("math-inspector-top-" + data.w + ".png");
@@ -169,6 +240,9 @@ TestCase {
         }
         const notes = findChild(panel, "mathInspectorNotes");
         verify(notes.width <= panel.width);
+        const seconds = findChild(panel, "mathWriteSeconds");
+        verify(seconds.visible && seconds.width <= panel.width);
+        verify(findChild(panel, "mathWriteState").width <= panel.width);
         panel.contentY = panel.contentHeight - panel.height;
         wait(50);
         const position = notes.mapToItem(panel, 0, notes.height);

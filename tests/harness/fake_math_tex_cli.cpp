@@ -12,12 +12,17 @@
 //     FAKE_NO_OUTPUT     PNG を書かずに 0 で終わる
 //     FAKE_TWO_OUTPUTS   PNG を 2 つ書く
 //     (印なし)           3x2 の白い glyph の PNG を書く
+//   scene が MvmMathWrite (Write の連番) なら、request.json の intro_frames 枚の PNG を
+//   <Scene>0000.png から書く (書く順は逆にして、名前の順で並べることを確かめる)。
+//     FAKE_WRITE_SHORT   1 枚少なく書く
 
 #include "math_test_png.h"
 #include "util/mvm_win_utf8.h"
 
 #include <windows.h>
 #include <cstdio>
+#include <cstdlib>
+#include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -49,7 +54,8 @@ void writePng(const std::filesystem::path& path) {
     writeFile(path, mvm::test::mathTestPngBytes());
 }
 
-int render(const std::filesystem::path& script, const std::filesystem::path& media) {
+int render(const std::filesystem::path& script, const std::filesystem::path& media,
+           const std::string& scene, bool lastFrameOnly) {
     const auto job = script.parent_path();
     const std::string request = readFile(job / L"request.json");
     if (request.empty())
@@ -77,6 +83,24 @@ int render(const std::filesystem::path& script, const std::filesystem::path& med
     if (request.find("FAKE_NO_OUTPUT") != std::string::npos)
         return 0;
     const auto images = media / L"images" / L"mvm_math_tex";
+    if (scene == "MvmMathWrite") {
+        const auto at = request.find("\"intro_frames\": ");
+        if (at == std::string::npos)
+            return 22;
+        int frames = std::atoi(request.c_str() + at + std::string("\"intro_frames\": ").size());
+        if (request.find("FAKE_WRITE_SHORT") != std::string::npos)
+            --frames;
+        // 実 Manim は -s では最後の 1 枚だけを書く。
+        if (lastFrameOnly)
+            frames = 1;
+        for (int index = frames - 1; index >= 0; --index) {
+            wchar_t name[64] = {};
+            std::swprintf(name, std::size(name), L"MvmMathWrite%04d.png", index);
+            writePng(images / name);
+        }
+        std::puts("fake Manim: wrote sequence");
+        return 0;
+    }
     writePng(images / L"MvmMathTex_ManimCE_fake.png");
     if (request.find("FAKE_TWO_OUTPUTS") != std::string::npos)
         writePng(images / L"MvmMathTex_second.png");
@@ -109,12 +133,15 @@ int main() {
         code = 0;
     } else if (argc >= 4 && std::string(argv[1]) == "render") {
         std::filesystem::path media;
+        bool lastFrameOnly = false;
         for (int index = 2; index + 1 < argc; ++index) {
             if (std::string(argv[index]) == "--media_dir")
                 media = fromUtf8(argv[index + 1]);
+            if (std::string(argv[index]) == "-s")
+                lastFrameOnly = true;
         }
         const auto script = fromUtf8(argv[argc - 2]);
-        code = media.empty() ? 2 : render(script, media);
+        code = media.empty() ? 2 : render(script, media, argv[argc - 1], lastFrameOnly);
     }
     mvm_win_free_utf8_args(argv, argc);
     return code;

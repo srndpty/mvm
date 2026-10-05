@@ -3,12 +3,14 @@
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <mutex>
 
 namespace mvm::gpu {
+namespace {
 
-bool makeStillImageFrame(SharedD3D11Device& device, int width, int height,
-                         const unsigned char* rgba, std::size_t byteCount, SourceId sourceId,
-                         DecodedGpuFrame& out, std::string& err) {
+bool makeFrame(SharedD3D11Device& device, int width, int height, const unsigned char* rgba,
+               std::size_t byteCount, SourceId sourceId, D3D11_USAGE usage, DecodedGpuFrame& out,
+               std::string& err) {
     out = {};
     if (!device.valid() || width <= 0 || height <= 0 || !rgba ||
         static_cast<unsigned long long>(width) * 4ULL > std::numeric_limits<unsigned int>::max() ||
@@ -22,7 +24,7 @@ bool makeStillImageFrame(SharedD3D11Device& device, int width, int height,
     td.MipLevels = td.ArraySize = 1;
     td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_IMMUTABLE;
+    td.Usage = usage;
     td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     const D3D11_SUBRESOURCE_DATA init{rgba, static_cast<UINT>(width) * 4U, 0};
     ID3D11Texture2D* texture = nullptr;
@@ -46,6 +48,39 @@ bool makeStillImageFrame(SharedD3D11Device& device, int width, int height,
     out.sourceId = sourceId;
     out.lifetime = std::shared_ptr<void>(
         texture, [](void* p) { static_cast<ID3D11Texture2D*>(p)->Release(); });
+    return true;
+}
+
+} // namespace
+
+bool makeStillImageFrame(SharedD3D11Device& device, int width, int height,
+                         const unsigned char* rgba, std::size_t byteCount, SourceId sourceId,
+                         DecodedGpuFrame& out, std::string& err) {
+    return makeFrame(device, width, height, rgba, byteCount, sourceId, D3D11_USAGE_IMMUTABLE, out,
+                     err);
+}
+
+bool makeUpdatableStillImageFrame(SharedD3D11Device& device, int width, int height,
+                                  const unsigned char* rgba, std::size_t byteCount,
+                                  SourceId sourceId, DecodedGpuFrame& out, std::string& err) {
+    return makeFrame(device, width, height, rgba, byteCount, sourceId, D3D11_USAGE_DEFAULT, out,
+                     err);
+}
+
+bool updateStillImageRegion(SharedD3D11Device& device, const DecodedGpuFrame& frame, int x, int y,
+                            int width, int height, const unsigned char* rgba, std::size_t byteCount,
+                            std::string& err) {
+    if (!device.valid() || !frame.texture || !rgba || x < 0 || y < 0 || width <= 0 || height <= 0 ||
+        x > frame.width - width || y > frame.height - height ||
+        byteCount != static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U) {
+        err = "静止画 layer の書き換え範囲または画素数が不正です";
+        return false;
+    }
+    const D3D11_BOX box{static_cast<UINT>(x),         static_cast<UINT>(y),          0,
+                        static_cast<UINT>(x + width), static_cast<UINT>(y + height), 1};
+    std::lock_guard<D3D11Lock> guard(device.lock());
+    device.context()->UpdateSubresource(frame.texture, 0, &box, rgba, static_cast<UINT>(width) * 4U,
+                                        0);
     return true;
 }
 

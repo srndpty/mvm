@@ -763,6 +763,68 @@ void compositionStillLayers() {
             "対照: fade 付きの video layer を受理しません");
 }
 
+// 一部の画素を frame ごとに変える静止画 layer (数式の Write)。矩形は静止画の内側に限る。
+class RectAnimation final : public PreviewStillAnimation {
+public:
+    explicit RectAnimation(PreviewPixelRect rect) : rect_(rect) {}
+
+    PreviewPixelRect patchRect() const override { return rect_; }
+
+    std::int64_t stateAt(std::int64_t outputFrame) const override { return outputFrame; }
+
+    void fillPatch(std::int64_t, std::uint8_t*) const override {}
+
+private:
+    PreviewPixelRect rect_;
+};
+
+void compositionStillAnimation() {
+    const auto sources = twoSources();
+    PreviewCapabilities capabilities;
+    capabilities.configuredMaxActiveVideoSources = 2;
+    capabilities.configuredMaxCompositionLayers = 3;
+    const auto image = stillImage(4, 2);
+    auto animated = [&](PreviewPixelRect rect) {
+        auto value = stillLayer(image);
+        value.stillAnimation = std::make_shared<RectAnimation>(rect);
+        return value;
+    };
+
+    CompositionAcceptanceState state;
+    const auto inside = animated({1, 0, 3, 2});
+    const auto accepted = state.submit(snapshot({layer(1), inside}), sources, capabilities);
+    require(accepted && accepted.value() == AcceptedComposition{{1}, 1},
+            "静止画の内側の矩形を書き換える layer を受理しません");
+    const auto resent = state.submit(snapshot({layer(1), inside}), sources, capabilities);
+    require(resent && resent.value() == accepted.value(),
+            "同じ animation instance の再送で token が変わりました");
+    const auto other =
+        state.submit(snapshot({layer(1), animated({1, 0, 3, 2})}), sources, capabilities);
+    require(other && other.value() == AcceptedComposition{{2}, 2},
+            "別の animation instance を同一 composition と見なしました");
+    const auto plain = state.submit(snapshot({layer(1), stillLayer(image)}), sources, capabilities);
+    require(plain && plain.value() == AcceptedComposition{{3}, 3},
+            "animation の有無を構造比較していません");
+
+    for (const auto& [rect, what] :
+         std::vector<std::pair<PreviewPixelRect, std::string>>{{{2, 0, 3, 2}, "右へはみ出す矩形"},
+                                                               {{0, 1, 4, 2}, "下へはみ出す矩形"},
+                                                               {{-1, 0, 2, 2}, "負の位置の矩形"},
+                                                               {{0, 0, 0, 2}, "幅 0 の矩形"}}) {
+        CompositionAcceptanceState rejected;
+        const std::string message = what + "で静止画を書き換える layer を受理しました";
+        requireFailure(rejected.submit(snapshot({animated(rect)}), sources, capabilities),
+                       PreviewErrorCategory::CompositionFailure, message.c_str());
+    }
+    PreviewCompositionLayer withoutImage;
+    withoutImage.source = {1};
+    withoutImage.stillAnimation = std::make_shared<RectAnimation>(PreviewPixelRect{0, 0, 1, 1});
+    CompositionAcceptanceState noImage;
+    requireFailure(noImage.submit(snapshot({withoutImage}), sources, capabilities),
+                   PreviewErrorCategory::CompositionFailure,
+                   "静止画の無い layer の animation を受理しました");
+}
+
 void compositionIdentityAndCapabilities() {
     const auto sources = twoSources();
     PreviewCapabilities capabilities;
@@ -1491,6 +1553,7 @@ int main(int argc, char** argv) {
         {"composition domain", compositionDomains},
         {"composition identity", compositionIdentityAndCapabilities},
         {"composition still layers", compositionStillLayers},
+        {"composition still animation", compositionStillAnimation},
         {"composition structural equality literals", compositionStructuralEqualityLiterals},
         {"engine façade / events", engineFacadeAndEvents},
         {"event ownership / fatal", eventOwnershipAndFatalPath},
