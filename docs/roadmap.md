@@ -30,8 +30,8 @@
   `docs/math-clips.md` の「式から式への変形 (P2)」にある。残りは次の段階で行う。
   - (済: P2-2) mvm の分け方と n 番目の出現の照合、変形の key・端点の配置・色の補間の中立な契約
   - 変形の artifact (`mvm-math-sequence/1` とは別の名前空間) と cache
-  - Manim の backend (`MathTex(*segments)` と明示の変形・fade、部分の数の検査)
-  - 実測の bbox による canvas と、半画素の補正
+  - (済: P2-3) Manim の backend (`MathTex(*segments)` と明示の変形・fade、部分の構造の検査、
+    実測の bbox による artifact の矩形、半画素の補正、端点の照合)
   - preview・書き出し・UI
   - P2-1 では、出力する変形のある書き出しを拒否し、preview は cut で切り替える
 - P2 の後: 手動の照合・部分式の ID・強調、背景の矩形の補間、区間の中で ClipEffects が

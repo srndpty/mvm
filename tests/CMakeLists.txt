@@ -808,6 +808,8 @@ add_executable(mvm_fake_math_tex_cli harness/fake_math_tex_cli.cpp)
 target_link_libraries(mvm_fake_math_tex_cli PRIVATE mvm::util mvm::warnings)
 add_executable(mvm_test_manim_math_tex core/test_manim_math_tex.cpp)
 target_link_libraries(mvm_test_manim_math_tex PRIVATE mvm::manim mvm::util mvm::warnings)
+# 偽の Manim と共有する変形の取り決め (harness/math_test_transform.h)。
+target_include_directories(mvm_test_manim_math_tex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
 add_dependencies(mvm_test_manim_math_tex mvm_fake_math_tex_cli)
 mvm_add_test(manim_math_tex_focused
     COMMAND mvm_test_manim_math_tex "$<TARGET_FILE:mvm_fake_math_tex_cli>"
@@ -822,6 +824,10 @@ target_link_libraries(mvm_math_manim_smoke PRIVATE
     mvm::timeline_preview_mapping mvm::mlt Qt6::Gui mvm::warnings)
 target_compile_definitions(mvm_math_manim_smoke PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_MATH_FFMPEG="${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
+# 式から式への変形の backend の実 Manim の smoke (P2-3)。同じ理由で CTest に登録しない。
+add_executable(mvm_math_transform_smoke harness/mvm_math_transform_smoke.cpp)
+target_link_libraries(mvm_math_transform_smoke PRIVATE
+    mvm::manim mvm::math_clip_render mvm::util mvm::warnings)
 # directory の拒否は実 Manim を使わないので通常試験へ入れる。
 mvm_add_test(math_smoke_existing_workspace_rejected
     COMMAND ${MVM_PWSH} -NoProfile -File

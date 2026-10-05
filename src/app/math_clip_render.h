@@ -45,6 +45,11 @@ std::optional<std::int64_t> mathIntroFrameAt(const project::TimelineClip& clip,
                                              std::int64_t timelineFpsDen,
                                              std::int64_t clipLocalFrame);
 
+// backend の PNG を被覆率 (alpha) として読む (math::MathCoverageLoader の実装)。
+// 静止の mask・変形の frame の decode は mvm の静止画 decoder だけを通す。
+bool loadMathCoverage(const std::filesystem::path& png, math::MathCoverage& coverage,
+                      std::string& error);
+
 // mask (backend の PNG を decode したもの) に数式 clip の色・背景を付け、出力 raster の
 // 中央へ置く。色の形式が不正、または mask が出力より大きければ失敗する。
 math::MathComposeResult composeMathClipRaster(const media::StillImage& mask,

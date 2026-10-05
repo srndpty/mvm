@@ -34,6 +34,28 @@ mathTransformSpecFor(const project::TimelineTransition& transition,
                                    transition.framesBeforeCut + transition.framesAfterCut};
 }
 
+bool loadMathCoverage(const std::filesystem::path& png, math::MathCoverage& coverage,
+                      std::string& error) {
+    const auto decoded = media::loadStaticImage(png);
+    if (!decoded.success) {
+        error = decoded.error;
+        return false;
+    }
+    const auto& image = decoded.image;
+    math::MathCoverage result;
+    result.width = image.width;
+    result.height = image.height;
+    result.alpha.resize(image.rgba.size() / 4);
+    for (std::size_t at = 0; at < result.alpha.size(); ++at)
+        result.alpha[at] = image.rgba[at * 4 + 3];
+    if (!math::mathCoverageValid(result)) {
+        error = "数式の画像の大きさが不正です";
+        return false;
+    }
+    coverage = std::move(result);
+    return true;
+}
+
 bool mathComposeStyleFor(const project::MathClipData& data, math::MathComposeStyle& style) {
     return project::parseArgbColor(data.color, style.colorArgb) &&
            project::parseArgbColor(data.backgroundColor, style.backgroundArgb);

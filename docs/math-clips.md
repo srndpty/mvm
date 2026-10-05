@@ -558,6 +558,8 @@ e` を関係子に足した。
   - 整数の位置は静止の `mathRasterPlacement` と同じ (中央、余りは左上寄せ)。
   - 補正 shift は `left + W/2 − W_C/2` で、0 または −0.5 px になる。
     backend は式を canvas の中心に置き、shift だけ動かして描く。
+  - shiftX・shiftY は raster の座標 (+X は右、+Y は下)。Manim は +Y が上なので、
+    backend は縦に −shiftY だけ動かす。
   - spike の位置 `ceil(W_C/2) − ceil(W/2)` とは、canvas の幅が奇数のときに 1 px 違う。
     補正をその位置から計算するので、どちらでも端点は静止と画素で一致する。
   - canvas の大きさ (全 frame の alpha の実測) はまだ決めない。
@@ -570,6 +572,53 @@ e` を関係子に足した。
     色・ClipEffects・ID・fps・timeline の位置で key が変わらないこと、
     対照として式・文字サイズ・frame 数で変わること。
   - [事実] 実装に 13 種の変異を 1 つずつ入れると、`math_transform_contract` はすべてで失敗した (1〜22 件)。
+
+### Manim の変形の backend (P2-3)
+
+cache・controller・preview・書き出し・UI はまだつないでいない (P2-4 以降)。
+`MathRenderBackend` と preflight も変えていない。
+
+- `renderManimMathTransform` (`src/media/manim/manim_math_tex.h`、script の識別 `manim-transform/1`)
+  - 両端を `segmentMathTex` で分け、`matchMathTexSegments` で対応を決める (`planManimMathTransform`)。
+  - Manim では `MathTex(*segments)` で両端を作る。
+    対応は `ReplacementTransform`、消える部分は `FadeOut`、現れる部分は `FadeIn` で組む。
+    `TransformMatchingTex` は使わない。
+  - script は部分の型・文字列・glyph の数と、Manim の代用の log (`Could not find SVG group`) を
+    `structure.txt` に事実として書く。合否は mvm が決める (`checkManimTransformStructure`)。
+    - 部分の数・型 (`MathTexPart`)・文字列のどれかが違う、または代用の log があれば失敗にする。
+    - 代用された group で script が後から落ちた場合も、構造の誤りとして知らせる。
+  - frames 枚に、終状態の照合の 1 枚を足して描く。PNG がちょうど frames + 1 枚でなければ失敗にする。
+  - canvas は端点の大きい方の静止の矩形に、各辺 200 px を足した大きさ。
+    - 端点は P2-2 の配置に置く。Manim へ渡す縦の shift は −shiftY (+Y が上)。
+- 全 frame の alpha を、呼び出し側が渡す loader (`MathCoverageLoader`) で読んで検査する。
+  - `src/media/manim` は decoder に依存しない。製品の loader は app 層の `loadMathCoverage` (静止画 decoder)。
+  - 一時的な canvas の縁 (最外周の 1 画素) に alpha が触れたら失敗にする。
+  - frame 0 は source、照合の 1 枚は target の静止 (呼び出し側が渡す正の mask) と、全画素で一致しなければ失敗にする。
+    mask の外の alpha も 0 と比べる。
+  - artifact の矩形は、全 frame の alpha の外接矩形と、両端の静止の矩形の和 (canvas の座標)。
+- 結果 (`MathTransformRenderResult`)
+  - frames 枚の PNG (canvas の大きさ、白の glyph で alpha が被覆率、色は含まない)
+  - canvas の大きさ・artifact の矩形・端点の配置
+  - 切り出しと保存は P2-4 で行う。
+- 中立な検査の関数 (`math_transform.h`): `mathCoverageBounds`・`mathRectUnion`・`mathRectTouchesEdge`・`mathEndpointDifference`。
+- 試験
+  - `manim_math_tex_focused` (偽の Manim): request.json の golden (重複項・縦の符号・escape)、構造の照合、
+    代用・部分の数と文字列の拒否、取消・timeout、読めない frame、枚数の過不足、
+    canvas の縁、端点の不一致、前の実行の `structure.txt` を読まないこと。
+  - `math_transform_contract`: 中立な検査の関数。
+  - [事実] 16 種の変異を 1 つずつ入れると、すべてで上の試験のどちらかが失敗した。
+- [事実] 実 Manim の smoke (`mvm_math_transform_smoke`、CTest に登録しない) は 71 / 71 検査、終了コード 0
+  (`build/math-p23-real-20261005-233515.log`)。環境は P2-0 と同じ。
+  - 対象: E1→E2・E2→E3・重複項・文字サイズ違い (96→64)・`\frac`・`\left … \right`・小さい式 3 件。
+  - 全ケースで、frame 0 と終状態は静止と全画素で一致した。frame 0 を縦に 1 画素ずらすと一致しない。
+  - 半画素の補正は横 4・縦 5 の端点で使われた (`small-y` は両方)。
+  - artifact は全ケースで両端の静止の矩形の和に等しかった (途中の frame は外に出なかった)。
+  - 変形 1 件の所要時間: N = 30 で 2.6〜3.3 秒、N = 12 で 2.2 秒 (端点の静止の描画は別)。
+  - `{{a}} + b = c` は、Manim が `{{ }}` で部分を分け直すので、部分の文字列の違いとして拒否した。
+- [事実] 縦の符号の換算を外す変異 (shiftY をそのまま渡す) を実 Manim で走らせると、
+  縦の補正が 0 でない 5 ケースだけが、端点の不一致 (266〜8546 画素) で失敗した
+  (`build/math-p23-real-ysign-mutant-*.log`)。
+- [未検証] 実際に Manim が代用 (`Could not find SVG group`) する式。検査は偽の Manim と構造の照合で確かめた。
 
 ### P2-1 の gate (2026-10-05)
 

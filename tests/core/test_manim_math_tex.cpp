@@ -1,12 +1,14 @@
 // 数式 backend "manim-mathtex" (preflight と render) を偽の Manim / latex / dvisvgm で検査する。
 // 実 Manim と LaTeX は使わない (それは math_manim_real_smoke の役目)。
 
+#include "math_test_transform.h"
 #include "media/manim/manim_math_tex.h"
 #include "util/mvm_win_utf8.h"
 
 #include <windows.h>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cwchar>
@@ -309,6 +311,300 @@ void testBackendRender(const std::filesystem::path& fake, const std::filesystem:
           "preflight が束ねた連番の関数で描ける (-s を付けない)");
 }
 
+// --- 式から式への変形 (P2-3) -------------------------------------------------
+
+const std::string kD1 = "x + x = 2x";
+const std::string kD2 = "x + x + x = 3x";
+
+math::MathTransformSpec transformSpec(const std::string& source, const std::string& target,
+                                      std::int64_t frames, int sourceEm = 17, int targetEm = 85) {
+    return {{"latex", source, sourceEm}, {"latex", target, targetEm}, frames};
+}
+
+void testTransformRequestJson() {
+    // 端点 5x3 → 4x2。canvas は大きい方 + 各辺 200 で 405x403。
+    // source: left (405-5)/2 = 200、shift (400+5-405)/2 = 0。top (403-3)/2 = 200、shift 0。
+    // target: left floor(401/2) = 200、shift (400+4-405)/2 = -0.5。top floor(401/2) = 200、
+    //   shift (400+2-403)/2 = -0.5 (raster で上へ半画素) → Manim の +Y (上) へ +0.5。
+    const auto spec = transformSpec(kD1, kD2, 30);
+    manim::ManimTransformPlan plan;
+    std::string error;
+    check(manim::planManimMathTransform(spec, 5, 3, 4, 2, plan, error), "計画を作れる: " + error);
+    check(plan.canvasWidth == 405 && plan.canvasHeight == 403, "canvas は端点の最大 + 各辺 200");
+    check(plan.placement.source == math::MathEndpointPlacement{200, 200, 0.0, 0.0} &&
+              plan.placement.target == math::MathEndpointPlacement{200, 200, -0.5, -0.5},
+          "端点の配置は P2-2 の契約 (raster の座標)");
+    const std::string expected =
+        "{\"frames\": 30, \"canvas_px\": [405, 403], "
+        "\"source\": {\"segments\": [\"x\", \" + \", \"x\", \" = \", \"2x\"], "
+        "\"manim_font_size\": 12, \"static_px\": [5, 3], \"placement_px\": [200, 200], "
+        "\"manim_shift_px\": [0, 0]}, "
+        "\"target\": {\"segments\": [\"x\", \" + \", \"x\", \" + \", \"x\", \" = \", \"3x\"], "
+        "\"manim_font_size\": 60, \"static_px\": [4, 2], \"placement_px\": [200, 200], "
+        "\"manim_shift_px\": [-0.5, 0.5]}, "
+        "\"pairs\": [[0, 0], [1, 1], [2, 2], [3, 5]], \"unmatched_source\": [4], "
+        "\"unmatched_target\": [3, 4, 6]}";
+    const std::string json = manim::manimMathTransformRequestJson(spec, plan);
+    check(json == expected, "重複項の request.json (n 番目の出現の対応・余り・縦の符号): " + json);
+    for (int i = 0; i < 3; ++i) {
+        manim::ManimTransformPlan again;
+        check(manim::planManimMathTransform(spec, 5, 3, 4, 2, again, error) &&
+                  manim::manimMathTransformRequestJson(spec, again) == expected,
+              "request.json は決定的");
+    }
+
+    check(manim::manimShiftUpFor(-0.5) == 0.5 && manim::manimShiftUpFor(0.5) == -0.5,
+          "raster の下向き (+Y) は Manim の下向き (-Y)");
+    check(manim::manimShiftUpFor(0.0) == 0.0 && !std::signbit(manim::manimShiftUpFor(0.0)),
+          "補正なしは +0 (JSON に -0 を書かない)");
+    // 逆に source が奇数側: source 4x2・target 5x3 → source の shift は (-0.5, -0.5)。
+    manim::ManimTransformPlan swapped;
+    check(manim::planManimMathTransform(spec, 4, 2, 5, 3, swapped, error) &&
+              manim::manimMathTransformRequestJson(spec, swapped)
+                      .find("\"static_px\": [4, 2], \"placement_px\": [200, 200], "
+                            "\"manim_shift_px\": [-0.5, 0.5]}, \"target\"") != std::string::npos,
+          "source 側の半画素の補正も縦の符号を反転して渡す");
+
+    // E1 → E2: \frac・\left \right を含む部分を escape して渡し、対応は mvm の照合のまま。
+    const auto e12 = transformSpec("x^2 + \\frac{b}{a}x = -\\frac{c}{a}",
+                                   "x^2 + \\frac{b}{a}x + \\left(\\frac{b}{2a}\\right)^2 = "
+                                   "-\\frac{c}{a} + \\left(\\frac{b}{2a}\\right)^2",
+                                   30, 96, 96);
+    manim::ManimTransformPlan e12Plan;
+    check(manim::planManimMathTransform(e12, 100, 40, 200, 60, e12Plan, error), "E1→E2 の計画");
+    const std::string e12Json = manim::manimMathTransformRequestJson(e12, e12Plan);
+    check(e12Json.find("\"segments\": [\"x^2\", \" + \", \"\\\\frac{b}{a}x\", \" = \", "
+                       "\"-\\\\frac{c}{a}\"]") != std::string::npos &&
+              e12Json.find("\"\\\\left(\\\\frac{b}{2a}\\\\right)^2\"") != std::string::npos,
+          "部分の文字列は JSON の escape で渡す: " + e12Json);
+    check(e12Json.find("\"pairs\": [[0, 0], [1, 1], [2, 2], [3, 5], [4, 6]], "
+                       "\"unmatched_source\": [], \"unmatched_target\": [3, 4, 7, 8]}") !=
+              std::string::npos,
+          "E1→E2 の対応と余り");
+
+    manim::ManimTransformPlan rejected;
+    check(!manim::planManimMathTransform(transformSpec(kD1, kD2, 0), 5, 3, 4, 2, rejected, error),
+          "0 枚の変形は計画しない");
+    check(!manim::planManimMathTransform(
+              transformSpec(kD1, kD2, manim::kMaximumMathTransformFrames + 1), 5, 3, 4, 2, rejected,
+              error),
+          "照合の 1 枚を足して 4 桁に収まらない枚数は計画しない");
+    check(manim::planManimMathTransform(transformSpec(kD1, kD2, 9998), 5, 3, 4, 2, rejected, error),
+          "9998 枚 (照合の 1 枚を足して 9999) は計画する");
+    auto typst = transformSpec(kD1, kD2, 30);
+    typst.target.syntax = "typst";
+    check(!manim::planManimMathTransform(typst, 5, 3, 4, 2, rejected, error),
+          "latex 以外の記法は計画しない");
+    check(!manim::planManimMathTransform(transformSpec("", kD2, 30), 5, 3, 4, 2, rejected, error),
+          "空の式は計画しない");
+    check(!manim::planManimMathTransform(transformSpec(kD1, kD2, 30), 5, 0, 4, 2, rejected, error),
+          "大きさ 0 の端点は計画しない");
+}
+
+void testTransformStructure() {
+    const auto source = math::segmentMathTex("a + b"); // a | " + " | b
+    const auto target = math::segmentMathTex("b");
+    // 'a' = 61、' ' = 20、'+' = 2b、'b' = 62、'c' = 63 (手で書いた 16 進)。
+    const std::string ok = "part source MathTexPart x61 1\r\n"
+                           "part source MathTexPart x202b20 1\n"
+                           "part source MathTexPart x62 1\n"
+                           "part target MathTexPart x62 1\n";
+    check(manim::checkManimTransformStructure(ok, source, target).empty(),
+          "部分の数・型・文字列が一致すれば受け付ける (CRLF も可)");
+    const auto rejects = [&](const std::string& report, const std::string& fragment,
+                             const std::string& what) {
+        const auto error = manim::checkManimTransformStructure(report, source, target);
+        check(error.find(fragment) != std::string::npos, what + ": " + error);
+    };
+    rejects("fallback x" + std::string("436f756c64") + "\n" + ok, "式全体で代用",
+            "Manim の代用の log があれば、部分が揃っていても拒否する");
+    rejects("part source MathTexPart x61 1\npart source MathTexPart x202b20 1\n"
+            "part target MathTexPart x62 1\n",
+            "部分の数", "部分が足りなければ拒否する");
+    rejects(ok + "part target MathTexPart x62 1\n", "部分の数", "部分が多ければ拒否する");
+    rejects("part source VGroup none 9\npart source MathTexPart x202b20 1\n"
+            "part source MathTexPart x62 1\npart target MathTexPart x62 1\n",
+            "部分として作りませんでした", "式全体の group (tex_string なし) を拒否する");
+    rejects("part source MathTexPart x63 1\npart source MathTexPart x202b20 1\n"
+            "part source MathTexPart x62 1\npart target MathTexPart x62 1\n",
+            "文字列が分けた部分と違います", "部分の文字列が違えば拒否する");
+    rejects("part source MathTexPart xzz 1\n", "読めません", "16 進でない文字列を拒否する");
+    rejects("garbage\n", "読めません", "知らない行を拒否する");
+    rejects("", "報告しませんでした", "空の報告を拒否する");
+}
+
+std::uint64_t coverageLoads = 0;
+
+bool loadFakeCoverage(const std::filesystem::path& file, math::MathCoverage& coverage,
+                      std::string& error) {
+    ++coverageLoads;
+    if (!mvm::test::parseMathTestCoverage(readFile(file), coverage.width, coverage.height,
+                                          coverage.alpha)) {
+        error = "偽の被覆率の画像ではありません";
+        return false;
+    }
+    return true;
+}
+
+math::MathCoverage endpointStatic(bool target, int width, int height) {
+    math::MathCoverage coverage{width, height, {}};
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+            coverage.alpha.push_back(mvm::test::mathTestEndpointAlpha(target, x, y));
+    return coverage;
+}
+
+math::MathTransformRenderResult
+renderTransform(const std::filesystem::path& manimExe, const std::filesystem::path& job,
+                const std::string& source, const std::string& target, std::int64_t frames = 6,
+                std::chrono::milliseconds timeout = std::chrono::seconds(20),
+                const std::atomic<bool>* cancel = nullptr) {
+    math::MathTransformRenderRequest request;
+    request.spec = transformSpec(source, target, frames, 96, 64);
+    request.sourceStatic = endpointStatic(false, 30, 20);
+    request.targetStatic = endpointStatic(true, 25, 15);
+    request.jobDirectory = job;
+    request.timeout = timeout;
+    return manim::renderManimMathTransform(manimExe, request, loadFakeCoverage, cancel);
+}
+
+void testRenderTransform(const std::filesystem::path& fake, const std::filesystem::path& root) {
+    const auto manimExe = install(fake, root / L"manim bin", L"manim.exe");
+    const auto jobs = root / L"transform jobs 日本語";
+
+    // 端点 30x20 → 25x15。canvas 430x420。
+    // source: (200, 200)、shift 0。target: left floor(405/2) = 202、shift (404+25-430)/2 = -0.5、
+    //   top floor(405/2) = 202、shift (404+15-420)/2 = -0.5。
+    // artifact は source の矩形 (200,200,30,20) と target の矩形 (202,202,25,15) の和。
+    coverageLoads = 0;
+    const auto ok = renderTransform(manimExe, jobs / L"ok", "a + b", "b + a");
+    check(ok.status == math::MathRenderStatus::Ok, "変形の連番は Ok: " + ok.message);
+    check(ok.frames.size() == 6, "frames 枚を返す (照合の 1 枚は含めない)");
+    bool ordered = ok.frames.size() == 6;
+    for (std::size_t index = 0; ordered && index < ok.frames.size(); ++index) {
+        wchar_t name[64] = {};
+        std::swprintf(name, std::size(name), L"MvmMathTransform%04zu.png", index);
+        ordered = ok.frames[index].filename() == name;
+    }
+    check(ordered, "frame は名前の順 (偽の Manim は逆順に書く)");
+    check(coverageLoads == 7,
+          "照合の 1 枚を含む全 7 枚の alpha を読む: " + std::to_string(coverageLoads));
+    check(ok.canvasWidth == 430 && ok.canvasHeight == 420, "canvas は端点の最大 + 各辺 200");
+    check(ok.placement.source == math::MathEndpointPlacement{200, 200, 0.0, 0.0} &&
+              ok.placement.target == math::MathEndpointPlacement{202, 202, -0.5, -0.5},
+          "端点の配置を返す");
+    check(ok.artifact == math::MathRect{200, 200, 30, 20},
+          "artifact は全 frame の外接矩形と両端の矩形の和");
+    manim::ManimTransformPlan plan;
+    std::string planError;
+    manim::planManimMathTransform(transformSpec("a + b", "b + a", 6, 96, 64), 30, 20, 25, 15, plan,
+                                  planError);
+    check(
+        readFile(jobs / L"ok" / L"request.json") ==
+            manim::manimMathTransformRequestJson(transformSpec("a + b", "b + a", 6, 96, 64), plan),
+        "計画の request.json を渡す");
+    const std::string script = readFile(jobs / L"ok" / L"mvm_math_tex.py");
+    check(script.find("class MvmMathTransform") != std::string::npos &&
+              script.find("a + b") == std::string::npos,
+          "変形の scene を書き、式を Python の source へ埋め込まない");
+    check(script.find("TransformMatchingTex") == std::string::npos &&
+              script.find("ReplacementTransform(SOURCE[i], TARGET[j]") != std::string::npos &&
+              script.find("FadeOut(SOURCE[i]") != std::string::npos &&
+              script.find("FadeIn(TARGET[j]") != std::string::npos,
+          "対応は mvm の pairs・余りで組み、TransformMatchingTex を使わない");
+    check(script.find("MathTex(*part[\"segments\"]") != std::string::npos &&
+              script.find("UP * (shift_up / PX_PER_UNIT)") != std::string::npos,
+          "MathTex(*segments) で作り、縦は Manim の上向きの shift で動かす");
+
+    const auto spread = renderTransform(manimExe, jobs / L"spread", "FAKE_SPREAD + b", "b");
+    // (10,12) から source の右下 (230,220) まで。
+    check(spread.status == math::MathRenderStatus::Ok &&
+              spread.artifact == math::MathRect{10, 12, 220, 208},
+          "端点の外に出た途中の frame の alpha も artifact に含める");
+
+    const auto fails = [&](const wchar_t* job, const std::string& source,
+                           const std::string& fragment, const std::string& what) {
+        const auto result = renderTransform(manimExe, jobs / job, source, "b");
+        check(result.status == math::MathRenderStatus::Failed && result.frames.empty() &&
+                  result.message.find(fragment) != std::string::npos,
+              what + ": " + result.message);
+    };
+    fails(L"fallback", "FAKE_FALLBACK", "式全体で代用",
+          "Manim の代用は、script がその後で失敗しても代用として拒否する");
+    fails(L"part count", "FAKE_PART_COUNT + a", "部分の数", "部分の数が違えば拒否する");
+    fails(L"part text", "FAKE_PART_TEXT + a", "文字列が分けた部分と違います",
+          "部分の文字列が違えば拒否する");
+    fails(L"no structure", "FAKE_NO_STRUCTURE", "報告しませんでした",
+          "構造の報告が無ければ拒否する");
+    fails(L"info size", "FAKE_INFO_SIZE", "canvas の大きさが要求と違います",
+          "canvas の大きさが違えば拒否する");
+    fails(L"missing", "FAKE_MISSING_FRAME", "7 枚ではありません (件数=6)",
+          "1 枚足りなければ拒否する");
+    fails(L"extra", "FAKE_EXTRA_FRAME", "7 枚ではありません (件数=8)", "1 枚多ければ拒否する");
+    fails(L"malformed", "FAKE_MALFORMED_FRAME", "変形の frame 1 を読めません",
+          "読めない frame を拒否する");
+    fails(L"frame size", "FAKE_FRAME_SIZE", "変形の frame 1 の大きさが canvas と違います",
+          "大きさの違う frame を拒否する");
+    fails(L"edge", "FAKE_EDGE", "縁に触れました", "canvas の縁に触れた frame を拒否する");
+    fails(L"first", "FAKE_FIRST_MISMATCH",
+          "最初の frame が変形前の式の静止の描画と一致しません (違う画素 1)",
+          "frame 0 が source の静止と 1 画素違えば拒否する");
+    fails(L"last", "FAKE_LAST_MISMATCH", "終状態が変形後の式の静止の描画と一致しません",
+          "終状態が target の静止とずれていれば拒否する");
+
+    // 前の実行の structure.txt を読まない。
+    const auto stale = jobs / L"stale";
+    std::filesystem::create_directories(stale);
+    {
+        std::ofstream(stale / L"structure.txt") << "part source MathTexPart x7a 1\n";
+    }
+    const auto staleRun = renderTransform(manimExe, stale, "FAKE_NO_STRUCTURE", "b");
+    check(staleRun.status == math::MathRenderStatus::Failed &&
+              staleRun.message.find("報告しませんでした") != std::string::npos,
+          "前の実行の structure.txt を報告として読まない: " + staleRun.message);
+
+    const auto latex = renderTransform(manimExe, jobs / L"latex", "\\fracc FAKE_LATEX_ERROR", "b");
+    check(latex.status == math::MathRenderStatus::InvalidSource &&
+              latex.message == "Undefined control sequence.",
+          "変形でも TeX の error は InvalidSource で、message は ! 行");
+
+    std::atomic<bool> cancel{false};
+    std::thread canceller([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        cancel = true;
+    });
+    const auto cancelled = renderTransform(manimExe, jobs / L"cancel", "FAKE_HANG", "b", 6,
+                                           std::chrono::seconds(30), &cancel);
+    canceller.join();
+    check(cancelled.status == math::MathRenderStatus::Cancelled && cancelled.frames.empty(),
+          "変形の取消は Cancelled");
+    const auto timedOut = renderTransform(manimExe, jobs / L"hang", "FAKE_HANG", "b", 6,
+                                          std::chrono::milliseconds(400));
+    check(timedOut.status == math::MathRenderStatus::TimedOut, "終わらない変形は TimedOut");
+
+    // Manim を起動しない不正な要求。
+    const auto notRun = [&](const math::MathTransformRenderRequest& request,
+                            const math::MathCoverageLoader& loader, const std::string& what) {
+        const auto result = manim::renderManimMathTransform(manimExe, request, loader, nullptr);
+        check(result.status == math::MathRenderStatus::Failed &&
+                  !std::filesystem::exists(request.jobDirectory / L"request.json"),
+              what + " は Manim を起動せずに Failed: " + result.message);
+    };
+    math::MathTransformRenderRequest invalid;
+    invalid.spec = transformSpec("a", "b", 0, 96, 64);
+    invalid.sourceStatic = endpointStatic(false, 30, 20);
+    invalid.targetStatic = endpointStatic(true, 25, 15);
+    invalid.jobDirectory = jobs / L"invalid frames";
+    notRun(invalid, loadFakeCoverage, "0 枚の要求");
+    invalid.spec.frames = 6;
+    invalid.jobDirectory = jobs / L"invalid static";
+    invalid.targetStatic.alpha.pop_back();
+    notRun(invalid, loadFakeCoverage, "byte 数の合わない静止の mask");
+    invalid.targetStatic = endpointStatic(true, 25, 15);
+    invalid.jobDirectory = jobs / L"no loader";
+    notRun(invalid, {}, "loader の無い要求");
+}
+
 } // namespace
 
 int main() {
@@ -343,6 +639,9 @@ int main() {
     testRender(fake, root);
     testRenderWrite(fake, root);
     testBackendRender(fake, root);
+    testTransformRequestJson();
+    testTransformStructure();
+    testRenderTransform(fake, root);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     mvm_win_free_utf8_args(argv, argc);

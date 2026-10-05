@@ -452,6 +452,51 @@ void testColorInterpolation() {
     check(untouched == 0x01020304u, "失敗では出力を変えない");
 }
 
+void testCoverageInspection() {
+    using mvm::math::MathCoverage;
+    using mvm::math::MathRect;
+    // 6x4、alpha は (2,1) と (4,2) だけ。
+    MathCoverage frame{6, 4, std::vector<std::uint8_t>(24, 0)};
+    frame.alpha[1 * 6 + 2] = 10;
+    frame.alpha[2 * 6 + 4] = 255;
+    check(mvm::math::mathCoverageValid(frame), "6x4 で 24 byte は正しい");
+    check(!mvm::math::mathCoverageValid({6, 4, std::vector<std::uint8_t>(23, 0)}) &&
+              !mvm::math::mathCoverageValid({0, 4, {}}),
+          "byte 数の違い・大きさ 0 は不正");
+    check(mvm::math::mathCoverageBounds(frame) == MathRect{2, 1, 3, 2},
+          "外接矩形は (2,1) から (4,2) まで");
+    check(mvm::math::mathCoverageBounds({3, 3, std::vector<std::uint8_t>(9, 0)}).empty(),
+          "alpha が無ければ空");
+    check(mvm::math::mathRectUnion({2, 1, 3, 2}, {0, 3, 1, 1}) == MathRect{0, 1, 5, 3},
+          "和は両方を含む最小の矩形");
+    check(mvm::math::mathRectUnion({}, {4, 5, 1, 1}) == MathRect{4, 5, 1, 1} &&
+              mvm::math::mathRectUnion({4, 5, 1, 1}, {}) == MathRect{4, 5, 1, 1} &&
+              mvm::math::mathRectUnion({}, {}).empty(),
+          "空の矩形は和で無視する");
+
+    check(!mvm::math::mathRectTouchesEdge({1, 1, 4, 2}, 6, 4),
+          "内側の 1 画素を空けた矩形は触れない");
+    check(mvm::math::mathRectTouchesEdge({0, 1, 1, 1}, 6, 4), "左端に触れる");
+    check(mvm::math::mathRectTouchesEdge({1, 0, 1, 1}, 6, 4), "上端に触れる");
+    check(mvm::math::mathRectTouchesEdge({5, 1, 1, 1}, 6, 4), "右端 (x = 5) に触れる");
+    check(mvm::math::mathRectTouchesEdge({1, 3, 1, 1}, 6, 4), "下端 (y = 3) に触れる");
+    check(!mvm::math::mathRectTouchesEdge({}, 6, 4), "空の矩形は触れない");
+
+    // mask 2x2 を (2,1) に置く。frame の (2,1)=10 と (3,2)=0 などを手で並べる。
+    const MathCoverage mask{2, 2, {10, 0, 0, 0}};
+    MathCoverage exact{6, 4, std::vector<std::uint8_t>(24, 0)};
+    exact.alpha[1 * 6 + 2] = 10;
+    check(mvm::math::mathEndpointDifference(exact, mask, 2, 1) == 0, "置いた mask と同じなら差 0");
+    check(mvm::math::mathEndpointDifference(frame, mask, 2, 1) == 1,
+          "mask の外の alpha (4,2) は 0 と比べて差 1");
+    check(mvm::math::mathEndpointDifference(exact, mask, 3, 1) == 2,
+          "1 画素ずらすと (2,1) と (3,1) が違う");
+    check(mvm::math::mathEndpointDifference(exact, mask, 5, 1) == -1 &&
+              mvm::math::mathEndpointDifference(exact, mask, -1, 0) == -1 &&
+              mvm::math::mathEndpointDifference(exact, {2, 2, {1}}, 0, 0) == -1,
+          "はみ出す・負の位置・不正な mask は -1");
+}
+
 } // namespace
 
 int main() {
@@ -463,6 +508,7 @@ int main() {
     testEndpointPlacement();
     testTransformPlacement();
     testColorInterpolation();
+    testCoverageInspection();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;
 }

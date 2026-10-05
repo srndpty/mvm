@@ -3,6 +3,9 @@
 #include "media/math/math_key_material.h"
 #include "media/math/math_raster_layout.h"
 
+#include <algorithm>
+#include <cstddef>
+
 namespace mvm::math {
 
 using detail::appendKeyField;
@@ -50,6 +53,78 @@ bool mathTransformPlacement(int sourceWidth, int sourceHeight, int targetWidth, 
         return false;
     placement = result;
     return true;
+}
+
+bool mathCoverageValid(const MathCoverage& coverage) {
+    return coverage.width > 0 && coverage.height > 0 &&
+           coverage.alpha.size() ==
+               static_cast<std::size_t>(coverage.width) * static_cast<std::size_t>(coverage.height);
+}
+
+MathRect mathCoverageBounds(const MathCoverage& coverage) {
+    if (!mathCoverageValid(coverage))
+        return {};
+    int left = coverage.width;
+    int top = coverage.height;
+    int right = -1;
+    int bottom = -1;
+    for (int y = 0; y < coverage.height; ++y) {
+        const std::uint8_t* row =
+            coverage.alpha.data() +
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(coverage.width);
+        for (int x = 0; x < coverage.width; ++x) {
+            if (row[x] == 0)
+                continue;
+            left = std::min(left, x);
+            right = std::max(right, x);
+            top = std::min(top, y);
+            bottom = std::max(bottom, y);
+        }
+    }
+    if (right < 0)
+        return {};
+    return {left, top, right - left + 1, bottom - top + 1};
+}
+
+MathRect mathRectUnion(const MathRect& a, const MathRect& b) {
+    if (a.empty())
+        return b.empty() ? MathRect{} : b;
+    if (b.empty())
+        return a;
+    const int left = std::min(a.x, b.x);
+    const int top = std::min(a.y, b.y);
+    const int right = std::max(a.x + a.width, b.x + b.width);
+    const int bottom = std::max(a.y + a.height, b.y + b.height);
+    return {left, top, right - left, bottom - top};
+}
+
+bool mathRectTouchesEdge(const MathRect& bounds, int width, int height) {
+    return !bounds.empty() && (bounds.x <= 0 || bounds.y <= 0 || bounds.x + bounds.width >= width ||
+                               bounds.y + bounds.height >= height);
+}
+
+std::int64_t mathEndpointDifference(const MathCoverage& frame, const MathCoverage& mask, int left,
+                                    int top) {
+    if (!mathCoverageValid(frame) || !mathCoverageValid(mask) || left < 0 || top < 0 ||
+        left + mask.width > frame.width || top + mask.height > frame.height)
+        return -1;
+    std::int64_t different = 0;
+    for (int y = 0; y < frame.height; ++y) {
+        for (int x = 0; x < frame.width; ++x) {
+            const std::uint8_t got =
+                frame.alpha[static_cast<std::size_t>(y) * static_cast<std::size_t>(frame.width) +
+                            static_cast<std::size_t>(x)];
+            const bool inside =
+                x >= left && x < left + mask.width && y >= top && y < top + mask.height;
+            const std::uint8_t want = inside ? mask.alpha[static_cast<std::size_t>(y - top) *
+                                                              static_cast<std::size_t>(mask.width) +
+                                                          static_cast<std::size_t>(x - left)]
+                                             : 0;
+            if (got != want)
+                ++different;
+        }
+    }
+    return different;
 }
 
 bool mathTransformColorAt(std::uint32_t fromArgb, std::uint32_t toArgb, std::int64_t frame,

@@ -11,8 +11,12 @@
 #include "media/math/math_render.h"
 #include "media/math/math_tex_segments.h"
 
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace mvm::math {
 
@@ -60,10 +64,11 @@ std::string mathTransformKey(const MathTransformSpec& spec,
 
 // 変形の canvas の中の端点 (source・target の静止の mask) の配置。
 //
-// backend は式の bbox の中心を canvas の中心 (canvasWidth / 2, canvasHeight / 2) に置き、
-// (shiftX, shiftY) px だけ動かして描く (x は右、y は下が正)。すると静止の mask の画素 (x, y) は
-// canvas の画素 (left + x, top + y) にちょうど重なる (半画素の位相の補正。P2-0 で、補正なしは
-// 2603 画素ずれた)。
+// shiftX・shiftY は raster の座標の px (+X は右、+Y は下)。backend は式の bbox の中心を
+// canvas の中心 (canvasWidth / 2, canvasHeight / 2) に置き、(shiftX, shiftY) だけ動かして描く。
+// すると静止の mask の画素 (x, y) は canvas の画素 (left + x, top + y) にちょうど重なる
+// (半画素の位相の補正。P2-0 で、補正なしは 2603 画素ずれた)。
+// +Y が上の座標系 (Manim など) の backend は、縦に -shiftY だけ動かす。
 //
 // - left・top は静止の配置 (mathRasterPlacement) と同じ「中央、余りは左上寄せ」の整数。
 // - left + maskWidth / 2 == canvasWidth / 2 + shiftX (top も同様) が実数で厳密に成り立つ。
@@ -90,6 +95,77 @@ struct MathTransformPlacement {
 // source・target を同じ canvas に置く。各端点の配置は相手の大きさに依らない。
 bool mathTransformPlacement(int sourceWidth, int sourceHeight, int targetWidth, int targetHeight,
                             int canvasWidth, int canvasHeight, MathTransformPlacement& placement);
+
+// 1 枚の被覆率 (alpha) の画像。1 画素 1 byte、行間の余白なし (width * height byte)。
+struct MathCoverage {
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint8_t> alpha;
+    bool operator==(const MathCoverage&) const = default;
+};
+
+// 大きさが正で、alpha の byte 数が width * height と一致するか。
+bool mathCoverageValid(const MathCoverage& coverage);
+
+// 画像の file (backend の出力の PNG など) を被覆率として読む。色は捨て、alpha だけを使う。
+// 読めなければ false と error。src/media/math は decoder を持たないので、呼び出し側が渡す。
+using MathCoverageLoader = std::function<bool(const std::filesystem::path& file,
+                                              MathCoverage& coverage, std::string& error)>;
+
+// 画素の矩形。width または height が 0 なら空。
+struct MathRect {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+
+    bool empty() const { return width <= 0 || height <= 0; }
+
+    bool operator==(const MathRect&) const = default;
+};
+
+// alpha > 0 の画素の外接矩形。alpha が全く無ければ空。
+MathRect mathCoverageBounds(const MathCoverage& coverage);
+
+// 2 つの矩形を含む最小の矩形。空の矩形は無視する (両方空なら空)。
+MathRect mathRectUnion(const MathRect& a, const MathRect& b);
+
+// 空でない bounds が width x height の画像の縁 (最外周の 1 画素) に触れるか。
+bool mathRectTouchesEdge(const MathRect& bounds, int width, int height);
+
+// frame の (left, top) に mask を置いたとき、alpha が違う画素の数。mask の外は 0 と比べる。
+// 大きさが不正、または mask が frame からはみ出すなら -1。
+std::int64_t mathEndpointDifference(const MathCoverage& frame, const MathCoverage& mask, int left,
+                                    int top);
+
+// 変形の連番の描画要求。端点の静止の mask は、同じ backend の静止の描画 (renderer の正) を
+// 呼び出し側が decode して渡す。backend は frame 0 と終状態をこれと画素で照合する。
+struct MathTransformRenderRequest {
+    MathTransformSpec spec;
+    MathCoverage sourceStatic;
+    MathCoverage targetStatic;
+    // backend が自由に使ってよい作業 directory。呼び出し側が作り、後で消す。
+    std::filesystem::path jobDirectory;
+    std::chrono::milliseconds timeout{120000};
+};
+
+// 変形の連番。色は含まない (白の glyph を透過背景に描いた PNG で、alpha が被覆率)。
+// 文字色の補間 (mathTransformColorAt) と配置は合成の側で行う。
+struct MathTransformRenderResult {
+    MathRenderStatus status = MathRenderStatus::Failed;
+    // spec.frames 枚 (frame i は進み具合 i / frames)。各 frame は canvas の大きさ。
+    // 終状態の照合に使った 1 枚は含めない。
+    std::vector<std::filesystem::path> frames;
+    int canvasWidth = 0;
+    int canvasHeight = 0;
+    // canvas の座標で、全 frame (照合の 1 枚を含む) の alpha の外接矩形と、
+    // 両端の静止の矩形の和。artifact として切り出す範囲。
+    MathRect artifact;
+    // canvas の中の端点の配置 (P2-2 の契約)。
+    MathTransformPlacement placement;
+    std::string message;
+    std::string log;
+};
 
 // 変形の frame (frame / frames) での文字色 (0xAARRGGBB)。A・R・G・B の各成分を
 // straight alpha のまま (premultiply せずに) 線形に補間し、0.5 は切り上げて整数に丸める。
