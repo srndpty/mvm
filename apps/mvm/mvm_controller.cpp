@@ -6954,6 +6954,49 @@ bool MvmController::applyDefaultTransition() {
         selectedId, QStringLiteral("clipの先頭と末尾にフェードを付けました"));
 }
 
+bool MvmController::applyMathTransform() {
+    if (busy_)
+        return false;
+    if (selectedEditOutgoing_.empty()) {
+        setStatus(QStringLiteral("数式の変形を置く編集点が選択されていません"));
+        return false;
+    }
+    const std::string outgoing = selectedEditOutgoing_;
+    const std::string incoming = selectedEditIncoming_;
+    // 求める長さは Blend の既定と同じ。cut からの配置・縮め方・条件は model が決める。
+    const std::int64_t requestedFrames =
+        project::defaultTransitionFrames(project_.timelineFpsNum, project_.timelineFpsDen);
+    project::TransitionEditResult placed;
+    const bool applied = applyTimelineEdit(
+        [&](project::Project& candidate) {
+            placed = project::applyMathTransformTransition(candidate, outgoing, incoming,
+                                                           requestedFrames, newClipId);
+            project::TimelineEditResult result;
+            result.success = placed.success;
+            result.error = placed.error;
+            return result;
+        },
+        std::string{}, QString());
+    if (!applied) {
+        // applyTimelineEdit は model の理由をそのまま status に出している。編集点の表示にも残す。
+        mathTransformRejection_ = {outgoing, incoming, {}, currentRevision_, statusText_};
+        Q_EMIT stateChanged();
+        return false;
+    }
+    mathTransformRejection_ = {};
+    selectedEditOutgoing_.clear();
+    selectedEditIncoming_.clear();
+    selectedTransitionId_ = placed.transitionId;
+    QString status = QString::number(placed.frames) +
+                     QStringLiteral("フレームの数式の変形を作成しました");
+    if (placed.frames < requestedFrames)
+        status += QStringLiteral("。後ろの数式 clip の尺・区間の見た目の条件に合わせて短くしました");
+    setStatus(status);
+    notifyTimelineTransitions();
+    Q_EMIT stateChanged();
+    return true;
+}
+
 bool MvmController::stepSelectedClipVolume(double stepDb) {
     std::vector<std::string> clipIds = selectedClipIds_;
     if (clipIds.empty() && !currentClipId().empty())
@@ -7062,7 +7105,9 @@ QVariantList MvmController::timelineTransitions() const {
                         {QStringLiteral("trackIndex"), clip.track.index},
                         {QStringLiteral("start"), cut - transition.framesBeforeCut},
                         {QStringLiteral("cut"), cut},
-                        {QStringLiteral("end"), cut + transition.framesAfterCut}});
+                        {QStringLiteral("end"), cut + transition.framesAfterCut},
+                        {QStringLiteral("kind"),
+                         QString::fromLatin1(project::transitionKindName(transition.kind))}});
     }
     return list;
 }
@@ -7072,13 +7117,28 @@ QVariantMap MvmController::selectedEditPoint() const {
     if (outgoing < 0)
         return {};
     const auto& clip = project_.timelineClips[static_cast<std::size_t>(outgoing)];
+    const int incoming = indexOfClipId(project_.timelineClips, selectedEditIncoming_);
     const auto duration = project::timelineClipDuration(project_, clip);
-    if (!duration.success)
+    if (!duration.success || incoming < 0)
         return {};
+    const auto& incomingClip = project_.timelineClips[static_cast<std::size_t>(incoming)];
+    // 試せるかどうかだけを示す (どちらかが数式 clip)。数式 clip と他の clip の編集点も試せるように
+    // し、置けない理由は model が返すものをそのまま出す。
+    const bool mathCandidate = clip.kind == project::TimelineClipKind::Math ||
+                               incomingClip.kind == project::TimelineClipKind::Math;
+    const bool rejectedHere = mathTransformRejection_.revision == currentRevision_ &&
+                              mathTransformRejection_.transitionId.empty() &&
+                              mathTransformRejection_.outgoingId == selectedEditOutgoing_ &&
+                              mathTransformRejection_.incomingId == selectedEditIncoming_;
     return {
         {QStringLiteral("trackKind"), QString::fromLatin1(project::trackKindName(clip.track.kind))},
         {QStringLiteral("trackIndex"), clip.track.index},
-        {QStringLiteral("frame"), clip.timelineStartFrame + duration.frame}};
+        {QStringLiteral("frame"), clip.timelineStartFrame + duration.frame},
+        {QStringLiteral("outgoingName"), QString::fromStdString(clip.name)},
+        {QStringLiteral("incomingName"), QString::fromStdString(incomingClip.name)},
+        {QStringLiteral("mathTransformCandidate"), mathCandidate},
+        {QStringLiteral("mathTransformRejection"),
+         rejectedHere ? mathTransformRejection_.message : QString()}};
 }
 
 bool MvmController::canDeleteSelection() const {
@@ -7169,6 +7229,12 @@ QVariantMap MvmController::computeSelectedTransition() const {
     const auto status = mathTransformStatus(*found);
     for (auto it = status.cbegin(); it != status.cend(); ++it)
         selected.insert(it.key(), it.value());
+    if (found->kind == project::TransitionKind::MathTransform)
+        selected.insert(QStringLiteral("spanRejection"),
+                        mathTransformRejection_.revision == currentRevision_ &&
+                                mathTransformRejection_.transitionId == found->id
+                            ? mathTransformRejection_.message
+                            : QString());
     return selected;
 }
 
@@ -7179,36 +7245,49 @@ bool MvmController::setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfter
         return false;
     }
     const std::string id = selectedTransitionId_;
+    const auto current =
+        std::find_if(project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
+                     [&](const auto& transition) { return transition.id == id; });
+    const bool mathTransform = current != project_.timelineTransitions.end() &&
+                               current->kind == project::TransitionKind::MathTransform;
+    // 数式の変形は、断った理由を inspector にも残す (status は次の操作で消える)。
+    const auto reject = [&](const QString& message) {
+        setStatus(message);
+        if (mathTransform) {
+            mathTransformRejection_ = {{}, {}, id, currentRevision_, message};
+            notifyTimelineTransitions();
+        }
+        return false;
+    };
     // 数値欄・ドラッグの値は素材 frame に乗るとは限らない (30fps 素材を 60fps timeline に置くと
     // 2 frame 単位)。最も近い置ける長さへ吸着させ、吸着したことは status に出す。
     const auto fitted = project::nearestTransitionSpan(
         project_, id, framesBeforeCut, framesAfterCut,
         keepTotal ? project::SpanFitMode::KeepTotal : project::SpanFitMode::EachSide,
         project::LinkMode::Linked);
-    if (!fitted.success) {
-        setStatus(QString::fromStdString(fitted.error));
-        return false;
-    }
+    if (!fitted.success)
+        return reject(QString::fromStdString(fitted.error));
     // 吸着した結果が今の値と同じなら編集ではない (上限で止まっただけ)。applyTimelineEdit は
     // 再生を止めるので、何も変わらない操作では入らない。
-    const auto current =
-        std::find_if(project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
-                     [&](const auto& transition) { return transition.id == id; });
     if (current != project_.timelineTransitions.end() &&
         current->framesBeforeCut == fitted.framesBeforeCut &&
         current->framesAfterCut == fitted.framesAfterCut) {
         const bool requestedSame =
             framesBeforeCut == fitted.framesBeforeCut && framesAfterCut == fitted.framesAfterCut;
-        setStatus(requestedSame ? QStringLiteral("トランジションの長さは変わっていません")
-                                : QStringLiteral("トランジションはこれ以上変えられません "
-                                                 "(素材の余白・フレーム・不透明度の範囲の端です)"));
-        return false;
+        if (requestedSame)
+            return reject(QStringLiteral("トランジションの長さは変わっていません"));
+        return reject(mathTransform
+                          ? QStringLiteral("数式の変形はこれ以上変えられません (後ろの数式 clip の"
+                                           "尺・前の数式 clip の Write・区間の見た目の範囲の端です)")
+                          : QStringLiteral("トランジションはこれ以上変えられません "
+                                           "(素材の余白・フレーム・不透明度の範囲の端です)"));
     }
     QString status = QStringLiteral("トランジションを") +
                      QString::number(fitted.framesBeforeCut + fitted.framesAfterCut) +
                      QStringLiteral("フレームにしました");
     if (fitted.framesBeforeCut != framesBeforeCut || fitted.framesAfterCut != framesAfterCut)
-        status += QStringLiteral(" (素材のフレームに合わせて cut の前 ") +
+        status += (mathTransform ? QStringLiteral(" (変形を置ける範囲に合わせて cut の前 ")
+                                 : QStringLiteral(" (素材のフレームに合わせて cut の前 ")) +
                   QString::number(fitted.framesBeforeCut) + QStringLiteral(" / 後 ") +
                   QString::number(fitted.framesAfterCut) + QStringLiteral(")");
     const bool applied = applyTimelineEdit(
@@ -7223,7 +7302,7 @@ bool MvmController::setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfter
         },
         std::string{}, status);
     if (!applied)
-        return false;
+        return mathTransform && !busy_ ? reject(statusText_) : false;
     notifyTimelineTransitions();
     Q_EMIT stateChanged();
     return true;

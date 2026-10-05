@@ -165,6 +165,20 @@ ApplicationWindow {
         enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
         onTriggered: root.mvmController.applyDefaultTransition()
     }
+    // 数式 clip の編集点に数式の変形を置く。試せる編集点かどうかだけを controller が示し、
+    // 置けるかどうか・長さは model (applyMathTransformTransition) が決める。断られた理由は
+    // エフェクトコントロールの編集点の欄と status に出る。
+    Action {
+        id: mathTransformAction
+        objectName: "mathTransformAction"
+        text: "数式の変形を適用"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+                 && root.mvmController.selectedEditPoint.mathTransformCandidate === true
+        onTriggered: {
+            if (root.mvmController.applyMathTransform())
+                root.leftPanelTab = 0;
+        }
+    }
     Action {
         id: speedDurationAction
         text: "速度・デュレーション..."
@@ -356,6 +370,10 @@ ApplicationWindow {
             CompactMenuItem { action: volumeDownAction }
             CompactMenuItem { action: toggleClipEnabledAction }
             CompactMenuItem { action: defaultTransitionAction }
+            CompactMenuItem {
+                objectName: "mathTransformMenuItem"
+                action: mathTransformAction
+            }
             CompactMenuSeparator {}
             // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {
@@ -923,12 +941,30 @@ ApplicationWindow {
                         // トランジションを選んでいる間は、clip の項目の代わりにトランジションの
                         // 長さと配置を出す (Premiere のエフェクトコントロールと同じ領域)。
                         Item {
-                            TransitionInspector {
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.top: parent.top
+                            // 数式の変形は状態・理由・案内の行が増え、低いパネルでは長さ欄やミニ
+                            // タイムラインが下へ押し出される。clip の項目と同じく縦にスクロールさせる。
+                            BoundedFlickable {
+                                id: transitionInspectorScroll
+                                objectName: "transitionInspectorScroll"
+                                anchors.fill: parent
                                 visible: root.mvmController.selectedTransitionId !== ""
-                                mvmController: root.mvmController
+                                clip: true
+                                contentWidth: width
+                                contentHeight: transitionInspector.implicitHeight
+                                flickableDirection: Flickable.VerticalFlick
+
+                                ScrollBar.vertical: ScrollBar {
+                                    id: transitionInspectorScrollBar
+                                    policy: ScrollBar.AsNeeded
+                                }
+
+                                TransitionInspector {
+                                    id: transitionInspector
+                                    width: transitionInspectorScroll.width
+                                           - (transitionInspectorScrollBar.visible
+                                              ? transitionInspectorScrollBar.width : 0)
+                                    mvmController: root.mvmController
+                                }
                             }
 
                             // 項目が増えるとパネルの高さを超え、下の再生時間の表示に重なっていた。
@@ -955,10 +991,57 @@ ApplicationWindow {
                                            - (effectControlsScrollBar.visible ? effectControlsScrollBar.width : 0)
                                     spacing: 6
 
+                                    // 選択中の編集点。数式 clip の編集点では数式の変形を置ける
+                                    // (編集メニューと同じ Action)。model が断った理由はここに残す。
+                                    ColumnLayout {
+                                        id: editPointSection
+                                        objectName: "editPointSection"
+                                        readonly property var point: root.mvmController.selectedEditPoint
+                                        Layout.fillWidth: true
+                                        visible: editPointSection.point.frame !== undefined
+                                        spacing: 4
+
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: "編集点"
+                                            color: "#e6e8ec"
+                                            font.bold: true
+                                            font.pixelSize: 12
+                                        }
+                                        Label {
+                                            objectName: "editPointClips"
+                                            Layout.fillWidth: true
+                                            text: (editPointSection.point.outgoingName ?? "") + "  →  "
+                                                  + (editPointSection.point.incomingName ?? "")
+                                            color: "#9aa2ad"
+                                            font.pixelSize: 11
+                                            wrapMode: Text.Wrap
+                                        }
+                                        ModernDialogButton {
+                                            objectName: "mathTransformCreateButton"
+                                            visible: editPointSection.point.mathTransformCandidate === true
+                                            text: mathTransformAction.text
+                                            enabled: !root.mvmController.busy
+                                            onClicked: {
+                                                if (root.mvmController.applyMathTransform())
+                                                    root.leftPanelTab = 0;
+                                            }
+                                        }
+                                        Label {
+                                            objectName: "mathTransformRejection"
+                                            Layout.fillWidth: true
+                                            visible: text.length > 0
+                                            text: editPointSection.point.mathTransformRejection ?? ""
+                                            color: "#f2c66d"
+                                            wrapMode: Text.Wrap
+                                        }
+                                    }
+
                                     // 文字 clip の名前は本文の先頭なので、本文の欄と重複する。出さない。
                                     Label {
                                         Layout.fillWidth: true
                                         visible: root.mvmController.selectedTextClip.clipId === undefined
+                                                 && editPointSection.point.frame === undefined
                                         text: root.mvmController.currentClipIndex >= 0
                                               ? root.mvmController.currentClipName
                                               : "クリップ未選択"
@@ -3661,8 +3744,10 @@ ApplicationWindow {
                                     objectName: "timelineTransitionLabel"
                                     anchors.centerIn: parent
                                     visible: implicitWidth + 8 <= parent.width
-                                    text: transitionItem.modelData.trackKind === "audio"
-                                          ? "クロスフェード" : "クロスディゾルブ"
+                                    text: transitionItem.modelData.kind === "math_transform"
+                                          ? "数式の変形"
+                                          : transitionItem.modelData.trackKind === "audio"
+                                            ? "クロスフェード" : "クロスディゾルブ"
                                     color: "white"
                                     font.pixelSize: 11
                                 }

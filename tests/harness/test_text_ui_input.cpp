@@ -139,6 +139,12 @@ void testTransitionInspector(QQuickWindow* window, mvm::app::MvmController& cont
     check(transitionValue(controller, "framesBeforeCut") == 30 &&
               transitionValue(controller, "framesAfterCut") == 30,
           "前提: Shift+D のトランジションが 30 / 30 ではありません");
+    // クロスディゾルブには数式の変形の行 (向き・状態・削除ボタン・長さの理由) を出さない。
+    for (const char* name : {"mathTransformEndpoints", "mathTransformState",
+                             "transitionDeleteButton", "mathTransformSpanRejection"}) {
+        auto* item = findVisualItem(window, QString::fromLatin1(name));
+        check(item && !item->isVisible(), "クロスディゾルブに数式の変形の行を出しています");
+    }
 
     // 長さ欄は秒。1 回クリックして 0.5 を入力すると 60fps で 30 frame、配置 (中央) を保って 15 /
     // 15。 単位をフレームへ切り替えて 20 を入力すると 10 / 10。
@@ -1230,6 +1236,538 @@ int checkMathTransformInspector(const std::filesystem::path& projectPath) {
     return result;
 }
 
+namespace {
+
+mvm::project::TimelineClip authoringMathClip(const std::string& id, const std::string& source,
+                                             qint64 start) {
+    mvm::project::TimelineClip clip;
+    clip.kind = mvm::project::TimelineClipKind::Math;
+    clip.id = id;
+    clip.name = "式" + id;
+    clip.sourceFpsNum = 60;
+    clip.sourceFpsDen = 1;
+    clip.sourceFrameCount = clip.sourceOutFrame = 300;
+    clip.timelineStartFrame = start;
+    clip.math.source = source;
+    return clip;
+}
+
+mvm::project::TimelineClip authoringTextClip(const std::string& id, qint64 start) {
+    mvm::project::TimelineClip clip;
+    clip.kind = mvm::project::TimelineClipKind::Text;
+    clip.id = id;
+    clip.name = "文字" + id;
+    clip.text.content = "文字" + id;
+    clip.sourceFpsNum = 60;
+    clip.sourceFrameCount = clip.sourceOutFrame = 300;
+    clip.timelineStartFrame = start;
+    return clip;
+}
+
+const mvm::project::TimelineTransition* transitionBetween(const mvm::project::Project& project,
+                                                          const std::string& outgoing,
+                                                          const std::string& incoming) {
+    for (const auto& transition : project.timelineTransitions)
+        if (transition.outgoingClipId == outgoing && transition.incomingClipId == incoming)
+            return &transition;
+    return nullptr;
+}
+
+// item が flickable の見えている範囲と幅の中にあるか (scene 座標)。
+bool insideViewport(QQuickItem* item, QQuickItem* viewport) {
+    const QRectF shown = item->mapRectToScene(QRectF(0, 0, item->width(), item->height()));
+    const QRectF view =
+        viewport->mapRectToScene(QRectF(0, 0, viewport->width(), viewport->height()));
+    return item->height() > 0 && shown.left() >= view.left() - 0.5 &&
+           shown.right() <= view.right() + 0.5 && shown.top() >= view.top() - 0.5 &&
+           shown.bottom() <= view.bottom() + 0.5;
+}
+
+// flickable を item が見える位置までスクロールする (利用者がスクロールして届くことの代わり)。
+// 届けば true。
+bool scrollIntoView(QQuickItem* flickable, QQuickItem* item) {
+    auto* content = flickable->property("contentItem").value<QQuickItem*>();
+    if (!content)
+        return false;
+    const qreal top = item->mapToItem(content, QPointF(0, 0)).y();
+    const qreal maxY =
+        std::max<qreal>(0, flickable->property("contentHeight").toReal() - flickable->height());
+    flickable->setProperty("contentY", std::clamp<qreal>(top - 4, 0, maxY));
+    pump(100);
+    return insideViewport(item, flickable);
+}
+
+} // namespace
+
+// P2-7: 製品の Main.qml と実 controller で、数式 clip の編集点から数式の変形を作り、長さ・削除・
+// 保存を既存のトランジションの操作で行えることと、作れない・使えない理由を区別して示すことを確かめる。
+// timeline は 60fps。clip は既定 300 frame で、組ごとに間を空けて同じ track に置く。
+int checkMathTransformAuthoring(const std::filesystem::path& projectPath) {
+    using mvm::project::TransitionKind;
+    auto project = mvm::project::createDefaultProject();
+    auto writeE = authoringMathClip("E", "e", 2000);
+    writeE.mathAnimation = {mvm::project::MathIntroKind::Write, 280};
+    auto writeD = authoringMathClip("D", "d", 1300);
+    writeD.mathAnimation = {mvm::project::MathIntroKind::Write, 60};
+    auto opaqueG = authoringMathClip("G", "g", 3000);
+    opaqueG.math.backgroundColor = "#FF000000";
+    auto movedJ = authoringMathClip("J", "j", 4300);
+    movedJ.effects.positionXPercent = 10;
+    // T は先頭の 1 frame だけ S と同じ位置で、そこから動く (区間の見た目が一定でない)。
+    auto movingT = authoringMathClip("T", "t", 9300);
+    movingT.effects.positionXKeys = {{0, 0.0}, {30, 10.0}};
+    project.timelineClips = {authoringMathClip("A", "x", 0),
+                             authoringMathClip("B", "y", 300),
+                             authoringMathClip("C", "c", 1000),
+                             writeD,
+                             writeE,
+                             authoringMathClip("F", "f", 2300),
+                             opaqueG,
+                             authoringMathClip("H", "h", 3300),
+                             authoringMathClip("I", "i", 4000),
+                             movedJ,
+                             authoringMathClip("K", "k", 5000),
+                             authoringTextClip("L", 5300),
+                             authoringMathClip("M", "SIZE1916x2 m", 6000),
+                             authoringMathClip("N", "SIZE4x5 n", 6300),
+                             authoringMathClip("O", "o", 7000),
+                             authoringMathClip("P", "BADT p", 7300),
+                             authoringTextClip("Q", 8000),
+                             authoringTextClip("R", 8300),
+                             authoringMathClip("S", "s", 9000),
+                             movingT};
+    check(mvm::project::saveProjectJson(project, projectPath).success,
+          "変形の作成 UI 試験の Project を保存できません");
+    mvm::app::MvmController controller(projectPath, {}, project);
+    // 最初は backend が無い。変形は Project の編集として作れること (描けるかとは別) を見る。
+    controller.setMathPreflightForTest(mvm::test::FakeMathBackend::unavailable("依存不足の試験"));
+    mvm::app::WaveformCache cache;
+    QQmlApplicationEngine engine;
+    auto properties = mvm::app::testFixedWindowInitialProperties();
+    properties.insert(QStringLiteral("mvmController"), QVariant::fromValue(&controller));
+    properties.insert(QStringLiteral("waveformCache"), QVariant::fromValue(&cache));
+    if (!mvm::app::testFixedWindowRequested())
+        properties.insert(QStringLiteral("flags"), mvm::test::backgroundWindowFlags());
+    engine.setInitialProperties(properties);
+    engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
+    auto* window = engine.rootObjects().isEmpty()
+                       ? nullptr
+                       : qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+    if (!window) {
+        controller.shutdown();
+        return 3;
+    }
+    mvm::test::FakeMathBackend backend;
+    const auto run = [&]() -> int {
+        QString reason;
+        if (!QTest::qWaitForWindowExposed(window) || !mvm::test::focusWithoutForeground(window) ||
+            !mvm::test::isolatedFromUserInput(window, reason)) {
+            std::fprintf(stderr,
+                         "PROTOCOL_INVALID: 変形の作成 UI 試験を操作から隔離できません: %s\n",
+                         qUtf8Printable(reason));
+            return 4;
+        }
+        window->setProperty("leftPanelWidth", 500);
+        window->setProperty("leftPanelTab", 0);
+        controller.attachPreview(
+            window->findChild<mvm::app::PreviewEngineRhiItem*>(QStringLiteral("previewSurface")));
+        check(pumpUntil([&] { return controller.previewReady(); }, 30000),
+              "変形の作成 UI 試験のプレビューを準備できません");
+        check(controller.timelineFpsNum() == 60 && controller.timelineFpsDen() == 1,
+              "前提: timeline が 60fps ではありません");
+        auto* action = window->findChild<QObject*>(QStringLiteral("mathTransformAction"));
+        auto* menuItem = window->findChild<QObject*>(QStringLiteral("mathTransformMenuItem"));
+        auto* section = findVisualItem(window, QStringLiteral("editPointSection"));
+        auto* create = findVisualItem(window, QStringLiteral("mathTransformCreateButton"));
+        auto* rejection = findVisualItem(window, QStringLiteral("mathTransformRejection"));
+        auto* inspector = findVisualItem(window, QStringLiteral("transitionInspector"));
+        auto* inspectorScroll = findVisualItem(window, QStringLiteral("transitionInspectorScroll"));
+        auto* title = inspector ? inspector->childItems().value(0) : nullptr;
+        auto* endpoints = findVisualItem(window, QStringLiteral("mathTransformEndpoints"));
+        auto* stateLabel = findVisualItem(window, QStringLiteral("mathTransformState"));
+        auto* message = findVisualItem(window, QStringLiteral("mathTransformMessage"));
+        auto* guidance = findVisualItem(window, QStringLiteral("mathTransformDependencyGuidance"));
+        auto* previewReason = findVisualItem(window, QStringLiteral("mathTransformPreviewReason"));
+        auto* spanRejection = findVisualItem(window, QStringLiteral("mathTransformSpanRejection"));
+        auto* deleteButton = findVisualItem(window, QStringLiteral("transitionDeleteButton"));
+        auto* durationField = findVisualItem(window, QStringLiteral("transitionDurationField"));
+        if (!action || !menuItem || !section || !create || !rejection || !inspector ||
+            !inspectorScroll || !title || !endpoints || !stateLabel || !message || !guidance ||
+            !previewReason || !spanRejection || !deleteButton || !durationField) {
+            check(false, "変形の作成・編集の UI が製品の画面にありません");
+            return 1;
+        }
+        const auto textOf = [](QQuickItem* item) { return item->property("text").toString(); };
+        const auto click = [&](QQuickItem* item) {
+            QTest::mouseClick(window, Qt::LeftButton, {}, itemCenter(item));
+            pump(300);
+        };
+        const auto selectEdit = [&](const char* outgoing) {
+            check(
+                controller.selectEditPoint(QString::fromLatin1(outgoing), QStringLiteral("right")),
+                "前提: 編集点を選べません");
+            pump(100);
+        };
+        // 作成を断られたとき: model の理由をそのまま出し、Project・Undo・Redo は変わらない。
+        int probeIds = 0;
+        const auto expectRejected = [&](const char* outgoing, const char* incoming,
+                                        const QString& expected, const char* what) {
+            selectEdit(outgoing);
+            const auto before = controller.projectForTest();
+            const auto undo = controller.undoDepthForTest();
+            const auto redo = controller.redoDepthForTest();
+            // 表示する理由は model を直接呼んだときの理由と同じ文であること。
+            auto copy = before;
+            const auto direct = mvm::project::applyMathTransformTransition(
+                copy, outgoing, incoming, 60, [&] { return "probe" + std::to_string(++probeIds); });
+            check(!direct.success && QString::fromStdString(direct.error).contains(expected),
+                  "前提: model がこの編集点の変形を想定の理由で断りません");
+            check(section->isVisible() && create->isVisible() && create->isEnabled() &&
+                      action->property("enabled").toBool() && !rejection->isVisible(),
+                  "数式 clip の編集点で数式の変形を試せません");
+            click(create);
+            const QString shown = textOf(rejection);
+            if (!(rejection->isVisible() && shown == QString::fromStdString(direct.error)))
+                std::fprintf(stderr, "%s: 表示 \"%s\" / model \"%s\"\n", what,
+                             qUtf8Printable(shown), direct.error.c_str());
+            check(rejection->isVisible() && shown == QString::fromStdString(direct.error), what);
+            check(controller.projectForTest() == before && controller.undoDepthForTest() == undo &&
+                      controller.redoDepthForTest() == redo &&
+                      controller.selectedTransitionId().isEmpty(),
+                  "作成を断ったのに Project・Undo が変わりました");
+            check(controller.projectForTest().timelineTransitions.size() ==
+                      before.timelineTransitions.size(),
+                  "作成を断ったときに Blend などで代用しました");
+        };
+
+        // --- 1. 数式 clip の編集点から作る (backend 無し) ---
+        selectEdit("A");
+        check(section->isVisible() && create->isVisible() &&
+                  textOf(findVisualItem(window, QStringLiteral("editPointClips")))
+                      .contains(QStringLiteral("式A")) &&
+                  action->property("enabled").toBool() && menuItem->property("enabled").toBool(),
+              "数式 clip の編集点で編集メニューとエフェクトコントロールに数式の変形を出しません");
+        // 期待する既定の長さは model を直接呼んだ結果 (同じ Project の複写) と、手で数えた値
+        // (60fps の 1 秒 = 60 frame、cut から開始) の両方と比べる。
+        auto modelCopy = controller.projectForTest();
+        int ids = 0;
+        const auto direct = mvm::project::applyMathTransformTransition(
+            modelCopy, "A", "B",
+            mvm::project::defaultTransitionFrames(modelCopy.timelineFpsNum,
+                                                  modelCopy.timelineFpsDen),
+            [&] { return "probe" + std::to_string(++ids); });
+        const auto* modelPlaced = transitionBetween(modelCopy, "A", "B");
+        const auto undoBeforeCreate = controller.undoDepthForTest();
+        click(create);
+        const auto* created = transitionBetween(controller.projectForTest(), "A", "B");
+        check(created && created->kind == TransitionKind::MathTransform,
+              "編集点のボタンで数式の変形 (MathTransform) を作りません");
+        check(direct.success && modelPlaced && created &&
+                  created->framesBeforeCut == modelPlaced->framesBeforeCut &&
+                  created->framesAfterCut == modelPlaced->framesAfterCut &&
+                  created->framesBeforeCut == 0 && created->framesAfterCut == 60,
+              "作成した変形の長さが model の既定 (cut の前 0 / 後 60) と違います");
+        check(controller.undoDepthForTest() == undoBeforeCreate + 1,
+              "変形の作成が Undo 1 回分になりません");
+        const QString abId = created ? QString::fromStdString(created->id) : QString();
+        check(!abId.isEmpty() && controller.selectedTransitionId() == abId &&
+                  window->property("leftPanelTab").toInt() == 0 && inspector->isVisible(),
+              "作成した変形を選んでエフェクトコントロールに出しません");
+        auto* drawn = findVisualItem(window, QStringLiteral("timelineTransition_") + abId);
+        auto* drawnLabel =
+            drawn ? drawn->findChild<QQuickItem*>(QStringLiteral("timelineTransitionLabel"))
+                  : nullptr;
+        check(drawnLabel && textOf(drawnLabel) == QStringLiteral("数式の変形"),
+              "timeline の変形を「数式の変形」と表示しません");
+        check(textOf(title) == QStringLiteral("数式の変形") && endpoints->isVisible() &&
+                  textOf(endpoints).contains(QStringLiteral("式A")) &&
+                  textOf(endpoints).contains(QStringLiteral("式B")) &&
+                  textOf(endpoints).indexOf(QStringLiteral("式A")) <
+                      textOf(endpoints).indexOf(QStringLiteral("式B")),
+              "変形の種類と向き (変形前 → 変形後) を示しません");
+        // backend が無くても変形は Project に残り、描画の状態と導入の案内は別に示す。
+        check(pumpUntil([&] { return textOf(stateLabel).contains(QStringLiteral("利用不可")); }),
+              "backend の不在で変形を利用不可と示しません");
+        check(guidance->isVisible() && !spanRejection->isVisible() &&
+                  transitionBetween(controller.projectForTest(), "A", "B") != nullptr &&
+                  controller.projectForTest().timelineTransitions.size() == 1,
+              "backend の不在で変形を消したか、導入の案内を出しません");
+
+        // --- 2. 長さの変更 (長さ欄)、前後の変更、Undo / Redo ---
+        {
+            const auto undo = controller.undoDepthForTest();
+            QTest::mouseClick(
+                window, Qt::LeftButton, {},
+                durationField
+                    ->mapToScene(QPointF(durationField->width() / 2, durationField->height() - 8))
+                    .toPoint());
+            pump();
+            typeText(window, "0.5");
+            QTest::keyClick(window, Qt::Key_Return);
+            pump(300);
+            const auto* changed = transitionBetween(controller.projectForTest(), "A", "B");
+            check(changed && QString::fromStdString(changed->id) == abId &&
+                      changed->kind == TransitionKind::MathTransform &&
+                      changed->framesBeforeCut == 0 && changed->framesAfterCut == 30 &&
+                      controller.undoDepthForTest() == undo + 1,
+                  "長さ欄で変形を 0.5 秒 (cut で開始のまま 0 / 30) にしません");
+            check(controller.setTransitionSpan(20, 25, false), "変形の前後の長さを変えられません");
+            pump(100);
+            changed = transitionBetween(controller.projectForTest(), "A", "B");
+            check(changed && QString::fromStdString(changed->id) == abId &&
+                      changed->framesBeforeCut == 20 && changed->framesAfterCut == 25 &&
+                      transitionValue(controller, "framesBeforeCut") == 20 &&
+                      transitionValue(controller, "framesAfterCut") == 25 &&
+                      controller.undoDepthForTest() == undo + 2,
+                  "変形の前後の長さが 20 / 25 になりません");
+            check(controller.undoLastEdit(), "前後の変更を Undo できません");
+            pump(100);
+            changed = transitionBetween(controller.projectForTest(), "A", "B");
+            check(changed && changed->framesBeforeCut == 0 && changed->framesAfterCut == 30,
+                  "前後の変更の Undo で 0 / 30 に戻りません");
+            check(controller.redoLastEdit(), "前後の変更を Redo できません");
+            pump(100);
+            changed = transitionBetween(controller.projectForTest(), "A", "B");
+            check(changed && changed->framesBeforeCut == 20 && changed->framesAfterCut == 25,
+                  "前後の変更の Redo で 20 / 25 になりません");
+            controller.undoLastEdit();
+            controller.undoLastEdit();
+            pump(100);
+            changed = transitionBetween(controller.projectForTest(), "A", "B");
+            check(changed && changed->framesBeforeCut == 0 && changed->framesAfterCut == 60 &&
+                      controller.undoDepthForTest() == undo,
+                  "長さの変更の Undo で作成時の 0 / 60 に戻りません");
+        }
+
+        // --- 3. 作れない編集点: model の理由をそのまま出す ---
+        expectRejected("C", "D", QStringLiteral("Write を付けられません"),
+                       "後ろの数式 clip の Write で作成を断った理由を示しません");
+        expectRejected("G", "H", QStringLiteral("背景を透明"),
+                       "背景が不透明な数式 clip で作成を断った理由を示しません");
+        expectRejected("I", "J", QStringLiteral("位置・拡大・回転・切り抜き・不透明度"),
+                       "ClipEffects の違う数式 clip で作成を断った理由を示しません");
+        expectRejected("K", "L", QStringLiteral("数式 clip どうし"),
+                       "数式 clip と文字 clip の編集点で作成を断った理由を示しません");
+        // 断った理由は、その編集点を選んでいる間だけ出す (別の編集点へ持ち越さない)。
+        selectEdit("G");
+        check(!rejection->isVisible(), "前の編集点の理由を別の編集点に出しています");
+        // 数式 clip の無い編集点は候補ではない。
+        selectEdit("Q");
+        check(section->isVisible() && !create->isVisible() && !action->property("enabled").toBool(),
+              "数式 clip の無い編集点で数式の変形を適用できる表示になっています");
+        // 区間の見た目が途中で変わる: model が縮めた長さで作る (UI は長さを決めない)。
+        {
+            auto copy = controller.projectForTest();
+            const auto shrunk = mvm::project::applyMathTransformTransition(
+                copy, "S", "T", 60, [&] { return "probe" + std::to_string(++ids); });
+            selectEdit("S");
+            click(create);
+            const auto* placed = transitionBetween(controller.projectForTest(), "S", "T");
+            check(shrunk.success && placed && placed->kind == TransitionKind::MathTransform &&
+                      placed->framesBeforeCut == 0 && placed->framesAfterCut == 1 &&
+                      shrunk.frames == 1 &&
+                      controller.statusText().contains(QStringLiteral("短く")),
+                  "区間の見た目が変わる数式 clip で、model が縮めた長さ (1 frame) で作りません");
+        }
+
+        // --- 4. 前の clip の Write: 置ける長さは model が決め、断った理由を残す ---
+        {
+            selectEdit("E");
+            click(create);
+            const auto* placed = transitionBetween(controller.projectForTest(), "E", "F");
+            check(placed && placed->framesBeforeCut == 0 && placed->framesAfterCut == 60,
+                  "Write のある前の数式 clip との変形を作れません");
+            // Write は 280 frame、clip は 300 frame なので cut の前は 20 frame まで。
+            check(controller.setTransitionSpan(30, 60, false), "前の Write の手前まで延ばせません");
+            pump(100);
+            placed = transitionBetween(controller.projectForTest(), "E", "F");
+            check(placed && placed->framesBeforeCut == 20 && placed->framesAfterCut == 60 &&
+                      controller.statusText().contains(QStringLiteral("変形を置ける範囲")),
+                  "前の Write に重なる長さを、Write の手前 (20) で止めません");
+            const auto before = controller.projectForTest();
+            const auto undo = controller.undoDepthForTest();
+            const auto redo = controller.redoDepthForTest();
+            check(!controller.setTransitionSpan(40, 60, false),
+                  "前の Write に重なる長さを受け付けました");
+            pump(100);
+            check(controller.projectForTest() == before && controller.undoDepthForTest() == undo &&
+                      controller.redoDepthForTest() == redo,
+                  "断った長さの変更で Project・Undo が変わりました");
+            check(spanRejection->isVisible() &&
+                      textOf(spanRejection).contains(QStringLiteral("Write")),
+                  "長さの変更を断った理由を変形の inspector に示しません");
+            // model を直接呼んでも、重なる長さは断られる (UI が上限を作っていない)。
+            auto copy = controller.projectForTest();
+            const auto directSpan = mvm::project::setTimelineTransitionSpan(
+                copy, placed ? placed->id : std::string{}, 21, 60, mvm::project::LinkMode::Linked);
+            // model は Write の分を上限に含め、「cut の前は最大 20」で断る。
+            if (directSpan.success || directSpan.error.find("最大 20") == std::string::npos)
+                std::fprintf(stderr, "model の理由: %s\n", directSpan.error.c_str());
+            check(!directSpan.success && directSpan.error.find("最大 20") != std::string::npos &&
+                      copy == before,
+                  "前提: model が Write に重なる長さを断りません");
+            // 選択を変えると理由は残らない。
+            check(controller.selectTransition(abId), "A→B の変形を選び直せません");
+            pump(100);
+            check(!spanRejection->isVisible(), "別の変形に長さの理由を持ち越しました");
+        }
+
+        // --- 5. backend が使える: 描画の失敗・memory・配置は Project の変形を消さない ---
+        controller.setMathPreflightForTest(backend.preflight());
+        check(
+            pumpUntil(
+                [&] { return controller.selectedTransition().value("transformState") == "ready"; },
+                20000),
+            "変形の描画が完了しません");
+        check(!guidance->isVisible() && textOf(stateLabel).startsWith(QStringLiteral("変形: 完了")),
+              "描画の済んだ変形を完了と示しません");
+        // 描画の失敗 (後ろの式が描けない): 変形は残り、理由を描画の行に出す。
+        selectEdit("O");
+        click(create);
+        const auto* failed = transitionBetween(controller.projectForTest(), "O", "P");
+        check(failed && failed->kind == TransitionKind::MathTransform,
+              "描けない式の間でも Project の変形は作れるはずです");
+        check(pumpUntil(
+                  [&] {
+                      return controller.selectedTransition().value("transformState") == "error" ||
+                             controller.selectedTransition().value("transformState") ==
+                                 "unavailable";
+                  },
+                  20000) &&
+                  message->isVisible() && !textOf(message).isEmpty() &&
+                  transitionBetween(controller.projectForTest(), "O", "P") != nullptr,
+              "描画の失敗で理由を示さないか、変形を消しました");
+        // 出力に収まらない artifact: disk は完了のまま、配置の理由を preview の行に出す。
+        selectEdit("M");
+        click(create);
+        check(transitionBetween(controller.projectForTest(), "M", "N") != nullptr,
+              "大きい式の間に変形を作れません");
+        check(pumpUntil(
+                  [&] {
+                      return controller.selectedTransition().value("transformPreview") ==
+                             "placement";
+                  },
+                  20000) &&
+                  previewReason->isVisible() && !textOf(previewReason).isEmpty() &&
+                  textOf(stateLabel).startsWith(QStringLiteral("変形: 完了")),
+              "出力に収まらない変形で disk の完了と配置の理由を分けて示しません");
+        const QString placementText = textOf(previewReason);
+        // 選択を A→B へ戻すと、配置の理由は残らない。
+        check(controller.selectTransition(abId), "A→B の変形を選び直せません");
+        pump(200);
+        check(!previewReason->isVisible() && textOf(endpoints).contains(QStringLiteral("式A")),
+              "選択を変えた後も前の変形の配置の理由・向きを出しています");
+        // memory の上限に収まらない: disk は完了のまま、memory の理由を出す。
+        controller.mathRastersForTest().setResidentMemoryBudget(16);
+        bool sought = false;
+        for (int attempt = 0; attempt < 100 && !sought; ++attempt) {
+            sought = controller.seekTimelineFrame(305);
+            if (!sought)
+                pump(50);
+        }
+        check(sought, "変形の区間へ移れません");
+        check(pumpUntil([&] { return previewReason->isVisible(); }) &&
+                  textOf(previewReason).contains(QStringLiteral("memory")) &&
+                  textOf(stateLabel).startsWith(QStringLiteral("変形: 完了")) &&
+                  transitionBetween(controller.projectForTest(), "A", "B") != nullptr,
+              "memory に収まらない変形で disk の完了と memory の理由を分けて示しません");
+
+        // --- 6. 狭い・低いパネルでも状態と理由と削除に届く ---
+        {
+            const auto* wide = transitionBetween(controller.projectForTest(), "M", "N");
+            check(wide && controller.selectTransition(QString::fromStdString(wide->id)),
+                  "M→N の変形を選び直せません");
+            pump(200);
+            const QSize original = window->size();
+            window->setProperty("leftPanelWidth", 240);
+            window->resize(original.width(), 560);
+            pump(400);
+            const qreal contentHeight = inspectorScroll->property("contentHeight").toReal();
+            check(
+                contentHeight > inspectorScroll->height() + 1,
+                "前提: 低いパネルで変形の inspector が収まってしまい、スクロールを検査できません");
+            for (QQuickItem* item :
+                 {stateLabel, previewReason, endpoints, durationField, deleteButton}) {
+                check(item->isVisible() && scrollIntoView(inspectorScroll, item),
+                      "低い・狭いパネルで変形の状態・理由・長さ・削除へスクロールで届きません");
+            }
+            check(textOf(previewReason) == placementText && previewReason->height() > 20,
+                  "狭いパネルで配置の理由を折り返して出しません");
+            inspectorScroll->setProperty("contentY", 0);
+            window->resize(original);
+            window->setProperty("leftPanelWidth", 500);
+            pump(300);
+        }
+
+        // --- 7. 削除と Undo / Redo (エフェクトコントロールの削除ボタン) ---
+        {
+            check(controller.selectTransition(abId), "A→B の変形を選べません");
+            pump(200);
+            const auto count = controller.projectForTest().timelineTransitions.size();
+            const auto undo = controller.undoDepthForTest();
+            check(scrollIntoView(inspectorScroll, deleteButton), "削除ボタンへ届きません");
+            click(deleteButton);
+            check(transitionBetween(controller.projectForTest(), "A", "B") == nullptr &&
+                      controller.projectForTest().timelineTransitions.size() == count - 1 &&
+                      controller.selectedTransitionId().isEmpty() &&
+                      controller.undoDepthForTest() == undo + 1 &&
+                      controller.projectForTest().timelineClips.size() ==
+                          project.timelineClips.size(),
+                  "削除ボタンで変形だけを Undo 1 回分で消しません");
+            check(controller.undoLastEdit(), "変形の削除を Undo できません");
+            pump(100);
+            const auto* restored = transitionBetween(controller.projectForTest(), "A", "B");
+            check(restored && QString::fromStdString(restored->id) == abId &&
+                      restored->kind == TransitionKind::MathTransform &&
+                      restored->framesAfterCut == 60,
+                  "変形の削除の Undo で同じ変形に戻りません");
+            check(controller.redoLastEdit() &&
+                      transitionBetween(controller.projectForTest(), "A", "B") == nullptr,
+                  "変形の削除を Redo できません");
+            check(controller.undoLastEdit(), "Redo した削除を Undo できません");
+            pump(100);
+        }
+
+        // --- 8. 保存して開き直しても変形として見える ---
+        {
+            check(controller.saveProject(), "変形のある Project を保存できません");
+            const auto loaded = mvm::project::loadProjectJson(projectPath);
+            const auto* saved =
+                loaded.success ? transitionBetween(loaded.project, "A", "B") : nullptr;
+            check(saved && saved->kind == TransitionKind::MathTransform &&
+                      QString::fromStdString(saved->id) == abId && saved->framesAfterCut == 60,
+                  "保存した Project に変形が残りません");
+            if (loaded.success) {
+                mvm::app::MvmController reopened(projectPath, {}, loaded.project);
+                window->setProperty("mvmController", QVariant::fromValue(&reopened));
+                pump(200);
+                check(reopened.selectTransition(abId), "開き直した Project の変形を選べません");
+                pump(300);
+                auto* reopenedDrawn =
+                    findVisualItem(window, QStringLiteral("timelineTransition_") + abId);
+                auto* reopenedLabel = reopenedDrawn ? reopenedDrawn->findChild<QQuickItem*>(
+                                                          QStringLiteral("timelineTransitionLabel"))
+                                                    : nullptr;
+                check(inspector->isVisible() && textOf(title) == QStringLiteral("数式の変形") &&
+                          textOf(endpoints).contains(QStringLiteral("式A")) &&
+                          transitionValue(reopened, "framesAfterCut") == 60 && reopenedLabel &&
+                          textOf(reopenedLabel) == QStringLiteral("数式の変形"),
+                      "開き直した Project の変形を数式の変形として表示しません");
+                window->setProperty("mvmController", QVariant::fromValue(&controller));
+                pump(100);
+                reopened.shutdown();
+            }
+        }
+        return failures ? 1 : 0;
+    };
+    const int result = run();
+    controller.shutdown();
+    if (!result)
+        std::puts("製品の UI "
+                  "で数式の変形の作成・長さ・削除・保存と、作れない・使えない理由を確認しました");
+    return result;
+}
+
 int main(int argc, char** argv) {
     mvm::app::prepareTestFixedWindowEnvironment();
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
@@ -1254,6 +1792,13 @@ int main(int argc, char** argv) {
     if (application.arguments().contains(QStringLiteral("--math-transform-inspector"))) {
         const int result = checkMathTransformInspector(
             directory.filePath(QStringLiteral("math-transform-ui.mvm")).toStdWString());
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
+
+    if (application.arguments().contains(QStringLiteral("--math-transform-authoring"))) {
+        const int result = checkMathTransformAuthoring(
+            directory.filePath(QStringLiteral("math-transform-authoring.mvm")).toStdWString());
         mvm_mlt_runtime_shutdown();
         return result;
     }
@@ -1482,6 +2027,16 @@ int main(int argc, char** argv) {
                                   .value(QStringLiteral("frame"))
                                   .toLongLong() == 60,
                           "clip の端を押しても編集点を選びません");
+                    // 映像どうしの編集点は数式の変形の候補ではない (Action も押せない)。
+                    auto* mathAction =
+                        window->findChild<QObject*>(QStringLiteral("mathTransformAction"));
+                    auto* mathCreate =
+                        findVisualItem(window, QStringLiteral("mathTransformCreateButton"));
+                    check(controller.selectedEditPoint().value(
+                              QStringLiteral("mathTransformCandidate")) == false &&
+                              mathAction && !mathAction->property("enabled").toBool() &&
+                              mathCreate && !mathCreate->isVisible(),
+                          "映像の編集点で数式の変形を適用できる表示になっています");
                     QTest::keyClick(window, Qt::Key_D, Qt::ShiftModifier);
                     pump(300);
                     const auto transitions = controller.timelineTransitions();
@@ -1496,6 +2051,17 @@ int main(int argc, char** argv) {
                             findVisualItem(window, QStringLiteral("timelineTransition_") + id);
                         check(drawn && drawn->isVisible() && drawn->width() > 0,
                               "置いたトランジションを timeline に描きません");
+                        const auto& placed = controller.projectForTest().timelineTransitions;
+                        auto* drawnLabel = drawn ? drawn->findChild<QQuickItem*>(
+                                                       QStringLiteral("timelineTransitionLabel"))
+                                                 : nullptr;
+                        check(placed.size() == 1 &&
+                                  placed.front().kind == mvm::project::TransitionKind::Blend &&
+                                  drawnLabel &&
+                                  drawnLabel->property("text").toString() ==
+                                      QStringLiteral("クロスディゾルブ"),
+                              "Shift+D の映像のトランジションがクロスディゾルブ (Blend) "
+                              "ではありません");
                         controller.selectTimelineClips({});
                         pump();
                         // 選択を外しても delegate は作り直さない (同じ item のまま)。

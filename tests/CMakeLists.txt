@@ -4010,6 +4010,12 @@ add_test(NAME math_transform_inspector_product_ui
 set_tests_properties(math_transform_inspector_product_ui PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)
+# P2-7: 製品の Main.qml で数式の変形を作り、長さ・削除・保存と作れない・使えない理由を確かめる。
+add_test(NAME math_transform_authoring_product_ui
+    COMMAND mvm_test_text_ui_input --math-transform-authoring)
+set_tests_properties(math_transform_authoring_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
 add_test(NAME audio_mixer_controls_qml
     COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
             -Runner ${MVM_QMLTESTRUNNER}

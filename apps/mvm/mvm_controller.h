@@ -137,20 +137,25 @@ class MvmController : public QObject {
     Q_PROPERTY(qint64 totalTimelineFrames READ totalTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(qint64 navigationTimelineFrames READ navigationTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(QVariantList timelineMarkers READ timelineMarkers NOTIFY stateChanged)
-    // timeline に描くトランジション。{transitionId, trackKind, trackIndex, start, cut, end}。
+    // timeline に描くトランジション。{transitionId, trackKind, trackIndex, start, cut, end, kind}。
     // 選択は selectedTransitionId と比べる (選択で model を変えない)。
     // Repeater の model なので stateChanged (再生中も頻繁に出る) では通知しない。通知のたびに
     // delegate が作り直される。
     Q_PROPERTY(
         QVariantList timelineTransitions READ timelineTransitions NOTIFY timelineTransitionsChanged)
-    // 選択中の編集点 {trackKind, trackIndex, frame}。無ければ空。clip の選択とは排他。
+    // 選択中の編集点 {trackKind, trackIndex, frame, outgoingName, incomingName,
+    //  mathTransformCandidate, mathTransformRejection}。無ければ空。clip の選択とは排他。
+    // mathTransformCandidate は applyMathTransform を試せる編集点 (どちらかの端が数式 clip)。
+    // 置けるかどうかの条件はここでは見ない (model の applyMathTransformTransition だけが決め、
+    // 断った理由が mathTransformRejection)。
     Q_PROPERTY(QVariantMap selectedEditPoint READ selectedEditPoint NOTIFY stateChanged)
     Q_PROPERTY(QString selectedTransitionId READ selectedTransitionId NOTIFY stateChanged)
     // エフェクトコントロールに出す選択中のトランジション。無ければ空。
     // {transitionId, trackKind, cut, framesBeforeCut, framesAfterCut, durationText (timecode),
     //  maxBefore, maxAfter,
     //  outgoingClipId, outgoingName, outgoingStart, outgoingEnd,
-    //  incomingClipId, incomingName, incomingStart, incomingEnd} (frame は timeline frame)。
+    //  incomingClipId, incomingName, incomingStart, incomingEnd, kind} (frame は timeline frame)。
+    // 数式の変形は mathTransformStatus の key と、長さの変更を断った理由 spanRejection を足す。
     // max* は cut の前後に置ける長さの上限 (transitionSpanLimits, リンク相手込み)。
     // 上限の計算は Project を複写するので、再生中も出る stateChanged では通知しない。
     Q_PROPERTY(
@@ -831,6 +836,11 @@ public:
     // 編集点 (またはトランジション) を選んでいれば、そこへ 1 秒のクロスディゾルブ /
     // クロスフェードを 置く (リンク相手も同じ cut なら一緒に)。
     Q_INVOKABLE bool applyDefaultTransition();
+    // 選択中の編集点に数式の変形を置く (project::applyMathTransformTransition)。長さは
+    // Blend と同じ既定の長さ (defaultTransitionFrames) を求め、置ける長さは model が決める。
+    // 1 回が 1 undo。置いた変形を選ぶ。model が断れば理由を status と selectedEditPoint の
+    // mathTransformRejection に出し、Project・Undo を変えない (Blend で代用しない)。
+    Q_INVOKABLE bool applyMathTransform();
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
                                            qint64 requestedFrame, double value) const;
     Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,
@@ -1401,6 +1411,16 @@ private:
     std::string selectedEditOutgoing_;
     std::string selectedEditIncoming_;
     std::string selectedTransitionId_;
+    // 数式の変形の作成・長さの変更を model が断った理由。断ったときの編集点 (またはトランジション)
+    // と Project の revision が今と同じ間だけ UI に出す (Project が変われば古い理由は出さない)。
+    struct MathTransformRejection {
+        std::string outgoingId;
+        std::string incomingId;
+        std::string transitionId;
+        std::uint64_t revision = 0;
+        QString message;
+    };
+    MathTransformRejection mathTransformRejection_;
     // 最後に通知した timelineTransitions。変わったときだけ timelineTransitionsChanged を出す。
     QVariantList shownTransitions_;
     // 最後に通知した selectedTransition。

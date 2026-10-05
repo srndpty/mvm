@@ -121,6 +121,17 @@ ColumnLayout {
         font.bold: true
         font.pixelSize: 12
     }
+    // 数式の変形の向き (どの式からどの式へ変えるか)。端点の式は両 clip を参照する。
+    Label {
+        objectName: "mathTransformEndpoints"
+        Layout.fillWidth: true
+        visible: root.isMathTransform
+        text: "変形前  " + (root.transition.outgoingName ?? "") + "  →  変形後  "
+              + (root.transition.incomingName ?? "")
+        color: "#9aa2ad"
+        font.pixelSize: 11
+        wrapMode: Text.Wrap
+    }
 
     // 数式の変形: disk の描画 (書き出しが使う) の状態と、preview 用の mask を memory に置けたかを
     // 分けて示す。使えない間の preview は前後の式を cut で切り替える。
@@ -279,6 +290,17 @@ ColumnLayout {
                                                           root.maxAfter), true);
             }
         }
+    }
+
+    // 長さの変更を model が断った理由 (Write・区間の見た目・尺)。置ける範囲は UI で計算せず、
+    // controller の結果だけを出す。Project が変わると消える。
+    Label {
+        objectName: "mathTransformSpanRejection"
+        Layout.fillWidth: true
+        visible: root.isMathTransform && text.length > 0
+        text: root.transition.spanRejection || ""
+        color: "#f2c66d"
+        wrapMode: Text.Wrap
     }
 
     // --- ミニタイムライン ---
@@ -515,6 +537,20 @@ ColumnLayout {
                 height: parent.height
                 color: "#4aa3ff"
             }
+        }
+    }
+
+    // 削除は Delete キーと同じ deleteSelection (Undo 1 回分)。
+    Flow {
+        Layout.fillWidth: true
+        Layout.topMargin: 4
+        visible: root.isMathTransform
+        spacing: 6
+        ModernDialogButton {
+            objectName: "transitionDeleteButton"
+            text: "トランジションを削除"
+            enabled: root.editable
+            onClicked: root.mvmController.deleteSelection()
         }
     }
 

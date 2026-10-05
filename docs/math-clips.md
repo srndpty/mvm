@@ -985,6 +985,110 @@ P2-5 の描画・timeline・色・ClipEffects の振る舞いは変えていな�
   示すものとは扱わない。証拠は `build/math-p261-release-20261006.log`。
   未解決の preview 調査は `docs/roadmap.md` の既存の項目へ追記した。
 
+### MathTransform の編集 UI (P2-7)
+
+P2-1 の model と controller の操作を、製品の UI から使えるようにした。Project の schema・分け方と照合・
+Manim の描画・cache と artifact の形・preview と書き出しの意味・変形を置ける条件は変えていない。
+数式専用の関係の editor は作らず、既存のトランジションの UI (編集点の選択・timeline の帯・
+エフェクトコントロールの `TransitionInspector.qml`) をそのまま使う。
+
+- 作成
+  - 数式 clip の編集点を選ぶと (clip の端を押す。Blend の Shift+D と同じ選び方)、
+    エフェクトコントロールに「編集点」の欄が出て、「数式の変形を適用」のボタンを押せる。
+    同じ Action (`mathTransformAction`) を編集メニューにも置いた。
+  - 押せるのは、どちらかの端が数式 clip の編集点だけ (`selectedEditPoint.mathTransformCandidate`)。
+    置けるかどうかの条件はここで見ない。数式 clip と文字 clip の編集点も押せ、model の理由を示す。
+  - controller の `applyMathTransform` は `applyMathTransformTransition` を呼ぶだけ。求める長さは
+    Blend と同じ `defaultTransitionFrames` (1 秒) で、cut から始め、置けない分を縮めるのは model。
+    UI 専用の既定の長さは持たない。1 回が 1 undo で、置いた変形を選ぶ。
+  - model が断ったら、その理由の文をそのまま status と編集点の欄 (`mathTransformRejection`) に出し、
+    Project・Undo・Redo を変えない。Blend で代用しない。理由は断った編集点と Project の revision が
+    今と同じ間だけ出す (別の編集点・編集の後には持ち越さない)。
+  - timeline の帯の文字は、変形なら「数式の変形」(`timelineTransitions` に `kind` を足した)。
+- 選んだ変形のエフェクトコントロール (既存の項目に足したもの。クロスディゾルブには出さない)
+  - 向き: 「変形前 A → 変形後 B」(両 clip の名前)
+  - 削除のボタン (Delete キーと同じ `deleteSelection`)
+  - 長さの変更を断った理由 (`selectedTransition.spanRejection`)
+  - 種類 (題)・長さと前後 (既存の長さ欄・配置・ミニタイムライン)・disk の状態・preview の memory と
+    配置の理由・導入の案内は P2-5 / P2-5.1 のまま。
+  - パネル全体を `BoundedFlickable` に入れた。状態・理由・案内の行が増えても、低いパネルで長さ欄・
+    ミニタイムライン・削除までスクロールで届く (以前はパネルの上に固定し、スクロールしなかった)。
+- 長さの変更・削除は既存の `setTransitionSpan` (`nearestTransitionSpan` で吸着し、
+  `setTimelineTransitionSpan` で確定) と `deleteSelection` (`deleteTimelineTransition`)。
+  - 上限・吸着・可否は model だけが決める。QML は前後の上限を計算しない (既存の `maxBefore` /
+    `maxAfter` をドラッグの表示に使うだけ)。
+  - 前の clip の Write や区間の見た目で置けない長さは、model が置ける長さへ止める。
+    変形のときは status を「変形を置ける範囲に合わせて」とし、それ以上変えられない要求は
+    理由を inspector に残す (Blend の status の文は変えていない)。
+  - 断った変更では Project・Undo を変えない。preview・cache の要求は既存の Project の変更の経路で出る。
+- 作れない (Project の変形として不正) と、使えない (変形は正しいが描画・backend・preview が今は使えない) の区別
+  - 作れない: 編集点の欄 (作成) と inspector の長さの理由 (変更) に model の理由を出す。
+    Project は変えない。
+  - 使えない: backend の不在・権限・描画の失敗・memory・配置は、作った変形を消さず、
+    inspector の描画の行と preview の行に出す (P2-5 / P2-5.1 の表示)。
+- 試験: `math_transform_authoring_product_ui` (新規、`mvm_test_text_ui_input --math-transform-authoring`)。
+  製品の `Main.qml` と実 controller、60 fps の timeline に組ごとに間を空けた数式 clip を置く。
+  期待値は手で数えた値と、同じ Project の複写へ model を直接呼んだ結果。
+  - backend の無い状態で、A→B の編集点のボタンから作る。
+    - `TransitionKind::MathTransform` で、長さは model の直接の呼び出しと同じ cut の前 0 / 後 60。Undo 1 回分。
+    - 変形を選び、timeline の帯と題が「数式の変形」、向きが「式A → 式B」。
+    - 利用不可・導入の案内を出し、変形は Project に残る。
+  - 長さ欄に 0.5 秒 → 0 / 30 (同じ ID・同じ種類)、前後 20 / 25、Undo / Redo、作成時の 0 / 60 へ戻る。
+  - 作成の拒否 4 種。表示は model を直接呼んだときの理由の文と一致し、Project・Undo・Redo は不変で、
+    トランジションの数も変わらない。
+    - 後ろの clip の Write
+    - 不透明な背景
+    - 位置の違う ClipEffects
+    - 数式 clip と文字 clip
+  - 理由を別の編集点へ持ち越さない。文字 clip どうしの編集点では Action とボタンが使えない。
+  - 区間の途中で位置が動く clip: model が縮めた 1 frame で作る。
+  - 前の clip の Write (280 / 300 frame)
+    - cut の前 30 の要求は model が 20 で止める。
+    - 40 の要求は断り、Project・Undo・Redo は不変で、理由を inspector に出す。
+    - model へ直接 21 を渡すと「cut の前は最大 20」で断る。
+    - 別の変形を選ぶと理由は消える。
+  - backend を使えるようにする: 完了、描画の失敗 (`BADT`) で変形が残り理由を出す、
+    出力に収まらない (1916x2) で disk は完了のまま配置の理由、memory の上限 16 byte で
+    完了のまま memory の理由。選択を変えると前の変形の理由・向きは出さない。
+  - 幅 240・window の高さ 560 のパネル: 中身が表示より高く、状態・配置の理由・向き・長さ欄・
+    削除ボタンへスクロールで届き、幅の中に収まる。配置の理由は折り返す。
+  - 削除ボタン: 変形だけが Undo 1 回分で消え、Undo で同じ ID・種類・長さに戻り、Redo で消える。
+  - 保存して読み直す: file の kind は `math_transform`。読み直した Project を別の controller で
+    同じ window に出し、帯・題・向き・長さが変形として見える。
+  - 既存の Blend の試験 (`text_ui_direct_input`) に足した検査:
+    - 映像の編集点では Action とボタンが使えない。
+    - Shift+D の結果は Blend で、帯は「クロスディゾルブ」。
+    - クロスディゾルブの inspector に変形の行 (向き・状態・削除・長さの理由) を出さない。
+  - [事実] 変異を 1 つずつ入れると、すべて検出された。
+    | 変異 | 失敗した検査 |
+    |---|---|
+    | controller が求める長さを 2 倍にする (UI 専用の既定) | 6 件 |
+    | 作成を断った理由を編集点の欄に残さない | 4 件 |
+    | inspector のスクロールの中身の高さを表示の高さにする | 6 件 |
+
+#### P2-7 の検証 (2026-10-06)
+
+- [事実] 集中試験 (release、画面を消灯させない設定の下):
+  `ctest --test-dir build/ucrt64-release -R '^(m5_timeline_edit_focused|m7b_4_transition_editor_qml|transition_preview|text_ui_direct_input|math_.*|manim_math_tex_focused)$' -LE 'performance|stability' --timeout 300`
+  は 20 件中 19 件通過。`math_write_native_playback` が 1 件失敗した
+  (「一時停止中に mask を読み、合成に Write を付ける」「先頭から再生する」「再生が 60 frame まで進む」、22 検査中 3 件、12.1 秒)。
+  証拠は `build/math-p27-focused-20261006.log`。
+  - 同じ試験を単独で 1 回 + 5 回 (`--repeat until-fail:5`) 回すと 6 / 6 通過した
+    (`build/math-p27-write-native-diag1.log`・`build/math-p27-write-native-diag5.log`)。
+    この試験は `Main.qml` を使わず、P2-7 で変えた controller の関数も呼ばない。原因は未特定で、
+    P2-7 と無関係とは確かめていない。`docs/roadmap.md` に置いた。
+- [事実] lint は通過 (`build/math-p27-lint-20261006.log`)。最初の実行は試験の file の整形で落ち、
+  `scripts/format.ps1` の後に通過した (整形で変わったのはその file だけ)。
+- [事実] 完全な通常 release gate (`pwsh scripts/test.ps1 -Preset ucrt64-release`、画面を消灯させない設定の下) を
+  一回実行し、1457 件中 1456 件通過 (748 秒)。
+  - `m4_timeline_export_focused_tractor` が 1 件失敗した
+    (「末尾補完が必要なclipをtractorで書き出せません / padding-v1-effects.mp4: tractor出力を検証できません」)。
+  - P2-7 は書き出しの経路を変えていないが、因果関係は確かめていない。全通過とは扱わず、再試行もしていない。
+  - 同じ gate の中で `math_transform_authoring_product_ui`・`text_ui_direct_input`・
+    `math_write_native_playback`・`transition_preview` は通過した。
+  - 証拠は `build/math-p27-release-20261006.log`。performance / stability は実行していない。
+- P2-8 の受け入れはまだ行っていない。
+
 ### P2-1 の gate (2026-10-05)
 
 - [事実] 通常の release gate (`build/math-p21-release-gate.log`) は 1452 件中 1444 件が通過し、

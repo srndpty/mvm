@@ -17,6 +17,11 @@
   再現: 実 Manim smoke の対照。証拠は `build/math-p061-attribution-20261004-203505.log` と
   同名 directory の `audio-text.mvm` / `audio-image.mvm` / `acceptance.mvm`。
   Math Clip P0 の完了 gate には音声出力の成功を含めない。過去の P0-6 の失敗は保持する。
+- [事実] 2026-10-06、P2-7 の通常 release gate 一回で `m4_timeline_export_focused_tractor` が失敗した
+  (「末尾補完が必要なclipをtractorで書き出せません」、`padding-v1-effects.mp4` の tractor 出力を検証できない)。
+  1457 件中 1456 件通過。P2-7 は書き出しの経路を変えていない。再試行はしていない。
+  再現コマンドは `pwsh scripts/test.ps1 -Preset ucrt64-release`、証拠は `build/math-p27-release-20261006.log`。
+  原因と再現性は未調査。
 
 ## 数式 clip
 
@@ -42,6 +47,10 @@
     実測の bbox による artifact の矩形、半画素の補正、端点の照合)
   - (済: P2-5) preview (A の layer と B の layer が同じ変形の frame を見せる、artifact の位置の規則) と
     エフェクトコントロールの状態 (disk の描画と preview の memory を分けて示す)
+  - (済: P2-7) 製品の UI からの作成・長さ・削除 (`docs/math-clips.md` の「MathTransform の編集 UI」)
+  - [事実] 2026-10-06、P2-7 の集中試験の一括実行で `math_write_native_playback` が 1 回失敗した
+    (一時停止中の mask の読み込みと再生の開始、22 検査中 3 件)。単独では 6 / 6 通過し、
+    同じ日の通常 release gate でも通過した。原因は未特定 (`build/math-p27-focused-20261006.log`)。
   - 変形の mask の先読み: 今は前・後ろの clip が見える frame の合成が要求してから memory に読むので、
     再生中に読み終えるまでは cut で見せる (読み終えた次の tick から、その時刻の変形の frame を見せる)
 - P2 の後: 手動の照合・部分式の ID・強調、背景の矩形の補間、区間の中で ClipEffects が
