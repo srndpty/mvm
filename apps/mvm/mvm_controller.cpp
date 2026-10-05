@@ -8352,12 +8352,9 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
                                                  std::string& error) {
             return loadMathTransformFrame(artifact, index, bytes, error);
         };
+        if (mathTransformExportFrameLoaderForTest_)
+            input.loadFrame = mathTransformExportFrameLoaderForTest_;
         request.mathTransforms.emplace(transition.id, std::move(input));
-    }
-    const auto plan = mapTimelineExportPlan(project_, request);
-    if (!plan.success) {
-        reportExportFailure(QString::fromStdString(plan.error));
-        return false;
     }
 
     if (exportThread_.joinable())

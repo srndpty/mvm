@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -1354,6 +1355,77 @@ void testMathTransformPlacementDoesNotFit(const QTemporaryDir& temp,
     controller->shutdown();
 }
 
+// reader は GUI thread なら待たずに失敗させるので、旧実装でも試験自体はハングしない。
+// worker の reader は、start が返った後に試験が明示解放するまで待機する。
+void testMathTransformExportWorker(const QTemporaryDir& temp) {
+    const auto initial = transformProject("a", "b");
+    const auto path =
+        std::filesystem::path(temp.filePath("transform export worker.mvm").toStdWString());
+    const auto output = std::filesystem::path(temp.filePath("worker.mp4").toStdWString());
+    check(project::saveProjectJson(initial, path).success, "worker: project の保存");
+    const auto guiThread = std::this_thread::get_id();
+    std::atomic<int> guiLoads{0}, workerLoads{0}, progressCalls{0};
+    std::atomic<bool> wrongProgressThread{false}, entered{false}, timedOut{false};
+    std::mutex mutex;
+    std::condition_variable released;
+    bool release = false;
+    auto controller = std::make_unique<MvmController>(
+        path, std::filesystem::path{}, initial, nullptr,
+        [&](const project::Project& snapshot, const mvm::app::TimelineExportRequest& request) {
+            auto observed = request;
+            const auto progress = request.progress;
+            observed.progress = [&, progress](long long completed, long long total) {
+                ++progressCalls;
+                if (std::this_thread::get_id() == guiThread)
+                    wrongProgressThread = true;
+                return progress && progress(completed, total);
+            };
+            return mvm::app::exportTimeline(snapshot, observed);
+        });
+    FakeMathBackend backend;
+    controller->setMathPreflightForTest(backend.preflight());
+    check(pump([&] {
+              return controller->mathRastersForTest().backendState() ==
+                     mvm::app::MathRasterCache::BackendState::Available;
+          }),
+          "worker: 偽の backend が使える");
+    controller->selectTransition(QStringLiteral("t1"));
+    check(waitTransformState(*controller, QStringLiteral("ready")), "worker: 現在の disk は Ready");
+    controller->setMathTransformExportFrameLoaderForTest(
+        [&](std::size_t, std::vector<std::uint8_t>&, std::string& error) {
+            error = "試験で停止した変形 frame";
+            if (std::this_thread::get_id() == guiThread) {
+                ++guiLoads;
+                return false;
+            }
+            ++workerLoads;
+            std::unique_lock lock(mutex);
+            entered = true;
+            if (!released.wait_for(lock, std::chrono::seconds(10), [&] { return release; }))
+                timedOut = true;
+            return false;
+        });
+    const bool started =
+        controller->exportTimeline(QUrl::fromLocalFile(QString::fromStdWString(output.wstring())));
+    check(started && guiLoads == 0, "worker: start は frame reader を GUI thread で呼ばずに返る");
+    check(started && pump([&] { return entered.load(); }), "worker: reader が worker で待機に入る");
+    bool heartbeat = false;
+    QMetaObject::invokeMethod(controller.get(), [&] { heartbeat = true; }, Qt::QueuedConnection);
+    check(pump([&] { return heartbeat; }) && controller->exporting() && !timedOut,
+          "worker: reader の待機中も GUI event を処理し、書き出しは未完了");
+    {
+        std::lock_guard lock(mutex);
+        release = true;
+    }
+    released.notify_all();
+    check(pump([&] { return !controller->exporting(); }), "worker: 解放後に検査失敗を通知する");
+    check(workerLoads == 1 && guiLoads == 0 && !timedOut && progressCalls > 0 &&
+              !wrongProgressThread,
+          "worker: frame 検査と progress は worker のみで実行する");
+    check(!std::filesystem::exists(output), "worker: frame 検査失敗では出力を作らない");
+    controller->shutdown();
+}
+
 bool submittedHasWrite(const MvmController& controller) {
     const auto composition = controller.submittedCompositionForTest();
     if (!composition)
@@ -2488,6 +2560,7 @@ int main(int argc, char** argv) {
     testMathTransformWithWrite(temp, captured);
     testMathTransformYieldsToEditing(temp, captured);
     testMathTransformPlacementDoesNotFit(temp, captured);
+    testMathTransformExportWorker(temp);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;

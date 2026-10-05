@@ -151,6 +151,10 @@ clip の編集で字幕を置き直すとき、毎回 timeline の frame から�
   debug は `transition_preview` だけ失敗した (frame 110 の incoming 不透明度が −1、期待 0.025)。
   この形は下記の単独検証でも観測されている。新機能の解析・試聴・製品メニュー操作は両構成で通過。
   ログは `build/audio-adjustment-optimized-tests.log` に保存した。
+  [事実] 2026-10-06、P2-6.1 の通常 release gate 一回でも、frame 110 の incoming 不透明度が
+  −1 (期待 0.025) となり、`stale-engine-reset` の source 準備要求の前提も失敗した。
+  証拠は `build/math-p261-release-20261006.log`。preview の処理は変更していないが、
+  今回の発生原因は未特定。再試行による成功 run の選別はしていない。
 
 - [事実] 2026-10-04、release の通常テスト一式 (並列 8) の 1 回で
   `preview_engine_p5e_remove_fatal_event_order` が SEGFAULT で落ちた。単独では 5/5 通過。

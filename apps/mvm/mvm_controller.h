@@ -648,6 +648,12 @@ public:
     // 試験用: 数式の backend の確認を差し替えて確かめ直す (偽の backend を注入する)。
     void setMathPreflightForTest(MathRasterCache::PreflightFunction preflight);
     MathRasterCache& mathRastersForTest() { return *mathRasters_; }
+    // 試験用: disk 検査後に要求へ渡す frame reader を差し替え、実行 thread と待機を検査する。
+    using MathTransformExportFrameLoader =
+        std::function<bool(std::size_t, std::vector<std::uint8_t>&, std::string&)>;
+    void setMathTransformExportFrameLoaderForTest(MathTransformExportFrameLoader loader) {
+        mathTransformExportFrameLoaderForTest_ = std::move(loader);
+    }
     // 試験用: Write の preview の評価 (engine の render thread が出力 frame ごとに呼ぶ) を観測する。
     // 引数は clip ID・出力 frame・見せる Write の frame (-1 は静止)。設定後に作る animation に効く。
     // render thread から呼ぶので、observer は thread 安全にすること。
@@ -1497,6 +1503,7 @@ private:
     mutable QHash<QString, MathPreviewAnimationMemo> mathPreviewAnimations_;
     MathWriteObserver mathWriteObserverForTest_;
     MathTransformObserver mathTransformObserverForTest_;
+    MathTransformExportFrameLoader mathTransformExportFrameLoaderForTest_;
     // 入力中の数式 (clip ID と、Project へまだ保存していない値)。
     std::optional<std::pair<std::string, project::MathClipData>> mathPreviewOverride_;
     mutable QHash<QString, QRect> textRasterBounds_;

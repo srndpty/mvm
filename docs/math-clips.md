@@ -925,6 +925,8 @@ P2-5 の描画・timeline・色・ClipEffects の振る舞いは変えていな�
 - `mapTimelineExportPlan` は `mathTransformIsRendered` が真の変形すべてについて、要求の spec が現在の
   Project と一致し、枚数が `mathTransformWindowFor` の区間と一致することを確認する。
   `mathTransformRasterPlacement` で現在の出力サイズへの配置を検査し、出力開始前に全 A8 frame を読む。
+  この全 plan 検査は `exportTimeline` の先頭で書き出し worker が行う (P2-6.1)。controller は現在の
+  静止 artifact と `readyTransformForExport` の確認、および要求の作成だけを行い、plan は作らない。
   disk が Ready でも、配置が収まらない・frame が欠けた・内容が変わった場合は書き出しを拒否する。
 - 各 clip を Write・変形・静止の区間に分ける。変形の timeline frame は `mathTransformFrameAt` で選び、
   検証済み disk artifact の `.a8` を 1 枚ずつ `loadMathTransformFrame` で読む。
@@ -962,6 +964,26 @@ P2-5 の描画・timeline・色・ClipEffects の振る舞いは変えていな�
   `ownership_soak_100` の音声 consumer timeout が 1 件失敗。全通過とはしない。
   証拠は `build/math-p26-release-alpha-20261006.log`。未解決の調査は `docs/roadmap.md` に置く。
   performance / stability は実行していない。過去の P0・P1・P2 の記録は上書きしていない。
+
+#### P2-6.1: 書き出し plan の検査 thread
+
+- controller の同期 `mapTimelineExportPlan` 呼び出しを削除した。現在の静止 artifact と
+  各描画対象の `readyTransformForExport` の確認は維持する。配置・枚数・全 A8 frame の検査は
+  `exportTimeline` の先頭の worker 側 plan 検査が行い、失敗時は出力を作らない。
+- 回帰試験は disk が Ready の要求に待機する frame reader を注入し、worker の reader を
+  試験が明示的に解放するまで止める。開始呼び出しが先に返り、待機中に GUI の queued event を
+  処理できること、reader と progress が GUI thread で実行されないこと、検査失敗で出力が
+  作られないことを検査する。GUI thread で呼ばれた reader は直ちに失敗するので旧実装でも
+  ハングせずに回帰を検出する。秒数の速さを合否の基準にはしない。
+- [事実] Math / export は 19 件中 19 件通過。controller は追加分込みで 405 検査中 0 件失敗、
+  Transform export は 144 検査中 0 件失敗。実行条件は P2-6 と同じ release の集中試験。
+  証拠は `build/math-p261-focused-20261006.log`。lint も通過 (`build/math-p261-lint-20261006.log`)。
+- [事実] 完全な通常 release gate は `pwsh scripts/test.ps1 -Preset ucrt64-release` を一回実行し、
+  1456 件中 1455 件通過、`transition_preview` が 1 件失敗。incoming opacity と
+  `stale-engine-reset` の source 準備要求の検査で失敗した。全通過とは扱わず、再試行もしていない。
+  `ownership_soak_100` は今回通過したが、音声処理は変更しておらず、前回の失敗原因の解消を
+  示すものとは扱わない。証拠は `build/math-p261-release-20261006.log`。
+  未解決の preview 調査は `docs/roadmap.md` の既存の項目へ追記した。
 
 ### P2-1 の gate (2026-10-05)
 
