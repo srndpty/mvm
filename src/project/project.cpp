@@ -152,6 +152,26 @@ bool hasSyntheticSourceDomain(const TimelineClip& clip) {
     return isStillClipKind(clip.kind) || clip.frameHold.has_value();
 }
 
+const char* transitionKindName(TransitionKind kind) {
+    switch (kind) {
+    case TransitionKind::Blend:
+        return "blend";
+    case TransitionKind::MathTransform:
+        return "math_transform";
+    }
+    return "";
+}
+
+bool parseTransitionKind(const std::string& name, TransitionKind& kind) {
+    for (const auto candidate : {TransitionKind::Blend, TransitionKind::MathTransform}) {
+        if (name == transitionKindName(candidate)) {
+            kind = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
 const char* trackKindName(TrackKind kind) {
     switch (kind) {
     case TrackKind::Video:

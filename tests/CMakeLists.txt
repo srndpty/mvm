@@ -779,6 +779,15 @@ add_executable(mvm_test_project_math harness/test_project_math.cpp)
 target_link_libraries(mvm_test_project_math PRIVATE mvm::project mvm::util mvm::warnings)
 mvm_add_test(math_project_json_focused COMMAND mvm_test_project_math PROPERTIES TIMEOUT 30)
 
+# 数式の変形 (P2-1): Project / timeline の model と編集の不変条件。描画は含まない。
+add_executable(mvm_test_math_transform_timeline harness/test_math_transform_timeline.cpp)
+# math_clip_render は preview・書き出しの Write の frame の選び方 (mathIntroFrameAt) を、
+# 変形の条件と同じ境界か比べるために使う (Qt に依存しない)。
+target_link_libraries(mvm_test_math_transform_timeline PRIVATE mvm::project mvm::math_clip_render
+                                                               mvm::util mvm::warnings)
+mvm_add_test(math_transform_timeline_focused COMMAND mvm_test_math_transform_timeline
+             PROPERTIES TIMEOUT 30)
+
 add_executable(mvm_test_math_raster_cache harness/test_math_raster_cache.cpp)
 # Qt6::Gui は偽の backend が Write の連番の PNG を QImage で書くために使う。
 target_link_libraries(mvm_test_math_raster_cache PRIVATE

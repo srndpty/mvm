@@ -112,6 +112,19 @@ ClipProducerRange clipProducerRange(const TimelineClip& clip, std::int64_t timel
 TimelineFrameResult clipFadeSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
                                           std::int64_t timelineFpsDen, std::int64_t clipLocalFrame);
 bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip);
+
+// 数式 clip の intro (Write) の時間の正。clip の先頭からの timeline local frame で、intro の
+// どの frame を見せるか (素材 local frame。intro の外と intro の無い clip は -1)。素材 frame への
+// 換算は fade と同じ clipFadeSourceFrameAt (四捨五入) で、intro は素材 local frame < introFrames の
+// 間だけ見える。preview・書き出し (mathIntroFrameAt) とトランジションの条件・reconcile
+// (mathIntroTimelineFrames) はどちらもこれを通し、境界の丸めを別々に持たない。
+TimelineFrameResult mathIntroSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                           std::int64_t timelineFpsDen,
+                                           std::int64_t clipLocalFrame);
+// intro が見える timeline local frame の数 (local frame 0 から連続し、mathIntroSourceFrameAt が
+// 0 以上を返す範囲)。intro の無い clip は 0。例: 30 fps で置いた Write 135 frame は 60 fps の
+// timeline では 269 (local frame 269 は素材 134.5 を四捨五入した 135 で、書き終えた式を見せる)。
+TimelineFrameResult mathIntroTimelineFrames(const Project& project, const TimelineClip& clip);
 TimelineValidationResult validateTimeline(const Project& project);
 
 // clip ID -> timelineClips の位置。トランジションごとに全 clip を走査しない (clip 数 x
@@ -343,6 +356,17 @@ TransitionEditResult applyDefaultEditTransition(Project& project, const std::str
                                                 const std::string& incomingId,
                                                 std::int64_t timelineFrames, LinkMode linkMode,
                                                 const std::function<std::string()>& newId);
+// 隣り合う 2 つの数式 clip の編集点に数式の変形 (TransitionKind::MathTransform) を置く。
+// cut から始め (cut の前 0、後 timelineFrames)、後ろの clip の尺や区間の見た目の条件で置けない
+// 分は縮める (0 frame になれば失敗する)。その編集点の既存のトランジションは置き換え、両 clip の
+// その端のフェードは消す (Blend と同じ)。条件 (数式 clip どうし・後ろに Write が無い・背景が
+// 透明・区間の見た目が一定で等しい・前の clip の Write と重ならない) を満たさなければ理由付きで
+// 失敗し、Project を変えない。長さの変更・削除は Blend と同じ setTimelineTransitionSpan /
+// deleteTimelineTransition を使う。
+TransitionEditResult applyMathTransformTransition(Project& project, const std::string& outgoingId,
+                                                  const std::string& incomingId,
+                                                  std::int64_t timelineFrames,
+                                                  const std::function<std::string()>& newId);
 TimelineEditResult deleteTimelineTransition(Project& project, const std::string& transitionId);
 
 struct TransitionSpanLimits {

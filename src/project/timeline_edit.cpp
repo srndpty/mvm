@@ -5,6 +5,7 @@
 #include "project/timeline_render.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <limits>
@@ -405,6 +406,51 @@ TimelineFrameResult clipFadeSourceFrameAt(const TimelineClip& clip, std::int64_t
     return result;
 }
 
+TimelineFrameResult mathIntroSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                           std::int64_t timelineFpsDen,
+                                           std::int64_t clipLocalFrame) {
+    TimelineFrameResult result;
+    if (clip.kind != TimelineClipKind::Math || clip.mathAnimation.intro == MathIntroKind::None) {
+        result.success = true;
+        result.frame = -1;
+        return result;
+    }
+    result = clipFadeSourceFrameAt(clip, timelineFpsNum, timelineFpsDen,
+                                   std::max<std::int64_t>(0, clipLocalFrame));
+    if (result.success && result.frame >= clip.mathAnimation.introFrames)
+        result.frame = -1;
+    return result;
+}
+
+TimelineFrameResult mathIntroTimelineFrames(const Project& project, const TimelineClip& clip) {
+    TimelineFrameResult result;
+    if (clip.kind != TimelineClipKind::Math || clip.mathAnimation.intro == MathIntroKind::None) {
+        result.success = true;
+        return result;
+    }
+    const auto duration = timelineClipDuration(project, clip);
+    if (!duration.success)
+        return duration;
+    // intro の素材 local frame は timeline local frame に対して単調なので、intro が見えなくなる
+    // 最初の frame を二分探索で求める。判定は mathIntroSourceFrameAt だけで行う。
+    std::int64_t low = 0;
+    std::int64_t high = duration.frame;
+    while (low < high) {
+        const std::int64_t middle = low + (high - low) / 2;
+        const auto shown =
+            mathIntroSourceFrameAt(clip, project.timelineFpsNum, project.timelineFpsDen, middle);
+        if (!shown.success)
+            return shown;
+        if (shown.frame < 0)
+            high = middle;
+        else
+            low = middle + 1;
+    }
+    result.success = true;
+    result.frame = low;
+    return result;
+}
+
 bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip) {
     // 速度込みの実効 fps で比べる。等速でない clip は timeline frame と素材 frame が 1:1
     // にならない。
@@ -539,6 +585,136 @@ bool dissolveClipCoversOpaque(const Project& project, const TimelineClip& clip,
            dissolveClipOpaqueOver(project, clip, localBegin, localEnd, error);
 }
 
+// 数式 clip の先頭の Write が占める timeline frame 数 (Write の無い clip は 0)。境界は
+// preview・書き出しと同じ mathIntroTimelineFrames が決める (丸めをここで持たない)。
+bool mathWriteTimelineFrames(const Project& project, const TimelineClip& clip, std::int64_t& frames,
+                             std::string& error) {
+    const auto write = mathIntroTimelineFrames(project, clip);
+    if (!write.success) {
+        error = clip.name + ": " + write.error;
+        return false;
+    }
+    frames = write.frame;
+    return true;
+}
+
+// clip の先頭側で既に使われている frame 数 (先頭のトランジションが内側に使う分と Write の
+// 大きい方)。末尾側のトランジションは、この内側には置けない。Write は数式 clip だけが
+// 持つので、数式 clip に置けない Blend の上限は変わらない。
+bool outgoingHeadUsage(const Project& project, const TimelineClip& clip,
+                       std::int64_t headTransitionInside, std::int64_t& usage, std::string& error) {
+    std::int64_t write = 0;
+    if (!mathWriteTimelineFrames(project, clip, write, error))
+        return false;
+    usage = std::max(headTransitionInside, write);
+    return true;
+}
+
+// 数式の変形の区間で揃える見た目 (評価した ClipEffects の位置・拡大・回転・切り抜き・不透明度)。
+// 数式は出力全面の raster に合成してから ClipEffects を掛けるので、両端の clip でこれが一定かつ
+// 等しければ、変形の画素は両端の静止と同じ変換を受け、区間の境で段差が出ない。
+using MathTransformLook = std::array<double, 10>;
+
+bool mathTransformLookAt(const Project& project, const TimelineClip& clip, std::int64_t local,
+                         MathTransformLook& look, std::string& error) {
+    const auto sourceLocal =
+        clipFadeSourceFrameAt(clip, project.timelineFpsNum, project.timelineFpsDen, local);
+    if (!sourceLocal.success) {
+        error = clip.name + ": " + sourceLocal.error;
+        return false;
+    }
+    const auto evaluated = evaluateClipEffects(clip.effects, local);
+    look = {evaluated.positionXPercent,
+            evaluated.positionYPercent,
+            evaluated.scaleXPercent,
+            evaluated.scaleYPercent,
+            evaluated.rotationDegrees,
+            evaluated.cropLeftPercent,
+            evaluated.cropTopPercent,
+            evaluated.cropRightPercent,
+            evaluated.cropBottomPercent,
+            evaluateClipOpacity(clip.effects, local, sourceLocal.frame,
+                                clip.sourceOutFrame - clip.sourceInFrame)};
+    return true;
+}
+
+const char* const kMathTransformLookRequirement =
+    "数式の変形の区間では、両端の数式 clip の位置・拡大・回転・切り抜き・不透明度を一定にして"
+    "揃えてください: ";
+
+// 長さに依らない条件。両端が数式 clip、incoming に Write が無い、両方の背景が透明、cut の両側の
+// frame (outgoing の最後と incoming の最初) で見た目が等しい。reference には揃える見た目を返す。
+// 描けるかどうか (式・backend) は見ない。
+bool mathTransformClipsEligible(const Project& project, const TransitionClips& clips,
+                                MathTransformLook& reference, std::string& error) {
+    const auto& outgoing = project.timelineClips[static_cast<std::size_t>(clips.outgoing)];
+    const auto& incoming = project.timelineClips[static_cast<std::size_t>(clips.incoming)];
+    if (outgoing.kind != TimelineClipKind::Math || incoming.kind != TimelineClipKind::Math) {
+        error = "数式の変形は隣り合う数式 clip どうしにだけ置けます: " +
+                (outgoing.kind != TimelineClipKind::Math ? outgoing.name : incoming.name);
+        return false;
+    }
+    // 変形は incoming の先頭を使うので、P2 では incoming の Write と両立させない。
+    if (incoming.mathAnimation.intro != MathIntroKind::None) {
+        error = "数式の変形の後ろの数式 clip には Write を付けられません: " + incoming.name;
+        return false;
+    }
+    // 背景の矩形は式の大きさで変わり、変形の端で段差になる (矩形の補間は未対応)。
+    for (const auto* clip : {&outgoing, &incoming}) {
+        std::uint32_t background = 0;
+        if (!parseArgbColor(clip->math.backgroundColor, background) || (background >> 24) != 0) {
+            error = "数式の変形の両端の数式 clip は背景を透明にしてください: " + clip->name;
+            return false;
+        }
+    }
+    MathTransformLook incomingLook{};
+    if (!mathTransformLookAt(project, outgoing, clips.outgoingDuration - 1, reference, error) ||
+        !mathTransformLookAt(project, incoming, 0, incomingLook, error))
+        return false;
+    if (reference != incomingLook) {
+        error = kMathTransformLookRequirement + incoming.name;
+        return false;
+    }
+    return true;
+}
+
+// clip の local frame [localBegin, localEnd) で見た目が reference と等しいか。
+bool mathTransformLookConstantOver(const Project& project, const TimelineClip& clip,
+                                   std::int64_t localBegin, std::int64_t localEnd,
+                                   const MathTransformLook& reference, std::string& error) {
+    for (std::int64_t local = localBegin; local < localEnd; ++local) {
+        MathTransformLook look{};
+        if (!mathTransformLookAt(project, clip, local, look, error))
+            return false;
+        if (look != reference) {
+            error = kMathTransformLookRequirement + clip.name;
+            return false;
+        }
+    }
+    return true;
+}
+
+// 長さを含めた数式の変形の条件。区間 [cut - before, cut + after) で見た目が一定であることと、
+// outgoing の Write が区間に掛からないこと (Write の後でだけ変形を始める)。
+bool mathTransformClipsFit(const Project& project, const TransitionClips& clips,
+                           std::int64_t before, std::int64_t after, std::string& error) {
+    MathTransformLook reference{};
+    if (!mathTransformClipsEligible(project, clips, reference, error))
+        return false;
+    const auto& outgoing = project.timelineClips[static_cast<std::size_t>(clips.outgoing)];
+    const auto& incoming = project.timelineClips[static_cast<std::size_t>(clips.incoming)];
+    std::int64_t write = 0;
+    if (!mathWriteTimelineFrames(project, outgoing, write, error))
+        return false;
+    if (before > clips.outgoingDuration - write) {
+        error = "数式の変形の区間が前の数式 clip の Write と重なっています: " + outgoing.name;
+        return false;
+    }
+    return mathTransformLookConstantOver(project, outgoing, clips.outgoingDuration - before,
+                                         clips.outgoingDuration, reference, error) &&
+           mathTransformLookConstantOver(project, incoming, 0, after, reference, error);
+}
+
 bool dissolveClipsEligible(const Project& project, const TransitionClips& clips,
                            std::int64_t before, std::int64_t after, std::string& error) {
     const auto& outgoing = project.timelineClips[static_cast<std::size_t>(clips.outgoing)];
@@ -597,7 +773,9 @@ bool validateTimelineTransitions(const Project& project, std::string& error) {
             error = "トランジションのある clip 端にはフェードを設定できません: " + transition.id;
             return false;
         }
-        if (!dissolveClipsEligible(project, clips, before, after, error))
+        if (transition.kind == TransitionKind::MathTransform
+                ? !mathTransformClipsFit(project, clips, before, after, error)
+                : !dissolveClipsEligible(project, clips, before, after, error))
             return false;
         durations[outgoing.id] = clips.outgoingDuration;
         durations[incoming.id] = clips.incomingDuration;
@@ -647,7 +825,17 @@ void reconcileTimelineTransitions(Project& candidate) {
         const auto& clips = entry.clips;
         if (outgoingUsed.contains(clips.outgoing) || incomingUsed.contains(clips.incoming))
             continue;
-        const auto usedHead = headInside.contains(clips.outgoing) ? headInside[clips.outgoing] : 0;
+        // 先頭のトランジションに加えて、数式 clip の Write も先頭側を使う (Write の後でだけ変形を
+        // 始める)。換算できなければ縮められないので、そのまま残して検証に理由を出させる。
+        std::int64_t usedHead = 0;
+        std::string usageError;
+        if (!outgoingHeadUsage(candidate,
+                               candidate.timelineClips[static_cast<std::size_t>(clips.outgoing)],
+                               headInside.contains(clips.outgoing) ? headInside[clips.outgoing] : 0,
+                               usedHead, usageError)) {
+            keep[entry.index] = true;
+            continue;
+        }
         const auto maxBefore = std::max<std::int64_t>(
             0, std::min(clips.headHandle, clips.outgoingDuration - usedHead));
         const auto maxAfter =
@@ -2188,14 +2376,19 @@ bool prepareEditTransition(Project& candidate, const std::string& outgoingId,
         return false;
     candidate.timelineClips[static_cast<std::size_t>(clips.outgoing)].effects.fadeOutFrames = 0;
     candidate.timelineClips[static_cast<std::size_t>(clips.incoming)].effects.fadeInFrames = 0;
-    std::int64_t outgoingHeadInside = 0;
+    std::int64_t outgoingHeadTransition = 0;
     std::int64_t incomingTailInside = 0;
     for (const auto& other : candidate.timelineTransitions) {
         if (other.incomingClipId == outgoingId)
-            outgoingHeadInside = other.framesAfterCut;
+            outgoingHeadTransition = other.framesAfterCut;
         if (other.outgoingClipId == incomingId)
             incomingTailInside = other.framesBeforeCut;
     }
+    std::int64_t outgoingHeadInside = 0;
+    if (!outgoingHeadUsage(candidate,
+                           candidate.timelineClips[static_cast<std::size_t>(clips.outgoing)],
+                           outgoingHeadTransition, outgoingHeadInside, error))
+        return false;
     maxBefore = std::max<std::int64_t>(
         0, std::min(clips.headHandle, clips.outgoingDuration - outgoingHeadInside));
     maxAfter = std::max<std::int64_t>(
@@ -2276,26 +2469,42 @@ struct PointClips {
     TimelineClip outgoing;
     TimelineClip incoming;
     TransitionClips clips;
+    TransitionKind kind = TransitionKind::Blend;
+    // MathTransform で区間の見た目を揃える値 (cut の両側の frame の見た目)。
+    MathTransformLook mathLook{};
 };
 
-// 編集点の clip を引く。長さに依らない条件 (映像の形と、区間の端の frame の不透明度) は
-// ここで理由を付けて断る。
+// 編集点の clip を引く。長さに依らない条件 (Blend は映像の形と区間の端の frame の不透明度、
+// MathTransform は数式 clip・Write・背景・cut の両側の見た目) はここで理由を付けて断る。
 bool resolvePointClips(const Project& prepared, const std::vector<EditPoint>& points,
-                       std::vector<PointClips>& resolved, std::string& error) {
+                       TransitionKind kind, std::vector<PointClips>& resolved, std::string& error) {
     resolved.clear();
     for (const auto& point : points) {
-        const TimelineTransition probe{"probe", point.outgoing, point.incoming, 0, 0};
+        const TimelineTransition probe{"probe", point.outgoing, point.incoming, 0, 0, kind};
         PointClips entry;
+        entry.kind = kind;
         if (!resolveTransitionClips(prepared, probe, entry.clips, error))
             return false;
         entry.outgoing = prepared.timelineClips[static_cast<std::size_t>(entry.clips.outgoing)];
         entry.incoming = prepared.timelineClips[static_cast<std::size_t>(entry.clips.incoming)];
-        if (entry.outgoing.track.kind == TrackKind::Video &&
-            !dissolveClipsEligible(prepared, entry.clips, 0, 0, error))
+        if (kind == TransitionKind::MathTransform) {
+            if (!mathTransformClipsEligible(prepared, entry.clips, entry.mathLook, error))
+                return false;
+        } else if (entry.outgoing.track.kind == TrackKind::Video &&
+                   !dissolveClipsEligible(prepared, entry.clips, 0, 0, error)) {
             return false;
+        }
         resolved.push_back(std::move(entry));
     }
     return true;
+}
+
+// 区間の中の見た目の条件を満たさないときの理由。
+std::string spanLookRequirement(TransitionKind kind) {
+    return kind == TransitionKind::MathTransform
+               ? std::string(kMathTransformLookRequirement) + "区間の中で見た目が変わっています"
+               : std::string(kDissolveRequirement) +
+                     "トランジションの区間で不透明度が下がっています";
 }
 
 // 置ける長さは cut の前 (before) と後 (after) で独立に決まる。
@@ -2377,7 +2586,9 @@ private:
             const auto cut = entry.clips.cut;
             if (!clipWithEdgeAt(prepared_, entry.outgoing, TrimEdge::Right, cut + after, ignored))
                 return false;
-            if (entry.outgoing.track.kind == TrackKind::Video &&
+            // incoming を cut + after で分けるのはクロスディゾルブの lane 1 だけ。
+            if (entry.kind == TransitionKind::Blend &&
+                entry.outgoing.track.kind == TrackKind::Video &&
                 after < entry.clips.incomingDuration &&
                 !clipWithEdgeAt(prepared_, entry.incoming, TrimEdge::Right, cut + after, ignored))
                 return false;
@@ -2385,7 +2596,8 @@ private:
         return true;
     }
 
-    // 映像の編集点ごとに cut から連続して不透明な frame を数え、その最小値を返す。
+    // 映像の編集点ごとに cut から連続して条件を満たす frame を数え、その最小値を返す。
+    // Blend は不透明であること、MathTransform は見た目が cut の両側と等しいこと。
     // cut の前は outgoing の終端から手前へ、後は incoming の先頭から奥へ数える。
     std::int64_t countOpaque(bool beforeCut) {
         std::int64_t limit = beforeCut ? maxBefore_ : maxAfter_;
@@ -2398,7 +2610,12 @@ private:
             while (count < limit) {
                 const auto local = beforeCut ? entry.clips.outgoingDuration - 1 - count : count;
                 ++opacityProbes_;
-                if (!dissolveClipOpaqueOver(prepared_, clip, local, local + 1, ignored))
+                const bool fits =
+                    entry.kind == TransitionKind::MathTransform
+                        ? mathTransformLookConstantOver(prepared_, clip, local, local + 1,
+                                                        entry.mathLook, ignored)
+                        : dissolveClipOpaqueOver(prepared_, clip, local, local + 1, ignored);
+                if (!fits)
                     break;
                 ++count;
             }
@@ -2479,7 +2696,7 @@ TransitionEditResult applyDefaultEditTransition(Project& project, const std::str
     if (!editPointsUpperBounds(prepared, points, timelineFrames, maxBefore, maxAfter, result.error))
         return result;
     std::vector<PointClips> resolved;
-    if (!resolvePointClips(prepared, points, resolved, result.error))
+    if (!resolvePointClips(prepared, points, TransitionKind::Blend, resolved, result.error))
         return result;
     // before と after のそれぞれで置ける長さを求めてから、合計が最大で cut に最も近い中央の
     // 組を選ぶ。
@@ -2517,8 +2734,7 @@ TransitionEditResult applyDefaultEditTransition(Project& project, const std::str
         std::int64_t ignoredBefore = 0;
         std::int64_t ignoredAfter = 0;
         result.error = choose(false, ignoredBefore, ignoredAfter)
-                           ? std::string(kDissolveRequirement) +
-                                 "トランジションの区間で不透明度が下がっています"
+                           ? spanLookRequirement(TransitionKind::Blend)
                            : "素材の余白が足りないためトランジションを作れません";
         return result;
     }
@@ -2543,6 +2759,62 @@ TransitionEditResult applyDefaultEditTransition(Project& project, const std::str
     result.transitionId = firstId;
     result.frames = before + after;
     result.transitionCount = static_cast<int>(points.size());
+    return result;
+}
+
+namespace {
+std::int64_t nearestInRange(std::int64_t target, std::int64_t lower, std::int64_t upper,
+                            std::int64_t towards, const std::function<bool(std::int64_t)>& fits);
+} // namespace
+
+TransitionEditResult applyMathTransformTransition(Project& project, const std::string& outgoingId,
+                                                  const std::string& incomingId,
+                                                  std::int64_t timelineFrames,
+                                                  const std::function<std::string()>& newId) {
+    TransitionEditResult result;
+    if (timelineFrames < 1 || !newId) {
+        result.error = "数式の変形の長さが不正です";
+        return result;
+    }
+    // 数式 clip はリンクを持たないので、編集点は 1 つだけ。
+    const std::vector<EditPoint> points{{outgoingId, incomingId}};
+    Project prepared = project;
+    std::int64_t maxBefore = 0;
+    std::int64_t maxAfter = 0;
+    if (!editPointsUpperBounds(prepared, points, timelineFrames, maxBefore, maxAfter, result.error))
+        return result;
+    std::vector<PointClips> resolved;
+    if (!resolvePointClips(prepared, points, TransitionKind::MathTransform, resolved, result.error))
+        return result;
+    // cut から始める (incoming を置いた所から変形が始まる)。incoming が短い・区間の中で見た目が
+    // 変わるなら、その手前まで縮める。
+    SpanFitter fitter(prepared, resolved, maxBefore, maxAfter);
+    const auto after = nearestInRange(maxAfter, 1, maxAfter, -1, [&](std::int64_t value) {
+        return fitter.afterFits(value, true);
+    });
+    if (after < 1) {
+        result.error = maxAfter < 1
+                           ? std::string("数式の変形に使える後ろの数式 clip の尺がありません")
+                           : spanLookRequirement(TransitionKind::MathTransform);
+        return result;
+    }
+    const std::string id = newId();
+    if (id.empty()) {
+        result.error = "数式の変形の ID を作れません";
+        return result;
+    }
+    Project trial = prepared;
+    trial.timelineTransitions.push_back(
+        {id, outgoingId, incomingId, 0, after, TransitionKind::MathTransform});
+    const auto committed = commitTransitionTrial(project, std::move(trial), incomingId);
+    if (!committed.success) {
+        result.error = committed.error;
+        return result;
+    }
+    result.success = true;
+    result.transitionId = id;
+    result.frames = after;
+    result.transitionCount = 1;
     return result;
 }
 
@@ -2608,7 +2880,7 @@ TransitionSpanFit nearestTransitionSpan(const Project& project, const std::strin
     std::vector<PointClips> resolved;
     if (!editPointsUpperBounds(prepared, points, std::numeric_limits<std::int64_t>::max(),
                                maxBefore, maxAfter, result.error) ||
-        !resolvePointClips(prepared, points, resolved, result.error))
+        !resolvePointClips(prepared, points, transition->kind, resolved, result.error))
         return result;
     SpanFitter fitter(prepared, resolved, maxBefore, maxAfter);
     const auto beforeFits = [&](std::int64_t value) { return fitter.beforeFits(value, true); };
@@ -2693,7 +2965,7 @@ TransitionEditResult setTimelineTransitionSpan(Project& project, const std::stri
         return result;
     }
     std::vector<PointClips> resolved;
-    if (!resolvePointClips(prepared, points, resolved, result.error))
+    if (!resolvePointClips(prepared, points, transition->kind, resolved, result.error))
         return result;
     // 余白の内側でも、素材 frame に乗らない長さ (速度変更) と不透明度の下がる区間は断る。
     // 置ける長さへ黙って丸めない。
@@ -2703,8 +2975,7 @@ TransitionEditResult setTimelineTransitionSpan(Project& project, const std::stri
         return result;
     }
     if (!fitter.beforeFits(framesBeforeCut, true) || !fitter.afterFits(framesAfterCut, true)) {
-        result.error =
-            std::string(kDissolveRequirement) + "トランジションの区間で不透明度が下がっています";
+        result.error = spanLookRequirement(transition->kind);
         return result;
     }
     // ID と並び順を保つため、元の project の中で値だけを置き換える。

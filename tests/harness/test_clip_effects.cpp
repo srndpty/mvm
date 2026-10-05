@@ -432,10 +432,10 @@ int main(int argc, char** argv) {
               "拡大率の負例の対照群を読み込めません");
         // 旧 schema (10) と、縦横共通の拡大率 (scale_percent) は読み替えずに拒否する。
         auto oldSchema = originalJson;
-        const auto versionAt = oldSchema.find("\"schema_version\": 19");
+        const auto versionAt = oldSchema.find("\"schema_version\": 20");
         check(versionAt != std::string::npos, "負例のschema_version位置が保存されていません");
         if (versionAt != std::string::npos) {
-            oldSchema.replace(versionAt, std::string("\"schema_version\": 19").size(),
+            oldSchema.replace(versionAt, std::string("\"schema_version\": 20").size(),
                               "\"schema_version\": 14");
             check(!loadVariant("scale-schema12.mvm", oldSchema).success, "schema 14を拒否する");
         }

@@ -191,6 +191,28 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         plan.error = valid.error;
         return plan;
     }
+    // 数式の変形の書き出しはまだ無い (P2 の後の段階)。出力する変形を cut で黙って置き換えない。
+    for (const auto& transition : project.timelineTransitions) {
+        if (transition.kind != project::TransitionKind::MathTransform)
+            continue;
+        const auto outgoing =
+            std::find_if(project.timelineClips.begin(), project.timelineClips.end(),
+                         [&](const project::TimelineClip& clip) {
+                             return clip.id == transition.outgoingClipId;
+                         });
+        const auto incoming =
+            std::find_if(project.timelineClips.begin(), project.timelineClips.end(),
+                         [&](const project::TimelineClip& clip) {
+                             return clip.id == transition.incomingClipId;
+                         });
+        if (outgoing != project.timelineClips.end() && incoming != project.timelineClips.end() &&
+            outgoing->enabled && incoming->enabled &&
+            project::isTrackOutputEnabled(project, outgoing->track)) {
+            plan.error =
+                "数式の変形はまだ書き出せません: " + outgoing->name + " → " + incoming->name;
+            return plan;
+        }
+    }
     plan.totalDurationFrames = valid.totalFrames;
     std::vector<project::TimelineRenderSegment> videoSegments;
     std::vector<project::TimelineRenderSegment> audioSegments;

@@ -1547,6 +1547,43 @@ void testTimelineTransitions(const std::filesystem::path& root) {
                 check(!mvm::project::parseProjectJsonText(missing, path).success,
                       "frames_after_cut の無いトランジションを受理しました");
             }
+            // schema 20 は kind を必ず書く。負例は保存したままの JSON から 1 か所だけ変える。
+            const std::string kindField = ", \"kind\": \"blend\"";
+            const auto kindAt = serialized.json.find(kindField);
+            check(kindAt != std::string::npos, "schema 20 は transition の kind を書きます");
+            const auto variant = [&](const std::string& from, const std::string& to) {
+                auto text = serialized.json;
+                const auto at = text.find(from);
+                check(at != std::string::npos, ("負例の置き換え位置がありません: " + from).c_str());
+                return at == std::string::npos ? std::string{} : text.replace(at, from.size(), to);
+            };
+            const auto schema19 = [&](std::string text) {
+                const std::string version = "\"schema_version\": 20";
+                const auto at = text.find(version);
+                return at == std::string::npos
+                           ? std::string{}
+                           : text.replace(at, version.size(), "\"schema_version\": 19");
+            };
+            check(!mvm::project::parseProjectJsonText(variant(kindField, ""), path).success,
+                  "schema 20 で kind の無いトランジションを受理しました");
+            check(!mvm::project::parseProjectJsonText(
+                       variant(kindField, ", \"kind\": \"dissolve\""), path)
+                       .success,
+                  "未知の kind を受理しました");
+            check(!mvm::project::parseProjectJsonText(
+                       variant(kindField, kindField + ", \"kind\": \"blend\""), path)
+                       .success,
+                  "重複した kind を受理しました");
+            // 19 の file は kind を持たず、読み込み後は 20 の blend になる。
+            const auto old =
+                mvm::project::parseProjectJsonText(schema19(variant(kindField, "")), path);
+            check(old.success && old.project.schemaVersion == mvm::project::kProjectSchemaVersion &&
+                      old.project.timelineTransitions == saved.timelineTransitions &&
+                      old.project.timelineTransitions[0].kind ==
+                          mvm::project::TransitionKind::Blend,
+                  ("schema 19 のトランジションを blend として読めません: " + old.error).c_str());
+            check(!mvm::project::parseProjectJsonText(schema19(serialized.json), path).success,
+                  "schema 19 の file の kind を受理しました");
         }
     }
 
@@ -3122,10 +3159,10 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
             }
         }
         auto oldSchema = serialized.json;
-        const auto schema = oldSchema.find("\"schema_version\": 19");
-        check(schema != std::string::npos, "schema 19 が出力されません");
+        const auto schema = oldSchema.find("\"schema_version\": 20");
+        check(schema != std::string::npos, "schema 20 が出力されません");
         if (schema != std::string::npos) {
-            oldSchema.replace(schema, std::string("\"schema_version\": 19").size(),
+            oldSchema.replace(schema, std::string("\"schema_version\": 20").size(),
                               "\"schema_version\": 13");
             check(!mvm::project::parseProjectJsonText(oldSchema, projectFile).success,
                   "schema 13 を受理しました");

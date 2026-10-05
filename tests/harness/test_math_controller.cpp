@@ -12,6 +12,7 @@
 //   静止を見せ、連番が描けていなければ書き出さない
 
 #include "app/preview/preview_engine_rhi_item.h"
+#include "app/timeline_export.h"
 #include "math_fake_backend.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
@@ -491,6 +492,129 @@ struct WriteObservation {
         return frames;
     }
 };
+
+// 数式の変形 (P2-1): controller を通した編集の不変条件・Undo / Redo・保存と開き直し・
+// コピー / 複製・書き出しの拒否。描画と preview の変形はまだ無い (Project / timeline だけ)。
+void testMathTransformEditing(const QTemporaryDir& temp,
+                              const std::shared_ptr<CapturedExport>& captured) {
+    const auto math = [](const std::string& id, const std::string& source, qint64 start) {
+        project::TimelineClip clip;
+        clip.kind = project::TimelineClipKind::Math;
+        clip.id = id;
+        clip.name = id;
+        clip.sourceFpsNum = 60;
+        clip.sourceFpsDen = 1;
+        clip.sourceFrameCount = clip.sourceOutFrame = 300;
+        clip.timelineStartFrame = start;
+        clip.math.source = source;
+        return clip;
+    };
+    auto initial = project::createDefaultProject();
+    initial.timelineClips = {math("A", "x^2 + \\frac{b}{a}x = -\\frac{c}{a}", 0),
+                             math("B", "\\left(x + \\frac{b}{2a}\\right)^2 = c", 300)};
+    initial.timelineTransitions = {
+        {"t1", "A", "B", 60, 120, project::TransitionKind::MathTransform}};
+    const auto path = std::filesystem::path(temp.filePath("transform.mvm").toStdWString());
+    check(project::saveProjectJson(initial, path).success, "変形: project の保存");
+    const auto transitions = [](const MvmController& controller) {
+        return controller.projectForTest().timelineTransitions;
+    };
+    const auto only = [&](const MvmController& controller, const std::string& outgoing,
+                          qint64 before, qint64 after) {
+        const auto list = transitions(controller);
+        return list.size() == 1 && list[0].kind == project::TransitionKind::MathTransform &&
+               list[0].outgoingClipId == outgoing && list[0].incomingClipId == "B" &&
+               list[0].framesBeforeCut == before && list[0].framesAfterCut == after;
+    };
+    {
+        const auto loaded = project::loadProjectJson(path);
+        check(loaded.success && loaded.project.timelineTransitions == initial.timelineTransitions,
+              "変形: 保存した変形を読める");
+        auto controller = makeController(path, initial, captured);
+        check(only(*controller, "A", 60, 120), "変形: controller が変形を持つ");
+
+        // 条件を壊す確定は拒否し、Project と Undo を変えない。
+        const auto before = controller->projectForTest();
+        const auto depth = controller->undoDepthForTest();
+        check(!controller->updateMathClip(QStringLiteral("B"),
+                                          {{QStringLiteral("intro"), QStringLiteral("write")}}) &&
+                  controller->projectForTest() == before && controller->undoDepthForTest() == depth,
+              "変形の後ろの clip への Write を拒否する");
+        check(!controller->updateMathClip(QStringLiteral("A"), {{QStringLiteral("backgroundColor"),
+                                                                 QStringLiteral("#80000000")}}) &&
+                  controller->projectForTest() == before && controller->undoDepthForTest() == depth,
+              "変形の clip への背景を拒否する");
+        check(controller->updateMathClip(QStringLiteral("A"),
+                                         {{QStringLiteral("source"), QStringLiteral("x^2 = y")}}) &&
+                  only(*controller, "A", 60, 120),
+              "式を変えても変形は残る (端点は clip を参照する)");
+        check(controller->undoLastEdit(), "変形: 式の変更を Undo");
+
+        // trim と Undo / Redo。
+        check(controller->trimClip(QStringLiteral("B"), QStringLiteral("right"), -200, false) &&
+                  only(*controller, "A", 60, 100),
+              "B を 100 frame にすると後ろは 100");
+        check(controller->undoLastEdit() && only(*controller, "A", 60, 120), "trim の Undo");
+        check(controller->redoLastEdit() && only(*controller, "A", 60, 100), "trim の Redo");
+        check(controller->undoLastEdit() && only(*controller, "A", 60, 120),
+              "trim をもう一度 Undo");
+
+        // split の Undo。
+        check(controller->splitClipAt(QStringLiteral("A"), 100, false, false) &&
+                  transitions(*controller).size() == 1 &&
+                  transitions(*controller)[0].outgoingClipId != "A",
+              "A を分けると右側が前の clip");
+        check(controller->undoLastEdit() && only(*controller, "A", 60, 120), "split の Undo");
+
+        // 削除と Undo。
+        check(controller->deleteTimelineClip(QStringLiteral("B")) &&
+                  transitions(*controller).empty(),
+              "後ろの clip を削除すると変形は消える");
+        check(controller->undoLastEdit() && transitions(*controller) == initial.timelineTransitions,
+              "削除の Undo で変形 (種類を含む) が戻る");
+
+        // コピー / 貼り付け / 複製は clip だけを写す (Blend と同じ)。
+        check(controller->selectTimelineClips({QStringLiteral("A"), QStringLiteral("B")}) &&
+                  controller->copySelectedClips(),
+              "変形の両端をコピーする");
+        const auto clipCount = controller->projectForTest().timelineClips.size();
+        check(controller->pasteClips() &&
+                  controller->projectForTest().timelineClips.size() == clipCount + 2 &&
+                  only(*controller, "A", 60, 120),
+              "貼り付けは clip だけを写し、変形を写さない");
+        check(controller->selectTimelineClips({QStringLiteral("A"), QStringLiteral("B")}) &&
+                  controller->duplicateSelectedClips() &&
+                  controller->projectForTest().timelineClips.size() == clipCount + 4 &&
+                  only(*controller, "A", 60, 120),
+              "複製は clip だけを写し、変形を写さない");
+        check(controller->undoLastEdit() && controller->undoLastEdit() &&
+                  controller->projectForTest().timelineClips.size() == clipCount,
+              "貼り付けと複製の Undo");
+
+        check(controller->saveProject(), "変形: 保存する");
+        controller->shutdown();
+    }
+    {
+        const auto loaded = project::loadProjectJson(path);
+        check(loaded.success && loaded.project.timelineTransitions == initial.timelineTransitions,
+              "変形: 開き直しても変形 (種類・長さ) は同じ");
+        // 書き出しの描画はまだ無い。出力する変形を cut で黙って置き換えず拒否する。
+        mvm::app::TimelineExportRequest request;
+        request.outputPath = temp.filePath("transform.mp4").toStdWString();
+        request.width = loaded.project.outputWidth;
+        request.height = loaded.project.outputHeight;
+        request.fpsNum = loaded.project.timelineFpsNum;
+        request.fpsDen = loaded.project.timelineFpsDen;
+        const auto plan = mvm::app::mapTimelineExportPlan(loaded.project, request);
+        check(!plan.error.empty() && plan.error.find("数式の変形") != std::string::npos,
+              "出力する変形のある書き出しは拒否する: " + plan.error);
+        auto disabled = loaded.project;
+        disabled.timelineClips[0].enabled = false;
+        const auto disabledPlan = mvm::app::mapTimelineExportPlan(disabled, request);
+        check(disabledPlan.error.find("数式の変形") == std::string::npos,
+              "対照: 片方を無効にした変形は書き出しを止めない: " + disabledPlan.error);
+    }
+}
 
 bool submittedHasWrite(const MvmController& controller) {
     const auto composition = controller.submittedCompositionForTest();
@@ -1010,6 +1134,7 @@ int main(int argc, char** argv) {
     testWrite(temp, initial, captured);
     testWriteResidencyBudget(temp, initial, captured);
     testWriteBeyondBackendCapability(temp, initial, captured);
+    testMathTransformEditing(temp, captured);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;

@@ -26,10 +26,16 @@
   更新で glyph が変わる場合に、artifact を明示的に無効化する操作が必要かを P0.5 で検討する。
 - backend の無い機械での artifact 利用と、session をまたぐ last-good の対応付けは P0 の対象外。
   必要なら provenance と利用者の明示的な判断を使う方式を別途検討する。
-- P2: 式から式への変形 (`TransformMatchingTex` など)。隣り合う 2 つの数式 clip の境に置く
-  transition として持ち、P1 の連番の artifact (`mvm-math-sequence/1`)・cache・preview の
-  `PreviewStillAnimation`・書き出しの区間分けを使う。部分式の同一性は TeX の AST を作らず、
-  Manim の `{{ }}` / `substrings_to_isolate` を式の文字列に書く方式から検討する。
+- P2: 式から式への変形。設計の結論と P2-1 (Project / timeline、schema 20) は
+  `docs/math-clips.md` の「式から式への変形 (P2)」にある。残りは次の段階で行う。
+  - mvm の分け方と n 番目の出現の照合
+  - 変形の artifact (`mvm-math-sequence/1` とは別の名前空間) と cache
+  - Manim の backend (`MathTex(*segments)` と明示の変形・fade、部分の数の検査)
+  - 実測の bbox による canvas と、半画素の補正
+  - preview・書き出し・UI
+  - P2-1 では、出力する変形のある書き出しを拒否し、preview は cut で切り替える
+- P2 の後: 手動の照合・部分式の ID・強調、背景の矩形の補間、区間の中で ClipEffects が
+  違う変形、変形と後ろの clip の Write の両立、トランジションごとのコピー / 貼り付け。
 - P2 の最適化: Write の書き出しは Write の区間の timeline frame ごとに出力全面の PNG を
   合成・encode・stage する (尺と解像度に比例)。mask の矩形だけを stage し、配置を MLT の
   affine に任せれば減らせる。preview と同じ画素の契約 (`composeMathPatch`) を保つこと。

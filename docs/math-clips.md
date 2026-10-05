@@ -21,7 +21,8 @@
 - 描画は worker で非同期に行い、取消すると Manim が起動した latex などの子 process まで止める。
 
 animation の artifact は P1 (Write) で Manim の PNG 連番に決めた (下の「Write (P1)」)。
-部分式の同一性 (変形・強調のため) は未決定であり、P2 の着手時に比べて決める。
+式から式への変形 (P2) は、隣り合う 2 つの数式 clip の間のトランジションとして持つ
+(下の「式から式への変形 (P2)」)。部分式の同一性は P2 では Project に持たない。
 
 ## 構成
 
@@ -80,9 +81,10 @@ animation の artifact は P1 (Write) で Manim の PNG 連番に決めた (下�
 文字サイズを変えている間は、描き直しが済むまで前の大きさの描画を出す。
 計画との差と今後の改善は [ロードマップ](roadmap.md#数式-clip) に記録する。
 
-## Project の schema (18、Write は 19)
+## Project の schema (18、Write は 19、変形は 20)
 
-19 で数式 clip の `"math_animation"` を足した (下の「Write (P1)」)。以下は 18 で決めた形で、19 でも変わらない。
+19 で数式 clip の `"math_animation"` を足した (下の「Write (P1)」)。
+20 で transition の `"kind"` を足した (下の「式から式への変形 (P2)」)。以下は 18 で決めた形で、19・20 でも変わらない。
 
 - `TimelineClipKind::Math` (JSON の kind は `"math"`)。値は clip の `"math"` object に保存する:
   `syntax` / `source` / `font_size` / `color` / `background_color`。未知の field (例えば `renderer`)・
@@ -287,7 +289,7 @@ P0-6 の失敗記録・artifact と P0-4.1 の authority/cache 設計は保持�
 
 clip の先頭で式を Manim の `Write` で書いていく、最初の時間に沿った数式固有の animation。
 fade・不透明度・位置・拡大・回転は既存の ClipEffects で足りるので、数式専用には作らない。
-式から式への変形 (`TransformMatchingTex`・部分式の同一性) は P2。
+式から式への変形は P2 (下の「式から式への変形 (P2)」)。
 
 ### Project (schema 19)
 
@@ -425,6 +427,122 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
 - [未検証] 大きな式・長い Write の preview の再生中の負荷 (render thread での patch の着色と送信)。
   1080p 全面の式では 1 frame の patch が約 8 MB になる。
 - [未検証] Write を付けた解の公式を人が一通り制作する手順 (P0 と同じく自動試験は契約の確認)。
+
+## 式から式への変形 (P2)
+
+隣り合う 2 つの数式 clip の間で、前の式を後ろの式へ時間 T で変形する。導出の 1 段を示すための
+最小の縦切りで、完全な導出の editor や任意の部分式の操作は後の段階とする。
+
+### 設計の結論 (P2-0 の後)
+
+- **所有:** 既存の `TimelineTransition` に種類 `TransitionKind::MathTransform` を足して持つ。
+  - 端点の式は両 clip を ID で参照するだけで、写さない。A・B を編集すると、変形の端点もそれに追従する。
+    「今の A から今の B への変形」以外の値を持たないので、端点が食い違う状態を作れない。
+  - 隣接・reconcile・fps の換算・分割・削除は、既存のトランジションの規則をそのまま使う。
+  - 数式専用の関係の store は作らない。
+  - 比べた他の案 (前の clip の出の animation、後ろの clip の入りの animation、複数の式を持つ
+    Math Sequence clip) は、相手の参照の追跡や clip の中の timeline が新しく要るので採らない。
+- **Project に持たないもの:** 照合・分け方・Manim の値 (`MathTex`・`TransformMatchingTex`・
+  `{{ }}`・`substrings_to_isolate`) はすべて renderer の側に置く。
+- **静止の renderer (P0) は変えない。** P2-0 で、分けた式も glyph の配置が 1 文字列と同じだったため。
+- **自動の照合の意味は mvm が持つ。**
+  - mvm が式を分けた部分の文字列で対応させ、同じ文字列が重複するときは
+    「source の n 番目の出現 → target の n 番目の出現」とする。
+  - 対応は派生の値で Project に保存しないが、algorithm の版を変形の cache key に入れる。
+- **Manim の backend (後の段階):**
+  - `MathTex(*segments)` で部分を作る。
+  - mvm の対応を `ReplacementTransform`・`FadeOut`・`FadeIn` で組む。
+    `TransformMatchingTex` は意味の正としない。
+  - 部分の数と各部分の文字列を検査する。Manim が式全体の group で黙って代用した結果を受け付けない。
+- **端点の画素:**
+  - 半画素の位相の補正は必須とする (P2-0 で、補正なしは 2603 画素ずれた)。
+  - 変形の canvas と artifact の矩形は、全 frame の alpha の bbox を実測して決める。
+  - alpha が canvas の縁に触れたら失敗とする (「両端の大きさの最大が全 frame を含む」は前提にしない)。
+
+### Project と timeline (P2-1、schema 20)
+
+- 各 transition に `"kind": "blend" | "math_transform"` を**必ず**書く。
+  - 19・18・17・16 の file は kind を持たず、読み込み後は 20 の `blend` になる。
+  - kind は 20 の file にだけ現れてよい (19 以前の file の kind は、`math_transform` に限らず拒否する)。
+  - 未知・重複した kind、20 の file での欠落は拒否する。
+- 変形の条件 (`validateTimelineTransitions`)。Project の意味だけで決め、描けるかどうかは見ない。
+  - 既存の条件 (同じ track で接している・フレーム保持でない・その端のフェードが 0・尺) はそのまま。
+  - 両端が数式 clip である。
+  - 後ろの clip に Write が無い (変形が後ろの clip の先頭を使うため)。
+  - 前の clip の Write と区間が重ならない。Write の表示が終わる frame は `mathIntroFrameAt` と同じ
+    `clipFadeSourceFrameAt` (素材 frame の四捨五入) で数える。
+    - 例: 30 fps で置いた Write 135 frame は、60 fps の timeline では 269 frame 目で表示を終える。
+  - 両端の背景の alpha が 0 (背景の矩形は式の大きさで変わり、端で段差になる)。
+  - 評価した ClipEffects の位置・拡大・回転・切り抜き・不透明度が、次の範囲で一定かつ等しい
+    (区間の外の key・fade は自由)。
+    - 区間 [cut − before, cut + after)
+    - cut の両側の frame (前の clip の最後と後ろの clip の最初)
+- 作成は `applyMathTransformTransition`。
+  - cut から始め (前 0・後 T)、後ろの clip の尺や見た目の条件で置けない分は縮める。
+  - 同じ編集点の既存のトランジションを置き換え、その端のフェードを消す (Blend と同じ)。
+  - 長さの変更・削除は既存の `setTimelineTransitionSpan` / `deleteTimelineTransition` を使う。
+    上限と吸着は、前の clip の Write と見た目の条件を含む。
+  - 数式 clip の編集点のクロスディゾルブ (Blend) は従来どおり拒否する。
+- 編集の振る舞い (既存のトランジションの規則による):
+
+  | 操作 | 変形 |
+  |---|---|
+  | 式・文字サイズ・文字色の変更 | 残る (端点は clip を参照する) |
+  | 後ろの clip への Write、両端への背景、区間の見た目を変える ClipEffects | 確定を拒否する (Project・Undo は変わらない) |
+  | cut 以外の端の trim | 尺が足りなければ縮め、合計 0 で消える |
+  | rolling edit | 接したまま縮める。前の clip の Write が先頭側を使う分は変形に充てない |
+  | ripple trim | 接したままなら残る (式は変わらない) |
+  | 離す・削除・上書きで間に clip が入る | 消える (Undo で戻る) |
+  | 前の clip の分割 | 右側 (同じ式) が前の clip になる。区間の中なら縮める |
+  | 後ろの clip の分割 | 左側 (元の ID) が後ろの clip のまま。区間の中なら縮める |
+  | fps の変更 | 既存の換算で秒を保つ |
+  | 片方の clip を無効にする | Project には残り、描画区間には出さない (Blend と同じ) |
+  | コピー・貼り付け・複製 | clip だけを写し、変形は写さない (Blend と同じ) |
+
+- 区間分け (`timelineRenderSegments`) では変形を cut として扱う (延ばさない・重ねない)。
+  - 変形の描画・preview はまだ無いので、preview は両 clip を cut で切り替える。
+  - 書き出しは、出力する変形があれば `mapTimelineExportPlan` が拒否する。
+    変形を cut で黙って置き換えないためで、片方の clip が無効、または track が出力されない変形は対象外。
+- 試験:
+  - `math_transform_timeline_focused` (新規、83 検査)
+  - `math_controller_focused` の `testMathTransformEditing`
+    (確定の拒否・trim / split / 削除の Undo / Redo・コピー・複製・保存と開き直し・書き出しの拒否)
+  - `m5_timeline_edit_focused` の schema 19 → 20 の移行と kind の厳格な読み込み
+  - `math_project_json_focused` の読める版
+
+### Write の時間の正の一本化 (P2-1.1)
+
+- Write が見えるかどうかと境界の丸めは、`timeline_edit.h` の 2 つの関数だけが決める。
+  - `mathIntroSourceFrameAt`: timeline local frame で見せる Write の frame。
+    Write の外は -1。素材 frame への換算は `clipFadeSourceFrameAt` の四捨五入。
+  - `mathIntroTimelineFrames`: Write が見える timeline frame の数。
+- 次の 2 つはどちらもこれを通し、丸めを別々に持たない。動作は変えていない。
+  - preview・書き出しの `mathIntroFrameAt`
+  - 変形の条件・上限・吸着・reconcile
+- 試験: `math_transform_timeline_focused` の `testSharedWriteBoundary`。
+  - preview の frame の選び方を 1 frame ずつ走査した境界と、変形の境界・cut の前の上限・検証を比べる。
+    いずれも手で数えた値と一致する。
+  - 対象: 60/60 fps の 90、60 fps の timeline の 30 fps の 135 (269) と 1 (1)、
+    30 fps の timeline の 60 fps の 45 (23)、clip 全体。
+  - [事実] 境界を 1 frame ずらす変異では 113 検査中 23 件が落ちた。
+- [事実] 変更後、次の focused 試験は 8 / 8 件が通過し、lint も通過した。
+  - `math_transform_timeline_focused` (113 検査)
+  - `math_controller_focused`、`math_export_focused`、`math_project_json_focused`
+  - `m5_timeline_edit_focused`、`m7a_1_clip_effects_focused`、`subtitles_contract`、
+    `math_raster_cache_focused`
+
+### P2-1 の gate (2026-10-05)
+
+- [事実] 通常の release gate (`build/math-p21-release-gate.log`) は 1452 件中 1444 件が通過し、
+  8 件が失敗した。いずれも実際の提示・window の描画を待つ試験である。
+  - `transition_preview`・`text_ui_direct_input`・`math_write_native_playback`・`p4_c_contract_smoke`
+    (と `p4_c_contract_smoke_check` の未実行)・`audio_mixer_product_ui`・
+    `fixed_test_window_independent_of_screen`・`preview_engine_p5c_engine_lifetime_detach`
+  - 実行の終わりで利用者の無操作は 15.6 分 (画面の消灯は 15 分)。
+    同じ条件の再実行も同じ 8 件が落ちた。
+- [事実] 画面を点け、試験の間 `SetThreadExecutionState(ES_DISPLAY_REQUIRED)` で消灯を止めて
+  P2-1.1 の build で再実行すると、8 / 8 件が通過した (`build/math-p211-presentation-rerun.log`)。
+  - したがってこの 8 件の失敗は画面の消灯によるもので、P2-1 の変更によるものではない。
 
 ## P2-0: 式から式への変形の検証 (2026-10-05)
 

@@ -30,14 +30,13 @@ std::optional<std::int64_t> mathIntroFrameAt(const project::TimelineClip& clip,
                                              std::int64_t timelineFpsNum,
                                              std::int64_t timelineFpsDen,
                                              std::int64_t clipLocalFrame) {
-    if (clip.kind != project::TimelineClipKind::Math ||
-        clip.mathAnimation.intro == project::MathIntroKind::None)
-        return -1;
-    const auto source = project::clipFadeSourceFrameAt(clip, timelineFpsNum, timelineFpsDen,
-                                                       std::max<std::int64_t>(0, clipLocalFrame));
-    if (!source.success)
+    // intro が見えるかどうかと境界の丸めは Project の mathIntroSourceFrameAt だけが決める
+    // (トランジションの条件・reconcile の mathIntroTimelineFrames と同じ正)。
+    const auto shown =
+        project::mathIntroSourceFrameAt(clip, timelineFpsNum, timelineFpsDen, clipLocalFrame);
+    if (!shown.success)
         return std::nullopt;
-    return source.frame < clip.mathAnimation.introFrames ? source.frame : -1;
+    return shown.frame;
 }
 
 math::MathComposeResult composeMathClipRaster(const media::StillImage& mask,

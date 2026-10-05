@@ -28,9 +28,10 @@ constexpr char kFormatMarker[] = "mvm-project";
 //   16 -> 17: 自動音量調整の field (clip の effects と Project の設定) を追加
 //   17 -> 18: 数式 clip (kind "math" と "math" object) を追加
 //   18 -> 19: 数式 clip の時間の振る舞い ("math_animation" object、省略可) を追加
+//   19 -> 20: トランジションの種類 ("kind"、20 では必須) を追加。19 以前は blend だけ
 bool isReadableSchemaVersion(int schemaVersion) {
-    return schemaVersion == kSchemaVersion || schemaVersion == 18 || schemaVersion == 17 ||
-           schemaVersion == 16;
+    return schemaVersion == kSchemaVersion || schemaVersion == 19 || schemaVersion == 18 ||
+           schemaVersion == 17 || schemaVersion == 16;
 }
 
 std::string unsupportedSchemaMessage(int schemaVersion) {
@@ -313,7 +314,15 @@ public:
             return failAndFinish("schema " + std::to_string(project.schemaVersion) +
                                      " の file に math_animation があります",
                                  error);
-        // 16・17・18 は field の追加だけなので、値を変えずに現行版として扱う。
+        // トランジションの kind は 20 で加わった。20 では必須で、それより前の版の file に
+        // 現れたら壊れている (19 以前のトランジションは既定の blend として読む)。
+        if (project.schemaVersion >= 20 && transitionsWithoutKind_ > 0)
+            return failAndFinish("timeline transition の kind がありません", error);
+        if (project.schemaVersion < 20 && transitionsWithKind_ > 0)
+            return failAndFinish("schema " + std::to_string(project.schemaVersion) +
+                                     " の file に transition の kind があります",
+                                 error);
+        // 16〜19 は field の追加だけなので、値を変えずに現行版として扱う。
         project.schemaVersion = kSchemaVersion;
         if (!hasFormat || format != kFormatMarker)
             return failAndFinish("mvm project ファイルではありません (format marker 不一致)",
@@ -339,6 +348,10 @@ private:
     bool missingAudioAdjustmentFields_ = false;
     // math_animation が 19 より前の版の file に現れたら壊れている (schema の確認は最後に行う)。
     bool sawMathAnimation_ = false;
+    // transition の kind の有無。20 では全件に必須、19 以前には現れてはならない
+    // (schema_version の位置に依らないよう、確認は最後に行う)。
+    std::size_t transitionsWithKind_ = 0;
+    std::size_t transitionsWithoutKind_ = 0;
 
     bool finish(std::string& error) {
         if (error_.empty())
@@ -1545,6 +1558,7 @@ private:
 
     bool parseTimelineTransition(TimelineTransition& transition) {
         bool seen[5] = {};
+        bool seenKind = false;
         if (!consume('{'))
             return false;
         skipWhitespace();
@@ -1570,6 +1584,12 @@ private:
                 } else if (key == "frames_after_cut") {
                     field = 4;
                     parsed = !seen[field] && parseInteger64(transition.framesAfterCut);
+                } else if (key == "kind") {
+                    std::string kind;
+                    if (seenKind || !parseString(kind) ||
+                        !parseTransitionKind(kind, transition.kind))
+                        return fail("timeline transition の kind が重複または不正です");
+                    seenKind = true;
                 } else if (!skipValue()) {
                     return false;
                 }
@@ -1590,6 +1610,7 @@ private:
             if (!field)
                 return fail("timeline transition の必須 field がありません");
         }
+        ++(seenKind ? transitionsWithKind_ : transitionsWithoutKind_);
         return true;
     }
 
@@ -2112,7 +2133,8 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
              << "\", \"outgoing_clip_id\": \"" << escapeJson(transition.outgoingClipId)
              << "\", \"incoming_clip_id\": \"" << escapeJson(transition.incomingClipId)
              << "\", \"frames_before_cut\": " << transition.framesBeforeCut
-             << ", \"frames_after_cut\": " << transition.framesAfterCut << " }";
+             << ", \"frames_after_cut\": " << transition.framesAfterCut << ", \"kind\": \""
+             << transitionKindName(transition.kind) << "\" }";
     }
     if (!project.timelineTransitions.empty())
         json << '\n';

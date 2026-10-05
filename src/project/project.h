@@ -135,19 +135,31 @@ struct TimelineClip {
     bool operator==(const TimelineClip&) const = default;
 };
 
-// 同じ track で接している 2 clip の編集点に置くトランジション。種類は track の種別で
-// 決まる (映像: クロスディゾルブ、音声: 等パワーのクロスフェード)。区間は timeline frame で
+// トランジションの種類。
+//   Blend         既存の混合。映像はクロスディゾルブ、音声は等パワーのクロスフェード
+//                 (どちらになるかは track の種別で決まる)
+//   MathTransform 隣り合う 2 つの数式 clip の間で、outgoing の現在の式を incoming の現在の式へ
+//                 変形する (docs/math-clips.md の P2)。式は両 clip を ID で参照するだけで、
+//                 ここには写さない (端点が clip と食い違わない)。照合・描画の方式は持たない
+enum class TransitionKind { Blend, MathTransform };
+
+// 同じ track で接している 2 clip の編集点に置くトランジション。区間は timeline frame で
 // [cut - framesBeforeCut, cut + framesAfterCut)。cut は outgoing の終端 = incoming の先頭。
-// cut より前は incoming の先頭より前の素材 (頭の余白)、cut より後は outgoing の終端より後の
-// 素材 (尻の余白) を使う。前後を別々に持つので、中央・cut 始まり・cut 終わりを表せる。
+// Blend は cut より前に incoming の先頭より前の素材 (頭の余白)、cut より後に outgoing の終端より
+// 後の素材 (尻の余白) を使う。MathTransform は余白を使わず、outgoing の末尾と incoming の先頭を
+// 変形の区間に充てる。前後を別々に持つので、中央・cut 始まり・cut 終わりを表せる。
 struct TimelineTransition {
     std::string id;
     std::string outgoingClipId;
     std::string incomingClipId;
     std::int64_t framesBeforeCut = 0;
     std::int64_t framesAfterCut = 0;
+    TransitionKind kind = TransitionKind::Blend;
     bool operator==(const TimelineTransition&) const = default;
 };
+
+const char* transitionKindName(TransitionKind kind);
+bool parseTransitionKind(const std::string& name, TransitionKind& kind);
 
 // 速度の範囲 (10%〜1000%)。rbpitch の pitchscale 0.1〜10 に収め、後から音程保持を
 // 足しても範囲を変えずに済むようにしている。
@@ -157,8 +169,9 @@ inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
 // 18: 数式 clip (kind "math" と "math" object)。
 // 19: 数式 clip の時間の振る舞い ("math_animation" object、省略は intro 無し)。
-// 18・17・16 の file は読み込み時に 19 へ上げる。
-inline constexpr int kProjectSchemaVersion = 19;
+// 20: トランジションの種類 ("kind"、必須。"blend" / "math_transform")。
+// 19・18・17・16 の file は読み込み時に 20 へ上げる (トランジションはすべて blend)。
+inline constexpr int kProjectSchemaVersion = 20;
 
 struct SubtitleCue {
     std::string id;
