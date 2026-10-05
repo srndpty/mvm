@@ -417,6 +417,11 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
     (frame 0 を見せない)。再生の組み直しの回数は変わらない。5 回連続で通過した。
   - [事実] 合成の出し直しを「重ねる source が変わったときだけ」に変える変異では、2 の記録が
     0 件になり、試験が落ちた。
+- [事実] P1.2 の後: 通常 1451 / 1451 (`build/math-p12-release-gate-rerun.log`)、BuildIndependent
+  1078 / 1078 (`build/math-p12-build-independent.log`)、lint 通過、実 Manim の smoke 95 / 95
+  (`build/math-p12-write-20261005-085813.log`)。最初の通常の実行 (`build/math-p12-release-gate.log`) は
+  GUI・提示の 5 件が落ちたが、利用者の無操作 20.5 分 (画面の消灯は 15 分) の間に実行していた。
+  うち 2 件は P1.2 で変えた file を link しておらず、画面を点けた再実行では全件通過した。
 - [未検証] 大きな式・長い Write の preview の再生中の負荷 (render thread での patch の着色と送信)。
   1080p 全面の式では 1 frame の patch が約 8 MB になる。
 - [未検証] Write を付けた解の公式を人が一通り制作する手順 (P0 と同じく自動試験は契約の確認)。
