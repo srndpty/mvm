@@ -146,4 +146,58 @@ bool mathTransformColorAt(std::uint32_t fromArgb, std::uint32_t toArgb, std::int
     return true;
 }
 
+bool mathTransformRasterPlacement(int artifactWidth, int artifactHeight, int sourceX, int sourceY,
+                                  int sourceWidth, int sourceHeight, int targetX, int targetY,
+                                  int targetWidth, int targetHeight, int outputWidth,
+                                  int outputHeight, MathTransformRasterPlacement& placement) {
+    const auto inside = [&](int x, int y, int width, int height) {
+        return width > 0 && height > 0 && x >= 0 && y >= 0 && width <= artifactWidth - x &&
+               height <= artifactHeight - y;
+    };
+    if (artifactWidth <= 0 || artifactHeight <= 0 ||
+        !inside(sourceX, sourceY, sourceWidth, sourceHeight) ||
+        !inside(targetX, targetY, targetWidth, targetHeight))
+        return false;
+    // 端点の静止の位置は静止の配置そのもの (一本化)。
+    int sourceLeft = 0;
+    int sourceTop = 0;
+    int targetLeft = 0;
+    int targetTop = 0;
+    if (!mathRasterPlacement(sourceWidth, sourceHeight, outputWidth, outputHeight, sourceLeft,
+                             sourceTop) ||
+        !mathRasterPlacement(targetWidth, targetHeight, outputWidth, outputHeight, targetLeft,
+                             targetTop))
+        return false;
+    MathTransformRasterPlacement result{sourceLeft - sourceX, sourceTop - sourceY,
+                                        targetLeft - targetX, targetTop - targetY};
+    const auto fits = [&](int left, int top) {
+        return left >= 0 && top >= 0 && artifactWidth <= outputWidth - left &&
+               artifactHeight <= outputHeight - top;
+    };
+    if (!fits(result.sourceLeft, result.sourceTop) || !fits(result.targetLeft, result.targetTop))
+        return false;
+    placement = result;
+    return true;
+}
+
+bool mathTransformArtifactOriginAt(const MathTransformRasterPlacement& placement,
+                                   std::int64_t frame, std::int64_t frames, int& left, int& top) {
+    // 2^28 までなら 2 * |to - from| (2^32 未満) * frames が int64 に収まる。
+    constexpr std::int64_t kMaximumFrames = std::int64_t{1} << 28;
+    if (frames <= 0 || frames > kMaximumFrames || frame < 0 || frame >= frames)
+        return false;
+    // from + (to - from) * frame / frames を、ちょうど半分なら target の側へ丸める。
+    // 「0.5 は切り上げ」(+∞ 側) にすると、target が source より 1 画素小さく 2 枚のとき、最後の
+    // frame (進み具合 1/2) が source の位置に残り、次の target の静止で 1 画素跳ぶ。
+    const auto interpolate = [&](std::int64_t from, std::int64_t to) {
+        const std::int64_t delta = to - from;
+        const std::int64_t magnitude = delta < 0 ? -delta : delta;
+        const std::int64_t step = (2 * magnitude * frame + frames) / (2 * frames);
+        return static_cast<int>(from + (delta < 0 ? -step : step));
+    };
+    left = interpolate(placement.sourceLeft, placement.targetLeft);
+    top = interpolate(placement.sourceTop, placement.targetTop);
+    return true;
+}
+
 } // namespace mvm::math

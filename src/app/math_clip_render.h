@@ -33,6 +33,28 @@ std::optional<math::MathTransformSpec>
 mathTransformSpecFor(const project::TimelineTransition& transition,
                      const project::TimelineClip& outgoing, const project::TimelineClip& incoming);
 
+// 変形のトランジションの区間 (timeline frame の [start, start + frames))。
+// 区間の i 番目の timeline frame (start + i) は変形の frame i を見せる。区間の外は両端の静止。
+struct MathTransformWindow {
+    std::int64_t start = 0;  // cut - framesBeforeCut
+    std::int64_t frames = 0; // framesBeforeCut + framesAfterCut (変形の連番の枚数)
+    bool operator==(const MathTransformWindow&) const = default;
+};
+
+// transition の区間。種類が変形でない、outgoing の clip が無い、尺が求まらない、または
+// 長さが 0 なら nullopt。cut は outgoing の終端 (timelineTransitions と同じ)。
+std::optional<MathTransformWindow>
+mathTransformWindowFor(const project::Project& project,
+                       const project::TimelineTransition& transition);
+
+// timelineFrame で見せる変形の frame。区間の外は -1 (両端の静止を見せる)。
+std::int64_t mathTransformFrameAt(const MathTransformWindow& window, std::int64_t timelineFrame);
+
+// 変形が描かれる (preview に見え、書き出しに出る) か。両 clip が有効で、track が出力される
+// (isTrackOutputEnabled)。片方が無効なら Project に残るが、描画区間には出さない (Blend と同じ)。
+bool mathTransformIsRendered(const project::Project& project,
+                             const project::TimelineTransition& transition);
+
 // 数式 clip の色・背景 (preview の patch と書き出しの合成が共有する)。形式が不正なら false。
 bool mathComposeStyleFor(const project::MathClipData& data, math::MathComposeStyle& style);
 

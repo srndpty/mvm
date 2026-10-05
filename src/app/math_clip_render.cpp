@@ -34,6 +34,48 @@ mathTransformSpecFor(const project::TimelineTransition& transition,
                                    transition.framesBeforeCut + transition.framesAfterCut};
 }
 
+namespace {
+
+const project::TimelineClip* findClip(const project::Project& project, const std::string& id) {
+    const auto found =
+        std::find_if(project.timelineClips.begin(), project.timelineClips.end(),
+                     [&](const project::TimelineClip& clip) { return clip.id == id; });
+    return found == project.timelineClips.end() ? nullptr : &*found;
+}
+
+} // namespace
+
+std::optional<MathTransformWindow>
+mathTransformWindowFor(const project::Project& project,
+                       const project::TimelineTransition& transition) {
+    if (transition.kind != project::TransitionKind::MathTransform)
+        return std::nullopt;
+    const auto* outgoing = findClip(project, transition.outgoingClipId);
+    if (!outgoing)
+        return std::nullopt;
+    const auto duration = project::timelineClipDuration(project, *outgoing);
+    const std::int64_t frames = transition.framesBeforeCut + transition.framesAfterCut;
+    if (!duration.success || frames <= 0)
+        return std::nullopt;
+    const std::int64_t cut = outgoing->timelineStartFrame + duration.frame;
+    return MathTransformWindow{cut - transition.framesBeforeCut, frames};
+}
+
+std::int64_t mathTransformFrameAt(const MathTransformWindow& window, std::int64_t timelineFrame) {
+    const std::int64_t local = timelineFrame - window.start;
+    return local >= 0 && local < window.frames ? local : -1;
+}
+
+bool mathTransformIsRendered(const project::Project& project,
+                             const project::TimelineTransition& transition) {
+    if (transition.kind != project::TransitionKind::MathTransform)
+        return false;
+    const auto* outgoing = findClip(project, transition.outgoingClipId);
+    const auto* incoming = findClip(project, transition.incomingClipId);
+    return outgoing && incoming && outgoing->enabled && incoming->enabled &&
+           project::isTrackOutputEnabled(project, outgoing->track);
+}
+
 bool loadMathCoverage(const std::filesystem::path& png, math::MathCoverage& coverage,
                       std::string& error) {
     const auto decoded = media::loadStaticImage(png);

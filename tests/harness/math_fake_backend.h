@@ -9,6 +9,8 @@
 //   "WIDE" を含む式  64x8 の白い帯 (位置で frame を見分ける試験用)。Write の frame i は
 //                    左から 64 * i / frames 列だけが不透明 (frame 0 は空)
 //   "GATE" を含む式  staticGate が true の間は静止の描画を終えない (cancel で止まる)
+//   "SIZE<w>x<h>" を含む式  w x h の全面が不透明 (alpha 255) な白の静止 (偶奇を変える試験用)。
+//                           Write の frame i は左から w * i / frames 列だけが不透明
 //   それ以外  3x2 の白い glyph の PNG (math_test_png.h) を書いて Ok。Write も各 frame が同じ PNG
 //
 // 変形 (renderTransform): canvas は大きい方の端点の静止 + 各辺 kFakeTransformPadding。端点は
@@ -18,6 +20,7 @@
 //   transformGate が true の間は終えない (cancel を見ずに待つ。取り消された後に結果を返す
 //   renderer を真似る)
 //   target が "BADT" を含む  InvalidSource
+//   target が "GONET" を含む BackendUnavailable (変形の描画中に toolchain が消えた)
 //   source が "LIE" を含む   artifact の矩形を (2, 3) の画素を含めずに報告する
 //   source が "SHIFT" を含む frame 0 の source を右へ 1 画素ずらして描く
 
@@ -28,6 +31,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
@@ -59,6 +63,20 @@ inline bool writeWidePng(const std::filesystem::path& path, int opaqueColumns) {
         for (int x = 0; x < opaqueColumns; ++x)
             image.setPixelColor(x, y, QColor(255, 255, 255, 255));
     return image.save(QString::fromStdWString(path.wstring()), "PNG");
+}
+
+// 式の "SIZE<w>x<h>" (例 "SIZE7x2") の大きさ。無ければ false。
+inline bool fakeMathSize(const std::string& source, int& width, int& height) {
+    const auto at = source.find("SIZE");
+    if (at == std::string::npos)
+        return false;
+    int w = 0;
+    int h = 0;
+    if (std::sscanf(source.c_str() + at, "SIZE%dx%d", &w, &h) != 2 || w <= 0 || h <= 0)
+        return false;
+    width = w;
+    height = h;
+    return true;
 }
 
 inline constexpr int kFakeTransformPadding = 6;
@@ -117,6 +135,11 @@ fakeRenderTransform(const math::MathTransformRenderRequest& request,
     if (request.spec.target.source.find("BADT") != std::string::npos) {
         result.status = math::MathRenderStatus::InvalidSource;
         result.message = "fake transform error";
+        return result;
+    }
+    if (request.spec.target.source.find("GONET") != std::string::npos) {
+        result.status = math::MathRenderStatus::BackendUnavailable;
+        result.message = "fake transform backend gone";
         return result;
     }
     const auto& from = request.sourceStatic;
@@ -247,7 +270,17 @@ struct FakeMathBackend {
                     return rendered;
                 }
                 const auto png = request.jobDirectory / L"out.png";
-                if (request.spec.source.find("WIDE") != std::string::npos) {
+                int sizedWidth = 0;
+                int sizedHeight = 0;
+                if (fakeMathSize(request.spec.source, sizedWidth, sizedHeight)) {
+                    writeCoveragePng(
+                        png, {sizedWidth, sizedHeight,
+                              std::vector<std::uint8_t>(static_cast<std::size_t>(sizedWidth) *
+                                                            static_cast<std::size_t>(sizedHeight),
+                                                        255)});
+                    rendered.width = sizedWidth;
+                    rendered.height = sizedHeight;
+                } else if (request.spec.source.find("WIDE") != std::string::npos) {
                     writeWidePng(png, kWideMathWidth);
                     rendered.width = kWideMathWidth;
                     rendered.height = kWideMathHeight;
@@ -289,19 +322,36 @@ struct FakeMathBackend {
                     return rendered;
                 }
                 const bool wide = source.find("WIDE") != std::string::npos;
+                int sizedWidth = 0;
+                int sizedHeight = 0;
+                const bool sized = fakeMathSize(source, sizedWidth, sizedHeight);
                 for (std::int64_t index = 0; index < request.spec.frames; ++index) {
                     wchar_t name[32] = {};
                     std::swprintf(name, std::size(name), L"f%04lld.png",
                                   static_cast<long long>(index));
                     const auto png = request.jobDirectory / name;
-                    if (wide)
+                    if (sized) {
+                        // frame i は左から w * i / frames 列だけが不透明 (WIDE と同じ規則)。
+                        math::MathCoverage coverage{
+                            sizedWidth, sizedHeight,
+                            std::vector<std::uint8_t>(static_cast<std::size_t>(sizedWidth) *
+                                                          static_cast<std::size_t>(sizedHeight),
+                                                      0)};
+                        const auto columns =
+                            static_cast<int>(sizedWidth * index / request.spec.frames);
+                        for (int y = 0; y < sizedHeight; ++y)
+                            for (int x = 0; x < columns; ++x)
+                                coverage.alpha[coverageIndex(sizedWidth, x, y)] = 255;
+                        writeCoveragePng(png, coverage);
+                    } else if (wide) {
                         writeWidePng(png, wideRevealColumns(index, request.spec.frames));
-                    else
+                    } else {
                         std::ofstream(png, std::ios::binary) << mathTestPngBytes();
+                    }
                     rendered.frames.push_back(png);
                 }
-                rendered.width = wide ? kWideMathWidth : kMathTestPngWidth;
-                rendered.height = wide ? kWideMathHeight : kMathTestPngHeight;
+                rendered.width = sized ? sizedWidth : wide ? kWideMathWidth : kMathTestPngWidth;
+                rendered.height = sized ? sizedHeight : wide ? kWideMathHeight : kMathTestPngHeight;
                 rendered.status = math::MathRenderStatus::Ok;
                 return rendered;
             };

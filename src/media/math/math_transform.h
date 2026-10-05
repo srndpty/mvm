@@ -175,6 +175,40 @@ struct MathTransformRenderResult {
 bool mathTransformColorAt(std::uint32_t fromArgb, std::uint32_t toArgb, std::int64_t frame,
                           std::int64_t frames, std::uint32_t& argb);
 
+// 変形の artifact (切り出した被覆) を出力 raster に置く左上 (P2-5)。preview と書き出しが共有する。
+//
+// 端点 (frame 0 と、連番に含めない終状態) では、artifact の中の端点の静止が、静止の配置
+// (mathRasterPlacement) とちょうど同じ画素に来なければならない。したがって
+//   source = mathRasterPlacement(source の静止) - artifact の中の source の位置
+//   target = mathRasterPlacement(target の静止) - artifact の中の target の位置
+// 両端の静止の大きさの偶奇が違うと、2 つは 1 画素違いうる (中央の余りを左上へ寄せるため)。
+struct MathTransformRasterPlacement {
+    int sourceLeft = 0;
+    int sourceTop = 0;
+    int targetLeft = 0;
+    int targetTop = 0;
+    bool operator==(const MathTransformRasterPlacement&) const = default;
+};
+
+// artifact の大きさと、その中の両端の静止の位置・大きさから、出力 raster での artifact の
+// 左上を決める。大きさが不正、端点の静止が artifact からはみ出す、静止が出力より大きい、
+// または artifact がどちらの端の位置でも出力に収まらなければ false
+// (はみ出した画素を黙って切らない)。
+bool mathTransformRasterPlacement(int artifactWidth, int artifactHeight, int sourceX, int sourceY,
+                                  int sourceWidth, int sourceHeight, int targetX, int targetY,
+                                  int targetWidth, int targetHeight, int outputWidth,
+                                  int outputHeight, MathTransformRasterPlacement& placement);
+
+// 変形の frame (0 <= frame < frames) での artifact の左上。各軸、source の位置から target の
+// 位置へ frame / frames で線形に動かし、最も近い整数に丸める。ちょうど半分は target の側へ
+// 丸める (動く向きに依らず、進み具合 1/2 で同じように切り替わる)。
+// frame 0 は source の位置。P2-2 の配置 (mathTransformPlacement) で描いた artifact では
+// 端点の差は各軸 1 画素以内なので、frames >= 2 なら最後の frame (進み具合 (frames-1)/frames
+// >= 1/2) は target の位置になり、その次の target の静止へ段差なく続く。
+// frames <= 0、frames が 2^28 超、または frame が [0, frames) の外なら false。
+bool mathTransformArtifactOriginAt(const MathTransformRasterPlacement& placement,
+                                   std::int64_t frame, std::int64_t frames, int& left, int& top);
+
 } // namespace mvm::math
 
 #endif // MVM_MEDIA_MATH_MATH_TRANSFORM_H

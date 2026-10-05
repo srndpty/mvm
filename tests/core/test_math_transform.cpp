@@ -8,8 +8,10 @@
 #include "media/math/math_tex_segments.h"
 #include "media/math/math_transform.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -497,6 +499,181 @@ void testCoverageInspection() {
           "はみ出す・負の位置・不正な mask は -1");
 }
 
+// 変形の artifact を出力 raster に置く位置 (P2-5)。期待値は手で数えた値。
+void testRasterPlacement() {
+    using mvm::math::MathTransformRasterPlacement;
+    MathTransformRasterPlacement placement;
+    // 20x10 の出力。artifact 8x6 の中に source 5x3 が (1,2)、target 6x4 が (0,1)。
+    // 静止の配置は source (7,3)・target (7,3)。左上は source (6,1)・target (7,2)。
+    check(
+        mvm::math::mathTransformRasterPlacement(8, 6, 1, 2, 5, 3, 0, 1, 6, 4, 20, 10, placement) &&
+            placement == MathTransformRasterPlacement{6, 1, 7, 2},
+        "端点の左上 = 静止の配置 - artifact の中の位置");
+
+    // P2-2 の配置で描いた artifact の偶奇の組 (出力 1920x1080)。
+    // source 7x2 (幅は奇数、高さは偶数)、target 4x5 (幅は偶数、高さは奇数)。canvas は大きい方 +
+    // 各辺 6 で 19x17。canvas の中の source は ((19-7)/2, (17-2)/2) = (6,7)、target は
+    // ((19-4)/2, (17-5)/2) = (7,6)。artifact は両者の和 (6,6)-(13,11) で 7x5、中の位置は
+    // source (0,1)・target (1,0)。静止の配置は source ((1920-7)/2, (1080-2)/2) = (956,539)、
+    // target ((1920-4)/2, (1080-5)/2) = (958,537)。左上は source (956,538)・target (957,537)。
+    mvm::math::MathTransformPlacement canvas;
+    check(mvm::math::mathTransformPlacement(7, 2, 4, 5, 19, 17, canvas) &&
+              canvas.source.left == 6 && canvas.source.top == 7 && canvas.target.left == 7 &&
+              canvas.target.top == 6,
+          "偶奇の組: canvas の中の端点 (P2-2)");
+    check(mvm::math::mathTransformRasterPlacement(7, 5, 0, 1, 7, 2, 1, 0, 4, 5, 1920, 1080,
+                                                  placement) &&
+              placement == MathTransformRasterPlacement{956, 538, 957, 537},
+          "偶奇の違う端点の左上は 1 画素ずれる (横 +1、縦 -1)");
+
+    // 途中の frame は線形に動かし、ちょうど半分は target の側へ丸める。4 枚:
+    // 横 956 + i/4 → 956, 956.25→956, 956.5→957, 956.75→957
+    // 縦 538 - i/4 → 538, 537.75→538, 537.5→537 (target の側), 537.25→537
+    const int wantLeft[] = {956, 956, 957, 957};
+    const int wantTop[] = {538, 538, 537, 537};
+    for (int i = 0; i < 4; ++i) {
+        int left = -1;
+        int top = -1;
+        const bool placed = mvm::math::mathTransformArtifactOriginAt(placement, i, 4, left, top);
+        check(placed && left == wantLeft[i] && top == wantTop[i],
+              "4 枚の frame " + std::to_string(i) + " の左上: " + std::to_string(left) + "," +
+                  std::to_string(top));
+    }
+    int left = -1;
+    int top = -1;
+    check(mvm::math::mathTransformArtifactOriginAt(placement, 0, 1, left, top) && left == 956 &&
+              top == 538,
+          "1 枚なら source の位置だけ");
+    // 2 枚の最後の frame は進み具合 1/2: 横 956.5→957、縦 537.5→537。どちらも target の位置。
+    // (「0.5 は切り上げ」なら縦は 538 に残り、次の target の静止で 1 画素跳ぶ。)
+    check(mvm::math::mathTransformArtifactOriginAt(placement, 1, 2, left, top) && left == 957 &&
+              top == 537,
+          "2 枚の最後の frame は target の位置 (縦に小さくなる向きでも)");
+
+    int untouchedLeft = 12345;
+    int untouchedTop = 12345;
+    check(!mvm::math::mathTransformArtifactOriginAt(placement, 4, 4, untouchedLeft, untouchedTop) &&
+              !mvm::math::mathTransformArtifactOriginAt(placement, -1, 4, untouchedLeft,
+                                                        untouchedTop) &&
+              !mvm::math::mathTransformArtifactOriginAt(placement, 0, 0, untouchedLeft,
+                                                        untouchedTop) &&
+              !mvm::math::mathTransformArtifactOriginAt(placement, 0, (std::int64_t{1} << 28) + 1,
+                                                        untouchedLeft, untouchedTop) &&
+              untouchedLeft == 12345 && untouchedTop == 12345,
+          "範囲外の frame (終状態の frame == frames を含む)・frames <= 0・大きすぎる frames は"
+          "失敗し、出力を変えない");
+
+    MathTransformRasterPlacement failed{1, 2, 3, 4};
+    check(
+        !mvm::math::mathTransformRasterPlacement(8, 6, 4, 2, 5, 3, 0, 1, 6, 4, 20, 10, failed) &&
+            !mvm::math::mathTransformRasterPlacement(8, 6, 1, 2, 5, 3, 0, 3, 6, 4, 20, 10, failed),
+        "端点の静止が artifact からはみ出せば失敗");
+    // 20 幅の出力に 20 幅の artifact: source の左上は (20-5)/2 - 1 = 6 で、右端が 26 > 20。
+    check(!mvm::math::mathTransformRasterPlacement(20, 6, 1, 2, 5, 3, 0, 1, 6, 4, 20, 10, failed),
+          "artifact が出力からはみ出せば失敗 (黙って切らない)");
+    check(!mvm::math::mathTransformRasterPlacement(8, 6, 1, 2, 5, 3, 0, 1, 6, 4, 4, 10, failed),
+          "静止が出力より大きければ失敗");
+    check(failed == MathTransformRasterPlacement{1, 2, 3, 4}, "失敗では出力を変えない");
+}
+
+// P2-2 の配置で描いた artifact では、偶奇の 16 通りと出力の偶奇で、端点の静止が静止の配置に
+// 重なり、端点の左上の差は各軸 1 画素以内で、最後の frame (2 枚以上) は target の位置になる。
+void testRasterPlacementParity() {
+    int combinations = 0;
+    for (const int outputWidth : {1920, 1921})
+        for (const int outputHeight : {1080, 1081})
+            for (int bits = 0; bits < 16; ++bits) {
+                const int sw = 40 + (bits & 1);
+                const int sh = 20 + ((bits >> 1) & 1);
+                const int tw = 30 + ((bits >> 2) & 1);
+                const int th = 25 + ((bits >> 3) & 1);
+                const int cw = std::max(sw, tw) + 12;
+                const int ch = std::max(sh, th) + 12;
+                mvm::math::MathTransformPlacement canvas;
+                if (!mvm::math::mathTransformPlacement(sw, sh, tw, th, cw, ch, canvas)) {
+                    check(false, "偶奇: canvas の配置");
+                    continue;
+                }
+                const mvm::math::MathRect artifact =
+                    mvm::math::mathRectUnion({canvas.source.left, canvas.source.top, sw, sh},
+                                             {canvas.target.left, canvas.target.top, tw, th});
+                mvm::math::MathTransformRasterPlacement placement;
+                if (!mvm::math::mathTransformRasterPlacement(
+                        artifact.width, artifact.height, canvas.source.left - artifact.x,
+                        canvas.source.top - artifact.y, sw, sh, canvas.target.left - artifact.x,
+                        canvas.target.top - artifact.y, tw, th, outputWidth, outputHeight,
+                        placement)) {
+                    check(false, "偶奇: 出力への配置");
+                    continue;
+                }
+                // 静止の配置 (中央、余りは左上) を手で数える。
+                const int sourceLeft = (outputWidth - sw) / 2;
+                const int targetLeft = (outputWidth - tw) / 2;
+                const int sourceTop = (outputHeight - sh) / 2;
+                const int targetTop = (outputHeight - th) / 2;
+                const std::string what = "偶奇 " + std::to_string(sw) + "x" + std::to_string(sh) +
+                                         "→" + std::to_string(tw) + "x" + std::to_string(th) +
+                                         " 出力 " + std::to_string(outputWidth) + "x" +
+                                         std::to_string(outputHeight);
+                check(placement.sourceLeft + canvas.source.left - artifact.x == sourceLeft &&
+                          placement.sourceTop + canvas.source.top - artifact.y == sourceTop &&
+                          placement.targetLeft + canvas.target.left - artifact.x == targetLeft &&
+                          placement.targetTop + canvas.target.top - artifact.y == targetTop,
+                      what + ": 端点の静止が静止の配置に重なる");
+                check(std::abs(placement.sourceLeft - placement.targetLeft) <= 1 &&
+                          std::abs(placement.sourceTop - placement.targetTop) <= 1,
+                      what + ": 端点の左上の差は 1 画素以内");
+                for (const std::int64_t frames : {2, 3, 9}) {
+                    int left = 0;
+                    int top = 0;
+                    check(
+                        mvm::math::mathTransformArtifactOriginAt(placement, 0, frames, left, top) &&
+                            left == placement.sourceLeft && top == placement.sourceTop,
+                        what + ": frame 0 は source の位置");
+                    check(mvm::math::mathTransformArtifactOriginAt(placement, frames - 1, frames,
+                                                                   left, top) &&
+                              left == placement.targetLeft && top == placement.targetTop,
+                          what + ": " + std::to_string(frames) +
+                              " 枚の最後の frame は target の位置");
+                }
+                ++combinations;
+            }
+    check(combinations == 64, "偶奇の 64 通りをすべて確かめた");
+}
+
+// composeMathPatchAt は composeMathPatch と同じ画素を、広い画像の中の位置へ書く。
+void testComposePatchAt() {
+    const std::uint8_t coverage[] = {255, 128, 0, 64};
+    mvm::math::MathComposeStyle style;
+    style.colorArgb = 0xFF336699u;
+    std::vector<std::uint8_t> direct(2 * 2 * 4, 0xEE);
+    mvm::math::composeMathPatch(coverage, 2, 2, style, direct.data());
+    std::vector<std::uint8_t> wide(4 * 3 * 4, 0xAB);
+    mvm::math::composeMathPatchAt(coverage, 2, 2, style, wide.data(), 4, 1, 1);
+    bool same = true;
+    bool outsideUntouched = true;
+    for (int y = 0; y < 3; ++y)
+        for (int x = 0; x < 4; ++x)
+            for (int c = 0; c < 4; ++c) {
+                const std::uint8_t got =
+                    wide[(static_cast<std::size_t>(y) * 4 + static_cast<std::size_t>(x)) * 4 +
+                         static_cast<std::size_t>(c)];
+                if (x >= 1 && x < 3 && y >= 1 && y < 3)
+                    same = same && got == direct[(static_cast<std::size_t>(y - 1) * 2 +
+                                                  static_cast<std::size_t>(x - 1)) *
+                                                     4 +
+                                                 static_cast<std::size_t>(c)];
+                else
+                    outsideUntouched = outsideUntouched && got == 0xAB;
+            }
+    check(same, "位置を指定した合成は composeMathPatch と同じ画素");
+    check(outsideUntouched, "位置を指定した合成は矩形の外を書かない");
+    // 被覆 255 の画素は文字色そのもの、0 は透明。
+    check(direct[0] == 0x33 && direct[1] == 0x66 && direct[2] == 0x99 && direct[3] == 255 &&
+              direct[2 * 4 + 3] == 0,
+          "被覆 255 は文字色、0 は透明");
+}
+
 } // namespace
 
 int main() {
@@ -509,6 +686,9 @@ int main() {
     testTransformPlacement();
     testColorInterpolation();
     testCoverageInspection();
+    testRasterPlacement();
+    testRasterPlacementParity();
+    testComposePatchAt();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;
 }

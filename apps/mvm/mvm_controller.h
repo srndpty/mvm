@@ -1,6 +1,7 @@
 #ifndef MVM_APPS_MVM_MVM_CONTROLLER_H
 #define MVM_APPS_MVM_MVM_CONTROLLER_H
 
+#include "app/math_clip_render.h"
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
 #include "audio_adjustment_job.h"
@@ -654,7 +655,17 @@ public:
         std::function<void(const std::string& clipId, std::int64_t outputFrame, std::int64_t state)>;
     void setMathWriteObserverForTest(MathWriteObserver observer) {
         mathWriteObserverForTest_ = std::move(observer);
-        mathWriteAnimations_.clear();
+        mathPreviewAnimations_.clear();
+    }
+    // 試験用: 変形の preview の評価を観測する。引数はトランジション ID・評価した clip (前・後ろの
+    // どちらの layer か) の ID・出力 frame・見せる変形の frame (-1 は区間の外の静止)。
+    // 設定後に作る animation に効く。render thread から呼ぶので、thread 安全にすること。
+    using MathTransformObserver =
+        std::function<void(const std::string& transitionId, const std::string& clipId,
+                           std::int64_t outputFrame, std::int64_t transformFrame)>;
+    void setMathTransformObserverForTest(MathTransformObserver observer) {
+        mathTransformObserverForTest_ = std::move(observer);
+        mathPreviewAnimations_.clear();
     }
     // 試験用: 最後に engine へ出した composition (再生中の引き継ぎも含む)。
     std::shared_ptr<const preview::CompositionSnapshot> submittedCompositionForTest() const {
@@ -1205,11 +1216,32 @@ private:
     // 画素 (last-good) を返す。どれも無ければ nullptr で pending を true にする (合成から外す)。
     std::shared_ptr<const preview::PreviewStillImage> mathStillImage(int clipIndex,
                                                                      bool& pending) const;
-    // 数式 clip の Write の preview (still の mask 矩形を frame ごとに連番の画素へ変える)。
-    // Write が無い・入力中・連番が描けていない・静止の描画が現在の式のものでない間は nullptr
-    // (still のまま、すなわち書き終えた式を見せる)。
+    // 数式 clip の preview の animation (Write と変形。still の一部の矩形を frame ごとに変える)。
+    // 付けられる部分が無ければ nullptr (still のまま、すなわち静止の式を見せる)。
+    // - Write: Write が無い・入力中・連番が描けていない・memory に無い・静止の描画が現在の式の
+    //   ものでない間は付けない (書き終えた式を見せる)
+    // - 変形: この clip が前・後ろの端の変形のうち、mathTransformPreviewPart が使えるもの
     std::shared_ptr<const preview::PreviewStillAnimation>
-    mathWriteAnimation(int clipIndex, const preview::PreviewStillImage& still) const;
+    mathPreviewAnimation(int clipIndex,
+                         const std::shared_ptr<const preview::PreviewStillImage>& still) const;
+    // 変形の preview に要る値が揃っているか。揃わなければ理由を返し、preview は cut で切り替える
+    // (古い変形・前に描けた別の式の静止は使わない)。
+    //   - 両 clip が描かれ (mathTransformIsRendered)、どちらも入力中でない
+    //   - 両端の今の式の静止が Ready、変形の disk の artifact が Ready
+    //   - artifact が出力 raster に収まる (mathTransformRasterPlacement)
+    // memory (residency) は見ない。
+    struct MathTransformPreviewInputs {
+        math::MathTransformSpec spec;
+        MathTransformWindow window;
+        math::MathTransformRasterPlacement placement;
+        std::uint32_t sourceColor = 0;
+        std::uint32_t targetColor = 0;
+    };
+    std::optional<MathTransformPreviewInputs>
+    mathTransformPreviewInputs(const project::TimelineTransition& transition,
+                               QString* placementError = nullptr) const;
+    // 選択中のトランジションが変形なら、描画と preview の状態 (computeSelectedTransition が足す)。
+    QVariantMap mathTransformStatus(const project::TimelineTransition& transition) const;
     // 数式 clip の Write の状態 (mathClipData の writeState / writeMessage)。
     std::pair<QString, QString> mathWriteState(const project::TimelineClip& clip) const;
     // preview 中の値を反映した数式 clip の値。
@@ -1369,6 +1401,8 @@ private:
     QVariantMap shownSelectedTransition_;
     void notifyTimelineTransitions();
     QVariantMap computeSelectedTransition() const;
+    // 合成の後に、選択中の変形の描画・memory の状態だけを inspector へ出し直す。
+    void refreshSelectedMathTransformStatus();
     std::vector<project::TimelineClip> clipboardClips_;
     // コピー元 Project の bin にあった、clipboardClips_ の素材。
     std::vector<project::MediaItem> clipboardMediaItems_;
@@ -1454,14 +1488,15 @@ private:
         std::shared_ptr<const preview::PreviewStillImage> image;
     };
     mutable QHash<QString, MathComposed> mathStillImages_;
-    // clip ごとの Write の preview。連番・見た目・時間が同じなら同じ instance を engine へ渡す
-    // (engine は instance ごとに texture を持つ)。
-    struct MathWriteAnimationMemo {
+    // clip ごとの preview の animation (Write と変形)。mask・見た目・時間が同じなら同じ instance を
+    // engine へ渡す (engine は instance ごとに texture を持つ)。
+    struct MathPreviewAnimationMemo {
         QString memo;
         std::shared_ptr<const preview::PreviewStillAnimation> animation;
     };
-    mutable QHash<QString, MathWriteAnimationMemo> mathWriteAnimations_;
+    mutable QHash<QString, MathPreviewAnimationMemo> mathPreviewAnimations_;
     MathWriteObserver mathWriteObserverForTest_;
+    MathTransformObserver mathTransformObserverForTest_;
     // 入力中の数式 (clip ID と、Project へまだ保存していない値)。
     std::optional<std::pair<std::string, project::MathClipData>> mathPreviewOverride_;
     mutable QHash<QString, QRect> textRasterBounds_;

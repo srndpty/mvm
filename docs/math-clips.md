@@ -729,6 +729,146 @@ controller・preview・書き出し・UI はまだ変形を使わない。previe
 - [未検証] 実 Manim では回し直していない。P2-4 は P2-3 の renderer の描画を変えず、preflight で束ねただけである。
   P2-3 の smoke (71 / 71) の結果がそのまま当てはまると考えている。
 
+### 変形の preview と inspector (P2-5)
+
+書き出しはまだ変形を使わない (出力する変形のある書き出しは拒否したまま、P2-6)。
+P2-4 の disk・cache・memory の意味 (`MathRasterCache`) は変えていない。Project の schema も変えていない。
+
+- 時間の正は timeline。変形の区間は `[cut - 前, cut + 後)` で、区間の i 番目の timeline frame は変形の frame i
+  (`mathTransformWindowFor`・`mathTransformFrameAt`、`src/app/math_clip_render.h`)。区間の外は両端の静止。
+- 描かれるかどうかは `mathTransformIsRendered` (両 clip が有効で、track が出力される) だけが決める。
+  書き出しの拒否 (`mapTimelineExportPlan`) も同じ関数を通すようにした (動作は変えていない)。
+- artifact の位置 (`mathTransformRasterPlacement`・`mathTransformArtifactOriginAt`、`src/media/math/math_transform.h`)
+  - 端点の位置: `source = mathRasterPlacement(A の静止) - artifact の中の source の位置`、target も同じ。
+    出力の中央に置く静止の配置そのものから決めるので、frame 0 は普通の A の静止と画素で一致する。
+  - 両端の静止の大きさの偶奇が違い、canvas (大きい方の端点 + 余白) と出力の偶奇が違う軸では、
+    2 つの位置は 1 画素違う。途中の frame は線形に動かし、最も近い整数に丸め、ちょうど半分は
+    target の側へ丸める。したがって 2 枚以上なら最後の frame は target の位置で、次の B の静止へ段差なく続く。
+  - 「0.5 は切り上げ」(文字色と同じ丸め) にしなかった理由: target が 1 画素上・左にあり 2 枚のとき、
+    最後の frame (進み具合 1/2) が source の位置に残り、B の静止で 1 画素跳ぶ。許容誤差で隠さず、規則で防ぐ。
+  - artifact がどちらかの端の位置で出力からはみ出すなら使わない (cut で見せ、inspector に理由を出す。黙って切らない)。
+- preview の animation (`MathClipPreviewAnimation`、`mvm_controller.cpp`)
+  - 既存の `PreviewStillAnimation` (静止画 layer の一部の矩形を出力 frame ごとに変える) にそのまま収まった。
+    engine は変えていない。
+  - 1 本の数式 clip に 1 つの instance で、Write の部分と、その clip が前・後ろの端の変形の部分を持つ。
+    - engine は instance ごとに静止画の texture を持ち、合成の切り替えは tick 単位で提示より遅れて届く。
+      区間の境ごとに instance を替えると、その間の frame が前の instance で提示される。
+    - state は出力 frame だけから決まる。前の clip の layer が cut の後まで残っても、同じ変形の frame を見せる。
+  - 書き換える矩形は、artifact を両端の位置に置いた矩形の和 (と Write の矩形)。
+    - 変形の frame は矩形を透明で埋めてから artifact を置く。1 画素動いた位置で静止の glyph を残さない。
+    - 背景は透明 (P2-1 で両端の背景は透明に限る)。
+    - 文字色は `mathTransformColorAt(A の色, B の色, i, N)`。
+  - ClipEffects は今までどおり layer (`PreviewMotion` / 合成の値) が 1 回だけ掛ける。artifact には焼き込まない。
+- 変形を付ける条件 (`mathTransformPreviewInputs`)。満たさない間は今までの cut で見せる。
+  - 両 clip が描かれ、どちらも入力中でない。
+  - 両端の今の式の静止が Ready。前に描けた別の式の静止 (last-good) では置かない。
+  - 変形の disk の artifact が Ready。
+  - preview 用の mask が memory にある (Resident)。Loading・OverBudget の間は cut。
+  - 古い変形・前に見せた変形は使わない。
+    - key は端点の式と長さで変わる。
+    - animation は毎回の合成で作り直す (同じ値なら同じ instance)。
+- 再生中に mask が届いたとき: P1.2 と同じく、次の tick の合成に変形が付き、出し直す。
+  変形の frame は engine が出力 frame から決めるので、届いた時刻の frame から見せ、0 からやり直さない。
+- 描画の要求 (`requestMathRenders`)
+  - Project にある変形をすべて disk に要求する (Write と同じく、書き出しの前に揃えておくため)。
+    - 再生位置がどちらかの clip に掛かる変形は、両端の静止と一緒に先に要求する。
+  - `retainOnly` に今の変形の key を入れる。
+    - 今の変形 (disk と memory) は取り下げない。
+    - 端点・長さを変えた前の変形は取り下げる。描きかけなら process ごと止め、結果を確定しない。
+  - memory への読み込みは、前・後ろの clip が見える frame の合成だけが要求する (先読みは足していない)。
+- inspector (`selectedTransition` に足した値。変形のときだけ)
+  - `kind`
+  - `transformState`: checking / rendering / ready / error / unavailable。disk の変形の状態で、書き出しが使う。
+    - `transformMessage`・`transformLog`
+  - `transformPreview` ("" / loading / ready / memory) と `transformPreviewMessage`
+    - preview 用の mask の状態。memory に収まらなくても `transformState` は ready のまま。
+  - `transformUnavailableReason` (backend / authority)・`transformCanRetry`・`transformToolchain`
+  - エフェクトコントロール (`TransitionInspector.qml`) は、変形のとき題を「数式の変形」にし、次を出す。
+    - 状態
+    - 描画の理由と、memory の理由 (別の行)
+    - 導入の案内 (`MathDependencyGuidance.qml`、数式 clip の inspector と共有)
+    - 再試行・ログ
+  - 作成・長さの操作は足していない。
+  - 合成が読み込みを始めた・上限に収まらなかったことは、合成の後に状態だけを出し直して示す
+    (`refreshSelectedMathTransformStatus`)。
+- [未検証] 入力中の式の静止は、待っている変形の描画より後になりうる。worker は 1 本で、`cancelPendingSequences` は連番だけを止める。
+- [未検証] 大きな式の変形の preview の再生中の負荷。区間では state が frame ごとに変わり、render thread が
+  矩形を着色して送る (Write と同じ方式)。
+- 試験 (期待値は手で数えた値、または偽の backend の定義から手で数えた値。実装の配置関数で作らない)
+  - `math_transform_contract` (836 検査)
+    - 端点の位置と途中の frame の手計算の値 (偶奇の違う 7x2→4x5 で横 +1・縦 -1)。
+    - 2 枚で縦に小さくなる向きでも、最後の frame が target の位置になること。
+    - 範囲外の拒否。
+    - 偶奇 16 通り x 出力の偶奇 4 通りで、端点の静止が静止の配置に重なり、差が 1 画素以内で、
+      2・3・9 枚の最後の frame が target の位置になること。
+    - `composeMathPatchAt` が `composeMathPatch` と同じ画素を書くこと。
+  - `math_controller_focused` (374 検査)。偽の backend で、区間は 290..319 (30 枚)。
+    - 偶奇の組 5 つ (7x2→4x5、4x5→7x2、6x4→4x2、5x3→9x7、8x3→5x6)。
+      - cut の前後の timeline frame と変形の frame の対応。
+      - frame 0 が普通の A の静止の preview と全画素で一致する。
+      - frame 0・1・14・15・16・29 が手で数えた画素と一致する (前・後ろの layer の両方)。
+      - 最後の frame と次の B の静止の違いが、偽の変形が足した 1 画素だけ (glyph は跳ばない)。
+    - 色 (#FF102030 → #FF5021F0): frame 14・15 (0.5 の切り上げ)・29 と、被覆 200 の画素。
+    - ClipEffects (位置 X 10%・不透明度 50%)
+      - 変形の layer の値が普通の静止の layer と同じ。
+      - 合成の layer は 1 枚。
+      - patch の glyph は被覆 255 のまま (artifact に焼き込まない)。
+    - fallback (いずれも hard cut の画素)
+      - disk: Pending・Failed (`BADT`)・Unavailable (`GONET`)
+      - memory: Loading (試験用の保留)・OverBudget。OverBudget では disk は ready のまま、memory の理由を描画の error と分けて示す。
+    - memory に置き直すと disk から読み、描き直さない。
+    - 色の変更で `retainOnly` が今の変形 (disk と memory) を残す。
+    - 式の変更・描画中の再度の変更・長さの変更で古い key を捨てる (描きかけの結果を確定しない)。
+    - Write
+      - 区間に掛かる A の Write と、B の Write の確定を拒否する (P2-1 の不変条件)。
+      - 区間の前で終わる Write と変形は 1 つの animation で見せる。
+  - `math_transform_native_playback` (新規、`workstation`、26 検査)。実 D3D11 の preview で、区間は 240..419 (180 枚)。
+    1. 再生前に memory にある: 区間の先頭から、cut の前は A の layer、後は B の layer で、変形の frame = 出力 frame - 240。
+    2. memory に無い。frame 270 (cut の前) で届ける。
+       - [事実] 届いた後の frame 273 から見せ、frame 0 を出さない。
+       - cut を越えて B の layer で続く。
+       - 再生の組み直しは無い。
+    3. memory の上限に収まらない区間へ seek する: cut の静止を提示し、選び直さなくても inspector が memory の理由を示す。
+  - `math_transform_inspector_product_ui` (新規): 製品の `Main.qml` と実 controller で確かめる。
+    - backend の不在: 「利用不可」・導入の案内・再試行を出す。
+    - OverBudget: 「完了」と memory の理由を分けて出し、理由はパネルの幅で折り返す。
+  - [事実] 実装に変異を 1 つずつ入れると、すべて試験のどれかが失敗した (8 種)。
+    | 変異 | 失敗した試験 |
+    |---|---|
+    | 位置を「0.5 は切り上げ」で丸める | contract 18 件・focused 6 件 |
+    | 変形の frame の前に矩形を透明で埋めない | focused 29 件 |
+    | 位置を source のまま動かさない | focused 18 件 |
+    | `retainOnly` に変形の key を入れない | focused 1 件 |
+    | 色を補間しない | focused 4 件 |
+    | 変形の frame を 1 frame ずらす | focused 42 件・native 2 件 |
+    | 使えなくなった変形の前の animation を使い続ける | focused 2 件 |
+    | 最初に見せた frame を 0 とする (途中から 0 で始める) | focused 2 件・native 3 件 |
+    - 「透明で埋めない」は最初は試験を通過した。
+      - 試験の合成が patch を毎回 0 で初期化しており、engine の作業領域の使い回しを再現していなかった。
+      - patch を無関係な値で埋めてから `fillPatch` を呼ぶように直すと、検出できるようになった。
+- 実 Manim の受け入れ (`mvm_test_math_controller --real-manim-transform <manim.exe> <作業 directory>`、CTest に登録しない)
+  - 経路: Manim の確認 → 両端の静止 → 変形の cache (.a8) → memory → 実 D3D11 の preview の再生。
+    製品の controller を通す。
+  - [事実] 2026-10-06: 36 / 36 検査、終了コード 0 (`build/math-p25-real-20261006-021951.log`)。
+    - 環境は P2-3 と同じ (Manim Community v0.21.0、MiKTeX 26.5、dvisvgm 3.6)。
+    - 所要時間: 確認 7.4 秒、静止と変形 5 件の描画 40.6 秒。
+  - 解の公式の連鎖 E1 (416x147) → E2 (976x182) → E3 (636x182)
+    - 30 枚の .a8 と、frame 0 が A の静止と全画素一致することを確かめた。
+    - 再生中の engine の評価 58 件が「変形の frame = 出力 frame - 区間の先頭」で、両方の変形を cut の前後の layer で見せた。
+  - 偶奇: `small-y` (`y` 48 px の 38x47 → `y^2 = 1` 72 px の 209x94)
+    - 幅が偶数 → 奇数で、大きい方が奇数なので、端点の左上が横に 1 画素ずれる (856 → 855)。
+    - 最後の frame の位置で target の静止が B の静止に重なることを確かめた。
+    - 最後の frame と B の静止は全画素で一致した。
+  - [事実] 他のケースの最後の frame (進み具合 29/30) と B の静止の違う画素数 (参考)。
+    - e1-e2 11733、e2-e3 8546、small-a 247、small-k 232。
+    - 途中の frame なので一致は期待しない。
+    - 位置の正しさは frame 0 と、終状態の照合 (P2-4) と位置の規則で確かめている。
+- [事実] 2026-10-06 の通常の release gate (`scripts/test.ps1 -Preset ucrt64-release -Group All`、
+  `build/math-p25-release-gate.log`) は 1455 / 1455 件が通過した (741 秒)。
+  - `-Group BuildIndependent` は 1078 / 1078 件 (`build/math-p25-build-independent.log`)。
+  - `performance|stability` は除外した。`scripts/lint.ps1` も通過した。
+  - GUI・提示の試験は、画面を消灯させない設定 (`SetThreadExecutionState(ES_DISPLAY_REQUIRED)`) の下で回した。
+
 ### P2-1 の gate (2026-10-05)
 
 - [事実] 通常の release gate (`build/math-p21-release-gate.log`) は 1452 件中 1444 件が通過し、

@@ -192,26 +192,19 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         return plan;
     }
     // 数式の変形の書き出しはまだ無い (P2 の後の段階)。出力する変形を cut で黙って置き換えない。
+    // 描かれるかどうかは preview と同じ判定 (mathTransformIsRendered)。
     for (const auto& transition : project.timelineTransitions) {
-        if (transition.kind != project::TransitionKind::MathTransform)
+        if (!mathTransformIsRendered(project, transition))
             continue;
-        const auto outgoing =
-            std::find_if(project.timelineClips.begin(), project.timelineClips.end(),
-                         [&](const project::TimelineClip& clip) {
-                             return clip.id == transition.outgoingClipId;
-                         });
-        const auto incoming =
-            std::find_if(project.timelineClips.begin(), project.timelineClips.end(),
-                         [&](const project::TimelineClip& clip) {
-                             return clip.id == transition.incomingClipId;
-                         });
-        if (outgoing != project.timelineClips.end() && incoming != project.timelineClips.end() &&
-            outgoing->enabled && incoming->enabled &&
-            project::isTrackOutputEnabled(project, outgoing->track)) {
-            plan.error =
-                "数式の変形はまだ書き出せません: " + outgoing->name + " → " + incoming->name;
-            return plan;
-        }
+        const auto name = [&](const std::string& id) {
+            const auto clip =
+                std::find_if(project.timelineClips.begin(), project.timelineClips.end(),
+                             [&](const project::TimelineClip& item) { return item.id == id; });
+            return clip == project.timelineClips.end() ? id : clip->name;
+        };
+        plan.error = "数式の変形はまだ書き出せません: " + name(transition.outgoingClipId) + " → " +
+                     name(transition.incomingClipId);
+        return plan;
     }
     plan.totalDurationFrames = valid.totalFrames;
     std::vector<project::TimelineRenderSegment> videoSegments;

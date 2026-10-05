@@ -248,13 +248,9 @@ ColumnLayout {
         color: "#f2c66d"
         wrapMode: Text.Wrap
     }
-    Label {
+    MathDependencyGuidance {
         objectName: "mathDependencyGuidance"
-        Layout.fillWidth: true
         visible: root.clipData.unavailableReason === "backend"
-        text: "Manim と MiKTeX を導入し、latex / dvisvgm が利用できる状態にして再試行してください。MiKTeX の不足パッケージは自動導入を有効にしてください。"
-        color: "#aeb4bf"
-        wrapMode: Text.Wrap
     }
     Flow {
         Layout.fillWidth: true

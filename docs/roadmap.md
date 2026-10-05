@@ -35,8 +35,12 @@
     長い変形で disk が大きくなる場合は、可逆の圧縮 (PNG の encode など) を検討する
   - (済: P2-3) Manim の backend (`MathTex(*segments)` と明示の変形・fade、部分の構造の検査、
     実測の bbox による artifact の矩形、半画素の補正、端点の照合)
-  - preview・書き出し・UI
-  - P2-1 では、出力する変形のある書き出しを拒否し、preview は cut で切り替える
+  - (済: P2-5) preview (A の layer と B の layer が同じ変形の frame を見せる、artifact の位置の規則) と
+    エフェクトコントロールの状態 (disk の描画と preview の memory を分けて示す)
+  - 書き出し (P2-6)。それまでは出力する変形のある書き出しを拒否する
+  - 変形の mask の先読み: 今は前・後ろの clip が見える frame の合成が要求してから memory に読むので、
+    再生中に読み終えるまでは cut で見せる (読み終えた次の tick から、その時刻の変形の frame を見せる)
+  - 入力中の式の静止は、待ち行列にある変形の描画の後になりうる (`cancelPendingSequences` は連番だけを止める)
 - P2 の後: 手動の照合・部分式の ID・強調、背景の矩形の補間、区間の中で ClipEffects が
   違う変形、変形と後ろの clip の Write の両立、トランジションごとのコピー / 貼り付け。
 - P2 の最適化: Write の書き出しは Write の区間の timeline frame ごとに出力全面の PNG を

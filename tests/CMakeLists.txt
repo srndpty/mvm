@@ -4005,6 +4005,11 @@ add_test(NAME math_inspector_product_ui COMMAND mvm_test_text_ui_input --math-in
 set_tests_properties(math_inspector_product_ui PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)
+add_test(NAME math_transform_inspector_product_ui
+    COMMAND mvm_test_text_ui_input --math-transform-inspector)
+set_tests_properties(math_transform_inspector_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 60)
 add_test(NAME audio_mixer_controls_qml
     COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
             -Runner ${MVM_QMLTESTRUNNER}
@@ -4096,6 +4101,11 @@ mvm_add_test(math_controller_focused COMMAND mvm_test_math_controller PROPERTIES
 # 実 D3D11 の preview で再生し、Write の mask が再生中に届いたときの表示を確かめる。
 add_test(NAME math_write_native_playback COMMAND mvm_test_math_controller --native-write)
 set_tests_properties(math_write_native_playback PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+# 同じ方法で、数式の変形の mask が再生中 (区間の途中) に届いたときの表示を確かめる。
+add_test(NAME math_transform_native_playback COMMAND mvm_test_math_controller --native-transform)
+set_tests_properties(math_transform_native_playback PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
 target_link_libraries(mvm_test_subtitle_controller PRIVATE ${_subtitle_controller_libraries})

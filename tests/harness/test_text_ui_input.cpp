@@ -1088,6 +1088,148 @@ int checkMathInspector(const std::filesystem::path& projectPath) {
     return result;
 }
 
+// P2-5: 製品 QML と実 controller で、数式の変形を選ぶとエフェクトコントロールが変形の状態を示す。
+// backend の不在は導入案内と再試行、描画の済んだ変形が preview の memory に収まらないときは
+// disk の状態 (完了) と memory の理由を分けて示す (Write と同じ区別)。
+int checkMathTransformInspector(const std::filesystem::path& projectPath) {
+    auto project = mvm::project::createDefaultProject();
+    const auto math = [](const std::string& id, const std::string& source, qint64 start) {
+        mvm::project::TimelineClip clip;
+        clip.kind = mvm::project::TimelineClipKind::Math;
+        clip.id = id;
+        clip.name = id;
+        clip.sourceFpsNum = 60;
+        clip.sourceFpsDen = 1;
+        clip.sourceFrameCount = clip.sourceOutFrame = 300;
+        clip.timelineStartFrame = start;
+        clip.math.source = source;
+        return clip;
+    };
+    project.timelineClips = {math("A", "x", 0), math("B", "y", 300)};
+    project.timelineTransitions = {
+        {"t1", "A", "B", 10, 20, mvm::project::TransitionKind::MathTransform}};
+    check(mvm::project::saveProjectJson(project, projectPath).success,
+          "変形 UI 試験の Project を保存できません");
+    mvm::app::MvmController controller(projectPath, {}, project);
+    controller.setMathPreflightForTest(mvm::test::FakeMathBackend::unavailable("依存不足の試験"));
+    mvm::app::WaveformCache cache;
+    QQmlApplicationEngine engine;
+    auto properties = mvm::app::testFixedWindowInitialProperties();
+    properties.insert(QStringLiteral("mvmController"), QVariant::fromValue(&controller));
+    properties.insert(QStringLiteral("waveformCache"), QVariant::fromValue(&cache));
+    if (!mvm::app::testFixedWindowRequested())
+        properties.insert(QStringLiteral("flags"), mvm::test::backgroundWindowFlags());
+    engine.setInitialProperties(properties);
+    engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
+    auto* window = engine.rootObjects().isEmpty()
+                       ? nullptr
+                       : qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+    if (!window) {
+        controller.shutdown();
+        return 3;
+    }
+    const auto run = [&]() -> int {
+        QString reason;
+        if (!QTest::qWaitForWindowExposed(window) || !mvm::test::focusWithoutForeground(window) ||
+            !mvm::test::isolatedFromUserInput(window, reason)) {
+            std::fprintf(stderr, "PROTOCOL_INVALID: 変形 UI 試験を操作から隔離できません: %s\n",
+                         qUtf8Printable(reason));
+            return 4;
+        }
+        window->setProperty("leftPanelWidth", 500);
+        // 合成 (mask の読み込みと memory の上限の判定) は preview engine を通る。
+        controller.attachPreview(
+            window->findChild<mvm::app::PreviewEngineRhiItem*>(QStringLiteral("previewSurface")));
+        check(pumpUntil([&] { return controller.previewReady(); }, 30000),
+              "変形 UI 試験のプレビューを準備できません");
+        check(controller.selectTransition(QStringLiteral("t1")), "変形を選べません");
+        window->setProperty("leftPanelTab", 0);
+        pump(200);
+        auto* inspector = findVisualItem(window, QStringLiteral("transitionInspector"));
+        auto* stateLabel = findVisualItem(window, QStringLiteral("mathTransformState"));
+        auto* guidance = findVisualItem(window, QStringLiteral("mathTransformDependencyGuidance"));
+        auto* retry = findVisualItem(window, QStringLiteral("mathTransformRetryButton"));
+        auto* memory = findVisualItem(window, QStringLiteral("mathTransformPreviewMemory"));
+        if (!inspector || !stateLabel || !guidance || !retry || !memory) {
+            check(false, "エフェクトコントロールに変形の状態の表示がありません");
+            return 1;
+        }
+        check(pumpUntil([&] {
+                  return stateLabel->isVisible() &&
+                         stateLabel->property("text").toString().contains(
+                             QStringLiteral("利用不可"));
+              }),
+              "backend の不在で変形を利用不可と示しません");
+        check(guidance->isVisible() && retry->isVisible() && !memory->isVisible(),
+              "backend の不在で導入案内と再試行を示しません");
+
+        // backend が使える: 変形を描き、preview の memory の上限を変形より小さくする。
+        mvm::test::FakeMathBackend backend;
+        controller.setMathPreflightForTest(backend.preflight());
+        check(
+            pumpUntil(
+                [&] { return controller.selectedTransition().value("transformState") == "ready"; },
+                20000),
+            "変形の描画が完了しません");
+        check(!guidance->isVisible() &&
+                  stateLabel->property("text").toString().startsWith(QStringLiteral("変形: 完了")),
+              "描画の済んだ変形を完了と示しません");
+        controller.mathRastersForTest().setResidentMemoryBudget(16);
+        // preview の準備と前の seek の完了を待ってから、変形の区間へ移る。
+        // engine が cache の結果による組み直しを seek している間は受け付けないので、間を空けて
+        // 繰り返す (続けざまに呼ぶと、その間の提示を待たせる)。
+        bool sought = false;
+        for (int attempt = 0; attempt < 100 && !sought; ++attempt) {
+            sought = controller.seekTimelineFrame(295);
+            if (!sought)
+                pump(50);
+        }
+        if (!sought)
+            std::fprintf(stderr, "seek の状態: %s\n", qUtf8Printable(controller.statusText()));
+        check(sought, "変形の区間へ移れません");
+        const bool memoryShown = pumpUntil([&] { return memory->isVisible(); });
+        if (!memoryShown) {
+            const auto selected = controller.selectedTransition();
+            const auto& p = controller.projectForTest();
+            const auto spec = mvm::app::mathTransformSpecFor(
+                p.timelineTransitions[0], p.timelineClips[0], p.timelineClips[1]);
+            const auto residency = spec
+                                       ? controller.mathRastersForTest().transformResidencyOf(*spec)
+                                       : mvm::app::MathRasterCache::ResidentSequence{};
+            std::fprintf(stderr,
+                         "変形の状態: %s / preview: %s / %s / cache の residency %d / live %zu\n",
+                         qUtf8Printable(selected.value("transformState").toString()),
+                         qUtf8Printable(selected.value("transformPreview").toString()),
+                         qUtf8Printable(controller.statusText()), static_cast<int>(residency.state),
+                         controller.mathRastersForTest().residentBytes());
+        }
+        check(memoryShown, "preview の memory に収まらない変形の理由を示しません");
+        check(memory->property("text").toString().contains(QStringLiteral("memory")) &&
+                  stateLabel->property("text").toString().startsWith(QStringLiteral("変形: 完了")),
+              "memory の理由と disk の状態 (完了) を分けて示しません");
+        // 理由の文はパネルの幅で折り返し、エフェクトコントロールの外へはみ出さない
+        // (表示に切り替わった後の layout の配置を待ってから測る)。
+        pump(200);
+        const QRectF panel =
+            inspector->mapRectToScene(QRectF(0, 0, inspector->width(), inspector->height()));
+        const QRectF shown =
+            memory->mapRectToScene(QRectF(0, 0, memory->width(), memory->height()));
+        if (!(memory->height() > 0 && shown.left() >= panel.left() - 0.5 &&
+              shown.right() <= panel.right() + 0.5))
+            std::fprintf(stderr, "panel %.1f..%.1f、理由 %.1f..%.1f (高さ %.1f)\n", panel.left(),
+                         panel.right(), shown.left(), shown.right(), memory->height());
+        check(memory->height() > 0 && shown.left() >= panel.left() - 0.5 &&
+                  shown.right() <= panel.right() + 0.5,
+              "memory の理由がエフェクトコントロールの幅を超えて描かれます");
+        return failures ? 1 : 0;
+    };
+    const int result = run();
+    controller.shutdown();
+    if (!result)
+        std::puts("製品のエフェクトコントロールで数式の変形の状態と memory の理由を確認しました");
+    return result;
+}
+
 int main(int argc, char** argv) {
     mvm::app::prepareTestFixedWindowEnvironment();
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
@@ -1108,6 +1250,13 @@ int main(int argc, char** argv) {
     application.setApplicationName(QStringLiteral("project-panel"));
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+
+    if (application.arguments().contains(QStringLiteral("--math-transform-inspector"))) {
+        const int result = checkMathTransformInspector(
+            directory.filePath(QStringLiteral("math-transform-ui.mvm")).toStdWString());
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
 
     if (application.arguments().contains(QStringLiteral("--math-inspector"))) {
         const int result =
