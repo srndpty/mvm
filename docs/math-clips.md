@@ -1089,6 +1089,24 @@ Manim の描画・cache と artifact の形・preview と書き出しの意味�
   - 証拠は `build/math-p27-release-20261006.log`。performance / stability は実行していない。
 - P2-8 の受け入れはまだ行っていない。
 
+#### P2-7.1: 権限の無い controller の変形 (2026-10-06)
+
+- `math_transform_authoring_product_ui` の保存・開き直しの段に足した。製品の動作は変えていない。
+  - 保存した Project を 2 つ目の `MvmController` で開く。最初の controller が Project lock を持つので、
+    2 つ目は lock を取れない (前提として検査する)。
+  - 既存の変形を選び、製品の `Main.qml` / `TransitionInspector.qml` で次を確かめる。
+    - 変形は残って選ばれている (`kind` は `math_transform`)。
+    - `transformState` は unavailable、`transformUnavailableReason` は authority、`transformCanRetry` は false。
+    - 状態の行は「利用不可」で、理由の行に lock の理由 (「他のプロセスが編集中」) が出る。
+    - 導入の案内と再試行のボタンは出ない。
+    - controller の Project は読んだ値のまま (dirty でない)。
+    - file は byte 単位で保存したときのまま (schema・kind・トランジション)。
+- [事実] 導入の案内を authority でも出す変異 (`transformUnavailableReason !== ""`) を入れると、
+  この検査だけが失敗した (1 件)。
+- [事実] `ctest -R '^math_transform_authoring_product_ui$'` (release、画面を消灯させない設定の下) は通過した
+  (`build/math-p271-focused-20261006.log`)。lint は、追加した行の整形 (`scripts/format.ps1`) の後に通過した
+  (`build/math-p271-lint-20261006.log`)。通常 release gate は回していない (製品のコードは変えていない)。
+
 ### P2-1 の gate (2026-10-05)
 
 - [事実] 通常の release gate (`build/math-p21-release-gate.log`) は 1452 件中 1444 件が通過し、

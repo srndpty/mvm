@@ -1738,11 +1738,51 @@ int checkMathTransformAuthoring(const std::filesystem::path& projectPath) {
                       QString::fromStdString(saved->id) == abId && saved->framesAfterCut == 60,
                   "保存した Project に変形が残りません");
             if (loaded.success) {
+                // P2-7.1: 開き直す 2 つ目の controller は Project lock を取れない (最初の
+                // controller が 持っている)。変形は正しい Project
+                // の値のまま残り、描けない理由は権限であって依存の 不足ではない
+                // (導入の案内も再試行も出さない)。Project と file は変えない。
+                std::string savedBytes;
+                {
+                    QFile file(QString::fromStdWString(projectPath.wstring()));
+                    if (file.open(QIODevice::ReadOnly))
+                        savedBytes = file.readAll().toStdString();
+                }
+                check(!savedBytes.empty(), "前提: 保存した Project の file を読めません");
                 mvm::app::MvmController reopened(projectPath, {}, loaded.project);
+                check(!reopened.holdsProjectLock() && controller.holdsProjectLock(),
+                      "前提: 開き直した controller が Project lock を取れてしまいます");
                 window->setProperty("mvmController", QVariant::fromValue(&reopened));
                 pump(200);
                 check(reopened.selectTransition(abId), "開き直した Project の変形を選べません");
                 pump(300);
+                const auto shown = reopened.selectedTransition();
+                check(reopened.selectedTransitionId() == abId &&
+                          shown.value("transitionId").toString() == abId &&
+                          shown.value("kind").toString() == QStringLiteral("math_transform"),
+                      "権限の無い controller で変形が選ばれた状態になりません");
+                check(shown.value("transformState").toString() == QStringLiteral("unavailable") &&
+                          shown.value("transformUnavailableReason").toString() ==
+                              QStringLiteral("authority") &&
+                          shown.value("transformCanRetry").toBool() == false,
+                      "権限の無い controller の変形が unavailable / authority / "
+                      "再試行不可になりません");
+                auto* retry = findVisualItem(window, QStringLiteral("mathTransformRetryButton"));
+                if (!(message->isVisible() &&
+                      textOf(message).contains(QStringLiteral("他のプロセスが編集中"))))
+                    std::fprintf(stderr, "権限の理由の表示: visible=%d \"%s\"\n",
+                                 message->isVisible(), qUtf8Printable(textOf(message)));
+                check(textOf(stateLabel).contains(QStringLiteral("利用不可")) &&
+                          message->isVisible() &&
+                          textOf(message).contains(QStringLiteral("他のプロセスが編集中")),
+                      "権限 (Project lock) の理由を inspector に示しません");
+                check(!guidance->isVisible() && retry && !retry->isVisible(),
+                      "権限の不足に Manim / MiKTeX の導入案内か再試行を出しました");
+                const auto* still = transitionBetween(reopened.projectForTest(), "A", "B");
+                check(reopened.projectForTest() == loaded.project && still &&
+                          still->kind == TransitionKind::MathTransform &&
+                          still->framesAfterCut == 60 && !reopened.dirty(),
+                      "権限の無い controller が Project の変形を変えたか消しました");
                 auto* reopenedDrawn =
                     findVisualItem(window, QStringLiteral("timelineTransition_") + abId);
                 auto* reopenedLabel = reopenedDrawn ? reopenedDrawn->findChild<QQuickItem*>(
@@ -1756,6 +1796,17 @@ int checkMathTransformAuthoring(const std::filesystem::path& projectPath) {
                 window->setProperty("mvmController", QVariant::fromValue(&controller));
                 pump(100);
                 reopened.shutdown();
+                // file (schema・kind・トランジション) は byte 単位で保存したときのまま。
+                std::string afterBytes;
+                {
+                    QFile file(QString::fromStdWString(projectPath.wstring()));
+                    if (file.open(QIODevice::ReadOnly))
+                        afterBytes = file.readAll().toStdString();
+                }
+                const auto reloaded = mvm::project::loadProjectJson(projectPath);
+                check(afterBytes == savedBytes && reloaded.success &&
+                          reloaded.project == loaded.project,
+                      "権限の無い controller が Project の file を書き換えました");
             }
         }
         return failures ? 1 : 0;
