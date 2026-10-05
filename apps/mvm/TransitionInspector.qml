@@ -18,6 +18,8 @@ ColumnLayout {
     readonly property bool hasTransition: root.transition.transitionId !== undefined
     readonly property bool editable: root.hasTransition && !root.mvmController.busy
     readonly property bool isMathTransform: root.transition.kind === "math_transform"
+    readonly property bool previewUnusable: root.transition.transformPreview === "memory"
+                                            || root.transition.transformPreview === "placement"
     property bool transformLogExpanded: false
 
     readonly property int cut: root.transition.cut ?? 0
@@ -132,7 +134,7 @@ ColumnLayout {
               + (root.transition.transformPreview === "loading" ? "（preview を準備中）" : "")
         color: root.transition.transformState === "error"
                || root.transition.transformState === "unavailable"
-               || root.transition.transformPreview === "memory" ? "#f2c66d" : "#a8d5a2"
+               || root.previewUnusable ? "#f2c66d" : "#a8d5a2"
         wrapMode: Text.Wrap
     }
     // 描画の失敗・backend の不在の理由。
@@ -144,11 +146,12 @@ ColumnLayout {
         color: "#f2c66d"
         wrapMode: Text.Wrap
     }
-    // 描画は済んでいるが、preview の memory の上限で cut で表示している (書き出しには影響しない)。
+    // 描画は済んでいるが、preview では使えず cut で表示している理由 (memory の上限・出力に
+    // 収まらない)。disk の状態 (上の「完了」) とは別に示す。
     Label {
-        objectName: "mathTransformPreviewMemory"
+        objectName: "mathTransformPreviewReason"
         Layout.fillWidth: true
-        visible: root.isMathTransform && root.transition.transformPreview === "memory"
+        visible: root.isMathTransform && root.previewUnusable
         text: root.transition.transformPreviewMessage || ""
         color: "#f2c66d"
         wrapMode: Text.Wrap

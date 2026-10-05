@@ -350,7 +350,7 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
   - disk の大きさは合うが読めない frame は、読むときに見つけて artifact を消し、連番を Failed に
     する (再試行で描き直す)。
 - 入力中の式の静止がまだ描けていなければ、描きかけ・待ちの連番を止めて先に描かせる
-  (`cancelPendingSequences`)。止めた連番は同じ要求で要求し直す。
+  (P2-5.1 で変形も止める `cancelPendingAnimations` にした)。止めた連番は同じ要求で要求し直す。
 
 ### preview
 
@@ -746,7 +746,8 @@ P2-4 の disk・cache・memory の意味 (`MathRasterCache`) は変えていな�
     target の側へ丸める。したがって 2 枚以上なら最後の frame は target の位置で、次の B の静止へ段差なく続く。
   - 「0.5 は切り上げ」(文字色と同じ丸め) にしなかった理由: target が 1 画素上・左にあり 2 枚のとき、
     最後の frame (進み具合 1/2) が source の位置に残り、B の静止で 1 画素跳ぶ。許容誤差で隠さず、規則で防ぐ。
-  - artifact がどちらかの端の位置で出力からはみ出すなら使わない (cut で見せ、inspector に理由を出す。黙って切らない)。
+  - artifact がどちらかの端の位置で出力からはみ出すなら使わない (cut で見せ、黙って切らない)。
+    disk の変形は ready のままで、preview で使えない理由として示す (P2-5.1)。
 - preview の animation (`MathClipPreviewAnimation`、`mvm_controller.cpp`)
   - 既存の `PreviewStillAnimation` (静止画 layer の一部の矩形を出力 frame ごとに変える) にそのまま収まった。
     engine は変えていない。
@@ -780,8 +781,9 @@ P2-4 の disk・cache・memory の意味 (`MathRasterCache`) は変えていな�
   - `kind`
   - `transformState`: checking / rendering / ready / error / unavailable。disk の変形の状態で、書き出しが使う。
     - `transformMessage`・`transformLog`
-  - `transformPreview` ("" / loading / ready / memory) と `transformPreviewMessage`
-    - preview 用の mask の状態。memory に収まらなくても `transformState` は ready のまま。
+  - `transformPreview` ("" / loading / ready / memory / placement) と `transformPreviewMessage`
+    - preview で変形を使えるか。memory の上限に収まらない (memory)・artifact が出力に収まらない
+      (placement) 間は cut で見せる。どちらでも `transformState` は ready のまま。
   - `transformUnavailableReason` (backend / authority)・`transformCanRetry`・`transformToolchain`
   - エフェクトコントロール (`TransitionInspector.qml`) は、変形のとき題を「数式の変形」にし、次を出す。
     - 状態
@@ -791,7 +793,6 @@ P2-4 の disk・cache・memory の意味 (`MathRasterCache`) は変えていな�
   - 作成・長さの操作は足していない。
   - 合成が読み込みを始めた・上限に収まらなかったことは、合成の後に状態だけを出し直して示す
     (`refreshSelectedMathTransformStatus`)。
-- [未検証] 入力中の式の静止は、待っている変形の描画より後になりうる。worker は 1 本で、`cancelPendingSequences` は連番だけを止める。
 - [未検証] 大きな式の変形の preview の再生中の負荷。区間では state が frame ごとに変わり、render thread が
   矩形を着色して送る (Write と同じ方式)。
 - 試験 (期待値は手で数えた値、または偽の backend の定義から手で数えた値。実装の配置関数で作らない)
@@ -868,6 +869,52 @@ P2-4 の disk・cache・memory の意味 (`MathRasterCache`) は変えていな�
   - `-Group BuildIndependent` は 1078 / 1078 件 (`build/math-p25-build-independent.log`)。
   - `performance|stability` は除外した。`scripts/lint.ps1` も通過した。
   - GUI・提示の試験は、画面を消灯させない設定 (`SetThreadExecutionState(ES_DISPLAY_REQUIRED)`) の下で回した。
+
+### 入力中の式の優先と、preview で使えない変形の状態 (P2-5.1)
+
+P2-5 の描画・timeline・色・ClipEffects の振る舞いは変えていない。書き出しはまだ (P2-6)。
+
+- 入力中の式の静止を、裏で disk に揃えている変形より先に描く。
+  - P2-5 では Project にある変形をすべて要求するので、worker (1 本) が変形を描いている間、
+    入力中の式の静止が数秒待たされることがあった。止めていたのは Write の連番だけだった。
+  - `cancelPendingAnimations` (`cancelPendingSequences` を置き換え): 入力中の式の静止が Pending なら、
+    描き終えていない連番と変形を取り消して忘れる。
+    - 描画中なら process ごと止める。待ち行列の仕事は始めずに捨てる。
+    - 変形の取消は provenance の書き込み (確定) と同じ mutex で排他にする (retainOnly と同じ)。
+    - disk の Ready の artifact と memory の mask は消さない。
+    - 止めた連番と変形は、同じ `requestMathRenders` の中で要求し直す。入力中の静止が先に
+      要求済みなので、worker は静止を先に描く。
+- artifact が出力 raster に収まらない変形
+  - P2-5 では Ready の変形の `transformState` を error にしていた。disk の状態と preview の状態を混ぜていた。
+  - `transformState` は ready のまま、`transformPreview` = placement と理由
+    (`transformPreviewMessage`) で示す。preview は cut で見せ、memory には読まない。
+  - 書き出し (P2-6) は同じ中立な検査 (`mathTransformRasterPlacement`) を自分で行い、収まらなければ
+    拒否すること (preview の判定を流用しない)。
+- エフェクトコントロールは memory と placement の理由を同じ行 (`mathTransformPreviewReason`) に出す。
+- 試験 (期待値は手で数えた値、または偽の backend の定義から手で数えた値)
+  - `math_controller_focused` (396 検査)
+    - 入力中の式の優先
+      - 無関係な変形の描画を、取消を見る偽の renderer で止めておく。
+      - 静止の描けていない式を入力すると、変形が取消を受け取り、入力中の静止が先に描き終わる。
+      - 偽の backend が描き終えた順の記録で確かめる。
+      - その後、変形が要求し直されて Ready になり、preview に付く。
+    - 出力に収まらない変形 (A 1916x2、artifact 1920 幅、出力の左に 2 画素はみ出す)
+      - disk は ready で、`transformMessage` は空。
+      - `transformPreview` は placement で、理由を示す。memory には読まない。
+      - preview は手で数えた hard cut の画素。
+  - `math_raster_cache_focused` (248 検査): `cancelPendingAnimations` は描画中の変形だけを止めて
+    結果を確定させない。Ready の変形の provenance・frame・memory の mask は残す。
+    取り消した変形は要求し直すと Ready になる。
+  - [事実] 変異を 1 つずつ入れると、すべて検出された。
+    | 変異 | 失敗した試験 |
+    |---|---|
+    | 変形を取り消さない | focused 3 件・cache 3 件 |
+    | Ready の変形も取り消す | cache 2 件 |
+    | 収まらない変形を disk の error にする (P2-5 の振る舞い) | focused 3 件 |
+- [事実] 2026-10-06 の通常の release gate は 1455 / 1455 件が通過した (`build/math-p251-release-gate.log`、729 秒)。
+  - BuildIndependent は 1078 / 1078 件 (`build/math-p251-build-independent.log`)。
+  - lint も通過した。
+  - GUI・提示の試験は、画面を消灯させない設定の下で回した。
 
 ### P2-1 の gate (2026-10-05)
 

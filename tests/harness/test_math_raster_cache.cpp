@@ -439,7 +439,7 @@ void testSequenceFailuresAndCancel(const std::filesystem::path& root) {
               MathRasterCache::State::Pending,
           "連番を描き始める");
     check(waitUntil([&] { return backend.slowStarted->load(); }), "連番の描画が始まる");
-    cache->cancelPendingSequences();
+    cache->cancelPendingAnimations();
     check(cache->sequenceRecordCount() == 1, "描き終えていない連番の要求だけを忘れる (BAD は残る)");
     const auto typed = waitForResult(*cache, spec("typed"));
     check(*backend.slowSawCancel && typed.state == MathRasterCache::State::Ready,
@@ -836,6 +836,44 @@ void testTransformEndpointEditInFlight(const std::filesystem::path& root) {
           "取り下げた変形の結果を record に残さない (残すのは要求中の新しい変形だけ)");
     check(!std::filesystem::exists(transformProvenanceOf(directory, staleKey)),
           "取り下げた (取り消した) 変形の provenance を書かない");
+}
+
+// 入力中の式の静止を優先するための取消 (cancelPendingAnimations、P2-5.1): 描き終えていない変形
+// だけを止めて忘れる。Ready の変形の disk の artifact と memory の mask は消さない。取り消した
+// 変形は要求し直すと描ける。
+void testCancelPendingAnimationsKeepsReady(const std::filesystem::path& root) {
+    const auto directory = root / L"transform cancel pending";
+    FakeBackend backend;
+    auto cache = readyCache(directory, backend);
+    const auto ready = transformSpec("x", "WIDE t");
+    check(waitForTransform(*cache, ready).state == MathRasterCache::State::Ready &&
+              waitForResidentTransform(*cache, ready).state == MathRasterCache::Residency::Resident,
+          "取消: Ready の変形を disk と memory に置く");
+    const auto readyKey = cache->transformKeyFor(ready);
+
+    backend.transformCancellableGate->store(true);
+    const auto pending = transformSpec("x", "WIDE held");
+    const auto pendingKey = cache->transformKeyFor(pending);
+    cache->requestTransform(pending);
+    check(waitUntil([&] { return backend.transformHeld->load(); }), "取消: 変形の描画が始まる");
+    const int rendersBefore = *backend.transformRenders;
+    cache->cancelPendingAnimations();
+    check(waitUntil([&] { return backend.transformSawCancel->load(); }),
+          "取消: 描画中の変形は取消を受け取って止まる");
+    waitUntil([] { return false; }, 200);
+    check(cache->transformRecordCount() == 1 && !cache->readyTransform(pending) &&
+              !std::filesystem::exists(transformProvenanceOf(directory, pendingKey)),
+          "取消: 描き終えていない変形を忘れ、結果を確定しない");
+    check(cache->readyTransform(ready).has_value() &&
+              std::filesystem::exists(transformProvenanceOf(directory, readyKey)) &&
+              std::filesystem::exists(transformFrameOf(directory, readyKey, 0)) &&
+              cache->transformResidencyOf(ready).state == MathRasterCache::Residency::Resident,
+          "取消: Ready の変形の disk の artifact と memory の mask は残す");
+
+    backend.transformCancellableGate->store(false);
+    check(waitForTransform(*cache, pending).state == MathRasterCache::State::Ready &&
+              *backend.transformRenders == rendersBefore + 1,
+          "取消: 取り消した変形は要求し直すと描き直して Ready になる");
 }
 
 // 権限・世代が変わった後に、古い描画を確定させない。権限が無ければ何もしない。
@@ -1301,6 +1339,7 @@ int main(int argc, char** argv) {
     testTransformWaitsForEndpoints(root);
     testTransformNoLastGoodEndpoint(root);
     testTransformEndpointEditInFlight(root);
+    testCancelPendingAnimationsKeepsReady(root);
     testTransformAuthority(root);
     testTransformDiskAndProvenance(root);
     testTransformValidation(root);

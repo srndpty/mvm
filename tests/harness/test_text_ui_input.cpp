@@ -1149,7 +1149,7 @@ int checkMathTransformInspector(const std::filesystem::path& projectPath) {
         auto* stateLabel = findVisualItem(window, QStringLiteral("mathTransformState"));
         auto* guidance = findVisualItem(window, QStringLiteral("mathTransformDependencyGuidance"));
         auto* retry = findVisualItem(window, QStringLiteral("mathTransformRetryButton"));
-        auto* memory = findVisualItem(window, QStringLiteral("mathTransformPreviewMemory"));
+        auto* memory = findVisualItem(window, QStringLiteral("mathTransformPreviewReason"));
         if (!inspector || !stateLabel || !guidance || !retry || !memory) {
             check(false, "エフェクトコントロールに変形の状態の表示がありません");
             return 1;

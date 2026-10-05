@@ -221,10 +221,11 @@ public:
     ResidentSequence residentSequence(const math::MathSequenceSpec& spec);
     // residentSequence と同じ状態を、読み始めずに返す (inspector の表示用)。
     ResidentSequence residencyOf(const math::MathSequenceSpec& spec) const;
-    // 描き終えていない連番の要求を取り消して忘れる (描画中なら process ごと止める)。
-    // worker は 1 本なので、長い連番が入力中の式の静止の描画を待たせないために使う。
-    // 取り消した連番は次の requestSequence で要求し直される。
-    void cancelPendingSequences();
+    // 描き終えていない連番と変形の要求を取り消して忘れる (描画中なら process ごと止め、
+    // 待ち行列の仕事は始めずに捨てる)。worker は 1 本なので、Write や変形の描画が入力中の式の
+    // 静止の描画を待たせないために使う。disk の Ready の artifact・memory の mask は消さない。
+    // 取り消した連番・変形は次の requestSequence / requestTransform で要求し直される。
+    void cancelPendingAnimations();
 
     // 式から式への変形 (P2-4)。静止・Write と同じ worker・権限・世代で扱い、key は
     // math::mathTransformKey (mvm-math-transform/1)。disk は cacheDirectory/transform/<key>/ と

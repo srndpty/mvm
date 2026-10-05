@@ -1665,16 +1665,29 @@ MathRasterCache::readySequence(const math::MathSequenceSpec& spec) const {
     return found->artifact;
 }
 
-void MathRasterCache::cancelPendingSequences() {
-    for (auto it = sequences_.begin(); it != sequences_.end();) {
+namespace {
+
+// 描き終えていない (Pending の) record を取り消して忘れる。Ready・失敗の record は残す。
+template <typename Records> void cancelPendingRecords(Records& records) {
+    for (auto it = records.begin(); it != records.end();) {
         if (it->entry.state != State::Pending) {
             ++it;
             continue;
         }
         if (it->cancel)
             it->cancel->store(true);
-        it = sequences_.erase(it);
+        it = records.erase(it);
     }
+}
+
+} // namespace
+
+void MathRasterCache::cancelPendingAnimations() {
+    cancelPendingRecords(sequences_);
+    // 変形の取消は provenance の書き込み (確定) と排他にする (retainOnly と同じ)。描きかけの
+    // 変形の worker は取消を見てから書くので、取り消した後に確定しない。
+    std::lock_guard gate(*publishGate_);
+    cancelPendingRecords(transforms_);
 }
 
 QString MathRasterCache::transformKeyFor(const math::MathTransformSpec& spec) const {

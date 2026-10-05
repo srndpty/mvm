@@ -17,6 +17,8 @@
 // mathTransformPlacement の位置に置く。frame 0 は source の静止の mask だけ、frame 1 以降は
 // target の静止の mask と、canvas の (2, 3) の 1 画素 (alpha 200)。artifact は両端の静止の矩形と
 // その 1 画素の和。受け取った両端の mask を記録する。
+//   transformCancellableGate が true の間は、cancel されるか gate が下りるまで待つ。cancel なら
+//   Cancelled を返し、transformSawCancel を立てる (取消を見る renderer を真似る)
 //   transformGate が true の間は終えない (cancel を見ずに待つ。取り消された後に結果を返す
 //   renderer を真似る)
 //   target が "BADT" を含む  InvalidSource
@@ -109,10 +111,18 @@ inline void stampCoverage(math::MathCoverage& canvas, const math::MathCoverage& 
                 mask.alpha[coverageIndex(mask.width, x, y)];
 }
 
-// 偽の変形が受け取った両端の静止の mask。
+// 偽の変形が受け取った両端の静止の mask と、描き終えた順の記録 (events)。
+// events は "static:<式>" (静止を描き終えた)・"transform:<target の式>" (変形を描き終えた)・
+// "transform-cancelled:<target の式>" (取消を見て止めた)。
 struct FakeTransformLog {
     std::mutex mutex;
     std::vector<std::pair<math::MathCoverage, math::MathCoverage>> received;
+    std::vector<std::string> events;
+
+    void record(std::string event) {
+        std::lock_guard lock(mutex);
+        events.push_back(std::move(event));
+    }
 };
 
 inline math::MathTransformRenderResult
@@ -193,6 +203,10 @@ struct FakeMathBackend {
     std::shared_ptr<std::atomic<bool>> staticGate = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::atomic<bool>> transformGate = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::atomic<bool>> transformHeld = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> transformCancellableGate =
+        std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> transformSawCancel =
+        std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<FakeTransformLog> transformLog = std::make_shared<FakeTransformLog>();
     std::string transformTemplate = "fake-transform/1";
     bool withTransform = true;
@@ -213,6 +227,7 @@ struct FakeMathBackend {
                 withSequence = withSequence, maximumSequenceFrames = maximumSequenceFrames,
                 transformRenders = transformRenders, staticGate = staticGate,
                 transformGate = transformGate, transformHeld = transformHeld,
+                cancellableGate = transformCancellableGate, sawCancel = transformSawCancel,
                 transformLog = transformLog, transformTemplate = transformTemplate,
                 withTransform = withTransform, maximumTransformFrames = maximumTransformFrames](
                    const std::filesystem::path&, const std::atomic<bool>*) {
@@ -223,22 +238,40 @@ struct FakeMathBackend {
                 result.backend.transformTemplate = transformTemplate;
                 result.backend.maximumTransformFrames = maximumTransformFrames;
                 result.backend.renderTransform =
-                    [transformRenders, transformGate, transformHeld, transformLog](
-                        const math::MathTransformRenderRequest& request,
-                        const math::MathCoverageLoader& loader, const std::atomic<bool>* cancel) {
+                    [transformRenders, transformGate, transformHeld, cancellableGate, sawCancel,
+                     transformLog](const math::MathTransformRenderRequest& request,
+                                   const math::MathCoverageLoader& loader,
+                                   const std::atomic<bool>* cancel) {
                         ++*transformRenders;
                         {
                             std::lock_guard lock(transformLog->mutex);
                             transformLog->received.emplace_back(request.sourceStatic,
                                                                 request.targetStatic);
                         }
-                        return fakeRenderTransform(request, loader, cancel, transformGate,
-                                                   transformHeld);
+                        const auto& target = request.spec.target.source;
+                        if (cancellableGate->load()) {
+                            transformHeld->store(true);
+                            for (int i = 0; i < 3000 && cancellableGate->load() && !cancel->load();
+                                 ++i)
+                                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                            if (cancel->load()) {
+                                sawCancel->store(true);
+                                transformLog->record("transform-cancelled:" + target);
+                                math::MathTransformRenderResult cancelled;
+                                cancelled.status = math::MathRenderStatus::Cancelled;
+                                return cancelled;
+                            }
+                        }
+                        auto result = fakeRenderTransform(request, loader, cancel, transformGate,
+                                                          transformHeld);
+                        if (result.status == math::MathRenderStatus::Ok)
+                            transformLog->record("transform:" + target);
+                        return result;
                     };
             }
-            result.backend.render = [renders, started, slow,
-                                     staticGate](const math::MathStaticRenderRequest& request,
-                                                 const std::atomic<bool>* cancel) {
+            result.backend.render = [renders, started, slow, staticGate,
+                                     transformLog](const math::MathStaticRenderRequest& request,
+                                                   const std::atomic<bool>* cancel) {
                 ++*renders;
                 if (request.spec.source.find("GATE") != std::string::npos) {
                     while (staticGate->load() && !cancel->load())
@@ -291,6 +324,7 @@ struct FakeMathBackend {
                 }
                 rendered.status = math::MathRenderStatus::Ok;
                 rendered.png = png;
+                transformLog->record("static:" + request.spec.source);
                 return rendered;
             };
             if (!withSequence)

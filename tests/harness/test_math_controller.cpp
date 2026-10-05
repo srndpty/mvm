@@ -1252,6 +1252,105 @@ void testMathTransformWithWrite(const QTemporaryDir& temp,
     controller->shutdown();
 }
 
+// 入力中の式の静止が、裏で disk に揃えている変形より先に描かれる (P2-5.1)。worker は 1 本なので、
+// 描画中・待ちの変形を止めて静止を先に描かせ、止めた変形は後で要求し直して Ready にする。
+void testMathTransformYieldsToEditing(const QTemporaryDir& temp,
+                                      const std::shared_ptr<CapturedExport>& captured) {
+    auto initial = transformProject(sizeSource(7, 2, "a"), sizeSource(4, 5, "held"));
+    // 変形と無関係な数式 clip (同じ track の離れた位置)。
+    initial.timelineClips.push_back(
+        transformEndpoint("C", sizeSource(3, 3, "c"), 1000, "#FFFFFFFF"));
+    FakeMathBackend backend;
+    backend.transformCancellableGate->store(true);
+    auto controller = openTransformProject(temp, QStringLiteral("transform yields.mvm"), initial,
+                                           captured, backend);
+    check(pump([&] {
+              return state(*controller, QStringLiteral("C")) == QStringLiteral("ready") &&
+                     backend.transformHeld->load();
+          }),
+          "優先: 静止は描け、無関係な変形が描画中で止まっている");
+    const auto events = [&] {
+        std::lock_guard lock(backend.transformLog->mutex);
+        return backend.transformLog->events;
+    };
+    const auto indexOf = [](const std::vector<std::string>& list, const std::string& event) {
+        const auto found = std::find(list.begin(), list.end(), event);
+        return found == list.end() ? -1 : static_cast<int>(found - list.begin());
+    };
+    check(indexOf(events(), "static:SIZE5x5 typed") < 0, "優先: 入力する式の静止はまだ無い (対照)");
+
+    // C の式を入力する: その静止は描けておらず、変形が worker を使っている。
+    check(controller->previewMathClip(
+              QStringLiteral("C"), {{QStringLiteral("source"), QStringLiteral("SIZE5x5 typed")}}),
+          "優先: C の式を入力する");
+    check(pump([&] { return state(*controller, QStringLiteral("C")) == QStringLiteral("ready"); },
+               5000),
+          "優先: 入力中の式の静止が描ける (変形の描画を待たない)");
+    const auto afterTyping = events();
+    const int cancelled = indexOf(afterTyping, "transform-cancelled:SIZE4x5 held");
+    const int typed = indexOf(afterTyping, "static:SIZE5x5 typed");
+    check(backend.transformSawCancel->load() && cancelled >= 0 && typed > cancelled &&
+              indexOf(afterTyping, "transform:SIZE4x5 held") < 0,
+          "優先: 描画中の変形は取消を受け取って止まり、入力中の静止が先に描き終わる");
+    check(controller->projectForTest().timelineClips[2].math.source == "SIZE3x3 c",
+          "優先: 入力中の preview は Project を変えない");
+
+    // 止めた変形は要求し直されていて、worker が空けば Ready になる。
+    check(transitionValue(*controller, "transformState") == QStringLiteral("rendering"),
+          "優先: 止めた変形は要求し直されて描画待ち");
+    backend.transformCancellableGate->store(false);
+    check(waitTransformState(*controller, QStringLiteral("ready")), "優先: 変形が Ready になる");
+    const auto finished = events();
+    check(indexOf(finished, "transform:SIZE4x5 held") > indexOf(finished, "static:SIZE5x5 typed"),
+          "優先: 変形は入力中の静止の後に描き終わる");
+    const auto animated = waitForAnimatedLayer(*controller, kTransformStart + 5);
+    check(animated && animated->stillAnimation, "優先: 描き直した変形を preview で見せる");
+    controller->cancelMathPreview();
+    controller->shutdown();
+}
+
+// artifact が出力 raster に収まらない変形 (P2-5.1): disk の変形は Ready のまま、preview で使えない
+// 理由を disk の状態と分けて示し、preview は cut で見せる。
+// A は 1916x2 (出力 1920 に収まる)。偽の変形の artifact は canvas の (2, 3) の 1 画素を含むので、
+// 横は canvas の 2..1922 (幅 1920)、A の静止は artifact の中の x = 6 - 2 = 4。出力の中の A の
+// 静止は x = (1920 - 1916) / 2 = 2 なので、artifact の左は 2 - 4 = -2 で出力からはみ出す。
+void testMathTransformPlacementDoesNotFit(const QTemporaryDir& temp,
+                                          const std::shared_ptr<CapturedExport>& captured) {
+    FakeMathBackend backend;
+    auto controller = openTransformProject(
+        temp, QStringLiteral("transform wide.mvm"),
+        transformProject(sizeSource(1916, 2, "a"), sizeSource(4, 5, "b")), captured, backend);
+    check(waitTransformState(*controller, QStringLiteral("ready")),
+          "収まらない: disk の変形は ready");
+    const auto& p = controller->projectForTest();
+    const auto spec = mvm::app::mathTransformSpecFor(p.timelineTransitions[0], p.timelineClips[0],
+                                                     p.timelineClips[1]);
+    const auto artifact =
+        spec ? controller->mathRastersForTest().readyTransform(*spec) : std::nullopt;
+    check(artifact && artifact->width == 1920 && artifact->sourceX == 4,
+          "収まらない: artifact は 1920 幅で、A の静止は artifact の x = 4 (手計算の前提)");
+    // 合成で preview を使えるか判定させる。
+    const auto a = mathLayer(*controller, kTransformStart + 5);
+    const auto b = mathLayer(*controller, kTransformCut + 5);
+    controller->selectTransition(QStringLiteral("t1"));
+    check(transitionValue(*controller, "transformState") == QStringLiteral("ready") &&
+              transitionValue(*controller, "transformMessage").isEmpty(),
+          "収まらない: disk の状態は ready のまま (描画の error にしない)");
+    check(transitionValue(*controller, "transformPreview") == QStringLiteral("placement") &&
+              transitionValue(*controller, "transformPreviewMessage")
+                  .contains(QStringLiteral("出力")),
+          "収まらない: preview で使えない理由を transformPreview に分けて示す");
+    check(controller->mathRastersForTest().transformResidencyOf(*spec).state ==
+              mvm::app::MathRasterCache::Residency::NotReady,
+          "収まらない: preview 用の mask を memory に読まない");
+    const TransformGeometry geometry(1916, 2, 4, 5);
+    check(a && !a->stillAnimation && b && !b->stillAnimation &&
+              presentedPixels(*a, kTransformStart + 5) == geometry.staticA(0xFFFFFF) &&
+              presentedPixels(*b, kTransformCut + 5) == geometry.staticB(0xFFFFFF),
+          "収まらない: preview は cut の前は A、後は B の静止 (hard cut)");
+    controller->shutdown();
+}
+
 bool submittedHasWrite(const MvmController& controller) {
     const auto composition = controller.submittedCompositionForTest();
     if (!composition)
@@ -2272,6 +2371,8 @@ int main(int argc, char** argv) {
     testMathTransformPreviewEffects(temp, captured);
     testMathTransformPreviewFallbacks(temp, captured);
     testMathTransformWithWrite(temp, captured);
+    testMathTransformYieldsToEditing(temp, captured);
+    testMathTransformPlacementDoesNotFit(temp, captured);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;

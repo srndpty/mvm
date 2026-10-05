@@ -3690,11 +3690,12 @@ void MvmController::requestMathRenders() {
                 keys.insert(key);
     // 使わなくなった式 (書き換えた前の式など) の描画は process ごと止める。
     mathRasters_->retainOnly(keys);
-    // 入力中の式の静止がまだ描けていなければ、描きかけ・待ちの連番を止めて先に描かせる
-    // (長い連番が入力中の preview を待たせない)。止めた連番はすぐ下で要求し直す。
+    // 入力中の式の静止がまだ描けていなければ、描きかけ・待ちの連番と変形を止めて先に描かせる
+    // (長い Write や、裏で disk に揃えている変形が入力中の preview を待たせない)。止めた連番と
+    // 変形はすぐ下で要求し直す。入力中の静止が先に要求済みなので、worker は静止を先に描く。
     if (mathPreviewOverride_ &&
         mathRasters_->request(statics.front()).state == MathRasterCache::State::Pending)
-        mathRasters_->cancelPendingSequences();
+        mathRasters_->cancelPendingAnimations();
     for (const auto& spec : statics)
         mathRasters_->request(spec);
     for (const auto& spec : writes)
@@ -3900,12 +3901,13 @@ QVariantMap MvmController::mathTransformStatus(const project::TimelineTransition
             unavailableReason = QStringLiteral("backend");
             break;
         case MathRasterCache::State::Ready: {
+            // disk の artifact は Ready のまま。出力 raster に置けないことは preview 側の理由で、
+            // preview は cut で見せる (書き出しは P2-6 が同じ中立な検査を自分で行う)。
             state = QStringLiteral("ready");
             QString placementError;
             if (!mathTransformPreviewInputs(transition, &placementError) &&
                 !placementError.isEmpty()) {
-                state = QStringLiteral("error");
-                message = placementError;
+                preview = {QStringLiteral("placement"), placementError};
                 break;
             }
             const auto residency = mathRasters_->transformResidencyOf(*spec);
@@ -3937,8 +3939,10 @@ QVariantMap MvmController::mathTransformStatus(const project::TimelineTransition
              mathRasters_->authorized() && !shutdownStarted_ &&
                  mathRasters_->backendState() != MathRasterCache::BackendState::Checking},
             {QStringLiteral("transformToolchain"), mathRasters_->toolchainText()},
-            // preview 用の mask を memory に置けたか (書き出しの可否とは別)。"" は未要求
-            // (前・後ろの clip が見える frame の合成が要求する)。
+            // preview で変形を使えるか (書き出しの可否とは別。disk が ready のときだけ)。
+            //   "" 未要求 (前・後ろの clip が見える frame の合成が要求する) / loading / ready /
+            //   memory (memory の上限に収まらない) / placement (artifact が出力 raster に収まらない)。
+            // memory・placement の間は cut で見せ、理由は transformPreviewMessage。
             {QStringLiteral("transformPreview"), preview.first},
             {QStringLiteral("transformPreviewMessage"), preview.second}};
 }
