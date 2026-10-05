@@ -112,6 +112,10 @@ void testPreflight(const std::filesystem::path& fake, const std::filesystem::pat
               static_cast<bool>(ok.backend.renderSequence) &&
               ok.backend.maximumSequenceFrames == 9999,
           "Available なら Write の連番の関数と script の識別を束ねる (fingerprint には入れない)");
+    check(ok.backend.transformTemplate == "manim-transform/1" &&
+              static_cast<bool>(ok.backend.renderTransform) &&
+              ok.backend.maximumTransformFrames == 9998,
+          "Available なら変形の関数・script の識別・枚数の上限を束ねる (fingerprint には入れない)");
 
     const auto onlyDvisvgm = root / L"tools latex 無し";
     install(fake, onlyDvisvgm, L"dvisvgm.exe");
@@ -288,6 +292,27 @@ void testRenderWrite(const std::filesystem::path& fake, const std::filesystem::p
         "4 桁の連番に収まらない枚数は描かない");
 }
 
+std::uint64_t coverageLoads = 0;
+
+bool loadFakeCoverage(const std::filesystem::path& file, math::MathCoverage& coverage,
+                      std::string& error) {
+    ++coverageLoads;
+    if (!mvm::test::parseMathTestCoverage(readFile(file), coverage.width, coverage.height,
+                                          coverage.alpha)) {
+        error = "偽の被覆率の画像ではありません";
+        return false;
+    }
+    return true;
+}
+
+math::MathCoverage endpointStatic(bool target, int width, int height) {
+    math::MathCoverage coverage{width, height, {}};
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+            coverage.alpha.push_back(mvm::test::mathTestEndpointAlpha(target, x, y));
+    return coverage;
+}
+
 void testBackendRender(const std::filesystem::path& fake, const std::filesystem::path& root) {
     const auto tools = root / L"tools 全部";
     setPath(tools);
@@ -309,6 +334,18 @@ void testBackendRender(const std::filesystem::path& fake, const std::filesystem:
     const auto written = ready.backend.renderSequence(sequence, nullptr);
     check(written.status == math::MathRenderStatus::Ok && written.frames.size() == 5,
           "preflight が束ねた連番の関数で描ける (-s を付けない)");
+    // 変形: loader は呼び出し側が渡す (backend は decoder を持たない)。
+    math::MathTransformRenderRequest transform;
+    transform.spec = {{"latex", "a + b", 96}, {"latex", "b + a", 64}, 6};
+    transform.sourceStatic = endpointStatic(false, 30, 20);
+    transform.targetStatic = endpointStatic(true, 25, 15);
+    transform.jobDirectory = root / L"backend transform job";
+    const std::uint64_t loadsBefore = coverageLoads;
+    const auto transformed = ready.backend.renderTransform(transform, loadFakeCoverage, nullptr);
+    check(transformed.status == math::MathRenderStatus::Ok && transformed.frames.size() == 6 &&
+              coverageLoads == loadsBefore + 7,
+          "preflight が束ねた変形の関数で描け、渡した loader で全 7 枚を読む: " +
+              transformed.message);
 }
 
 // --- 式から式への変形 (P2-3) -------------------------------------------------
@@ -431,27 +468,6 @@ void testTransformStructure() {
     rejects("part source MathTexPart xzz 1\n", "読めません", "16 進でない文字列を拒否する");
     rejects("garbage\n", "読めません", "知らない行を拒否する");
     rejects("", "報告しませんでした", "空の報告を拒否する");
-}
-
-std::uint64_t coverageLoads = 0;
-
-bool loadFakeCoverage(const std::filesystem::path& file, math::MathCoverage& coverage,
-                      std::string& error) {
-    ++coverageLoads;
-    if (!mvm::test::parseMathTestCoverage(readFile(file), coverage.width, coverage.height,
-                                          coverage.alpha)) {
-        error = "偽の被覆率の画像ではありません";
-        return false;
-    }
-    return true;
-}
-
-math::MathCoverage endpointStatic(bool target, int width, int height) {
-    math::MathCoverage coverage{width, height, {}};
-    for (int y = 0; y < height; ++y)
-        for (int x = 0; x < width; ++x)
-            coverage.alpha.push_back(mvm::test::mathTestEndpointAlpha(target, x, y));
-    return coverage;
 }
 
 math::MathTransformRenderResult

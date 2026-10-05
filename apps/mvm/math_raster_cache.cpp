@@ -1,11 +1,18 @@
 #include "math_raster_cache.h"
 
+#include "app/math_clip_render.h"
 #include "media/still_image/static_image.h"
 #include "util/mvm_atomic_write.h"
+#include "util/mvm_sha256.h"
 
 #include <QMetaObject>
+#include <QStringList>
 
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <cwchar>
+#include <initializer_list>
 #include <fstream>
 #include <sstream>
 #include <system_error>
@@ -449,7 +456,580 @@ SequenceOutcome renderSequenceJob(const std::filesystem::path& directory,
     return outcome;
 }
 
+// ---- 式から式への変形 ----
+//
+// disk の形: cacheDirectory/transform/<key>/00000.a8 ... と cacheDirectory/transform/<key>.txt
+// (provenance)。frame は backend の一時的な canvas から artifact の矩形だけを切り出した被覆
+// (1 画素 1 byte の生の byte 列)。PNG にしないのは、この層に PNG の encoder が無く (画素の decode は
+// 静止画 decoder だけを通す)、被覆を byte 単位でそのまま残せるため。中身は SHA-256 で照合する。
+// 公開の手順は Write と同じ: 古い provenance を消し、frame を書き、provenance を最後に書く
+// (provenance があり、正確に合うことが確定の印。directory の rename は使わない)。
+
+using TransformEntry = MathRasterCache::TransformEntry;
+
+std::filesystem::path transformRoot(const std::filesystem::path& directory) {
+    return directory / L"transform";
+}
+
+std::filesystem::path transformDirectory(const std::filesystem::path& directory, const QString& key) {
+    return transformRoot(directory) / key.toStdWString();
+}
+
+std::filesystem::path transformProvenancePath(const std::filesystem::path& directory,
+                                              const QString& key) {
+    return transformRoot(directory) / (key.toStdWString() + L".txt");
+}
+
+std::string transformFrameName(std::size_t index) {
+    char name[32] = {};
+    std::snprintf(name, sizeof name, "%05zu.a8", index);
+    return name;
+}
+
+void removeTransformArtifact(const std::filesystem::path& directory, const QString& key) {
+    std::error_code error;
+    std::filesystem::remove(transformProvenancePath(directory, key), error);
+    std::filesystem::remove_all(transformDirectory(directory, key), error);
+}
+
+std::string sha256Hex(const void* data, std::size_t size) {
+    char hex[MVM_SHA256_HEX_SIZE] = {};
+    if (mvm_sha256_hex(data, size, hex) != 0)
+        return {};
+    return hex;
+}
+
+// provenance の中身。identity (key・静止の key・script・規則の版・toolchain) は読んだ値ではなく
+// 期待する値で正準形を組み直し、file と byte 単位で比べる。
+struct TransformProvenance {
+    std::string key;
+    int width = 0; // 切り出した frame の大きさ
+    int height = 0;
+    int canvasWidth = 0;
+    int canvasHeight = 0;
+    math::MathRect artifact; // canvas の座標
+    int sourceX = 0;         // 切り出した座標での端点の左上
+    int sourceY = 0;
+    int targetX = 0;
+    int targetY = 0;
+    int sourceWidth = 0; // 端点の静止の大きさ
+    int sourceHeight = 0;
+    int targetWidth = 0;
+    int targetHeight = 0;
+    std::string sourceStaticKey;
+    std::string targetStaticKey;
+    std::vector<std::uintmax_t> frameBytes;
+    std::vector<std::string> frameSha256;
+    std::string transformTemplate;
+    std::string segmenter;
+    std::string matching;
+    std::string toolchain;
+};
+
+std::string transformProvenanceText(const TransformProvenance& p) {
+    const auto pair = [](int a, char separator, int b) {
+        return std::to_string(a) + separator + std::to_string(b);
+    };
+    std::string text = std::string(MathRasterCache::kTransformArtifactFormat) + "\n";
+    text += "key=" + p.key + "\n";
+    text += "frames=" + std::to_string(p.frameSha256.size()) + "\n";
+    text += "width=" + std::to_string(p.width) + "\n";
+    text += "height=" + std::to_string(p.height) + "\n";
+    text += "canvas=" + pair(p.canvasWidth, 'x', p.canvasHeight) + "\n";
+    text += "artifact_rect=" + pair(p.artifact.x, ',', p.artifact.y) + "," +
+            pair(p.artifact.width, ',', p.artifact.height) + "\n";
+    text += "source_offset=" + pair(p.sourceX, ',', p.sourceY) + "\n";
+    text += "target_offset=" + pair(p.targetX, ',', p.targetY) + "\n";
+    text += "source_static=" + pair(p.sourceWidth, 'x', p.sourceHeight) + "\n";
+    text += "target_static=" + pair(p.targetWidth, 'x', p.targetHeight) + "\n";
+    text += "source_static_key=" + p.sourceStaticKey + "\n";
+    text += "target_static_key=" + p.targetStaticKey + "\n";
+    for (std::size_t index = 0; index < p.frameSha256.size(); ++index)
+        text += "frame=" + transformFrameName(index) + " " +
+                std::to_string(index < p.frameBytes.size() ? p.frameBytes[index] : 0) + " " +
+                p.frameSha256[index] + "\n";
+    text += "transform_template=" + p.transformTemplate + "\n";
+    text += "segmenter=" + p.segmenter + "\n";
+    text += "matching=" + p.matching + "\n";
+    text += "toolchain:\n" + p.toolchain;
+    return text;
+}
+
+// "a<sep>b<sep>..." の整数を count 個読む。形の厳密さは正準形の組み直しで確かめる。
+bool readInts(const std::string& text, char separator, std::size_t count, std::vector<long long>& out) {
+    out.clear();
+    std::istringstream values(text);
+    std::string value;
+    while (std::getline(values, value, separator)) {
+        try {
+            std::size_t used = 0;
+            out.push_back(std::stoll(value, &used));
+            if (used != value.size())
+                return false;
+        } catch (...) {
+            return false;
+        }
+    }
+    return out.size() == count;
+}
+
+bool fitsInt(long long value) {
+    return value >= 0 && value <= (1LL << 30);
+}
+
+// provenance を読み、数値の field と各 frame の行を取り出す。形が違えば false。
+bool parseTransformProvenance(const std::string& text, TransformProvenance& p) {
+    std::istringstream lines(text);
+    std::string line;
+    const auto field = [&](const char* prefix, std::string& value) {
+        if (!std::getline(lines, line) || line.rfind(prefix, 0) != 0)
+            return false;
+        value = line.substr(std::strlen(prefix));
+        return true;
+    };
+    std::string value;
+    std::vector<long long> numbers;
+    if (!std::getline(lines, line) || line != MathRasterCache::kTransformArtifactFormat)
+        return false;
+    if (!field("key=", p.key) || !field("frames=", value) || !readInts(value, ',', 1, numbers) ||
+        numbers[0] < 1 || numbers[0] > 1000000)
+        return false;
+    const auto frames = static_cast<std::size_t>(numbers[0]);
+    const auto ints = [&](const char* prefix, char separator, std::initializer_list<int*> out) {
+        if (!field(prefix, value) || !readInts(value, separator, out.size(), numbers))
+            return false;
+        std::size_t at = 0;
+        for (int* target : out) {
+            if (!fitsInt(numbers[at]))
+                return false;
+            *target = static_cast<int>(numbers[at++]);
+        }
+        return true;
+    };
+    if (!ints("width=", ',', {&p.width}) || !ints("height=", ',', {&p.height}) ||
+        !ints("canvas=", 'x', {&p.canvasWidth, &p.canvasHeight}) ||
+        !ints("artifact_rect=", ',',
+              {&p.artifact.x, &p.artifact.y, &p.artifact.width, &p.artifact.height}) ||
+        !ints("source_offset=", ',', {&p.sourceX, &p.sourceY}) ||
+        !ints("target_offset=", ',', {&p.targetX, &p.targetY}) ||
+        !ints("source_static=", 'x', {&p.sourceWidth, &p.sourceHeight}) ||
+        !ints("target_static=", 'x', {&p.targetWidth, &p.targetHeight}) ||
+        !field("source_static_key=", p.sourceStaticKey) ||
+        !field("target_static_key=", p.targetStaticKey))
+        return false;
+    for (std::size_t index = 0; index < frames; ++index) {
+        if (!field("frame=", value))
+            return false;
+        std::istringstream parts(value);
+        std::string name;
+        std::string bytes;
+        std::string sha;
+        if (!(parts >> name >> bytes >> sha) || name != transformFrameName(index) ||
+            !readInts(bytes, ',', 1, numbers) || numbers[0] < 0)
+            return false;
+        p.frameBytes.push_back(static_cast<std::uintmax_t>(numbers[0]));
+        p.frameSha256.push_back(sha);
+    }
+    return true;
+}
+
+// 変形の要求から決まる、provenance に期待する値。
+struct TransformExpectation {
+    QString key;
+    std::int64_t frames = 0;
+    std::string sourceStaticKey;
+    std::string targetStaticKey;
+    int sourceWidth = 0;
+    int sourceHeight = 0;
+    int targetWidth = 0;
+    int targetHeight = 0;
+    std::string transformTemplate;
+    math::MathTransformAlgorithms algorithms;
+    std::string toolchain;
+};
+
+bool containsRect(int width, int height, int x, int y, int innerWidth, int innerHeight) {
+    return x >= 0 && y >= 0 && innerWidth > 0 && innerHeight > 0 &&
+           static_cast<long long>(x) + innerWidth <= width &&
+           static_cast<long long>(y) + innerHeight <= height;
+}
+
+// provenance の数値どうしが矛盾しないか (切り出しの矩形・端点が収まり、frame の byte 数が合う)。
+// 端点の位置は、両端の静止と canvas の大きさから P2-2 の配置 (mathTransformPlacement) で決まる
+// 値を、切り出した座標へ移したものでなければならない。
+bool transformGeometryValid(const TransformProvenance& p) {
+    math::MathTransformPlacement placement;
+    if (!math::mathTransformPlacement(p.sourceWidth, p.sourceHeight, p.targetWidth, p.targetHeight,
+                                      p.canvasWidth, p.canvasHeight, placement) ||
+        p.sourceX != placement.source.left - p.artifact.x ||
+        p.sourceY != placement.source.top - p.artifact.y ||
+        p.targetX != placement.target.left - p.artifact.x ||
+        p.targetY != placement.target.top - p.artifact.y)
+        return false;
+    if (p.width <= 0 || p.height <= 0 || p.width != p.artifact.width ||
+        p.height != p.artifact.height ||
+        !containsRect(p.canvasWidth, p.canvasHeight, p.artifact.x, p.artifact.y, p.artifact.width,
+                      p.artifact.height) ||
+        !containsRect(p.width, p.height, p.sourceX, p.sourceY, p.sourceWidth, p.sourceHeight) ||
+        !containsRect(p.width, p.height, p.targetX, p.targetY, p.targetWidth, p.targetHeight))
+        return false;
+    const auto frameBytes = static_cast<std::uintmax_t>(p.width) * static_cast<std::uintmax_t>(p.height);
+    return std::all_of(p.frameBytes.begin(), p.frameBytes.end(),
+                       [&](std::uintmax_t bytes) { return bytes == frameBytes; });
+}
+
+MathTransformArtifact transformArtifactFrom(const std::filesystem::path& directory,
+                                            const QString& key, const TransformProvenance& p) {
+    MathTransformArtifact artifact;
+    const auto frames = transformDirectory(directory, key);
+    for (std::size_t index = 0; index < p.frameSha256.size(); ++index)
+        artifact.frames.push_back(frames / transformFrameName(index));
+    artifact.frameSha256 = p.frameSha256;
+    artifact.width = p.width;
+    artifact.height = p.height;
+    artifact.sourceX = p.sourceX;
+    artifact.sourceY = p.sourceY;
+    artifact.targetX = p.targetX;
+    artifact.targetY = p.targetY;
+    return artifact;
+}
+
+// file の中身を読む。大きさが expected でなければ false。
+bool readExactly(const std::filesystem::path& path, std::uintmax_t expected,
+                 std::vector<std::uint8_t>& bytes) {
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error || size != expected)
+        return false;
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return false;
+    bytes.resize(static_cast<std::size_t>(expected));
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return static_cast<std::uintmax_t>(input.gcount()) == expected;
+}
+
+struct TransformOutcome {
+    TransformEntry entry;
+    MathTransformArtifact artifact;
+    bool cancelled = false;
+};
+
+TransformOutcome transformCancelled() {
+    TransformOutcome outcome;
+    outcome.cancelled = true;
+    return outcome;
+}
+
+TransformOutcome transformFailed(math::MathRenderStatus status, const std::string& message,
+                                 const std::string& log = {}) {
+    TransformOutcome outcome;
+    outcome.entry.state = status == math::MathRenderStatus::BackendUnavailable
+                              ? State::Unavailable
+                              : State::Failed;
+    outcome.entry.status = status;
+    outcome.entry.message = QString::fromStdString(message);
+    outcome.entry.log = QString::fromStdString(log);
+    return outcome;
+}
+
+TransformOutcome transformReady(MathTransformArtifact artifact) {
+    TransformOutcome outcome;
+    outcome.entry.state = State::Ready;
+    outcome.entry.status = math::MathRenderStatus::Ok;
+    outcome.entry.width = artifact.width;
+    outcome.entry.height = artifact.height;
+    outcome.artifact = std::move(artifact);
+    return outcome;
+}
+
+// worker が 1 件の変形に使う値 (起動の時点で固定する)。
+struct TransformJob {
+    std::filesystem::path directory;
+    std::filesystem::path jobs;
+    QString key;
+    math::MathTransformSpec spec;
+    math::MathRenderBackend backend;
+    std::chrono::milliseconds timeout{120000};
+    std::uint64_t ticket = 0;
+    // 両端の今の静止の mask (同じ key の静止の artifact を decode したもの)。
+    math::MathCoverage sourceStatic;
+    math::MathCoverage targetStatic;
+    std::string sourceStaticKey;
+    std::string targetStaticKey;
+    std::shared_ptr<std::mutex> publishGate;
+    std::function<void(const std::filesystem::path&)> beforePublish;
+};
+
+TransformExpectation expectationFor(const TransformJob& job) {
+    TransformExpectation expect;
+    expect.key = job.key;
+    expect.frames = job.spec.frames;
+    expect.sourceStaticKey = job.sourceStaticKey;
+    expect.targetStaticKey = job.targetStaticKey;
+    expect.sourceWidth = job.sourceStatic.width;
+    expect.sourceHeight = job.sourceStatic.height;
+    expect.targetWidth = job.targetStatic.width;
+    expect.targetHeight = job.targetStatic.height;
+    expect.transformTemplate = job.backend.transformTemplate;
+    expect.toolchain = job.backend.fingerprint.canonical;
+    return expect;
+}
+
+// cache directory を変える操作 (消す・確定する) を、取消と排他に行う。取り消されていれば
+// 何もせず false。
+bool underGate(const TransformJob& job, const std::atomic<bool>* cancel,
+               const std::function<void()>& action) {
+    std::lock_guard lock(*job.publishGate);
+    if (cancel->load())
+        return false;
+    action();
+    return true;
+}
+
+enum class DiskLoad { Ready, Missing, Cancelled };
+
+// disk の変形を確かめる: provenance の正準形・期待する identity・数値の整合、各 frame の
+// 大きさと SHA-256。どれかが合わなければ消して Missing (描き直させる)。
+DiskLoad loadTransformArtifact(const TransformJob& job, const std::atomic<bool>* cancel,
+                               MathTransformArtifact& artifact) {
+    const auto provenancePath = transformProvenancePath(job.directory, job.key);
+    const std::string text = readFile(provenancePath);
+    if (text.empty())
+        return DiskLoad::Missing; // 確定の印が無い: 途中で止まった (または未作成)
+    const auto expect = expectationFor(job);
+    TransformProvenance parsed;
+    bool valid = parseTransformProvenance(text, parsed);
+    if (valid) {
+        TransformProvenance canonical = parsed;
+        canonical.key = expect.key.toStdString();
+        canonical.sourceStaticKey = expect.sourceStaticKey;
+        canonical.targetStaticKey = expect.targetStaticKey;
+        canonical.transformTemplate = expect.transformTemplate;
+        canonical.segmenter = expect.algorithms.segmenter;
+        canonical.matching = expect.algorithms.matching;
+        canonical.toolchain = expect.toolchain;
+        valid = transformProvenanceText(canonical) == text &&
+                static_cast<std::int64_t>(parsed.frameSha256.size()) == expect.frames &&
+                parsed.sourceWidth == expect.sourceWidth &&
+                parsed.sourceHeight == expect.sourceHeight &&
+                parsed.targetWidth == expect.targetWidth &&
+                parsed.targetHeight == expect.targetHeight && transformGeometryValid(parsed);
+    }
+    if (valid) {
+        artifact = transformArtifactFrom(job.directory, job.key, parsed);
+        std::vector<std::uint8_t> bytes;
+        for (std::size_t index = 0; valid && index < artifact.frames.size(); ++index) {
+            if (cancel->load())
+                return DiskLoad::Cancelled;
+            valid = readExactly(artifact.frames[index], parsed.frameBytes[index], bytes) &&
+                    sha256Hex(bytes.data(), bytes.size()) == artifact.frameSha256[index];
+            // frame 0 は今の変形前の静止と、記録した端点の位置で全画素一致する。
+            if (valid && index == 0)
+                valid = math::mathEndpointDifference(
+                            {artifact.width, artifact.height, bytes}, job.sourceStatic,
+                            artifact.sourceX, artifact.sourceY) == 0;
+        }
+    }
+    if (valid)
+        return DiskLoad::Ready;
+    if (!underGate(job, cancel, [&] { removeTransformArtifact(job.directory, job.key); }))
+        return DiskLoad::Cancelled;
+    return DiskLoad::Missing;
+}
+
+TransformOutcome renderTransformJob(const TransformJob& job, const std::atomic<bool>* cancel) {
+    {
+        MathTransformArtifact artifact;
+        switch (loadTransformArtifact(job, cancel, artifact)) {
+        case DiskLoad::Ready:
+            return transformReady(std::move(artifact));
+        case DiskLoad::Cancelled:
+            return transformCancelled();
+        case DiskLoad::Missing:
+            break;
+        }
+    }
+    if (cancel->load())
+        return transformCancelled();
+
+    math::MathTransformRenderRequest request;
+    request.spec = job.spec;
+    request.sourceStatic = job.sourceStatic;
+    request.targetStatic = job.targetStatic;
+    request.timeout = job.timeout;
+    request.jobDirectory =
+        job.jobs / (job.key.toStdWString() + L"-transform-" + std::to_wstring(job.ticket));
+    std::error_code error;
+    std::filesystem::remove_all(request.jobDirectory, error);
+    std::filesystem::create_directories(request.jobDirectory, error);
+    if (error)
+        return transformFailed(math::MathRenderStatus::Failed,
+                               "数式の作業 directory を作成できません: " + error.message());
+    // backend の PNG は静止の mask と同じ decoder (loadMathCoverage) で読む。
+    const auto rendered = job.backend.renderTransform(request, loadMathCoverage, cancel);
+    const auto cleanup = [&] {
+        std::error_code ignored;
+        std::filesystem::remove_all(request.jobDirectory, ignored);
+    };
+    if (rendered.status == math::MathRenderStatus::Cancelled || cancel->load()) {
+        cleanup();
+        return transformCancelled();
+    }
+    if (rendered.status != math::MathRenderStatus::Ok) {
+        cleanup();
+        return transformFailed(rendered.status, rendered.message, rendered.log);
+    }
+
+    // 切り出す矩形と、切り出した座標での端点の位置。
+    const math::MathRect& rect = rendered.artifact;
+    TransformProvenance p;
+    p.key = job.key.toStdString();
+    p.width = rect.width;
+    p.height = rect.height;
+    p.canvasWidth = rendered.canvasWidth;
+    p.canvasHeight = rendered.canvasHeight;
+    p.artifact = rect;
+    p.sourceX = rendered.placement.source.left - rect.x;
+    p.sourceY = rendered.placement.source.top - rect.y;
+    p.targetX = rendered.placement.target.left - rect.x;
+    p.targetY = rendered.placement.target.top - rect.y;
+    p.sourceWidth = job.sourceStatic.width;
+    p.sourceHeight = job.sourceStatic.height;
+    p.targetWidth = job.targetStatic.width;
+    p.targetHeight = job.targetStatic.height;
+    p.sourceStaticKey = job.sourceStaticKey;
+    p.targetStaticKey = job.targetStaticKey;
+    p.transformTemplate = job.backend.transformTemplate;
+    p.segmenter = math::MathTransformAlgorithms{}.segmenter;
+    p.matching = math::MathTransformAlgorithms{}.matching;
+    p.toolchain = job.backend.fingerprint.canonical;
+    const auto frameBytes = static_cast<std::uintmax_t>(rect.width > 0 ? rect.width : 0) *
+                            static_cast<std::uintmax_t>(rect.height > 0 ? rect.height : 0);
+    p.frameBytes.assign(rendered.frames.size(), frameBytes);
+    p.frameSha256.assign(rendered.frames.size(), std::string(64, '0'));
+    if (static_cast<std::int64_t>(rendered.frames.size()) != job.spec.frames ||
+        rendered.canvasWidth <= 0 || rendered.canvasHeight <= 0 || !transformGeometryValid(p)) {
+        cleanup();
+        return transformFailed(math::MathRenderStatus::Failed,
+                               "変形の連番の枚数・artifact の矩形・端点の配置が要求と合いません",
+                               rendered.log);
+    }
+
+    // 古い provenance を消し、frame の directory を空にしてから書く。
+    const auto frames = transformDirectory(job.directory, job.key);
+    const auto provenancePath = transformProvenancePath(job.directory, job.key);
+    if (!underGate(job, cancel, [&] {
+            std::filesystem::remove(provenancePath, error);
+            std::filesystem::remove_all(frames, error);
+            if (!error)
+                std::filesystem::create_directories(frames, error);
+        })) {
+        cleanup();
+        return transformCancelled();
+    }
+    const auto fail = [&](const std::string& message) {
+        cleanup();
+        underGate(job, cancel, [&] { removeTransformArtifact(job.directory, job.key); });
+        return transformFailed(math::MathRenderStatus::Failed, message, rendered.log);
+    };
+    if (error)
+        return fail("変形の連番を cache へ保存できません: " + error.message());
+
+    std::vector<std::uint8_t> cropped(static_cast<std::size_t>(frameBytes));
+    for (std::size_t index = 0; index < rendered.frames.size(); ++index) {
+        if (cancel->load()) {
+            // provenance が無いので、書きかけの frame は使われない (権限を失った後は消さない)。
+            cleanup();
+            return transformCancelled();
+        }
+        const std::string name = "変形の frame " + std::to_string(index);
+        math::MathCoverage canvas;
+        std::string loadError;
+        if (!loadMathCoverage(rendered.frames[index], canvas, loadError))
+            return fail(name + " を読めません: " + loadError);
+        if (canvas.width != rendered.canvasWidth || canvas.height != rendered.canvasHeight)
+            return fail(name + " の大きさが canvas と違います");
+        // artifact の矩形の外に被覆があれば、切り出すと画素を失う。黙って切らない。
+        const math::MathRect bounds = math::mathCoverageBounds(canvas);
+        if (!bounds.empty() && math::mathRectUnion(bounds, rect) != rect)
+            return fail(name + " の式が artifact の矩形の外にあります");
+        for (int y = 0; y < rect.height; ++y)
+            std::copy_n(canvas.alpha.begin() +
+                            static_cast<std::ptrdiff_t>(rect.y + y) * canvas.width + rect.x,
+                        rect.width,
+                        cropped.begin() + static_cast<std::ptrdiff_t>(y) * rect.width);
+        // 切り出した frame 0 は、変形前の式の静止と (切り出した座標の端点の位置で) 全画素一致する。
+        if (index == 0) {
+            const math::MathCoverage first{rect.width, rect.height, cropped};
+            const std::int64_t different =
+                math::mathEndpointDifference(first, job.sourceStatic, p.sourceX, p.sourceY);
+            if (different != 0)
+                return fail("切り出した変形の最初の frame が変形前の式の静止と一致しません "
+                            "(違う画素 " +
+                            std::to_string(different) + ")");
+        }
+        std::string writeError;
+        if (!writeAtomically(frames / transformFrameName(index),
+                             std::string(cropped.begin(), cropped.end()), writeError))
+            return fail("変形の連番を cache へ保存できません: " + writeError);
+        p.frameSha256[index] = sha256Hex(cropped.data(), cropped.size());
+        if (p.frameSha256[index].empty())
+            return fail("変形の frame の SHA-256 を計算できません");
+    }
+
+    if (job.beforePublish)
+        job.beforePublish(provenancePath);
+    std::string writeError;
+    bool written = false;
+    if (!underGate(job, cancel, [&] {
+            written =
+                writeAtomically(provenancePath, transformProvenanceText(p), writeError);
+        })) {
+        cleanup();
+        return transformCancelled();
+    }
+    if (!written)
+        return fail("変形の provenance を cache へ保存できません: " + writeError);
+    cleanup();
+    auto outcome = transformReady(transformArtifactFrom(job.directory, job.key, p));
+    outcome.entry.log = QString::fromStdString(rendered.log);
+    return outcome;
+}
+
+math::MathCoverage coverageOf(const media::StillImage& mask) {
+    math::MathCoverage coverage;
+    coverage.width = mask.width;
+    coverage.height = mask.height;
+    coverage.alpha.resize(mask.rgba.size() / 4U);
+    for (std::size_t index = 0; index < coverage.alpha.size(); ++index)
+        coverage.alpha[index] = mask.rgba[index * 4U + 3U];
+    return coverage;
+}
+
 } // namespace
+
+bool loadMathTransformFrame(const MathTransformArtifact& artifact, std::size_t index,
+                            std::vector<std::uint8_t>& coverage, std::string& error) {
+    if (index >= artifact.frames.size() || index >= artifact.frameSha256.size() ||
+        artifact.width <= 0 || artifact.height <= 0) {
+        error = "変形の frame の番号または大きさが不正です";
+        return false;
+    }
+    const auto bytes =
+        static_cast<std::uintmax_t>(artifact.width) * static_cast<std::uintmax_t>(artifact.height);
+    std::vector<std::uint8_t> read;
+    if (!readExactly(artifact.frames[index], bytes, read)) {
+        error = "変形の frame を読めないか、大きさが provenance と違います";
+        return false;
+    }
+    if (sha256Hex(read.data(), read.size()) != artifact.frameSha256[index]) {
+        error = "変形の frame の中身が provenance と違います";
+        return false;
+    }
+    coverage = std::move(read);
+    return true;
+}
 
 MathRasterCache::MathRasterCache(std::string sessionId, PreflightFunction preflight,
                                  QObject* parent)
@@ -501,6 +1081,12 @@ void MathRasterCache::shutdown() {
 }
 
 void MathRasterCache::cancelAll() {
+    // 変形の provenance を書いている worker と排他にする (取り消した後に確定させない)。
+    std::lock_guard gate(*publishGate_);
+    for (const auto& record : std::as_const(transforms_)) {
+        if (record.cancel)
+            record.cancel->store(true);
+    }
     if (preflightCancel_)
         preflightCancel_->store(true);
     for (const auto& record : std::as_const(records_)) {
@@ -518,6 +1104,7 @@ void MathRasterCache::cancelAll() {
 void MathRasterCache::clearRecords() {
     records_.clear();
     sequences_.clear();
+    transforms_.clear();
     resident_.clear();
     loading_.clear();
     overBudget_.clear();
@@ -688,6 +1275,7 @@ void MathRasterCache::finishRender(const QString& key, std::uint64_t ticket, Ent
     found->artifact = std::move(artifact);
     found->cancel.reset();
     Q_EMIT entryChanged(key);
+    advanceTransformsWaitingOn(key);
 }
 
 std::optional<std::filesystem::path>
@@ -724,9 +1312,13 @@ template <typename Records> void forgetFailedRecords(Records& records) {
 } // namespace
 
 void MathRasterCache::retainOnly(const QSet<QString>& keys) {
+    {
+        std::lock_guard gate(*publishGate_);
+        retainKeys(transforms_, keys);
+    }
     retainKeys(records_, keys);
     retainKeys(sequences_, keys);
-    // 連番が要求されなくなれば、preview 用の mask も手放す (読んでいる途中なら止める)。
+    // 連番・変形が要求されなくなれば、preview 用の mask も手放す (読んでいる途中なら止める)。
     for (const auto& key : resident_.keys() + loading_.keys() + overBudget_.keys())
         if (!keys.contains(key))
             dropResident(key);
@@ -735,6 +1327,7 @@ void MathRasterCache::retainOnly(const QSet<QString>& keys) {
 void MathRasterCache::forgetFailures() {
     forgetFailedRecords(records_);
     forgetFailedRecords(sequences_);
+    forgetFailedRecords(transforms_);
     overBudget_.clear();
 }
 
@@ -768,11 +1361,15 @@ void MathRasterCache::holdResidentLoadsForTest(bool hold) {
 
 MathRasterCache::ResidentSequence
 MathRasterCache::residencyOf(const math::MathSequenceSpec& spec) const {
-    ResidentSequence result;
     const QString key = sequenceKeyFor(spec);
     const auto record = sequences_.constFind(key);
     if (key.isEmpty() || record == sequences_.constEnd() || record->entry.state != State::Ready)
-        return result;
+        return {};
+    return residencyFor(key);
+}
+
+MathRasterCache::ResidentSequence MathRasterCache::residencyFor(const QString& key) const {
+    ResidentSequence result;
     if (const auto found = resident_.constFind(key); found != resident_.constEnd()) {
         result.state = Residency::Resident;
         result.frames = found->frames;
@@ -787,12 +1384,72 @@ MathRasterCache::residencyOf(const math::MathSequenceSpec& spec) const {
 
 MathRasterCache::ResidentSequence
 MathRasterCache::residentSequence(const math::MathSequenceSpec& spec) {
-    ResidentSequence result;
     const QString key = sequenceKeyFor(spec);
     const auto record = sequences_.constFind(key);
     if (key.isEmpty() || record == sequences_.constEnd() || record->entry.state != State::Ready ||
         shutDown_)
-        return result;
+        return {};
+    const auto& artifact = record->artifact;
+    const auto bytes = static_cast<std::size_t>(artifact.frames.size()) *
+                       static_cast<std::size_t>(artifact.width) *
+                       static_cast<std::size_t>(artifact.height);
+    return acquireResident(
+        key, ResidentKind::Write, bytes,
+        [artifact](const std::atomic<bool>* cancel,
+                   bool& cancelled) -> std::shared_ptr<MathCoverageSequence> {
+            return decodeSequence(artifact, cancel, cancelled);
+        });
+}
+
+MathRasterCache::ResidentSequence
+MathRasterCache::transformResidencyOf(const math::MathTransformSpec& spec) const {
+    const QString key = transformKeyFor(spec);
+    const auto record = transforms_.constFind(key);
+    if (key.isEmpty() || record == transforms_.constEnd() || record->entry.state != State::Ready)
+        return {};
+    return residencyFor(key);
+}
+
+MathRasterCache::ResidentSequence
+MathRasterCache::residentTransform(const math::MathTransformSpec& spec) {
+    const QString key = transformKeyFor(spec);
+    const auto record = transforms_.constFind(key);
+    if (key.isEmpty() || record == transforms_.constEnd() || record->entry.state != State::Ready ||
+        shutDown_)
+        return {};
+    const auto& artifact = record->artifact;
+    const auto bytes = static_cast<std::size_t>(artifact.frames.size()) *
+                       static_cast<std::size_t>(artifact.width) *
+                       static_cast<std::size_t>(artifact.height);
+    return acquireResident(
+        key, ResidentKind::Transform, bytes,
+        [artifact](const std::atomic<bool>* cancel,
+                   bool& cancelled) -> std::shared_ptr<MathCoverageSequence> {
+            cancelled = false;
+            auto coverage = std::make_shared<MathCoverageSequence>();
+            coverage->width = artifact.width;
+            coverage->height = artifact.height;
+            coverage->frames.reserve(artifact.frames.size());
+            for (std::size_t index = 0; index < artifact.frames.size(); ++index) {
+                if (cancel && cancel->load()) {
+                    cancelled = true;
+                    return nullptr;
+                }
+                std::vector<std::uint8_t> frame;
+                std::string error;
+                if (!loadMathTransformFrame(artifact, index, frame, error))
+                    return nullptr;
+                coverage->frames.push_back(std::move(frame));
+            }
+            return coverage;
+        });
+}
+
+MathRasterCache::ResidentSequence MathRasterCache::acquireResident(const QString& key,
+                                                                   ResidentKind kind,
+                                                                   std::size_t bytes,
+                                                                   ResidentDecoder decode) {
+    ResidentSequence result;
     if (const auto found = resident_.find(key); found != resident_.end()) {
         found->lastUse = ++useTick_;
         result.state = Residency::Resident;
@@ -803,16 +1460,13 @@ MathRasterCache::residentSequence(const math::MathSequenceSpec& spec) {
         result.state = Residency::Loading;
         return result;
     }
-    const auto& artifact = record->artifact;
-    const auto bytes = static_cast<std::size_t>(artifact.frames.size()) *
-                       static_cast<std::size_t>(artifact.width) *
-                       static_cast<std::size_t>(artifact.height);
     // 予約できるまで、最も長く使っていない mask から cache の参照を外す。外すのは cache だけが
     // 持つ mask に限る。preview (合成中の animation や engine) が使っている mask は外しても
     // memory に残る (予約も返らない) うえ、次の合成で読み直しになり、同じ frame の clip どうしで
-    // 追い出し合う。
+    // 追い出し合う。Write と変形の mask は同じ上限・同じ LRU で数える。1 件で上限を超える mask の
+    // ために他の mask を外すことはしない (外しても収まらない)。
     auto reserved = residency_->tryReserve(bytes);
-    while (!reserved) {
+    while (!reserved && bytes <= residency_->limit()) {
         auto oldest = resident_.end();
         for (auto it = resident_.begin(); it != resident_.end(); ++it)
             if (it->frames.use_count() == 1 &&
@@ -825,9 +1479,14 @@ MathRasterCache::residentSequence(const math::MathSequenceSpec& spec) {
     }
     if (!reserved) {
         const auto message =
-            QStringLiteral("Write の preview 用の mask が memory の上限 (全 clip の合計 %1 MB) に"
-                           "収まらないため、書き終えた式で表示します (書き出しには影響しません)。"
-                           "必要 %2 MB、使用中 %3 MB")
+            (kind == ResidentKind::Write
+                 ? QStringLiteral(
+                       "Write の preview 用の mask が memory の上限 (全 clip の合計 %1 MB) に"
+                       "収まらないため、書き終えた式で表示します (書き出しには影響しません)。"
+                       "必要 %2 MB、使用中 %3 MB")
+                 : QStringLiteral("変形の preview 用の mask が memory の上限 (Write と変形の合計 "
+                                  "%1 MB) に収まりません (disk の変形は使えます。書き出しには"
+                                  "影響しません)。必要 %2 MB、使用中 %3 MB"))
                 .arg(residency_->limit() >> 20)
                 .arg(bytes >> 20)
                 .arg(residency_->live() >> 20);
@@ -841,22 +1500,26 @@ MathRasterCache::residentSequence(const math::MathSequenceSpec& spec) {
     LoadingRecord loading;
     loading.ticket = nextTicket_++;
     loading.cancel = std::make_shared<std::atomic<bool>>(false);
+    loading.kind = kind;
     loading_.insert(key, loading);
     ++residentLoads_;
-    residentPool_.start([this, key, artifact, reservation, ticket = loading.ticket,
-                         cancel = loading.cancel]() mutable {
+    residentPool_.start([this, key, kind, decode = std::move(decode), reservation,
+                         ticket = loading.ticket, cancel = loading.cancel]() mutable {
         if (cancel->load())
             return;
         bool cancelled = false;
-        auto decoded = decodeSequence(artifact, cancel.get(), cancelled);
+        auto decoded = decode(cancel.get(), cancelled);
         if (cancelled)
             return;
         if (decoded)
             decoded->reservation = std::move(reservation);
         QString error;
         if (!decoded)
-            error = QStringLiteral("Write の連番の PNG を読めないか、大きさが provenance と"
-                                   "違います。描き直します");
+            error = kind == ResidentKind::Write
+                        ? QStringLiteral("Write の連番の PNG を読めないか、大きさが provenance と"
+                                         "違います。描き直します")
+                        : QStringLiteral("変形の frame を読めないか、大きさ・中身が provenance と"
+                                         "違います。描き直します");
         QMetaObject::invokeMethod(
             this,
             [this, key, ticket, frames = std::shared_ptr<const MathCoverageSequence>(decoded),
@@ -879,17 +1542,29 @@ void MathRasterCache::finishResident(const QString& key, std::uint64_t ticket,
         heldResident_.push_back({key, ticket, std::move(frames), std::move(error)});
         return;
     }
+    const ResidentKind kind = found->kind;
     loading_.erase(found);
     if (!frames) {
-        // disk の連番が壊れている。消して、連番を Failed にする (forgetFailures・再試行で描き直す)。
+        // disk の連番・変形が壊れている。消して Failed にする (forgetFailures・再試行で描き直す)。
         // cache directory の変更は権限がある間だけ行う。
-        if (authorized_)
-            removeSequenceArtifact(cacheDirectory_, key);
-        if (auto record = sequences_.find(key); record != sequences_.end()) {
-            record->entry = {};
-            record->entry.state = State::Failed;
-            record->entry.message = error;
-            record->artifact = {};
+        if (kind == ResidentKind::Write) {
+            if (authorized_)
+                removeSequenceArtifact(cacheDirectory_, key);
+            if (auto record = sequences_.find(key); record != sequences_.end()) {
+                record->entry = {};
+                record->entry.state = State::Failed;
+                record->entry.message = error;
+                record->artifact = {};
+            }
+        } else {
+            if (authorized_)
+                removeTransformArtifact(cacheDirectory_, key);
+            if (auto record = transforms_.find(key); record != transforms_.end()) {
+                record->entry = {};
+                record->entry.state = State::Failed;
+                record->entry.message = error;
+                record->artifact = {};
+            }
         }
         qWarning("%s", qUtf8Printable(error));
     } else {
@@ -1000,6 +1675,157 @@ void MathRasterCache::cancelPendingSequences() {
             it->cancel->store(true);
         it = sequences_.erase(it);
     }
+}
+
+QString MathRasterCache::transformKeyFor(const math::MathTransformSpec& spec) const {
+    if (backendState_ != BackendState::Available)
+        return {};
+    return QString::fromStdString(
+        math::mathTransformKey(spec, backend_.fingerprint, backend_.transformTemplate));
+}
+
+MathRasterCache::TransformEntry
+MathRasterCache::requestTransform(const math::MathTransformSpec& spec) {
+    if (backendState_ == BackendState::Checking)
+        return {};
+    if (backendState_ == BackendState::Unavailable) {
+        TransformEntry entry;
+        entry.state = State::Unavailable;
+        entry.status = math::MathRenderStatus::BackendUnavailable;
+        entry.message = backendMessage_;
+        return entry;
+    }
+    const QString key = transformKeyFor(spec);
+    if (key.isEmpty()) {
+        TransformEntry entry;
+        entry.state = State::Failed;
+        entry.message = QStringLiteral("数式の変形の cache key を計算できません");
+        return entry;
+    }
+    if (shutDown_)
+        return {};
+    if (!transforms_.contains(key)) {
+        TransformRecord record;
+        record.spec = spec;
+        // backend が描けない枚数は描かずに未対応として失敗させる (Project の値は正しいまま)。
+        if (!backend_.renderTransform || spec.frames < 1 ||
+            spec.frames > backend_.maximumTransformFrames) {
+            record.entry.state = State::Failed;
+            record.entry.status = math::MathRenderStatus::Failed;
+            record.entry.message =
+                backend_.renderTransform
+                    ? QStringLiteral("この描画環境の変形は %1 frame までです (要求 %2 frame)。"
+                                     "トランジションを短くしてください")
+                          .arg(backend_.maximumTransformFrames)
+                          .arg(spec.frames)
+                    : QStringLiteral("数式の描画 backend は式の変形を描けません");
+        }
+        transforms_.insert(key, record);
+    }
+    // 両端の静止を待っている間は、要求のたびに静止を要求し直す (取り下げられていても戻す)。
+    advanceTransform(key);
+    return transforms_.value(key).entry;
+}
+
+bool MathRasterCache::advanceTransform(const QString& key) {
+    const auto found = transforms_.constFind(key);
+    if (found == transforms_.constEnd() || found->launched ||
+        found->entry.state != State::Pending || shutDown_ || !authorized_ ||
+        backendState_ != BackendState::Available)
+        return false;
+    const math::MathTransformSpec spec = found->spec;
+    // 両端の今の静止 (この spec の key の静止そのもの)。前に描けた別の式の静止で代用しない。
+    const Entry source = request(spec.source);
+    const Entry target = request(spec.target);
+    auto record = transforms_.find(key);
+    const auto endpointFailed = [&](const Entry& endpoint, const QString& side) {
+        if (endpoint.state != State::Failed && endpoint.state != State::Unavailable)
+            return false;
+        record->entry = {};
+        record->entry.state = endpoint.state;
+        record->entry.status = endpoint.status;
+        record->entry.message =
+            QStringLiteral("%1の式の静止を描けないため、変形を描けません: %2")
+                .arg(side, endpoint.message);
+        return true;
+    };
+    if (endpointFailed(source, QStringLiteral("変形前")) ||
+        endpointFailed(target, QStringLiteral("変形後")))
+        return true;
+    if (source.state != State::Ready || target.state != State::Ready)
+        return false; // どちらかの静止がまだ描けていない: 待つ (古い静止では描かない)
+    if (!source.mask || !target.mask) {
+        record->entry = {};
+        record->entry.state = State::Failed;
+        record->entry.message = QStringLiteral("変形の端点の静止の mask がありません");
+        return true;
+    }
+
+    TransformJob job;
+    job.directory = cacheDirectory_;
+    job.jobs = jobsDirectory();
+    job.key = key;
+    job.spec = spec;
+    job.backend = backend_;
+    job.timeout = renderTimeout_ + sequenceTimeoutPerFrame_ * (spec.frames + 1);
+    job.sourceStatic = coverageOf(*source.mask);
+    job.targetStatic = coverageOf(*target.mask);
+    job.sourceStaticKey = keyFor(spec.source).toStdString();
+    job.targetStaticKey = keyFor(spec.target).toStdString();
+    job.publishGate = publishGate_;
+    job.beforePublish = beforeTransformPublish_;
+    record->launched = true;
+    record->ticket = nextTicket_++;
+    record->cancel = std::make_shared<std::atomic<bool>>(false);
+    job.ticket = record->ticket;
+    pool_.start([this, job = std::move(job), cancel = record->cancel] {
+        if (cancel->load())
+            return;
+        TransformOutcome outcome = renderTransformJob(job, cancel.get());
+        if (outcome.cancelled)
+            return;
+        QMetaObject::invokeMethod(
+            this,
+            [this, key = job.key, ticket = job.ticket, entry = std::move(outcome.entry),
+             artifact = std::move(outcome.artifact)]() mutable {
+                finishTransform(key, ticket, std::move(entry), std::move(artifact));
+            },
+            Qt::QueuedConnection);
+    });
+    return false;
+}
+
+void MathRasterCache::advanceTransformsWaitingOn(const QString& staticKey) {
+    QStringList waiting;
+    for (auto it = transforms_.cbegin(); it != transforms_.cend(); ++it)
+        if (!it->launched && it->entry.state == State::Pending &&
+            (keyFor(it->spec.source) == staticKey || keyFor(it->spec.target) == staticKey))
+            waiting.push_back(it.key());
+    for (const auto& key : waiting)
+        if (advanceTransform(key))
+            Q_EMIT entryChanged(key);
+}
+
+void MathRasterCache::finishTransform(const QString& key, std::uint64_t ticket,
+                                      TransformEntry entry, MathTransformArtifact artifact) {
+    auto found = transforms_.find(key);
+    // 要求されなくなった (retainOnly で捨てた・世代が変わった) key の結果は残さない。
+    if (found == transforms_.end() || found->ticket != ticket || shutDown_)
+        return;
+    if (entry.state != State::Ready)
+        qWarning("数式の変形を描けません: %s", qUtf8Printable(entry.message));
+    found->entry = std::move(entry);
+    found->artifact = std::move(artifact);
+    found->cancel.reset();
+    Q_EMIT entryChanged(key);
+}
+
+std::optional<MathTransformArtifact>
+MathRasterCache::readyTransform(const math::MathTransformSpec& spec) const {
+    const auto found = transforms_.constFind(transformKeyFor(spec));
+    if (found == transforms_.constEnd() || found->entry.state != State::Ready)
+        return std::nullopt;
+    return found->artifact;
 }
 
 } // namespace mvm::app

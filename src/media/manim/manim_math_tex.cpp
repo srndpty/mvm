@@ -586,6 +586,14 @@ math::MathPreflightResult preflightManimMathTex(const ManimMathTexConfig& config
         return renderManimMathWrite(manim, request, renderCancel);
     };
     result.backend.maximumSequenceFrames = kMaximumMathWriteFrames;
+    result.backend.transformTemplate =
+        std::string(kMathTransformTemplateId) + "/" + std::to_string(kMathTransformTemplateVersion);
+    result.backend.renderTransform = [manim](const math::MathTransformRenderRequest& request,
+                                             const math::MathCoverageLoader& loader,
+                                             const std::atomic<bool>* renderCancel) {
+        return renderManimMathTransform(manim, request, loader, renderCancel);
+    };
+    result.backend.maximumTransformFrames = kMaximumMathTransformFrames;
     return result;
 }
 

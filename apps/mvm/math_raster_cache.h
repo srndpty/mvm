@@ -1,7 +1,9 @@
 #ifndef MVM_APPS_MVM_MATH_RASTER_CACHE_H
 #define MVM_APPS_MVM_MATH_RASTER_CACHE_H
 
+#include "media/math/math_backend.h"
 #include "media/math/math_render.h"
+#include "media/math/math_transform.h"
 #include "media/still_image/still_image_decoder.h"
 
 #include <QHash>
@@ -23,7 +25,8 @@
 
 namespace mvm::app {
 
-// Write の preview が memory に置く連番の mask (A8 の被覆の中身) の総量の上限 (全 clip の合計)。
+// Write と変形の preview が memory に置く mask (A8 の被覆の中身) の総量の上限 (全 clip・全
+// トランジションの合計。Write と変形で別の上限を持たない)。
 // process 全体・GPU・decode の memory は数えない。
 // 予約してから decode し、mask が破棄される (どこからも参照されなくなる) ときに返す。
 // cache が手放しても preview engine が持っている間は返らないので、memory に実際にある量を数える。
@@ -89,6 +92,26 @@ struct MathSequenceArtifact {
     int height = 0;
 };
 
+// 変形の disk の artifact (frame 0 から順)。各 frame は backend の一時的な canvas から artifact の
+// 矩形だけを切り出した被覆 (1 画素 1 byte、行間の余白なし、width * height byte) の生の byte 列。
+// 端点の位置は切り出した座標で、端点の静止の mask の左上。
+struct MathTransformArtifact {
+    std::vector<std::filesystem::path> frames;
+    // 各 frame の中身の SHA-256 (provenance に書いた値)。読むたびに照合する。
+    std::vector<std::string> frameSha256;
+    int width = 0;
+    int height = 0;
+    int sourceX = 0;
+    int sourceY = 0;
+    int targetX = 0;
+    int targetY = 0;
+};
+
+// 変形の artifact の frame index を読む (provenance の大きさと SHA-256 を照合する)。
+// 合わなければ false と error。preview の memory への読み込みと、書き出し (P2-6) が使う。
+bool loadMathTransformFrame(const MathTransformArtifact& artifact, std::size_t index,
+                            std::vector<std::uint8_t>& coverage, std::string& error);
+
 // 数式 clip の描画結果 (白い glyph の mask) を key 単位で持つ (docs/math-clips.md)。
 //
 // - key は描画に効く値 (MathRenderSpec) と backend の toolchain fingerprint の SHA-256。
@@ -124,6 +147,17 @@ public:
     struct SequenceEntry {
         State state = State::Pending;
         int width = 0; // Ready のときの frame の大きさ
+        int height = 0;
+        math::MathRenderStatus status = math::MathRenderStatus::Failed;
+        QString message;
+        QString log;
+    };
+
+    // 変形の disk の artifact。Ready は検証済みの artifact が disk にある (preview・書き出しが
+    // 後で使える) ことだけを表す。preview 用の mask が memory にあるかは residentTransform が扱う。
+    struct TransformEntry {
+        State state = State::Pending;
+        int width = 0; // Ready のときの切り出した frame の大きさ
         int height = 0;
         math::MathRenderStatus status = math::MathRenderStatus::Failed;
         QString message;
@@ -192,7 +226,30 @@ public:
     // 取り消した連番は次の requestSequence で要求し直される。
     void cancelPendingSequences();
 
-    // keys に無い record (静止・連番) を捨てる (描画中なら止める)。
+    // 式から式への変形 (P2-4)。静止・Write と同じ worker・権限・世代で扱い、key は
+    // math::mathTransformKey (mvm-math-transform/1)。disk は cacheDirectory/transform/<key>/ と
+    // <key>.txt (provenance、mvm-math-transform-artifact/1)。
+    //
+    // - 描く前に、両端の式の今の静止 (request と同じ key) が Ready であることを待ち、その mask を
+    //   そのまま backend へ渡す。前に描けた別の式の静止で代用しない。どちらかの静止が Failed /
+    //   Unavailable なら変形も描かずに同じ状態にする
+    // - backend の能力を超える枚数は Project の誤りではなく、この描画環境の未対応として失敗させる
+    // - preview の表示・書き出しはまだ変形を使わない (P2-5 / P2-6)
+    QString transformKeyFor(const math::MathTransformSpec& spec) const;
+    TransformEntry requestTransform(const math::MathTransformSpec& spec);
+    std::optional<MathTransformArtifact> readyTransform(const math::MathTransformSpec& spec) const;
+    // preview 用の mask。Write と同じ全体の上限・予約・LRU を共有する (別の上限を持たない)。
+    // 上限に収まらなくても disk の artifact は Ready のまま。追い出した mask は disk から読み直す。
+    ResidentSequence residentTransform(const math::MathTransformSpec& spec);
+    ResidentSequence transformResidencyOf(const math::MathTransformSpec& spec) const;
+    int transformRecordCount() const { return static_cast<int>(transforms_.size()); }
+    // 試験用: 変形の provenance を書く直前に (worker の thread で) 呼ぶ。引数は provenance の path。
+    void setBeforeTransformPublishForTest(
+        std::function<void(const std::filesystem::path& provenance)> hook) {
+        beforeTransformPublish_ = std::move(hook);
+    }
+
+    // keys に無い record (静止・連番・変形) を捨てる (描画中なら止める)。
     void retainOnly(const QSet<QString>& keys);
     void forgetFailures();
     void shutdown();
@@ -226,6 +283,7 @@ public:
     // provenance file の 1 行目。形を変えたら上げる。
     static constexpr char kArtifactFormat[] = "mvm-math-artifact/1";
     static constexpr char kSequenceArtifactFormat[] = "mvm-math-sequence-artifact/1";
+    static constexpr char kTransformArtifactFormat[] = "mvm-math-transform-artifact/1";
 
 Q_SIGNALS:
     // key の結果が出た。空なら全体 (backend の状態が変わった)。
@@ -246,12 +304,30 @@ private:
         std::shared_ptr<std::atomic<bool>> cancel;
     };
 
+    struct TransformRecord {
+        TransformEntry entry;
+        math::MathTransformSpec spec;
+        // 描画を始めた (両端の静止が揃った) か。始める前は両端の静止を待っている。
+        bool launched = false;
+        MathTransformArtifact artifact;
+        std::uint64_t ticket = 0;
+        std::shared_ptr<std::atomic<bool>> cancel;
+    };
+
     void finishPreflight(std::uint64_t generation, math::MathPreflightResult result);
     void finishRender(const QString& key, std::uint64_t ticket, Entry entry,
                       std::filesystem::path artifact);
     void finishSequence(const QString& key, std::uint64_t ticket, SequenceEntry entry,
                         MathSequenceArtifact artifact);
-    // memory に置いた mask と、読んでいる途中の要求。
+    // 両端の静止が揃っていれば変形の描画を始める。状態が変わったら true。
+    bool advanceTransform(const QString& key);
+    // 静止の key の結果が出た: その静止を待つ変形を進める。
+    void advanceTransformsWaitingOn(const QString& staticKey);
+    void finishTransform(const QString& key, std::uint64_t ticket, TransformEntry entry,
+                         MathTransformArtifact artifact);
+    // memory に置いた mask と、読んでいる途中の要求。Write と変形は key の名前空間が別なので
+    // 同じ表に置き、同じ上限・LRU で扱う。
+    enum class ResidentKind { Write, Transform };
     struct ResidentRecord {
         std::shared_ptr<const MathCoverageSequence> frames;
         std::uint64_t lastUse = 0;
@@ -259,7 +335,14 @@ private:
     struct LoadingRecord {
         std::uint64_t ticket = 0;
         std::shared_ptr<std::atomic<bool>> cancel;
+        ResidentKind kind = ResidentKind::Write;
     };
+    // 読み込み (取消を見て、読めなければ nullptr。取消なら cancelled を立てる)。
+    using ResidentDecoder = std::function<std::shared_ptr<MathCoverageSequence>(
+        const std::atomic<bool>* cancel, bool& cancelled)>;
+    ResidentSequence acquireResident(const QString& key, ResidentKind kind, std::size_t bytes,
+                                     ResidentDecoder decode);
+    ResidentSequence residencyFor(const QString& key) const;
     void finishResident(const QString& key, std::uint64_t ticket,
                         std::shared_ptr<const MathCoverageSequence> frames, QString error);
     void dropResident(const QString& key);
@@ -275,6 +358,12 @@ private:
     QThreadPool pool_;
     QHash<QString, Record> records_;
     QHash<QString, SequenceRecord> sequences_;
+    QHash<QString, TransformRecord> transforms_;
+    // 変形の provenance (確定の印) を書くことと、取消 (権限・世代の変更、要求の取り下げ) を
+    // 排他にする。worker は取消を見てから書くまでをこの lock の中で行うので、取り消した後に
+    // 古い世代の結果が確定することはない。
+    std::shared_ptr<std::mutex> publishGate_ = std::make_shared<std::mutex>();
+    std::function<void(const std::filesystem::path&)> beforeTransformPublish_;
     // preview 用の mask の読み込みは描画 (Manim) と別の worker で行う (長い描画を待たない)。
     QThreadPool residentPool_;
     QHash<QString, ResidentRecord> resident_;

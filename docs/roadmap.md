@@ -29,7 +29,10 @@
 - P2: 式から式への変形。設計の結論と P2-1 (Project / timeline、schema 20) は
   `docs/math-clips.md` の「式から式への変形 (P2)」にある。残りは次の段階で行う。
   - (済: P2-2) mvm の分け方と n 番目の出現の照合、変形の key・端点の配置・色の補間の中立な契約
-  - 変形の artifact (`mvm-math-sequence/1` とは別の名前空間) と cache
+  - (済: P2-4) 変形の artifact (`mvm-math-transform-artifact/1`、切り出した A8) と cache、
+    Write と共有する memory の上限
+  - P2-4 の変形の frame は圧縮しない A8 で disk に置く (1 frame = artifact の幅 x 高さ byte)。
+    長い変形で disk が大きくなる場合は、可逆の圧縮 (PNG の encode など) を検討する
   - (済: P2-3) Manim の backend (`MathTex(*segments)` と明示の変形・fade、部分の構造の検査、
     実測の bbox による artifact の矩形、半画素の補正、端点の照合)
   - preview・書き出し・UI

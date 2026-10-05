@@ -5,6 +5,7 @@
 //
 // Manim 固有の設定と処理はここに閉じる。外へは math::MathRenderBackend (中立な契約) だけを出す。
 
+#include "media/math/math_backend.h"
 #include "media/math/math_render.h"
 #include "media/math/math_tex_segments.h"
 #include "media/math/math_transform.h"

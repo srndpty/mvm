@@ -620,6 +620,115 @@ cache・controller・preview・書き出し・UI はまだつないでいない 
   (`build/math-p23-real-ysign-mutant-*.log`)。
 - [未検証] 実際に Manim が代用 (`Could not find SVG group`) する式。検査は偽の Manim と構造の照合で確かめた。
 
+### 変形の artifact・cache・memory (P2-4)
+
+controller・preview・書き出し・UI はまだ変形を使わない。preview は A→B を cut で切り替え、
+出力する変形のある書き出しは拒否したまま (P2-5・P2-6)。Project の schema は変えていない。
+
+- backend の境界 (`src/media/math/math_backend.h`、新規)
+  - `MathRenderBackend` と preflight の結果を `math_render.h` から移した。
+    変形の描画関数の型が `math_transform.h` の型を使うため。
+  - 足した field: `transformTemplate` (`manim-transform/1`)、`renderTransform`、`maximumTransformFrames` (9998)。
+    静止と Write の field は変えていない。
+  - `renderTransform` は `MathCoverageLoader` を引数で受け取る。
+    `src/media/manim` は decoder に依存しないまま。cache が `loadMathCoverage` (app 層、静止画 decoder) を渡す。
+  - backend の上限を超える枚数は Project の誤りにしない。cache が描かずに、この描画環境の未対応として失敗させる。
+- key は P2-2 の `mathTransformKey` そのまま。
+  - 材料: 両端の `MathRenderSpec`・frame 数・分け方と照合の版・backend・toolchain・変形の script の識別。
+  - 色・ClipEffects・トランジションと clip の ID・timeline の位置と fps は含めない。
+- 端点の静止への依存
+  - 変形を描く前に、両端の今の静止 (同じ spec の静止の key) が Ready であることを待つ。
+    その mask (`Entry::mask`、静止の artifact を decode したもの) をそのまま backend へ渡す。
+  - 前に描けた別の式の静止 (last-good) では描かない。片方が Pending の間は始めない。
+  - どちらかの静止が Failed / Unavailable なら、変形も描かずに同じ状態にする (理由に「変形前 / 変形後」を付ける)。
+  - 静止の結果が出たら、それを待つ変形を進める (`advanceTransformsWaitingOn`)。
+  - 端点を書き換えると key が変わる。古い描画の結果は古い key にしか入らない。
+- disk の形
+  - `<cache>/transform/<key>/00000.a8 …` と provenance `<cache>/transform/<key>.txt`。
+  - 各 frame は、backend の一時的な canvas (余白 200 px) から `result.artifact` の矩形だけを切り出した被覆。
+    1 画素 1 byte の生の byte 列で、全 frame が同じ大きさ (artifact の幅 x 高さ)。
+  - PNG にしなかった理由
+    - mvm には PNG の encoder が無い (画素の decode は静止画 decoder だけを通す)。
+    - 被覆を byte 単位でそのまま残せる。
+    - 代わりに各 frame の中身を SHA-256 で照合する。
+  - 終状態の照合の 1 枚 (P2-3 の frames + 1 枚目) は保存しない。
+  - 端点の位置は切り出した座標へ移す (`endpointArtifact = endpointCanvas − artifact.xy`)。
+- 公開の手順 (P1.1 の Write と同じ)
+  1. 古い provenance を消す。
+  2. frame の directory を空にして frame を書く。
+  3. provenance を最後に atomic に書く。
+  - directory の rename は使わない。provenance があり、正確に合うことが確定の印。
+  - 取消 (権限・世代の変更、`retainOnly`) と provenance の書き込みは同じ mutex (`publishGate_`) で排他にする。
+    worker は lock の中で取消を見てから書くので、取り消した後に古い世代の結果は確定しない。
+  - 権限を失った後は、書きかけの frame も消さない (cache directory を変えない)。
+    provenance が無いので使われない。
+- provenance `mvm-math-transform-artifact/1`
+  - 中身: key・枚数・切り出した大きさ・canvas の大きさ・artifact の矩形 (canvas の座標)・両端の位置 (切り出した座標)・
+    両端の静止の大きさと key・各 frame の名前・byte 数・SHA-256 (順に)・変形の script・分け方と照合の版・toolchain。
+  - 読むとき (fail-closed、どれかが合わなければ消して描き直す)
+    - 読んだ数値と、期待する identity (key・静止の key・script・版・toolchain) から正準形を組み直し、file と byte 単位で比べる。
+      余分な行・`068` のような正準形でない数値も拒否する。
+    - 枚数が要求と同じか。
+    - 両端の静止の大きさが今の静止と同じか。
+    - 端点の位置が、静止と canvas の大きさから P2-2 の配置で決まる値と同じか。
+    - 各 frame の大きさと SHA-256。
+    - frame 0 が今の変形前の静止と全画素一致するか。
+  - 描いたとき (backend の結果を検査する、fail-closed)
+    - 枚数・矩形が canvas に収まるか、端点の配置が P2-2 の契約と同じか。
+    - 各 frame の alpha が artifact の矩形の外に無いか (切り出しで画素を失わない)。
+    - 切り出した frame 0 が変形前の静止と全画素一致するか。
+- 状態の意味
+  - 変形の Ready は「検証済みの artifact が disk にある (preview・書き出しが後で使える)」だけを表す。
+    mask が memory にあることは意味しない。
+  - 書き出し (P2-6) は `readyTransform` と `loadMathTransformFrame` で disk から読める。preview の mask を追い出した後でもよい。
+- preview 用の memory (`residentTransform`)
+  - Write と同じ全体の上限・予約 (`MathResidencyBudget`)・LRU・`resident_` の表を共有する。別の 256 MB は持たない。
+  - 数えるのは、Write と変形の A8 の mask の合計 (使用中で cache が手放したものを含む)。
+  - 追い出すのは使用中でない mask だけ。予約は mask が実際に破棄されるときに返る (P1.1 のまま)。
+  - 1 本で上限を超える mask は、他の mask を追い出さずに OverBudget (理由付き) にする。disk の変形は Ready のまま。
+    この短絡は Write にも効く (以前は、収まらないと分かっていても先に LRU を空にしていた)。
+  - 追い出した変形は、Manim を起動せず disk から読み直す。
+  - memory に読むときに中身の壊れた frame を見つけたら、artifact を消して変形を Failed にする (再試行で描き直す)。
+- 公開した API (controller からはまだ呼ばない)
+  - `transformKeyFor`・`requestTransform`・`readyTransform`・`residentTransform`・`transformResidencyOf`
+- 試験 (偽の backend。期待値は偽の backend の定義から手で数えた値)
+  - `math_raster_cache_focused` (241 検査、以前の静止・Write の検査は変えていない)。変形について確かめること:
+    - 両端の今の静止を待つ。渡す mask は今の静止そのもの。last-good で代用しない。
+    - 描画中に端点を書き換える (古い結果は古い key だけに入る。古い A と新しい B を混ぜない)。
+    - 取り下げ・権限の喪失・世代の変更の後に確定しない。
+      provenance を書く直前に権限を失う場合も含める。このとき frame は 4 枚揃い、provenance はまだ無い。
+    - 権限の無い instance は描かず、他の instance の file を消さない。
+    - 開き直しで描かない。
+    - provenance の欠落・変更 (端点の位置・切れ・余分な行・正準形でない数値・枚数) を拒否する。
+    - frame の中身の破損・大きさ・欠落・順の入れ替えを拒否する。
+    - 切り出し: 68x11、端点 (34,6)・(4,3)、frame 0 が静止と全画素一致、frame 1 以降の位置。
+    - 矩形の外の画素・frame 0 のずれ・backend の上限を拒否する。
+    - Write と変形の合計の上限・LRU・使用中の mask。1 本で上限を超える変形は disk で Ready のまま。
+    - memory での破損の検出。
+  - [事実] `math_raster_cache_focused` を 10 回続けて回し、10 / 10 が通過した。
+  - `manim_math_tex_focused`: preflight が変形の関数・script の識別・上限 (9998) を束ねることを確かめる。
+    束ねた関数が渡した loader で全 7 枚を読むことも確かめる。
+  - [事実] cache の実装に変異を 1 つずつ入れた結果
+    - 失敗した (検出できた) 10 種
+      - provenance を書くときに取消を見ない
+      - 描いたときの frame 0 の照合を外す
+      - 矩形の外の画素の検査を外す
+      - 読むときの SHA-256 を外す
+      - 枚数の照合を外す
+      - 片方の静止だけで描き始める
+      - 変形を上限に数えない
+      - 使用中の mask を追い出す
+      - `retainOnly` が変形を残す
+      - 配置の照合 4 つをすべて外す
+    - 通過した (検出できなかった) 2 種。どちらも他の検査が同じ誤りを先に止める
+      - 静止の大きさの照合を外す: 配置の照合と frame 0 の照合が同じ不一致を止める
+      - 書く前に古い provenance を消すのをやめる: 描き直すのは読み込みで artifact が合わなかったときだけで、
+        そのとき読み込みが provenance を消している
+- [事実] 2026-10-06 の通常の release gate (`ctest -LE "performance|stability"`、`build/math-p24-release-gate.log`) は
+  1453 / 1453 件が通過した (1975 秒)。`scripts/lint.ps1` も通過した。
+- [未検証] 実 Manim では回し直していない。P2-4 は P2-3 の renderer の描画を変えず、preflight で束ねただけである。
+  P2-3 の smoke (71 / 71) の結果がそのまま当てはまると考えている。
+
 ### P2-1 の gate (2026-10-05)
 
 - [事実] 通常の release gate (`build/math-p21-release-gate.log`) は 1452 件中 1444 件が通過し、
