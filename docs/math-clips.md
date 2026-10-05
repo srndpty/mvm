@@ -426,6 +426,117 @@ fade・不透明度・位置・拡大・回転は既存の ClipEffects で足り
   1080p 全面の式では 1 frame の patch が約 8 MB になる。
 - [未検証] Write を付けた解の公式を人が一通り制作する手順 (P0 と同じく自動試験は契約の確認)。
 
+## P2-0: 式から式への変形の検証 (2026-10-05)
+
+P2 (式 A → 式 B の変形) の着手前に、Manim の分け方・照合・端点の画素・途中の frame の bbox を
+実 Manim で測った。製品の code は変えていない。renderer と layout の最終の契約は、この結果の review の後に決める。
+環境は P1-0 と同じ (Manim Community v0.21.0、MiKTeX 26.5、dvisvgm 3.6)。
+
+### 再現
+
+- 静止の参照は、製品の script (`kSceneCommon` + `kStaticScene`) を写した `p20_static.py` を `-s` で描いた。
+- 変形は `p20_transform.py` で描いた。
+  - 両式を静止と同じ `font_size = em x 12/17` で作る。
+  - 静止の最大の大きさに各辺 200 px を足した canvas に置き、`frame_rate = N` で 1 秒の `play` の後に `wait(1/N)` を描く。
+  - A・B は、静止の `mathRasterPlacement` (出力が偶数) と同じ整数の offset `ceil(W_C/2) − ceil(W/2)` に置く。
+  - 静止と画素の位相を揃えるため、0 または ±0.5 px ずらす (半画素の補正)。
+- driver は `p20_driver.py` (segmenter と n 番目の出現の照合を含む)。
+- 結果: `build/math-p20-20261005-124047/` と同名の `.log` (27 ケース)、および
+  `build/math-p20-rerun-20261005-124328/` (10 ケースと確認用の画像 `sheet-*.png`)。各 directory の
+  `spike-scripts/` に script を置いた (置いたのは修正後の版。修正の内容は下の「方式の比較」)。
+- 対象の式 (文字サイズ 64、`e12-args-mvm-fs96to64` だけは A を 96)
+  - E1 `x^2 + \frac{b}{a}x = -\frac{c}{a}`
+  - E2 `x^2 + \frac{b}{a}x + \left(\frac{b}{2a}\right)^2 = -\frac{c}{a} + \left(\frac{b}{2a}\right)^2`
+  - E3 `\left(x + \frac{b}{2a}\right)^2 = \frac{b^2 - 4ac}{4a^2}`
+  - 重複項の対照 `x + x = 2x` → `x + x + x = 3x`
+  - `\boxed{x^2 + y^2 = r^2}` → `\boxed{x^2 = r^2 - y^2}`
+
+### 分け方と glyph の配置
+
+- [事実] Manim 0.21 の `MathTex` は、分けた式を **1 回だけ** TeX で処理する。各部分の前後に
+  `\special{dvisvgm:raw <g id=…>}` を挟み、SVG の group で部分を見分ける (`tex_mobject.py`)。
+- [事実] 次の 4 方式で、glyph の点の座標は 1 文字列の `MathTex` と完全に一致した
+  (最大の差 0 px、bbox も一致。E1・E2・E3・重複項・boxed のすべて)。
+  - `single`: 分けない
+  - `args`: `MathTex(*segments)`
+  - `braces`: backend の中で `{{ … }}` に書き換えた 1 文字列
+  - `isolate`: 1 文字列 + `substrings_to_isolate`
+  - [推測] 分けても静止の描画を分けた描画へ変える必要は無い。
+- [事実] `args` は `\frac{` / `b` / `}{a}x` のように `\frac` の中で分けても描けた
+  (`\frac{` は glyph 0 個の部分になる)。`\left(` / `x` / … / `\right)^2` も描けた。
+  - [推測] 式全体で中括弧が釣り合っていれば足りる。
+- [事実] `isolate` は、`TransformMatchingTex` が使う部分 (`submobjects`) を作らない。
+  - 部分は式全体の 1 つだけで、`single` と同じ変形になった (画素の変化の量も同じ)。
+  - 分ける文字列 `a` が `\frac` の中の `a` にも一致して命令を壊し、latex が失敗した (`probe-frac-inside-isolate`)。
+- [事実] `braces` は部分の間に空白だけの部分 (glyph 0 個) を挟み、部分の文字列にも前後の空白が付く。
+  - 部分の番号で照合すると食い違う。最初の run の `braces/mvm` 3 ケースは、終状態が B と一致しなかった
+    (差のある画素 2438〜5535)。これは spike の script の誤りで、空白だけの部分を数えずに番号を付けると一致した (rerun)。
+  - 空白でない部分だけを数えれば、画素は `args` と同じになった。
+  - `{{` は文字列の先頭か空白の直後でだけ group として扱われる。
+- [事実] 部分の SVG group が見つからないとき、Manim は error を log に出して式全体の group で代用する
+  (`Could not find SVG group … Using fallback`)。今回のケースでは起きなかった。
+  - 製品では、部分の数と各部分の文字列を検査しないと、この代用を見逃す。
+
+### 端点の画素
+
+- [事実] 半画素の補正をした描画では、失敗した 1 ケースを除く全ケースで、alpha が完全に一致した
+  (差のある画素 0)。canvas の中で静止の矩形の外に alpha は無かった。
+  - 最初の frame と静止の A
+  - 最後の frame (`wait` の 1 枚) と静止の B
+  - 文字サイズが違う A (96) → B (64) でも同じだった。
+- [事実] 補正を外した対照 (E1 の縦の補正は −0.5 px) では、frame 0 と静止 A の差が 2603 画素、alpha の差は最大 134。
+  [exit] 半画素の補正は必要。
+- [事実] PNG は N + 1 枚 (N = 30 で 31 枚、60 で 61 枚)。空の frame は無かった。
+  - frame i (< N) は進み具合 i/N、最後の 1 枚は終状態。
+- [事実] 半透明の画素では RGB が 255 未満になる (alpha の付いた画素の RGB を数えた)。
+  製品は alpha だけを被覆率に使うので影響しない。
+
+### 途中の frame の bbox
+
+- [事実] 全ケースの全 frame で、alpha の bbox は端点の glyph の bbox の和に収まった (はみ出し 0 px)。
+  端点の静止の矩形 (余白 8 px を含む) の和にも収まった。
+  - 対象には `TransformMatchingTex` の移動付きの fade (`target_position`) と、mvm の対応による変形を含む。
+- [推測] 直線の経路の補間と、移動しない fade なら、点は両端の点の凸結合なので和に収まる。
+  - `TransformMatchingTex` の fade は部分を相手の group の中心へ動かす。
+  - 円弧の経路 (`path_arc`) はこの議論の外である。
+  - したがって「max(A, B) が全 frame を含む」は、今回のケースでの観測にとどまる。
+- [推測] 契約の候補 (review で決める):
+  - backend は余白の広い canvas に描く。
+  - mvm は全 frame の alpha の bbox を実測し、artifact の矩形を「端点の矩形の和 ∪ 実測の bbox」とする。
+  - alpha が canvas の縁に触れたら、切れたとみなして失敗にする。
+  - 端点の offset は、この矩形からの整数の位置として provenance に書く。
+
+### 照合
+
+- [事実] `TransformMatchingTex` は、同じ文字列の部分を 1 つの group にまとめて変形する。
+  - 重複項の対照では、A の `x` 2 個の group が B の `x` 3 個の group へ変形する。
+  - どの `x` がどこへ行くかは Manim の部分の数合わせで決まる (`sheet-dup-args-manim.png`)。
+- [事実] mvm が決めた対応 (source の n 番目の出現 → target の n 番目の出現) を、
+  `ReplacementTransform` (対応する部分)・`FadeOut` (A だけの部分)・`FadeIn` (B だけの部分) で組めた。
+  - 端点は完全に一致した。
+  - 重複項では `x₁→x₁`・`x₂→x₂`・`+→+`・`=→=` が動き、3 つ目の `+ x` と `3x` が現れ、`2x` が消えた
+    (`sheet-dup-args-mvm.png`)。
+  - 曖昧な照合を Manim に任せずに済む。
+- [事実] E2→E3 は、自動の分け方では `=` だけが対応する
+  (E3 の左辺 `\left(x + \frac{b}{2a}\right)^2` は 1 つの部分)。
+  分けて (`\left(` / `x` / `+` / `\frac{b}{2a}` / `\right)^2`) も描けるので、
+  将来の手動の照合で部分を細かくする余地はある。
+- 照合の algorithm の版は変形の cache key に入れる (派生の値で Project には保存しない)。
+
+### 所要時間
+
+- [事実] 静止 1446〜2162 ms (最初の 1 回が 2162 ms)。
+- [事実] 変形 (N = 30) 2168〜3913 ms、N = 60 で 3875 ms。
+  - spike は配置の比較用に 1 文字列の `MathTex` も 2 つ作るので、製品より LaTeX の処理が 2 回多い。
+
+### 未検証
+
+- [未検証] mvm から `CREATE_NO_WINDOW` で起動した場合。
+- [未検証] 複数行 (`align` の `\\`) の式。
+- [未検証] 式が出力に近い幅の場合。
+- [未検証] N が数百を超える場合の時間。
+- [未検証] SVG group の代用が実際に起きる式。
+
 ## P1-0: Write の artifact と書き出しの検証 (2026-10-05)
 
 P1 (数式の `Write` animation) の着手前に、artifact の方式 (Manim の PNG 連番) と書き出しの経路
