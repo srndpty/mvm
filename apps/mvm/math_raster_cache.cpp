@@ -75,7 +75,7 @@ std::shared_ptr<const media::StillImage> decodeMask(const std::filesystem::path&
 // 読めない・大きさが違うものは消して描き直させる。
 std::shared_ptr<const media::StillImage>
 loadArtifact(const std::filesystem::path& directory, const QString& key,
-             const math::MathToolchainFingerprint& toolchain) {
+             const math::MathToolchainFingerprint& toolchain, bool removeInvalid = true) {
     const std::string provenance = readFile(provenancePath(directory, key));
     if (provenance.empty())
         return nullptr;
@@ -100,11 +100,12 @@ loadArtifact(const std::filesystem::path& directory, const QString& key,
     }
     if (format != MathRasterCache::kArtifactFormat || keyLine != "key=" + key.toStdString() ||
         width <= 0 || height <= 0 || provenance != provenanceText(key, width, height, toolchain)) {
-        removeArtifact(directory, key);
+        if (removeInvalid)
+            removeArtifact(directory, key);
         return nullptr;
     }
     auto mask = decodeMask(artifactPath(directory, key), width, height);
-    if (!mask)
+    if (!mask && removeInvalid)
         removeArtifact(directory, key);
     return mask;
 }
@@ -792,7 +793,7 @@ enum class DiskLoad { Ready, Missing, Cancelled };
 // disk の変形を確かめる: provenance の正準形・期待する identity・数値の整合、各 frame の
 // 大きさと SHA-256。どれかが合わなければ消して Missing (描き直させる)。
 DiskLoad loadTransformArtifact(const TransformJob& job, const std::atomic<bool>* cancel,
-                               MathTransformArtifact& artifact) {
+                               MathTransformArtifact& artifact, bool removeInvalid = true) {
     const auto provenancePath = transformProvenancePath(job.directory, job.key);
     const std::string text = readFile(provenancePath);
     if (text.empty())
@@ -833,7 +834,8 @@ DiskLoad loadTransformArtifact(const TransformJob& job, const std::atomic<bool>*
     }
     if (valid)
         return DiskLoad::Ready;
-    if (!underGate(job, cancel, [&] { removeTransformArtifact(job.directory, job.key); }))
+    if (removeInvalid &&
+        !underGate(job, cancel, [&] { removeTransformArtifact(job.directory, job.key); }))
         return DiskLoad::Cancelled;
     return DiskLoad::Missing;
 }
@@ -1839,6 +1841,43 @@ MathRasterCache::readyTransform(const math::MathTransformSpec& spec) const {
     if (found == transforms_.constEnd() || found->entry.state != State::Ready)
         return std::nullopt;
     return found->artifact;
+}
+
+std::optional<MathTransformArtifact>
+MathRasterCache::readyTransformForExport(const math::MathTransformSpec& spec) const {
+    if (!readyTransform(spec))
+        return std::nullopt;
+    const auto source = readyArtifact(spec.source);
+    const auto target = readyArtifact(spec.target);
+    if (!source || !target)
+        return std::nullopt;
+    TransformJob job;
+    job.directory = cacheDirectory_;
+    job.key = transformKeyFor(spec);
+    job.spec = spec;
+    job.backend = backend_;
+    job.sourceStaticKey = keyFor(spec.source).toStdString();
+    job.targetStaticKey = keyFor(spec.target).toStdString();
+    std::string error;
+    if (!loadMathCoverage(*source, job.sourceStatic, error) ||
+        !loadMathCoverage(*target, job.targetStatic, error))
+        return std::nullopt;
+    // 静止の内容も現在の Ready の mask と照合し、disk の差し替えを拒否する。
+    const auto sourceRecord = records_.constFind(keyFor(spec.source));
+    const auto targetRecord = records_.constFind(keyFor(spec.target));
+    const auto sourceDisk =
+        loadArtifact(cacheDirectory_, keyFor(spec.source), backend_.fingerprint, false);
+    const auto targetDisk =
+        loadArtifact(cacheDirectory_, keyFor(spec.target), backend_.fingerprint, false);
+    if (!sourceRecord->entry.mask || !targetRecord->entry.mask || !sourceDisk || !targetDisk ||
+        job.sourceStatic != coverageOf(*sourceRecord->entry.mask) ||
+        job.targetStatic != coverageOf(*targetRecord->entry.mask))
+        return std::nullopt;
+    MathTransformArtifact artifact;
+    const std::atomic<bool> cancel{false};
+    if (loadTransformArtifact(job, &cancel, artifact, false) != DiskLoad::Ready)
+        return std::nullopt;
+    return artifact;
 }
 
 } // namespace mvm::app

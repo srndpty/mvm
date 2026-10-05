@@ -4,6 +4,11 @@
 
 ## 一般の音声・書き出し
 
+- [事実] P2-6 の通常 release gate で `ownership_soak_100` が音声 consumer の
+  60000 ms timeout により 100/130 回で終了した。通常試験は 1456 件中 1455 件通過。
+  再現コマンドは `pwsh scripts/test.ps1 -Preset ucrt64-release`、証拠は
+  `build/math-p26-release-alpha-20261006.log`。原因と今回の変更との因果関係は未特定。
+  音声 soak は別途調査する。成功するまでの再試行による選別はしていない。
 - [事実] P0-6.1 の同条件対照で、Math を含まない通常 Text と通常画像の音声付き MP4 も
   AAC の `Input contains (near) NaN/+-Inf`、frame 2〜4 の encode error、
   `tractor出力を検証できません` を再現した。Math Clip を必要条件としない既存の不具合。
@@ -37,7 +42,6 @@
     実測の bbox による artifact の矩形、半画素の補正、端点の照合)
   - (済: P2-5) preview (A の layer と B の layer が同じ変形の frame を見せる、artifact の位置の規則) と
     エフェクトコントロールの状態 (disk の描画と preview の memory を分けて示す)
-  - 書き出し (P2-6)。それまでは出力する変形のある書き出しを拒否する
   - 変形の mask の先読み: 今は前・後ろの clip が見える frame の合成が要求してから memory に読むので、
     再生中に読み終えるまでは cut で見せる (読み終えた次の tick から、その時刻の変形の frame を見せる)
 - P2 の後: 手動の照合・部分式の ID・強調、背景の矩形の補間、区間の中で ClipEffects が

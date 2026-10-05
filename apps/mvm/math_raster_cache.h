@@ -239,6 +239,9 @@ public:
     QString transformKeyFor(const math::MathTransformSpec& spec) const;
     TransformEntry requestTransform(const math::MathTransformSpec& spec);
     std::optional<MathTransformArtifact> readyTransform(const math::MathTransformSpec& spec) const;
+    // 書き出し開始前に現在の端点と disk provenance を再検査する。常駐 mask は要求しない。
+    std::optional<MathTransformArtifact>
+    readyTransformForExport(const math::MathTransformSpec& spec) const;
     // preview 用の mask。Write と同じ全体の上限・予約・LRU を共有する (別の上限を持たない)。
     // 上限に収まらなくても disk の artifact は Ready のまま。追い出した mask は disk から読み直す。
     ResidentSequence residentTransform(const math::MathTransformSpec& spec);

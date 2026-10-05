@@ -8321,6 +8321,45 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
         }
     }
 
+    for (const auto& transition : project_.timelineTransitions) {
+        if (!mathTransformIsRendered(project_, transition))
+            continue;
+        const project::ClipIdIndex clipIndex(project_);
+        const auto& source =
+            project_
+                .timelineClips[static_cast<std::size_t>(clipIndex.find(transition.outgoingClipId))];
+        const auto& target =
+            project_
+                .timelineClips[static_cast<std::size_t>(clipIndex.find(transition.incomingClipId))];
+        const auto spec = mathTransformSpecFor(transition, source, target);
+        const auto artifact =
+            spec && mathRasters_ ? mathRasters_->readyTransformForExport(*spec) : std::nullopt;
+        if (!artifact) {
+            reportExportFailure(QStringLiteral("数式の変形の現在の disk 成果物を検証できません"));
+            return false;
+        }
+        TimelineMathTransformArtifact input;
+        input.spec = *spec;
+        input.width = artifact->width;
+        input.height = artifact->height;
+        input.sourceX = artifact->sourceX;
+        input.sourceY = artifact->sourceY;
+        input.targetX = artifact->targetX;
+        input.targetY = artifact->targetY;
+        input.frames = static_cast<std::int64_t>(artifact->frames.size());
+        input.loadFrame = [artifact = *artifact](std::size_t index,
+                                                 std::vector<std::uint8_t>& bytes,
+                                                 std::string& error) {
+            return loadMathTransformFrame(artifact, index, bytes, error);
+        };
+        request.mathTransforms.emplace(transition.id, std::move(input));
+    }
+    const auto plan = mapTimelineExportPlan(project_, request);
+    if (!plan.success) {
+        reportExportFailure(QString::fromStdString(plan.error));
+        return false;
+    }
+
     if (exportThread_.joinable())
         exportThread_.join();
     exportCancelRequested_.store(false, std::memory_order_release);

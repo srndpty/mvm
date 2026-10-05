@@ -14,6 +14,7 @@
 #include "app/preview/preview_engine_rhi_item.h"
 #include "app/timeline_export.h"
 #include "math_fake_backend.h"
+#include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
 
@@ -37,6 +38,7 @@
 
 #include <QElapsedTimer>
 #include <QGuiApplication>
+#include <QProcess>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QTemporaryDir>
@@ -79,6 +81,7 @@ struct CapturedExport {
     int calls = 0;
     std::map<std::string, std::filesystem::path> artifacts;
     std::map<std::string, std::vector<std::filesystem::path>> writeFrames;
+    std::optional<mvm::app::TimelineExportRequest> transformRequest;
 };
 
 std::unique_ptr<MvmController> makeController(const std::filesystem::path& path,
@@ -1774,8 +1777,13 @@ int realManimTransform(const std::filesystem::path& manim,
     auto captured = std::make_shared<CapturedExport>();
     auto controller = std::make_unique<MvmController>(
         path, manim, initial, nullptr,
-        [captured](const project::Project&, const mvm::app::TimelineExportRequest&) {
-            return mvm::app::TimelineExportResult{};
+        [captured](const project::Project&, const mvm::app::TimelineExportRequest& request) {
+            std::lock_guard lock(captured->mutex);
+            captured->transformRequest = request;
+            mvm::app::TimelineExportResult result;
+            result.success = true;
+            result.outputPath = request.outputPath;
+            return result;
         },
         MvmController::ExportThreadFactory{},
         MvmController::FileRevealer{[](const std::filesystem::path&, QString&) { return true; }});
@@ -1949,6 +1957,113 @@ int realManimTransform(const std::filesystem::path& manim,
     check(seen.contains("t-e1-e2/e1") && seen.contains("t-e1-e2/e2") &&
               seen.contains("t-e2-e3/e2") && seen.contains("t-e2-e3/e3"),
           "real: 連鎖の両方の変形を、cut の前後の layer で見せる");
+    // P2-6: 既存の映像のみの受け入れ経路で、実 Manim の二次方程式の連鎖を書き出す。
+    // preview の正の patch と復号画素を照合してから、常駐予算を外して同じ disk を書き出す。
+    std::map<qint64, std::vector<std::uint8_t>> expectedExport;
+    std::map<qint64, std::vector<std::uint8_t>> hardCutControl;
+    for (qint64 frame : {qint64{0}, qint64{105}, qint64{119}, qint64{120}, qint64{134}, qint64{135},
+                         qint64{225}, qint64{239}, qint64{240}, qint64{254}, qint64{255}}) {
+        const auto layer = mathLayer(*controller, frame);
+        check(layer.has_value(), "real export: 比較対象の製品 preview の layer がある");
+        if (layer)
+            expectedExport.emplace(frame, presentedPixels(*layer, frame));
+        const auto& clip = projectNow.timelineClips[frame < 120 ? 0 : frame < 240 ? 1 : 2];
+        const auto staticArtifact = cache.readyArtifact(mvm::app::mathRenderSpecFor(clip.math));
+        if (staticArtifact)
+            hardCutControl.emplace(frame,
+                                   mvm::app::composeMathClipFromPng(*staticArtifact, clip.math,
+                                                                    kOutputWidth, kOutputHeight)
+                                       .rgba);
+    }
+    cache.setResidentMemoryBudget(1);
+    check(exportAndWait(*controller, workDirectory / "captured.mp4"),
+          "real export: OverBudget でも controller が disk の成果物を受理する");
+    std::optional<mvm::app::TimelineExportRequest> exportRequest;
+    {
+        std::lock_guard lock(captured->mutex);
+        exportRequest = captured->transformRequest;
+    }
+    check(exportRequest.has_value(), "real export: 現在の disk artifact の要求を取得する");
+    if (exportRequest) {
+        auto sequence = projectNow;
+        sequence.timelineClips.resize(3);
+        sequence.timelineTransitions.resize(2);
+        check(
+            project::saveProjectJson(sequence, workDirectory / "quadratic-video-only.mvm").success,
+            "real export: 二次方程式の映像のみの Project を保存する");
+        exportRequest->outputPath = workDirectory / "quadratic-video-only.mp4";
+        exportRequest->progress = {};
+        exportRequest->videoCrf = 0;
+        // 製品と同じ明示した module / data の path で起動し、映像だけを検証する。
+        check(mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) == 0,
+              "real export: 映像のみの書き出し用 MLT を初期化する");
+        const auto exported = mvm::app::exportTimeline(sequence, *exportRequest);
+        check(exported.success && exported.frameCount == 360,
+              "real export: 実 Manim の連鎖を 360 frame 書き出す: " + exported.error);
+        QByteArray ordinaryA, ordinaryB;
+        for (const auto& [frame, expected] : expectedExport) {
+            if (!exported.success)
+                break;
+            QProcess decoder;
+            decoder.start(QStringLiteral("C:/msys64/ucrt64/bin/ffmpeg.exe"),
+                          {"-v", "error", "-i",
+                           QString::fromStdWString(exportRequest->outputPath.wstring()), "-vf",
+                           QStringLiteral("select=eq(n\\,%1)").arg(frame), "-frames:v", "1", "-f",
+                           "rawvideo", "-pix_fmt", "rgba", "-"});
+            const bool decoded = decoder.waitForFinished(60000) && decoder.exitCode() == 0;
+            const auto bytes = decoder.readAllStandardOutput();
+            check(decoded && bytes.size() == static_cast<qsizetype>(expected.size()),
+                  "real export: 選択 frame を復号できる: " + std::to_string(frame));
+            if (!decoded || bytes.size() != static_cast<qsizetype>(expected.size()))
+                continue;
+            if (frame == 0)
+                ordinaryA = bytes;
+            if (frame == 135)
+                ordinaryB = bytes;
+            if (frame == 105)
+                check(!ordinaryA.isEmpty() && ordinaryA == bytes,
+                      "real export: 変形 frame 0 と通常静止 A の復号画素が完全一致する");
+            if (frame == 225)
+                check(!ordinaryB.isEmpty() && ordinaryB == bytes,
+                      "real export: 連鎖の次の変形 frame 0 と通常静止 B の復号画素が完全一致する");
+            const auto* actual = reinterpret_cast<const unsigned char*>(bytes.constData());
+            std::size_t compared = 0, bad = 0, visible = 0, support = 0;
+            long long totalError = 0, hardCutError = 0;
+            for (std::size_t pixelAt = 0; pixelAt < expected.size(); pixelAt += 4) {
+                visible += expected[pixelAt + 3] > 128;
+                support += expected[pixelAt + 3] > 0;
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    const int wanted =
+                        (expected[pixelAt + channel] * expected[pixelAt + 3] + 127) / 255;
+                    const int difference =
+                        std::abs(static_cast<int>(actual[pixelAt + channel]) - wanted);
+                    if (hardCutControl.contains(frame)) {
+                        const auto& control = hardCutControl.at(frame);
+                        const int cutWanted =
+                            (control[pixelAt + channel] * control[pixelAt + 3] + 127) / 255;
+                        hardCutError +=
+                            std::abs(static_cast<int>(actual[pixelAt + channel]) - cutWanted);
+                    }
+                    totalError += difference;
+                    bad += difference > 60;
+                    ++compared;
+                }
+            }
+            std::fprintf(
+                stderr,
+                "real export: frame=%lld 比較=%zu 被覆=%zu 非零被覆=%zu 誤差和=%lld 大差=%zu\n",
+                static_cast<long long>(frame), compared, visible, support, totalError, bad);
+            // 4:2:0 の色差は周囲の透明画素にも広がる。誤差和は全画素で数え、分母には
+            // alpha > 128 の濃い部分だけでなく、変形中の薄い部分も含む全被覆を使う。
+            check(visible > 100 && compared > 0 &&
+                      totalError < static_cast<long long>(support) * 50 && bad < visible,
+                  "real export: frame 0・cut の両側・変形直後が製品 preview と一致する");
+            if (frame == 119 || frame == 120 || frame == 239 || frame == 240)
+                check(hardCutControl.contains(frame) && totalError * 2 < hardCutError,
+                      "real export: hard cut の対照より変形の製品画素に近い");
+        }
+        mvm_mlt_runtime_shutdown();
+    }
     controller->shutdown();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;

@@ -916,6 +916,53 @@ P2-5 の描画・timeline・色・ClipEffects の振る舞いは変えていな�
   - lint も通過した。
   - GUI・提示の試験は、画面を消灯させない設定の下で回した。
 
+### MathTransform の書き出し (P2-6)
+
+- 書き出しは preview の常駐 mask や `transformPreview` を参照しない。controller は現在の Project から
+  spec を作り、`MathRasterCache::readyTransformForExport` で現在の両端の静止と変形の disk を検査する。
+  静止の provenance・key・画素、変形の provenance・端点・枚数・各 frame のサイズと SHA-256 は
+  既存の cache の検査を通す。検査の失敗では cache を消したり、描き直したり、last-good へ戻したりしない。
+- `mapTimelineExportPlan` は `mathTransformIsRendered` が真の変形すべてについて、要求の spec が現在の
+  Project と一致し、枚数が `mathTransformWindowFor` の区間と一致することを確認する。
+  `mathTransformRasterPlacement` で現在の出力サイズへの配置を検査し、出力開始前に全 A8 frame を読む。
+  disk が Ready でも、配置が収まらない・frame が欠けた・内容が変わった場合は書き出しを拒否する。
+- 各 clip を Write・変形・静止の区間に分ける。変形の timeline frame は `mathTransformFrameAt` で選び、
+  検証済み disk artifact の `.a8` を 1 枚ずつ `loadMathTransformFrame` で読む。
+  原点は `mathTransformArtifactOriginAt`、文字色は `mathTransformColorAt`、透過の画素は
+  `composeMathPatchAt` を使う。出力全面の透過 PNG を連番として stage し、通常の export の合成へ渡す。
+  ClipEffects は通常の mapping で一度だけ掛け、A8 には焼き込まない。
+  V1 に描画対象の変形がある場合は黒の下地を一層残し、変形と静止を既存の overlay 合成へ通す。
+  最下層を直接映像へ変換して A8 の alpha を捨てないためで、変形のない Project の経路は変えない。
+- preview の NotReady・OverBudget・全 mask の追い出しは書き出しを妨げない。preview の共有予算へ
+  変形全体を読み込む要求は出さない。両端の片方が無効、または track が非出力の場合は、
+  `mathTransformIsRendered` に従ってその変形を要求しない。必要な変形を hard cut で代用する経路はない。
+- 集中試験は `math_transform_export_focused`。cut 前後の disk frame の番号、静止 A と変形 frame 0 の
+  全画素一致、±1 px の原点差、最後の原点と次の静止 B、異なる文字色、共通エフェクト、
+  先行 Write、常駐状態からの独立、配置不成立、欠損・破損・古い成果物の拒否を検査する。
+- 実 Manim の受け入れは既存の `mvm_test_math_controller --real-manim-transform` を拡張した。
+  E1 → E2 → E3 の映像のみの Project と MP4 を保存し、frame 0、各変形の先頭、cut の前後、
+  最後と直後の frame を復号して、製品 preview の合成画素と比較する。cut 前後では hard cut の対照とも
+  比較する。通常の PC 操作は可能。一般の音声/AAC NaN の問題はこの受け入れに含めない。
+
+#### P2-6 の検証 (2026-10-06)
+
+- [事実] `math_transform_export_focused` は 144 検査中 0 件失敗。通常 release gate にも含めた。
+- [事実] release の Math / export 集中試験は 19 件中 19 件通過。
+  実行: `ctest --test-dir build/ucrt64-release -V -R '(math|timeline_export)' -LE 'performance|stability' --timeout 120`。
+  `-N` で 19 件と確認してから実行した。証拠は `build/math-p26-focused-final-20261006.log`。
+- [事実] 実 Manim の映像のみ受け入れは 80 検査中 0 件失敗。E1 → E2 → E3 の 360 frame を
+  書き出し、11 frame の全 RGB 画素を製品の preview 合成と比較した。4:2:0 の色差の許容を含む。
+  通常静止 A と最初の変形 frame 0、通常静止 B と次の変形 frame 0 は復号後も全画素一致。
+  cut 前後の 4 frame は hard cut の対照より変形の期待画素に近いことも確認した。
+  実行: `mvm_test_math_controller --real-manim-transform <manim.exe> <新規 directory>`。
+  証拠は `build/math-p26-real-final-20261006.log` と `build/math-p26-real-final-20261006/` の
+  `quadratic-video-only.mvm` / `quadratic-video-only.mp4`。
+- [事実] 最終 lint は通過 (`build/math-p26-lint-final-20261006.log`)。
+  通常 release gate は `pwsh scripts/test.ps1 -Preset ucrt64-release` で 1456 件中 1455 件通過、
+  `ownership_soak_100` の音声 consumer timeout が 1 件失敗。全通過とはしない。
+  証拠は `build/math-p26-release-alpha-20261006.log`。未解決の調査は `docs/roadmap.md` に置く。
+  performance / stability は実行していない。過去の P0・P1・P2 の記録は上書きしていない。
+
 ### P2-1 の gate (2026-10-05)
 
 - [事実] 通常の release gate (`build/math-p21-release-gate.log`) は 1452 件中 1444 件が通過し、
