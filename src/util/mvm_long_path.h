@@ -43,6 +43,11 @@ namespace mvm::util {
 // path を絶対 path にして "\\?\" (UNC は "\\?\UNC\") を付ける。既に "\\?\" または "\\.\" で
 // 始まる path はそのまま返す。current directory を得られなければ元の path を返す (呼び出し側の
 // 操作がそのまま失敗し、error を返す)。260 文字を超える入力も字句的に変換する。
+//
+// 受け付ける入力は、drive の絶対 path (C:\...)・UNC・既に extended-length / device の path・
+// 普通の相対 path (current directory からの相対) だけである。Windows 固有の drive 相対
+// (C:foo) と root 相対 (\foo) の意味は定義しない (試験もしていない)。呼び出し側は Project と
+// cache の directory から作った絶対 path だけを渡す。
 inline std::filesystem::path extendedLengthPath(const std::filesystem::path& path) {
     const std::wstring& text = path.native();
     if (text.empty() || text.starts_with(L"\\\\?\\") || text.starts_with(L"\\\\.\\"))

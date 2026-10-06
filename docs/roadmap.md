@@ -52,12 +52,19 @@
   - (済: P2-5) preview (A の layer と B の layer が同じ変形の frame を見せる、artifact の位置の規則) と
     エフェクトコントロールの状態 (disk の描画と preview の memory を分けて示す)
   - (済: P2-7) 製品の UI からの作成・長さ・削除 (`docs/math-clips.md` の「MathTransform の編集 UI」)
-  - (済: P2-8) 統合受け入れ (`docs/math-clips.md` の「P2-8 統合受け入れ」)。手動の確認は未実施。
+  - (済: P2-8) 統合受け入れと手動の確認。MathTransform P2 は PASS/CLOSED
+    (`docs/math-clips.md` の「P2-8 統合受け入れ」と「最終判定」)。
   - [事実] P2-8 で、数式の作業 directory の下の 260 文字を超える file を直した (extended-length の走査と
     Win32 の木の削除)。残る制限: 作業 directory の下の directory 自体が 260 文字を超える深さの Project
     (この開発機の作業 directory の作り方では、Project の directory と file 名の合計が約 100 文字を超える場合)
     では、libstdc++ の列挙がその中を返さず、描画は「PNG が N 枚ではありません (件数=0)」で失敗する
     (止まりはしない)。直すなら、作業 directory の名前から key (64 文字) を外して短くするか、走査も Win32 で行う。
+  - `extendedLengthPath` は drive の絶対 path・UNC・普通の相対 path だけを対象にしている
+    (`src/util/mvm_long_path.h`)。drive 相対 (`C:foo`)・root 相対 (`\foo`) が必要になったら、
+    Windows の意味を実装して試験を足す。
+  - [未検証] `mvm_remove_tree` は `FindFirstFileExW` に `FIND_FIRST_EX_LARGE_FETCH` を渡す。特殊な
+    file system (NAS など) に cache を置く場合に `ERROR_INVALID_PARAMETER` 等で断られるなら、
+    flag 無しで開き直す。今の local の cache では問題は観測していない。
   - [推測] P2-8 で、試験の待ちが約 2 ms ごとに engine の status を読むと、試験の window の描画の周期が
     止まり、paused の seek の提示が 30 秒待っても終わらなかった (20 ms ごとでは 5 / 5 通過)。
     `math_write_native_playback` などの同じ形の待ち (`pump` の 2 ms) の一時的な失敗が同じ原因かは未検証。
