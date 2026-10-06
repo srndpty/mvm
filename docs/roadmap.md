@@ -4,6 +4,12 @@
 
 ## 一般の音声・書き出し
 
+- [事実] 2026-10-07、P3-1.1 の通常 release gate 一回は 1459/1460 通過。
+  `m4_timeline_export_focused_tractor` が「crop + 回転の clip を書き出せません」で失敗した。
+  通常動画の対照で `editEquationSequence` を呼ばない。原因は未特定。再試行はしていない。
+  再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。
+  証拠: `build/math-p311-release.log`、`build/math-p311-release-lasttest.log`。
+
 - [事実] P2-6 の通常 release gate で `ownership_soak_100` が音声 consumer の
   60000 ms timeout により 100/130 回で終了した。通常試験は 1456 件中 1455 件通過。
   再現コマンドは `pwsh scripts/test.ps1 -Preset ucrt64-release`、証拠は
@@ -41,6 +47,7 @@
   state 削除時は所有 action も原子的に削除し、missing StateId と orphan-action store は認めない。
   修復可能な missing PartId は既存 state 内だけ。全状態の Math 背景は透明、初期 operation は outline/pulse のみ。
 - (実装・検証済み: P3-1) 記録は [設計文書の P3-1 実装](math-equation-sequence-p30.md#p3-1-実装) へ移した。
+- P3-1.1 の外側 source 範囲修正は [設計文書](math-equation-sequence-p30.md#p3-11-外側-source-範囲の修正) に記録。
   schema 21 の domain、素材原点の frame 始点標本化、構造編集、参照 remap、通常 Undo を扱う。
   renderer・cache・製品 UI は後続段階のまま。
 - P3-2: annotation の binding と renderer 中立 plan。UTF-8/UTF-16 の変換、editor delta、

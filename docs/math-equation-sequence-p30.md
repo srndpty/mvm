@@ -108,7 +108,7 @@ Manim の run_time 秒は backend 内の正規化だけに使う。JSON に Mani
 |コピー・複製・paste|新 clip ID と全内部 ID を生成し参照を一括 remap。同じ式でも別所有者。描画に同じ入力なら cache は共有可能|
 |速度変更|P3 初期は拒否。将来追加時は正の有理数による `clipTimebase` の mapping のみを変え、内部 frame を書き直さない|
 |Project FPS 変更|既存の素材時間域と同様、内部 FPS と frame は維持し、timeline 開始を既存の境界換算で変更。同じ秒数を新 Project FPS で標本化。action が一 output frame にも現れないなら明示的な診断を出す|
-|内部の尺変更|hold/transition/action を明示編集。可視範囲が新 L の外へ出る変更は確認を含む別操作か拒否。暗黙の縮小・action の移動をしない|
+|内部の尺変更|hold/transition/action を明示編集。全体末尾は新 L へ追従し、右 trim は保持して範囲外なら拒否（P3-1.1）。action を暗黙に移動しない|
 
 P3-1 は以下の **純粋な評価契約の確定と検証** を担当する。
 
@@ -403,8 +403,8 @@ timeline split が整数 source 境界へ正確に戻らない場合は原子的
 
 state の挿入・削除・hold/transition の尺変更・source 置換・part 削除は候補を作って全検証後に確定する。
 中間 state の削除は両辺と所有 action を同時に消し、呼び出し元の明示的な新辺を追加する。
-新辺へ旧 correspondence を継承しない。最後の state の削除と、既存可視範囲が新 L を超える
-内部編集は拒否する。`editEquationSequenceData` は通常の Project transaction と Undo 履歴へ
+新辺へ旧 correspondence を継承しない。最後の state の削除は拒否する。
+外側 source 範囲は下記 P3-1.1 の契約で更新する。`editEquationSequenceData` は通常の Project transaction と Undo 履歴へ
 一操作を一回で確定する C++ 入口であり、製品 UI ではない。
 Undo/Redo は既存の Project snapshot を復元し、ID 発行器を再実行しない。
 Project FPS 変更は timeline 位置だけを既存換算で移し、内部 FPS・整数尺・offset・ID を保持する。
@@ -462,3 +462,31 @@ performance / stability を除外し、extended / workstation は短縮・除外
 成功するまでの再試行や有効 run の選別はしていない。
 証拠: `build/math-p31-release-20261007.log` と `build/math-p31-release-details-20261007.log`。
 P3-1 の実装・検証は完了。P3-2 以降の実装、commit、push は行っていない。
+
+## P3-1.1 外側 source 範囲の修正
+
+内部編集前の `sourceOutFrame == sourceFrameCount` を記録し、全体末尾まで表示していた
+clip だけ編集後の新 L へ末尾を追従させる。`sourceInFrame` は保持する。
+右 trim 済みの clip は `sourceOutFrame` を保持し、新 L がその末尾を下回れば
+Project と Undo 履歴を変更せず拒否する。内部編集によって右 trim を解除しない。
+
+domain と controller で hold・transition の延長/短縮、state 挿入/削除、右 trim の
+延長/範囲内短縮/範囲外短縮を検査する。controller の Undo/Redo は Project 全体の
+比較で frameCount/in/out・全 ID・sequence データの厳密な復元を確認する。
+
+[事実] `scripts/test-equation-sequence-mutations.ps1` の `source_count_only` は
+新しい末尾更新を無効にして旧動作へ戻す。domain の 263 検査中 9 件が失敗し、
+終了コード 1 で検出した。製品 source は変更せず build 配下の複製を使った。
+既存分を含め 6/6 変異を検出。
+証拠: `build/ucrt64-release/equation-mutations-20261007-011430/`。
+
+[事実] 最終 release ビルド、focused 3/3（domain・controller・履歴）、lint は通過。
+focused 証拠: `build/math-p311-focused-final.log`。
+
+[事実] BuildIndependent は 1078/1078 通過。
+通常 release gate 一回は 1459/1460 通過で、`m4_timeline_export_focused_tractor` の
+「crop + 回転の clip を書き出せません」が失敗した。通常 gate は未通過。
+この対照は通常動画で `editEquationSequence` を呼ばない。失敗原因は未特定で、
+再試行していない。一般の書き出しの未解決事項として roadmap に記録。
+証拠: `build/math-p311-independent.log`、`build/math-p311-release.log`、
+`build/math-p311-release-lasttest.log`。performance/stability は除外した。

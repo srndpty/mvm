@@ -17,14 +17,17 @@ editEquationSequence(Project& project, const std::string& id,
             result.error = "数式 sequence の編集対象が不正です";
             return result;
         }
+        const bool wasFullTail = clip.sourceOutFrame == clip.sourceFrameCount;
         if (!edit(clip.equationSequence, result.error))
             return result;
         std::vector<EquationInterval> intervals;
         std::int64_t length = 0;
         if (!equationIntervals(clip.equationSequence, intervals, length, result.error))
             return result;
-        // 内部編集は trim ではない。見えている範囲を暗黙に縮めない。
+        // 全体末尾まで表示していた場合だけ、新しい末尾へ追従する。
         clip.sourceFrameCount = length;
+        if (wasFullTail)
+            clip.sourceOutFrame = length;
         const auto valid = validateTimeline(candidate);
         if (!valid.success) {
             result.error = valid.error;

@@ -191,6 +191,48 @@ void invalid() {
 
 void edits() {
     std::string error;
+    auto rangeCase = [&](const std::string& name, std::int64_t out, std::int64_t expectedLength,
+                         std::int64_t expectedOut, const auto& edit, bool succeeds = true) {
+        auto p = project();
+        p.timelineClips[0].sourceInFrame = 2;
+        p.timelineClips[0].sourceOutFrame = out;
+        const auto before = p;
+        const auto result = editEquationSequence(p, "clip", edit);
+        check(result.success == succeeds, name + "の成否");
+        if (succeeds) {
+            const auto& clip = p.timelineClips[0];
+            check(clip.sourceFrameCount == expectedLength && clip.sourceInFrame == 2 &&
+                      clip.sourceOutFrame == expectedOut,
+                  name + "の外側 source 範囲");
+        } else {
+            check(p == before, name + "の原子的拒否");
+        }
+    };
+    auto hold = [](std::int64_t frames) {
+        return
+            [=](auto& data, auto& e) { return changeEquationHold(data, {"s2"}, frames, 1080, e); };
+    };
+    auto transition = [](std::int64_t frames) {
+        return [=](auto& data, auto& e) {
+            return changeEquationTransition(data, {"t0"}, frames, 1080, e);
+        };
+    };
+    rangeCase("全体末尾 hold 延長", 16, 18, 18, hold(6));
+    rangeCase("全体末尾 hold 短縮", 16, 14, 14, hold(2));
+    rangeCase("全体末尾 transition 延長", 16, 18, 18, transition(4));
+    rangeCase("全体末尾 transition 短縮", 16, 15, 15, transition(1));
+    rangeCase("状態挿入", 16, 19, 19, [](auto& data, auto& e) {
+        return insertEquationState(
+            data, 1, state("insert", 3),
+            {{{"ea"}, {"s0"}, {"insert"}, 1, {}}, {{"eb"}, {"insert"}, {"s1"}, 1, {}}}, 1080, e);
+    });
+    rangeCase("状態削除", 16, 9, 9, [](auto& data, auto& e) {
+        return deleteEquationState(
+            data, {"s1"}, EquationStepTransition{{"edge"}, {"s0"}, {"s2"}, 1, {}}, 1080, e);
+    });
+    rangeCase("右 trim 延長", 12, 18, 12, hold(6));
+    rangeCase("右 trim 内で短縮", 12, 14, 12, hold(2));
+    rangeCase("可視末尾より短縮", 15, 13, 15, hold(1), false);
     auto d = sequence();
     d.transitions[0].correspondence = {{{"part-s0"}, {"part-s1"}}};
     d.transitions[1].correspondence = {{{"part-s1"}, {"part-s2"}}};
@@ -235,6 +277,7 @@ void edits() {
               identical.actions[0].targetStatus == EquationTargetStatus::Missing,
           "同じ文字の別 PartId へ欠落対象を自動で付け替えない");
     auto p = project(d);
+    --p.timelineClips[0].sourceOutFrame;
     const auto beforeProject = p;
     auto result = editEquationSequence(p, "clip", [&](auto& data, auto& e) {
         return changeEquationHold(data, {"s2"}, 1, 1080, e);

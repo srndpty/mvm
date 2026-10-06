@@ -13,6 +13,7 @@ $outputDir = Join-Path $buildDir "equation-mutations-$stamp"
 $testObject = Join-Path $buildDir 'tests/CMakeFiles/mvm_test_equation_sequence.dir/harness/test_equation_sequence.cpp.obj'
 if (-not (Test-Path -LiteralPath $testObject)) { throw '先に scripts/build.ps1 -Target mvm_test_equation_sequence を実行してください' }
 $mutations = @(
+    @{ Name = 'source_count_only'; File = 'project/equation_sequence_edit.cpp'; From = 'if (wasFullTail)'; To = 'if (false)' },
     @{ Name = 'inclusive_end'; File = 'project/equation_sequence.cpp'; From = 'frame >= interval.end'; To = 'frame > interval.end' },
     @{ Name = 'progress_next'; File = 'project/equation_sequence.cpp'; From = 'result.progressNumerator = result.localFrame;'; To = 'result.progressNumerator = result.localFrame + 1;' },
     @{ Name = 'retained_action'; File = 'project/equation_sequence.cpp'; From = 'std::erase_if(c.actions, [&](const auto& a) { return a.state == id; });'; To = '/* 状態を削除しても action を残す変異 */' },

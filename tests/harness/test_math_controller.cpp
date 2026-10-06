@@ -2191,6 +2191,77 @@ void testEquationSequenceHistory() {
     auto captured = std::make_shared<CapturedExport>();
     auto controller = makeController(path, initial, captured);
     check(controller->selectClip(0), "sequence の構造選択");
+    auto rangeCase = [&](const std::string& name, std::int64_t length, const auto& edit) {
+        const auto beforeRange = controller->projectForTest();
+        const auto rangeDepth = controller->undoDepthForTest();
+        check(controller->editEquationSequenceData("sequence", edit), name + "の確定");
+        const auto afterRange = controller->projectForTest();
+        const auto& clip = afterRange.timelineClips[0];
+        check(clip.sourceFrameCount == length && clip.sourceInFrame == 0 &&
+                  clip.sourceOutFrame == length && controller->undoDepthForTest() == rangeDepth + 1,
+              name + "の外側範囲と Undo 一回");
+        check(controller->undoLastEdit() && controller->projectForTest() == beforeRange &&
+                  controller->redoLastEdit() && controller->projectForTest() == afterRange &&
+                  controller->undoLastEdit() && controller->projectForTest() == beforeRange,
+              name + "の範囲・全 ID・sequence の exact Undo/Redo");
+    };
+    for (const auto frames : {14, 7}) {
+        rangeCase("hold 尺編集", 24 + frames, [=](auto& d, auto& error) {
+            return project::changeEquationHold(d, {"last"}, frames, 1080, error);
+        });
+    }
+    for (const auto frames : {5, 1}) {
+        rangeCase("transition 尺編集", 32 + frames, [=](auto& d, auto& error) {
+            return project::changeEquationTransition(d, {"first-edge"}, frames, 1080, error);
+        });
+    }
+    rangeCase("状態挿入", 37, [state](auto& d, auto& error) {
+        auto inserted = state;
+        inserted.id = {"inserted"};
+        inserted.parts[0].id = {"inserted-part"};
+        inserted.holdFrames = 3;
+        return project::insertEquationState(d, 1, inserted,
+                                            {{{"insert-a"}, {"state"}, {"inserted"}, 1, {}},
+                                             {{"insert-b"}, {"inserted"}, {"middle"}, 1, {}}},
+                                            1080, error);
+    });
+    rangeCase("状態削除", 21, [](auto& d, auto& error) {
+        return project::deleteEquationState(
+            d, {"middle"}, project::EquationStepTransition{{"joined"}, {"state"}, {"last"}, 1, {}},
+            1080, error);
+    });
+    for (const auto frames : {14, 8, 1}) {
+        auto trimmed = initial;
+        trimmed.timelineClips[0].sourceInFrame = 3;
+        trimmed.timelineClips[0].sourceOutFrame = 29;
+        const auto trimPath = std::filesystem::path(temp.path().toStdWString()) /
+                              ("trim-" + std::to_string(frames) + ".mvm");
+        check(project::saveProjectJson(trimmed, trimPath).success, "右 trim の対照を保存");
+        auto trimController = makeController(trimPath, trimmed, captured);
+        const auto trimDepth = trimController->undoDepthForTest();
+        const bool accepted =
+            trimController->editEquationSequenceData("sequence", [=](auto& d, auto& error) {
+                return project::changeEquationHold(d, {"last"}, frames, 1080, error);
+            });
+        check(accepted == (frames != 1), "右 trim 尺編集の成否");
+        if (frames == 1) {
+            check(trimController->projectForTest() == trimmed &&
+                      trimController->undoDepthForTest() == trimDepth,
+                  "可視末尾より短縮は Project と履歴を原子的に保持");
+        } else {
+            const auto afterTrim = trimController->projectForTest();
+            const auto& clip = afterTrim.timelineClips[0];
+            check(clip.sourceFrameCount == 24 + frames && clip.sourceInFrame == 3 &&
+                      clip.sourceOutFrame == 29 &&
+                      trimController->undoDepthForTest() == trimDepth + 1,
+                  "右 trim と左端を保持して Undo 一回");
+            check(trimController->undoLastEdit() && trimController->projectForTest() == trimmed &&
+                      trimController->redoLastEdit() &&
+                      trimController->projectForTest() == afterTrim,
+                  "右 trim 尺編集の範囲・全 ID・sequence の exact Undo/Redo");
+        }
+        trimController->shutdown();
+    }
     const auto depth = controller->undoDepthForTest();
     const bool duplicatedOk = controller->duplicateSelectedClips();
     check(duplicatedOk,
