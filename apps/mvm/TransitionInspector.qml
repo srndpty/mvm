@@ -4,7 +4,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "TransitionEditorMath.js" as SpanMath
 
-// 選択中のトランジション (クロスディゾルブ / クロスフェード) のエフェクトコントロール。
+// 選択中のトランジション (クロスディゾルブ / クロスフェード / 数式の変形) のエフェクトコントロール。
 // 長さと配置を数値欄・配置の選択・ミニタイムラインのドラッグで変える。
 // ドラッグ中は表示だけを追従させ (Project は変えない)、離したときに setTransitionSpan を
 // 1 回だけ呼ぶ (Undo 1 回分)。素材 frame に乗らない長さは controller が最も近い長さへ吸着させる。
@@ -17,6 +17,10 @@ ColumnLayout {
     readonly property var transition: root.mvmController.selectedTransition
     readonly property bool hasTransition: root.transition.transitionId !== undefined
     readonly property bool editable: root.hasTransition && !root.mvmController.busy
+    readonly property bool isMathTransform: root.transition.kind === "math_transform"
+    readonly property bool previewUnusable: root.transition.transformPreview === "memory"
+                                            || root.transition.transformPreview === "placement"
+    property bool transformLogExpanded: false
 
     readonly property int cut: root.transition.cut ?? 0
     readonly property int committedBefore: root.transition.framesBeforeCut ?? 0
@@ -110,10 +114,88 @@ ColumnLayout {
 
     Label {
         Layout.fillWidth: true
-        text: root.transition.trackKind === "audio" ? "クロスフェード" : "クロスディゾルブ"
+        text: root.isMathTransform ? "数式の変形"
+                                   : root.transition.trackKind === "audio" ? "クロスフェード"
+                                                                          : "クロスディゾルブ"
         color: "#e6e8ec"
         font.bold: true
         font.pixelSize: 12
+    }
+    // 数式の変形の向き (どの式からどの式へ変えるか)。端点の式は両 clip を参照する。
+    Label {
+        objectName: "mathTransformEndpoints"
+        Layout.fillWidth: true
+        visible: root.isMathTransform
+        text: "変形前  " + (root.transition.outgoingName ?? "") + "  →  変形後  "
+              + (root.transition.incomingName ?? "")
+        color: "#9aa2ad"
+        font.pixelSize: 11
+        wrapMode: Text.Wrap
+    }
+
+    // 数式の変形: disk の描画 (書き出しが使う) の状態と、preview 用の mask を memory に置けたかを
+    // 分けて示す。使えない間の preview は前後の式を cut で切り替える。
+    Label {
+        objectName: "mathTransformState"
+        Layout.fillWidth: true
+        visible: root.isMathTransform
+        text: (({checking: "変形: 準備中", rendering: "変形: 描画中（cut で表示）", ready: "変形: 完了",
+                 error: "変形: エラー（cut で表示）", unavailable: "変形: 利用不可（cut で表示）"})
+               [root.transition.transformState] || "変形: 準備中")
+              + (root.transition.transformPreview === "loading" ? "（preview を準備中）" : "")
+        color: root.transition.transformState === "error"
+               || root.transition.transformState === "unavailable"
+               || root.previewUnusable ? "#f2c66d" : "#a8d5a2"
+        wrapMode: Text.Wrap
+    }
+    // 描画の失敗・backend の不在の理由。
+    Label {
+        objectName: "mathTransformMessage"
+        Layout.fillWidth: true
+        visible: root.isMathTransform && text.length > 0
+        text: root.transition.transformMessage || ""
+        color: "#f2c66d"
+        wrapMode: Text.Wrap
+    }
+    // 描画は済んでいるが、preview では使えず cut で表示している理由 (memory の上限・出力に
+    // 収まらない)。disk の状態 (上の「完了」) とは別に示す。
+    Label {
+        objectName: "mathTransformPreviewReason"
+        Layout.fillWidth: true
+        visible: root.isMathTransform && root.previewUnusable
+        text: root.transition.transformPreviewMessage || ""
+        color: "#f2c66d"
+        wrapMode: Text.Wrap
+    }
+    MathDependencyGuidance {
+        objectName: "mathTransformDependencyGuidance"
+        visible: root.isMathTransform && root.transition.transformUnavailableReason === "backend"
+    }
+    Flow {
+        Layout.fillWidth: true
+        visible: root.isMathTransform
+        spacing: 6
+        ModernDialogButton {
+            objectName: "mathTransformRetryButton"
+            visible: root.transition.transformCanRetry === true
+            text: "再試行"
+            onClicked: root.mvmController.retryMathRendering()
+        }
+        ModernDialogButton {
+            objectName: "mathTransformLogToggle"
+            visible: (root.transition.transformLog || "").length > 0
+            text: root.transformLogExpanded ? "ログを閉じる" : "ログを表示"
+            onClicked: root.transformLogExpanded = !root.transformLogExpanded
+        }
+    }
+    ModernDialogTextArea {
+        objectName: "mathTransformLog"
+        Layout.fillWidth: true
+        Layout.preferredHeight: implicitHeight
+        visible: root.isMathTransform && root.transformLogExpanded && text.length > 0
+        text: root.transition.transformLog || ""
+        readOnly: true
+        font.family: "Consolas"
     }
 
     GridLayout {
@@ -208,6 +290,17 @@ ColumnLayout {
                                                           root.maxAfter), true);
             }
         }
+    }
+
+    // 長さの変更を model が断った理由 (Write・区間の見た目・尺)。置ける範囲は UI で計算せず、
+    // controller の結果だけを出す。Project が変わると消える。
+    Label {
+        objectName: "mathTransformSpanRejection"
+        Layout.fillWidth: true
+        visible: root.isMathTransform && text.length > 0
+        text: root.transition.spanRejection || ""
+        color: "#f2c66d"
+        wrapMode: Text.Wrap
     }
 
     // --- ミニタイムライン ---
@@ -444,6 +537,20 @@ ColumnLayout {
                 height: parent.height
                 color: "#4aa3ff"
             }
+        }
+    }
+
+    // 削除は Delete キーと同じ deleteSelection (Undo 1 回分)。
+    Flow {
+        Layout.fillWidth: true
+        Layout.topMargin: 4
+        visible: root.isMathTransform
+        spacing: 6
+        ModernDialogButton {
+            objectName: "transitionDeleteButton"
+            text: "トランジションを削除"
+            enabled: root.editable
+            onClicked: root.mvmController.deleteSelection()
         }
     }
 

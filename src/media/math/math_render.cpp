@@ -1,11 +1,12 @@
 #include "media/math/math_render.h"
 
+#include "media/math/math_key_material.h"
 #include "util/mvm_sha256.h"
 
 namespace mvm::math {
-namespace {
+namespace detail {
 
-void appendField(std::string& material, const char* name, const std::string& value) {
+void appendKeyField(std::string& material, const char* name, const std::string& value) {
     material += name;
     material += '=';
     material += std::to_string(value.size());
@@ -14,13 +15,19 @@ void appendField(std::string& material, const char* name, const std::string& val
     material += '\n';
 }
 
-// 失敗 (CNG の失敗) なら空文字列。
-std::string hexDigest(const std::string& material) {
+std::string keyDigest(const std::string& material) {
     char hex[MVM_SHA256_HEX_SIZE] = {};
     if (mvm_sha256_hex(material.data(), material.size(), hex) != 0)
         return {};
     return hex;
 }
+
+} // namespace detail
+
+namespace {
+
+using detail::appendKeyField;
+using detail::keyDigest;
 
 } // namespace
 
@@ -44,12 +51,12 @@ const char* mathRenderStatusName(MathRenderStatus status) {
 
 std::string mathRenderKey(const MathRenderSpec& spec, const MathToolchainFingerprint& toolchain) {
     std::string material = "mvm-math-static/1\n";
-    appendField(material, "syntax", spec.syntax);
-    appendField(material, "source", spec.source);
+    appendKeyField(material, "syntax", spec.syntax);
+    appendKeyField(material, "source", spec.source);
     material += "font_size=" + std::to_string(spec.fontSize) + "\n";
-    appendField(material, "backend", toolchain.backendId);
-    appendField(material, "toolchain", toolchain.canonical);
-    return hexDigest(material);
+    appendKeyField(material, "backend", toolchain.backendId);
+    appendKeyField(material, "toolchain", toolchain.canonical);
+    return keyDigest(material);
 }
 
 const char* mathAnimationKindName(MathAnimationKind kind) {
@@ -63,15 +70,15 @@ const char* mathAnimationKindName(MathAnimationKind kind) {
 std::string mathSequenceKey(const MathSequenceSpec& spec, const MathToolchainFingerprint& toolchain,
                             const std::string& sequenceTemplate) {
     std::string material = "mvm-math-sequence/1\n";
-    appendField(material, "animation", mathAnimationKindName(spec.animation));
+    appendKeyField(material, "animation", mathAnimationKindName(spec.animation));
     material += "frames=" + std::to_string(spec.frames) + "\n";
-    appendField(material, "syntax", spec.still.syntax);
-    appendField(material, "source", spec.still.source);
+    appendKeyField(material, "syntax", spec.still.syntax);
+    appendKeyField(material, "source", spec.still.source);
     material += "font_size=" + std::to_string(spec.still.fontSize) + "\n";
-    appendField(material, "backend", toolchain.backendId);
-    appendField(material, "toolchain", toolchain.canonical);
-    appendField(material, "sequence_template", sequenceTemplate);
-    return hexDigest(material);
+    appendKeyField(material, "backend", toolchain.backendId);
+    appendKeyField(material, "toolchain", toolchain.canonical);
+    appendKeyField(material, "sequence_template", sequenceTemplate);
+    return keyDigest(material);
 }
 
 } // namespace mvm::math

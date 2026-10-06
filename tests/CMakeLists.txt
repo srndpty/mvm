@@ -774,15 +774,31 @@ add_executable(mvm_test_sha256 core/test_sha256.cpp)
 target_link_libraries(mvm_test_sha256 PRIVATE mvm::util mvm::warnings)
 mvm_add_test(sha256_known_vectors COMMAND mvm_test_sha256 PROPERTIES TIMEOUT 30)
 
+# 260 文字を超える path の走査と削除 (P2-8、src/util/mvm_long_path.h)。
+add_executable(mvm_test_long_path core/test_long_path.cpp)
+target_link_libraries(mvm_test_long_path PRIVATE mvm::util mvm::warnings)
+mvm_add_test(long_path_focused
+    COMMAND mvm_test_long_path "${CMAKE_CURRENT_BINARY_DIR}/long-path"
+    PROPERTIES TIMEOUT 60)
+
 # --- 数式 clip: renderer の中立な契約と manim-mathtex backend ---------------
 add_executable(mvm_test_project_math harness/test_project_math.cpp)
 target_link_libraries(mvm_test_project_math PRIVATE mvm::project mvm::util mvm::warnings)
 mvm_add_test(math_project_json_focused COMMAND mvm_test_project_math PROPERTIES TIMEOUT 30)
 
+# 数式の変形 (P2-1): Project / timeline の model と編集の不変条件。描画は含まない。
+add_executable(mvm_test_math_transform_timeline harness/test_math_transform_timeline.cpp)
+# math_clip_render は preview・書き出しの Write の frame の選び方 (mathIntroFrameAt) を、
+# 変形の条件と同じ境界か比べるために使う (Qt に依存しない)。
+target_link_libraries(mvm_test_math_transform_timeline PRIVATE mvm::project mvm::math_clip_render
+                                                               mvm::util mvm::warnings)
+mvm_add_test(math_transform_timeline_focused COMMAND mvm_test_math_transform_timeline
+             PROPERTIES TIMEOUT 30)
+
 add_executable(mvm_test_math_raster_cache harness/test_math_raster_cache.cpp)
 # Qt6::Gui は偽の backend が Write の連番の PNG を QImage で書くために使う。
 target_link_libraries(mvm_test_math_raster_cache PRIVATE
-    mvm::math_raster_cache Qt6::Core Qt6::Gui mvm::warnings)
+    mvm::math_raster_cache mvm::util Qt6::Core Qt6::Gui mvm::warnings)
 mvm_add_test(math_raster_cache_focused
     COMMAND mvm_test_math_raster_cache "${CMAKE_CURRENT_BINARY_DIR}/math-raster-cache"
     PROPERTIES TIMEOUT 120)
@@ -790,12 +806,17 @@ mvm_add_test(math_raster_cache_focused
 add_executable(mvm_test_math_render core/test_math_render.cpp)
 target_link_libraries(mvm_test_math_render PRIVATE mvm::math mvm::warnings)
 mvm_add_test(math_render_key_and_layout COMMAND mvm_test_math_render PROPERTIES TIMEOUT 30)
+add_executable(mvm_test_math_transform core/test_math_transform.cpp)
+target_link_libraries(mvm_test_math_transform PRIVATE mvm::math mvm::warnings)
+mvm_add_test(math_transform_contract COMMAND mvm_test_math_transform PROPERTIES TIMEOUT 30)
 
 # 実 Manim / LaTeX は使わない。偽の tool は自分の file 名で Manim / latex / dvisvgm を演じる。
 add_executable(mvm_fake_math_tex_cli harness/fake_math_tex_cli.cpp)
 target_link_libraries(mvm_fake_math_tex_cli PRIVATE mvm::util mvm::warnings)
 add_executable(mvm_test_manim_math_tex core/test_manim_math_tex.cpp)
 target_link_libraries(mvm_test_manim_math_tex PRIVATE mvm::manim mvm::util mvm::warnings)
+# 偽の Manim と共有する変形の取り決め (harness/math_test_transform.h)。
+target_include_directories(mvm_test_manim_math_tex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
 add_dependencies(mvm_test_manim_math_tex mvm_fake_math_tex_cli)
 mvm_add_test(manim_math_tex_focused
     COMMAND mvm_test_manim_math_tex "$<TARGET_FILE:mvm_fake_math_tex_cli>"
@@ -810,6 +831,10 @@ target_link_libraries(mvm_math_manim_smoke PRIVATE
     mvm::timeline_preview_mapping mvm::mlt Qt6::Gui mvm::warnings)
 target_compile_definitions(mvm_math_manim_smoke PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_MATH_FFMPEG="${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
+# 式から式への変形の backend の実 Manim の smoke (P2-3)。同じ理由で CTest に登録しない。
+add_executable(mvm_math_transform_smoke harness/mvm_math_transform_smoke.cpp)
+target_link_libraries(mvm_math_transform_smoke PRIVATE
+    mvm::manim mvm::math_clip_render mvm::util mvm::warnings)
 # directory の拒否は実 Manim を使わないので通常試験へ入れる。
 mvm_add_test(math_smoke_existing_workspace_rejected
     COMMAND ${MVM_PWSH} -NoProfile -File
@@ -3987,6 +4012,17 @@ add_test(NAME math_inspector_product_ui COMMAND mvm_test_text_ui_input --math-in
 set_tests_properties(math_inspector_product_ui PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)
+add_test(NAME math_transform_inspector_product_ui
+    COMMAND mvm_test_text_ui_input --math-transform-inspector)
+set_tests_properties(math_transform_inspector_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 60)
+# P2-7: 製品の Main.qml で数式の変形を作り、長さ・削除・保存と作れない・使えない理由を確かめる。
+add_test(NAME math_transform_authoring_product_ui
+    COMMAND mvm_test_text_ui_input --math-transform-authoring)
+set_tests_properties(math_transform_authoring_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
 add_test(NAME audio_mixer_controls_qml
     COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
             -Runner ${MVM_QMLTESTRUNNER}
@@ -4080,6 +4116,11 @@ add_test(NAME math_write_native_playback COMMAND mvm_test_math_controller --nati
 set_tests_properties(math_write_native_playback PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+# 同じ方法で、数式の変形の mask が再生中 (区間の途中) に届いたときの表示を確かめる。
+add_test(NAME math_transform_native_playback COMMAND mvm_test_math_controller --native-transform)
+set_tests_properties(math_transform_native_playback PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
 target_link_libraries(mvm_test_subtitle_controller PRIVATE ${_subtitle_controller_libraries})
 target_compile_definitions(mvm_test_subtitle_controller PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_SUBTITLE_PANEL_QML="${CMAKE_SOURCE_DIR}/apps/mvm/SubtitlePanel.qml"
@@ -4092,6 +4133,13 @@ add_dependencies(mvm_subtitle_validation mvm_test_subtitle_controller)
 set_tests_properties(subtitle_controller_contract PROPERTIES LABELS workstation)
 
 add_executable(mvm_test_math_export harness/test_math_export.cpp)
+add_executable(mvm_test_math_transform_export harness/test_math_transform_export.cpp)
+target_link_libraries(mvm_test_math_transform_export PRIVATE
+    mvm::timeline_export mvm::math_raster_cache mvm::math_clip_render mvm::mlt Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_test_math_transform_export PRIVATE ${MVM_MLT_PATH_DEFS})
+mvm_add_test(math_transform_export_focused
+    COMMAND mvm_test_math_transform_export "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
+    PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
 target_link_libraries(mvm_test_math_export PRIVATE
     mvm::project mvm::timeline_export mvm::timeline_preview_mapping mvm::math_clip_render
     mvm::gpu_preview mvm::mlt Qt6::Gui mvm::warnings)

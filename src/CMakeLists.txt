@@ -41,6 +41,7 @@ add_library(mvm::project ALIAS mvm_project)
 add_library(mvm_util STATIC
     util/mvm_atomic_write.c
     util/mvm_win_utf8.c
+    util/mvm_long_path.c
     util/mvm_reveal_in_explorer.c
     util/mvm_file_identity.c
     util/mvm_process.c
@@ -57,6 +58,8 @@ target_link_libraries(mvm_project PRIVATE mvm::util)
 add_library(mvm_math STATIC
     media/math/math_render.cpp
     media/math/math_raster_layout.cpp
+    media/math/math_tex_segments.cpp
+    media/math/math_transform.cpp
 )
 target_include_directories(mvm_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_math PUBLIC mvm::util PRIVATE mvm::warnings)

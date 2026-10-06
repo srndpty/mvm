@@ -1,6 +1,7 @@
 #ifndef MVM_APPS_MVM_MVM_CONTROLLER_H
 #define MVM_APPS_MVM_MVM_CONTROLLER_H
 
+#include "app/math_clip_render.h"
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
 #include "audio_adjustment_job.h"
@@ -136,20 +137,25 @@ class MvmController : public QObject {
     Q_PROPERTY(qint64 totalTimelineFrames READ totalTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(qint64 navigationTimelineFrames READ navigationTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(QVariantList timelineMarkers READ timelineMarkers NOTIFY stateChanged)
-    // timeline に描くトランジション。{transitionId, trackKind, trackIndex, start, cut, end}。
+    // timeline に描くトランジション。{transitionId, trackKind, trackIndex, start, cut, end, kind}。
     // 選択は selectedTransitionId と比べる (選択で model を変えない)。
     // Repeater の model なので stateChanged (再生中も頻繁に出る) では通知しない。通知のたびに
     // delegate が作り直される。
     Q_PROPERTY(
         QVariantList timelineTransitions READ timelineTransitions NOTIFY timelineTransitionsChanged)
-    // 選択中の編集点 {trackKind, trackIndex, frame}。無ければ空。clip の選択とは排他。
+    // 選択中の編集点 {trackKind, trackIndex, frame, outgoingName, incomingName,
+    //  mathTransformCandidate, mathTransformRejection}。無ければ空。clip の選択とは排他。
+    // mathTransformCandidate は applyMathTransform を試せる編集点 (どちらかの端が数式 clip)。
+    // 置けるかどうかの条件はここでは見ない (model の applyMathTransformTransition だけが決め、
+    // 断った理由が mathTransformRejection)。
     Q_PROPERTY(QVariantMap selectedEditPoint READ selectedEditPoint NOTIFY stateChanged)
     Q_PROPERTY(QString selectedTransitionId READ selectedTransitionId NOTIFY stateChanged)
     // エフェクトコントロールに出す選択中のトランジション。無ければ空。
     // {transitionId, trackKind, cut, framesBeforeCut, framesAfterCut, durationText (timecode),
     //  maxBefore, maxAfter,
     //  outgoingClipId, outgoingName, outgoingStart, outgoingEnd,
-    //  incomingClipId, incomingName, incomingStart, incomingEnd} (frame は timeline frame)。
+    //  incomingClipId, incomingName, incomingStart, incomingEnd, kind} (frame は timeline frame)。
+    // 数式の変形は mathTransformStatus の key と、長さの変更を断った理由 spanRejection を足す。
     // max* は cut の前後に置ける長さの上限 (transitionSpanLimits, リンク相手込み)。
     // 上限の計算は Project を複写するので、再生中も出る stateChanged では通知しない。
     Q_PROPERTY(
@@ -647,6 +653,12 @@ public:
     // 試験用: 数式の backend の確認を差し替えて確かめ直す (偽の backend を注入する)。
     void setMathPreflightForTest(MathRasterCache::PreflightFunction preflight);
     MathRasterCache& mathRastersForTest() { return *mathRasters_; }
+    // 試験用: disk 検査後に要求へ渡す frame reader を差し替え、実行 thread と待機を検査する。
+    using MathTransformExportFrameLoader =
+        std::function<bool(std::size_t, std::vector<std::uint8_t>&, std::string&)>;
+    void setMathTransformExportFrameLoaderForTest(MathTransformExportFrameLoader loader) {
+        mathTransformExportFrameLoaderForTest_ = std::move(loader);
+    }
     // 試験用: Write の preview の評価 (engine の render thread が出力 frame ごとに呼ぶ) を観測する。
     // 引数は clip ID・出力 frame・見せる Write の frame (-1 は静止)。設定後に作る animation に効く。
     // render thread から呼ぶので、observer は thread 安全にすること。
@@ -654,7 +666,17 @@ public:
         std::function<void(const std::string& clipId, std::int64_t outputFrame, std::int64_t state)>;
     void setMathWriteObserverForTest(MathWriteObserver observer) {
         mathWriteObserverForTest_ = std::move(observer);
-        mathWriteAnimations_.clear();
+        mathPreviewAnimations_.clear();
+    }
+    // 試験用: 変形の preview の評価を観測する。引数はトランジション ID・評価した clip (前・後ろの
+    // どちらの layer か) の ID・出力 frame・見せる変形の frame (-1 は区間の外の静止)。
+    // 設定後に作る animation に効く。render thread から呼ぶので、thread 安全にすること。
+    using MathTransformObserver =
+        std::function<void(const std::string& transitionId, const std::string& clipId,
+                           std::int64_t outputFrame, std::int64_t transformFrame)>;
+    void setMathTransformObserverForTest(MathTransformObserver observer) {
+        mathTransformObserverForTest_ = std::move(observer);
+        mathPreviewAnimations_.clear();
     }
     // 試験用: 最後に engine へ出した composition (再生中の引き継ぎも含む)。
     std::shared_ptr<const preview::CompositionSnapshot> submittedCompositionForTest() const {
@@ -814,6 +836,11 @@ public:
     // 編集点 (またはトランジション) を選んでいれば、そこへ 1 秒のクロスディゾルブ /
     // クロスフェードを 置く (リンク相手も同じ cut なら一緒に)。
     Q_INVOKABLE bool applyDefaultTransition();
+    // 選択中の編集点に数式の変形を置く (project::applyMathTransformTransition)。長さは
+    // Blend と同じ既定の長さ (defaultTransitionFrames) を求め、置ける長さは model が決める。
+    // 1 回が 1 undo。置いた変形を選ぶ。model が断れば理由を status と selectedEditPoint の
+    // mathTransformRejection に出し、Project・Undo を変えない (Blend で代用しない)。
+    Q_INVOKABLE bool applyMathTransform();
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
                                            qint64 requestedFrame, double value) const;
     Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,
@@ -1205,11 +1232,32 @@ private:
     // 画素 (last-good) を返す。どれも無ければ nullptr で pending を true にする (合成から外す)。
     std::shared_ptr<const preview::PreviewStillImage> mathStillImage(int clipIndex,
                                                                      bool& pending) const;
-    // 数式 clip の Write の preview (still の mask 矩形を frame ごとに連番の画素へ変える)。
-    // Write が無い・入力中・連番が描けていない・静止の描画が現在の式のものでない間は nullptr
-    // (still のまま、すなわち書き終えた式を見せる)。
+    // 数式 clip の preview の animation (Write と変形。still の一部の矩形を frame ごとに変える)。
+    // 付けられる部分が無ければ nullptr (still のまま、すなわち静止の式を見せる)。
+    // - Write: Write が無い・入力中・連番が描けていない・memory に無い・静止の描画が現在の式の
+    //   ものでない間は付けない (書き終えた式を見せる)
+    // - 変形: この clip が前・後ろの端の変形のうち、mathTransformPreviewPart が使えるもの
     std::shared_ptr<const preview::PreviewStillAnimation>
-    mathWriteAnimation(int clipIndex, const preview::PreviewStillImage& still) const;
+    mathPreviewAnimation(int clipIndex,
+                         const std::shared_ptr<const preview::PreviewStillImage>& still) const;
+    // 変形の preview に要る値が揃っているか。揃わなければ理由を返し、preview は cut で切り替える
+    // (古い変形・前に描けた別の式の静止は使わない)。
+    //   - 両 clip が描かれ (mathTransformIsRendered)、どちらも入力中でない
+    //   - 両端の今の式の静止が Ready、変形の disk の artifact が Ready
+    //   - artifact が出力 raster に収まる (mathTransformRasterPlacement)
+    // memory (residency) は見ない。
+    struct MathTransformPreviewInputs {
+        math::MathTransformSpec spec;
+        MathTransformWindow window;
+        math::MathTransformRasterPlacement placement;
+        std::uint32_t sourceColor = 0;
+        std::uint32_t targetColor = 0;
+    };
+    std::optional<MathTransformPreviewInputs>
+    mathTransformPreviewInputs(const project::TimelineTransition& transition,
+                               QString* placementError = nullptr) const;
+    // 選択中のトランジションが変形なら、描画と preview の状態 (computeSelectedTransition が足す)。
+    QVariantMap mathTransformStatus(const project::TimelineTransition& transition) const;
     // 数式 clip の Write の状態 (mathClipData の writeState / writeMessage)。
     std::pair<QString, QString> mathWriteState(const project::TimelineClip& clip) const;
     // preview 中の値を反映した数式 clip の値。
@@ -1363,12 +1411,24 @@ private:
     std::string selectedEditOutgoing_;
     std::string selectedEditIncoming_;
     std::string selectedTransitionId_;
+    // 数式の変形の作成・長さの変更を model が断った理由。断ったときの編集点 (またはトランジション)
+    // と Project の revision が今と同じ間だけ UI に出す (Project が変われば古い理由は出さない)。
+    struct MathTransformRejection {
+        std::string outgoingId;
+        std::string incomingId;
+        std::string transitionId;
+        std::uint64_t revision = 0;
+        QString message;
+    };
+    MathTransformRejection mathTransformRejection_;
     // 最後に通知した timelineTransitions。変わったときだけ timelineTransitionsChanged を出す。
     QVariantList shownTransitions_;
     // 最後に通知した selectedTransition。
     QVariantMap shownSelectedTransition_;
     void notifyTimelineTransitions();
     QVariantMap computeSelectedTransition() const;
+    // 合成の後に、選択中の変形の描画・memory の状態だけを inspector へ出し直す。
+    void refreshSelectedMathTransformStatus();
     std::vector<project::TimelineClip> clipboardClips_;
     // コピー元 Project の bin にあった、clipboardClips_ の素材。
     std::vector<project::MediaItem> clipboardMediaItems_;
@@ -1454,14 +1514,16 @@ private:
         std::shared_ptr<const preview::PreviewStillImage> image;
     };
     mutable QHash<QString, MathComposed> mathStillImages_;
-    // clip ごとの Write の preview。連番・見た目・時間が同じなら同じ instance を engine へ渡す
-    // (engine は instance ごとに texture を持つ)。
-    struct MathWriteAnimationMemo {
+    // clip ごとの preview の animation (Write と変形)。mask・見た目・時間が同じなら同じ instance を
+    // engine へ渡す (engine は instance ごとに texture を持つ)。
+    struct MathPreviewAnimationMemo {
         QString memo;
         std::shared_ptr<const preview::PreviewStillAnimation> animation;
     };
-    mutable QHash<QString, MathWriteAnimationMemo> mathWriteAnimations_;
+    mutable QHash<QString, MathPreviewAnimationMemo> mathPreviewAnimations_;
     MathWriteObserver mathWriteObserverForTest_;
+    MathTransformObserver mathTransformObserverForTest_;
+    MathTransformExportFrameLoader mathTransformExportFrameLoaderForTest_;
     // 入力中の数式 (clip ID と、Project へまだ保存していない値)。
     std::optional<std::pair<std::string, project::MathClipData>> mathPreviewOverride_;
     mutable QHash<QString, QRect> textRasterBounds_;

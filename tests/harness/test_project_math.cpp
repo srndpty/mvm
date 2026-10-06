@@ -1,9 +1,10 @@
-// 数式 clip の Project model と JSON (schema 19) の契約。
+// 数式 clip の Project model と JSON (schema 20) の契約。
 //
 // - 数式 clip は Project の値として往復し、描画方針 (renderer) を持たない
 // - 値の形の検証は描けるかどうかと無関係 (描けない式も保存できる。検証は形だけ)
-// - 読める版は 19・18・17・16 で、読み込み後は 19。数式 clip は 18 以上、
-//   math_animation は 19 の file にだけ現れてよい
+// - 読める版は 20・19・18・17・16 で、読み込み後は 20。数式 clip は 18 以上、
+//   math_animation は 19 以上の file にだけ現れてよい
+//   (transition の kind は test_math_transform_timeline.cpp が扱う)
 // - 自動音量調整の field の欠落は 16 の file だけに許す (17 で欠けていたら拒否する)
 // - Write の尺は clip の尺に収め、分割の右側は Write を持たない (fade in と同じ)
 //
@@ -94,7 +95,7 @@ void testRoundTrip() {
     check(json.find("\"math\": {") != std::string::npos, "math object を保存する");
     check(json.find("renderer") == std::string::npos,
           "数式 clip は描画方針 (renderer) を保存しない");
-    check(json.find("\"schema_version\": 19") != std::string::npos, "schema 19 で保存する");
+    check(json.find("\"schema_version\": 20") != std::string::npos, "schema 20 で保存する");
     check(json.find("\"math_animation\": { \"intro\": \"write\", \"intro_frames\": 90 }") !=
               std::string::npos,
           "Write の intro を math_animation として保存する");
@@ -280,7 +281,7 @@ void testStrictJson() {
 }
 
 std::string withSchema(const std::string& json, int version) {
-    return replaced(json, "\"schema_version\": 19",
+    return replaced(json, "\"schema_version\": 20",
                     "\"schema_version\": " + std::to_string(version), "schema_version");
 }
 
@@ -315,24 +316,28 @@ void testSchemaVersions() {
     check(withStaticMath.find("math_animation") == std::string::npos,
           "負例の準備: Write の無い数式の file は math_animation を持たない");
 
-    for (const int version : {18, 17, 16}) {
+    for (const int version : {19, 18, 17, 16}) {
         std::string old = withSchema(current, version);
         if (version == 16)
             old = withoutAudioAdjustmentFields(old);
         const auto parsed = parseProjectJsonText(old, kProjectPath);
         check(parsed.success, "schema " + std::to_string(version) + " を読める: " + parsed.error);
         check(parsed.success && parsed.project.schemaVersion == kProjectSchemaVersion,
-              "schema " + std::to_string(version) + " は読み込み後に現行版 (19) になる");
-        check(!loads(withSchema(withMath, version)),
-              "schema " + std::to_string(version) + " の file の math_animation を拒否する");
+              "schema " + std::to_string(version) + " は読み込み後に現行版 (20) になる");
+        if (version < 19)
+            check(!loads(withSchema(withMath, version)),
+                  "schema " + std::to_string(version) + " の file の math_animation を拒否する");
         if (version < 18)
             check(!loads(withSchema(withStaticMath, version)),
                   "schema " + std::to_string(version) + " の file の数式 clip を拒否する");
     }
+    const auto write19 = parseProjectJsonText(withSchema(withMath, 19), kProjectPath);
+    check(write19.success && write19.project == projectWithMath(),
+          "schema 19 の Write の数式 clip は値を変えずに読める (P1 の Project)");
     const auto staticMath18 = parseProjectJsonText(withSchema(withStaticMath, 18), kProjectPath);
     check(staticMath18.success && staticMath18.project == staticMath,
           "schema 18 の静止の数式 clip は値を変えずに読める (P0 の Project)");
-    for (const int version : {15, 20}) {
+    for (const int version : {15, 21}) {
         check(!loads(withSchema(current, version)),
               "schema " + std::to_string(version) + " を拒否する");
     }
@@ -344,7 +349,7 @@ void testSchemaVersions() {
     check(loads(withSchema(stripped, 16)), "対照: 16 の file は自動音量調整の field が無くてよい");
     check(!loads(withSchema(stripped, 17)),
           "17 の file で自動音量調整の field が欠けていたら拒否する");
-    check(!loads(stripped), "19 の file で自動音量調整の field が欠けていたら拒否する");
+    check(!loads(stripped), "20 の file で自動音量調整の field が欠けていたら拒否する");
 }
 
 // Write の尺は clip の見えている先頭から数え、分割・trim で clip の尺に収める。

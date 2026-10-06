@@ -1,5 +1,6 @@
 #include "media/manim/manim_math_tex.h"
 
+#include "util/mvm_long_path.h"
 #include "util/mvm_process.h"
 #include "util/mvm_win_utf8.h"
 
@@ -20,11 +21,9 @@ constexpr std::size_t kMaximumTexErrorLines = 3;
 // result.log へ残す標準出力・標準エラーの上限 (末尾を残す)。
 constexpr std::size_t kMaximumLogBytes = 64 * 1024;
 
-// module level で MathTex を作り、その大きさに frame を合わせる。CLI の --resolution より
-// module level の config が優先される (docs/math-clips.md P0-0)。式は request.json から読み、
-// Python の source には埋め込まない。失敗は error-kind.txt / error.txt に書いて exit 3。
-// 静止 (kStaticScene) と Write (kWriteScene) はこの共通部分の後に scene を足す。
-constexpr char kSceneCommon[] = R"PY(import json
+// 全 script の共通部分。式は request.json から読み、Python の source には埋め込まない。
+// 失敗は error-kind.txt / error.txt に書いて exit 3。
+constexpr char kScriptPrelude[] = R"PY(import json
 import math
 import pathlib
 import sys
@@ -45,7 +44,13 @@ except Exception as error:
 
 REQUEST = json.loads((HERE / "request.json").read_text(encoding="utf-8"))
 PX_PER_UNIT = 1080.0 / 8.0
-PAD_PX = 8
+)PY";
+
+// module level で MathTex を作り、その大きさに frame を合わせる。CLI の --resolution より
+// module level の config が優先される (docs/math-clips.md P0-0)。
+// 静止 (kStaticScene) と Write (kWriteScene) は kScriptPrelude + これの後に scene を足す。
+// 3 つを連結した script は P1 までの script と同じ byte 列 (template の版を変えない)。
+constexpr char kSingleTexSetup[] = R"PY(PAD_PX = 8
 
 try:
     TEX = MathTex(REQUEST["source"], font_size=REQUEST["manim_font_size"])
@@ -89,6 +94,97 @@ class MvmMathWrite(Scene):
         TEX.move_to(ORIGIN)
         self.play(Write(TEX), run_time=1)
 )PY";
+
+// 式から式への変形 (P2)。kScriptPrelude の後に置く。
+// - 部分は mvm が分けた文字列のまま MathTex(*segments) で作る。
+// - 部分の構造 (型・文字列・glyph の数) と Manim の代用の log を structure.txt へ事実として書く。
+//   合否は mvm が決める (checkManimTransformStructure)。
+// - 対応は mvm の照合 (pairs・unmatched_*) だけで組み、TransformMatchingTex に任せない。
+// - 端点は canvas の中心に置き、mvm が Manim の向き (+Y が上) へ換算した shift だけ動かす。
+// - frame_rate = frames で 1 秒の変形 (frames 枚) を描き、終状態を 1 枚足す (照合用)。
+constexpr char kTransformScene[] = R"PY(import logging
+
+try:
+    from manim import (RIGHT, UP, AnimationGroup, FadeIn, FadeOut, ReplacementTransform, logger,
+                       smooth)
+except Exception as error:
+    fail("other", "manim の変形を import できません: " + repr(error))
+
+
+# Manim は部分の SVG group が見つからないと error を log に出し、式全体の group で代用する
+# (tex_mobject.py の _break_up_by_substrings)。その log を集めて mvm へ報告する。
+class FallbackLog(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.ERROR)
+        self.messages = []
+
+    def emit(self, record):
+        text = record.getMessage()
+        if "Could not find SVG group" in text:
+            self.messages.append(text)
+
+
+FALLBACK_LOG = FallbackLog()
+logger.addHandler(FALLBACK_LOG)
+
+
+def build(side):
+    part = REQUEST[side]
+    try:
+        return MathTex(*part["segments"], font_size=part["manim_font_size"])
+    except ValueError as error:
+        fail("latex" if "latex error" in str(error).lower() else "other", str(error))
+    except Exception as error:
+        fail("other", repr(error))
+
+
+SOURCE = build("source")
+TARGET = build("target")
+
+
+def hex_text(text):
+    return "x" + text.encode("utf-8").hex()
+
+
+LINES = ["fallback " + hex_text(message) for message in FALLBACK_LOG.messages]
+for side, tex in (("source", SOURCE), ("target", TARGET)):
+    for part in tex.submobjects:
+        text = getattr(part, "tex_string", None)
+        LINES.append(" ".join(["part", side, type(part).__name__,
+                               "none" if text is None else hex_text(text),
+                               str(len(part.submobjects))]))
+(HERE / "structure.txt").write_text("\n".join(LINES) + "\n", encoding="utf-8")
+
+for side, tex in (("source", SOURCE), ("target", TARGET)):
+    tex.set_color(WHITE)
+    tex.move_to(ORIGIN)
+    shift_x, shift_up = REQUEST[side]["manim_shift_px"]
+    tex.shift(RIGHT * (shift_x / PX_PER_UNIT) + UP * (shift_up / PX_PER_UNIT))
+
+WIDTH, HEIGHT = REQUEST["canvas_px"]
+config.pixel_width = WIDTH
+config.pixel_height = HEIGHT
+config.frame_width = WIDTH / PX_PER_UNIT
+config.frame_height = HEIGHT / PX_PER_UNIT
+config.frame_rate = int(REQUEST["frames"])
+(HERE / "info.txt").write_text(f"{WIDTH} {HEIGHT}", encoding="utf-8")
+
+
+class MvmMathTransform(Scene):
+    def construct(self):
+        animations = [ReplacementTransform(SOURCE[i], TARGET[j], rate_func=smooth)
+                      for i, j in REQUEST["pairs"]]
+        animations += [FadeOut(SOURCE[i], rate_func=smooth) for i in REQUEST["unmatched_source"]]
+        animations += [FadeIn(TARGET[j], rate_func=smooth) for j in REQUEST["unmatched_target"]]
+        self.add(SOURCE)
+        self.play(AnimationGroup(*animations), run_time=1)
+        self.wait(1 / config.frame_rate)
+)PY";
+
+// 1 つの式を描く script (静止・Write)。
+std::string singleTexScript(const char* sceneText) {
+    return std::string(kScriptPrelude) + kSingleTexSetup + sceneText;
+}
 
 std::string pathToUtf8(const std::filesystem::path& path) {
     char* text = mvm_wide_to_utf8(path.c_str());
@@ -208,7 +304,8 @@ math::MathPreflightResult unavailable(std::string message) {
 std::string texErrorLines(const std::filesystem::path& mediaDirectory) {
     std::vector<std::string> lines;
     std::error_code error;
-    const auto texDirectory = mediaDirectory / L"Tex";
+    // Manim が作業 directory の下に書いた file は 260 文字を超えうる (util/mvm_long_path.h)。
+    const auto texDirectory = util::extendedLengthPath(mediaDirectory / L"Tex");
     for (std::filesystem::directory_iterator it(texDirectory, error), end; !error && it != end;
          it.increment(error)) {
         if (it->path().extension() != L".log")
@@ -231,11 +328,14 @@ std::string texErrorLines(const std::filesystem::path& mediaDirectory) {
 
 // directory の下の PNG を file 名の順に返す。Manim は連番を固定桁 (<Scene>0000.png)
 // で名付けるので、 名前の順が frame の順になる。
+// 通常の path で走査すると、260 文字を超える file は error 無しで 0 件になる (P2-8 で実測)。
+// extended-length の path で走査し、見つけた path もその形のまま返す (decoder は受け付ける)。
 std::vector<std::filesystem::path> findPngs(const std::filesystem::path& directory) {
     std::vector<std::filesystem::path> found;
     std::error_code error;
     for (std::filesystem::recursive_directory_iterator
-             it(directory, std::filesystem::directory_options::skip_permission_denied, error),
+             it(util::extendedLengthPath(directory),
+                std::filesystem::directory_options::skip_permission_denied, error),
          end;
          !error && it != end; it.increment(error)) {
         if (it->is_regular_file(error) && it->path().extension() == L".png")
@@ -263,10 +363,10 @@ SceneRun sceneFailure(math::MathRenderStatus status, std::string message, std::s
     return run;
 }
 
-// 共通の scene に sceneText を足した script と request.json を作業 directory へ書き、Manim で描く。
-// 失敗の分類 (TeX の誤り・timeout・取消・起動失敗) は静止と Write で同じ。
+// script と request.json を作業 directory へ書き、Manim で描く。
+// 失敗の分類 (TeX の誤り・timeout・取消・起動失敗) は静止・Write・変形で同じ。
 SceneRun runScene(const std::filesystem::path& manimExecutablePath,
-                  const std::filesystem::path& jobDirectory, const char* sceneText,
+                  const std::filesystem::path& jobDirectory, const std::string& scriptText,
                   const std::wstring& sceneName, const std::string& requestJson, bool lastFrameOnly,
                   std::chrono::milliseconds timeout, const std::atomic<bool>* cancel) {
     if (jobDirectory.empty())
@@ -279,8 +379,7 @@ SceneRun runScene(const std::filesystem::path& manimExecutablePath,
                             "数式の作業 directory を作成できません: " + pathToUtf8(jobDirectory) +
                                 " (" + error.message() + ")");
     const auto script = jobDirectory / L"mvm_math_tex.py";
-    if (!writeFile(script, std::string(kSceneCommon) + sceneText) ||
-        !writeFile(jobDirectory / L"request.json", requestJson))
+    if (!writeFile(script, scriptText) || !writeFile(jobDirectory / L"request.json", requestJson))
         return sceneFailure(math::MathRenderStatus::Failed,
                             "数式の描画 script を書けません: " + pathToUtf8(jobDirectory));
 
@@ -492,6 +591,14 @@ math::MathPreflightResult preflightManimMathTex(const ManimMathTexConfig& config
         return renderManimMathWrite(manim, request, renderCancel);
     };
     result.backend.maximumSequenceFrames = kMaximumMathWriteFrames;
+    result.backend.transformTemplate =
+        std::string(kMathTransformTemplateId) + "/" + std::to_string(kMathTransformTemplateVersion);
+    result.backend.renderTransform = [manim](const math::MathTransformRenderRequest& request,
+                                             const math::MathCoverageLoader& loader,
+                                             const std::atomic<bool>* renderCancel) {
+        return renderManimMathTransform(manim, request, loader, renderCancel);
+    };
+    result.backend.maximumTransformFrames = kMaximumMathTransformFrames;
     return result;
 }
 
@@ -502,8 +609,8 @@ math::MathStaticRenderResult renderManimMathTex(const std::filesystem::path& man
     if (spec.syntax != "latex" || spec.source.empty() || spec.fontSize <= 0)
         return failure(math::MathRenderStatus::Failed, "数式の描画要求が不正です");
     const SceneRun run =
-        runScene(manimExecutablePath, request.jobDirectory, kStaticScene, L"MvmMathTex",
-                 manimMathTexRequestJson(spec), true, request.timeout, cancel);
+        runScene(manimExecutablePath, request.jobDirectory, singleTexScript(kStaticScene),
+                 L"MvmMathTex", manimMathTexRequestJson(spec), true, request.timeout, cancel);
     if (run.status != math::MathRenderStatus::Ok)
         return failure(run.status, run.message, run.log);
     if (run.pngs.size() != 1)
@@ -531,8 +638,8 @@ renderManimMathWrite(const std::filesystem::path& manimExecutablePath,
         spec.frames > kMaximumMathWriteFrames)
         return sequenceFailure(math::MathRenderStatus::Failed, "数式の Write の描画要求が不正です");
     const SceneRun run =
-        runScene(manimExecutablePath, request.jobDirectory, kWriteScene, L"MvmMathWrite",
-                 manimMathWriteRequestJson(spec), false, request.timeout, cancel);
+        runScene(manimExecutablePath, request.jobDirectory, singleTexScript(kWriteScene),
+                 L"MvmMathWrite", manimMathWriteRequestJson(spec), false, request.timeout, cancel);
     if (run.status != math::MathRenderStatus::Ok)
         return sequenceFailure(run.status, run.message, run.log);
     // frame の数が違えば、進み具合と frame 番号の対応が崩れる。黙って詰めたり補ったりしない。
@@ -548,6 +655,321 @@ renderManimMathWrite(const std::filesystem::path& manimExecutablePath,
     result.frames = run.pngs;
     result.width = run.width;
     result.height = run.height;
+    result.log = run.log;
+    return result;
+}
+
+namespace {
+
+math::MathTransformRenderResult transformFailure(math::MathRenderStatus status, std::string message,
+                                                 std::string log = {}) {
+    math::MathTransformRenderResult result;
+    result.status = status;
+    result.message = std::move(message);
+    result.log = std::move(log);
+    return result;
+}
+
+bool specValid(const math::MathRenderSpec& spec) {
+    return spec.syntax == "latex" && !spec.source.empty() && spec.fontSize > 0;
+}
+
+// "x" + 16 進 (UTF-8 の byte 列) を戻す。形が違えば false。
+bool decodeHexText(const std::string& token, std::string& text) {
+    if (token.empty() || token[0] != 'x' || token.size() % 2 == 0)
+        return false;
+    const auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
+        return -1;
+    };
+    text.clear();
+    for (std::size_t at = 1; at + 1 < token.size(); at += 2) {
+        const int high = nibble(token[at]);
+        const int low = nibble(token[at + 1]);
+        if (high < 0 || low < 0)
+            return false;
+        text += static_cast<char>(high * 16 + low);
+    }
+    return true;
+}
+
+void appendJsonPair(std::string& json, const char* name, double first, double second) {
+    json += '"';
+    json += name;
+    json += "\": [" + numberText(first) + ", " + numberText(second) + "]";
+}
+
+void appendJsonIndices(std::string& json, const std::vector<std::size_t>& indices) {
+    json += '[';
+    for (std::size_t at = 0; at < indices.size(); ++at) {
+        if (at > 0)
+            json += ", ";
+        json += std::to_string(indices[at]);
+    }
+    json += ']';
+}
+
+void appendTransformSide(std::string& json, const math::MathRenderSpec& spec,
+                         const std::vector<math::MathTexSegment>& segments, int width, int height,
+                         const math::MathEndpointPlacement& placement) {
+    json += "{\"segments\": [";
+    for (std::size_t at = 0; at < segments.size(); ++at) {
+        if (at > 0)
+            json += ", ";
+        appendJsonString(json, segments[at].text);
+    }
+    json += "], \"manim_font_size\": " + numberText(manimFontSizeFor(spec.fontSize)) + ", ";
+    appendJsonPair(json, "static_px", width, height);
+    json += ", ";
+    appendJsonPair(json, "placement_px", placement.left, placement.top);
+    json += ", ";
+    appendJsonPair(json, "manim_shift_px", placement.shiftX, manimShiftUpFor(placement.shiftY));
+    json += '}';
+}
+
+} // namespace
+
+bool planManimMathTransform(const math::MathTransformSpec& spec, int sourceWidth, int sourceHeight,
+                            int targetWidth, int targetHeight, ManimTransformPlan& plan,
+                            std::string& error) {
+    if (!specValid(spec.source) || !specValid(spec.target) || spec.frames < 1 ||
+        spec.frames > kMaximumMathTransformFrames) {
+        error = "数式の変形の描画要求が不正です";
+        return false;
+    }
+    // canvas の大きさの計算が int をあふれない範囲。
+    constexpr int kMaximumSide = 1 << 20;
+    if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 || targetHeight <= 0 ||
+        std::max({sourceWidth, sourceHeight, targetWidth, targetHeight}) > kMaximumSide) {
+        error = "数式の変形の端点の静止の大きさが不正です";
+        return false;
+    }
+    ManimTransformPlan result;
+    result.sourceSegments = math::segmentMathTex(spec.source.source);
+    result.targetSegments = math::segmentMathTex(spec.target.source);
+    result.matching = math::matchMathTexSegments(result.sourceSegments, result.targetSegments);
+    result.sourceWidth = sourceWidth;
+    result.sourceHeight = sourceHeight;
+    result.targetWidth = targetWidth;
+    result.targetHeight = targetHeight;
+    result.canvasWidth = std::max(sourceWidth, targetWidth) + 2 * kMathTransformCanvasPadding;
+    result.canvasHeight = std::max(sourceHeight, targetHeight) + 2 * kMathTransformCanvasPadding;
+    if (!math::mathTransformPlacement(sourceWidth, sourceHeight, targetWidth, targetHeight,
+                                      result.canvasWidth, result.canvasHeight, result.placement)) {
+        error = "数式の変形の端点を canvas に置けません";
+        return false;
+    }
+    plan = std::move(result);
+    return true;
+}
+
+double manimShiftUpFor(double rasterShiftY) {
+    // 0.0 - (+0.0) は +0.0 になり、JSON に "-0" を書かない。
+    return 0.0 - rasterShiftY;
+}
+
+std::string manimMathTransformRequestJson(const math::MathTransformSpec& spec,
+                                          const ManimTransformPlan& plan) {
+    std::string json = "{\"frames\": " + std::to_string(spec.frames) + ", ";
+    appendJsonPair(json, "canvas_px", plan.canvasWidth, plan.canvasHeight);
+    json += ", \"source\": ";
+    appendTransformSide(json, spec.source, plan.sourceSegments, plan.sourceWidth, plan.sourceHeight,
+                        plan.placement.source);
+    json += ", \"target\": ";
+    appendTransformSide(json, spec.target, plan.targetSegments, plan.targetWidth, plan.targetHeight,
+                        plan.placement.target);
+    json += ", \"pairs\": [";
+    for (std::size_t at = 0; at < plan.matching.pairs.size(); ++at) {
+        if (at > 0)
+            json += ", ";
+        json += '[' + std::to_string(plan.matching.pairs[at].source) + ", " +
+                std::to_string(plan.matching.pairs[at].target) + ']';
+    }
+    json += "], \"unmatched_source\": ";
+    appendJsonIndices(json, plan.matching.unmatchedSource);
+    json += ", \"unmatched_target\": ";
+    appendJsonIndices(json, plan.matching.unmatchedTarget);
+    json += '}';
+    return json;
+}
+
+std::string checkManimTransformStructure(const std::string& report,
+                                         const std::vector<math::MathTexSegment>& source,
+                                         const std::vector<math::MathTexSegment>& target) {
+    struct Part {
+        std::string type;
+        bool hasText = false;
+        std::string text;
+    };
+
+    std::vector<Part> parts[2];
+    std::istringstream lines(report);
+    std::string line;
+    bool any = false;
+    while (std::getline(lines, line)) {
+        line = trimLine(line);
+        if (line.empty())
+            continue;
+        any = true;
+        std::istringstream fields(line);
+        std::string kind;
+        fields >> kind;
+        if (kind == "fallback") {
+            std::string token;
+            std::string message;
+            fields >> token;
+            if (!decodeHexText(token, message))
+                message = "(log を読めません)";
+            return "Manim が式の部分を見つけられず、式全体で代用しました: " + message;
+        }
+        std::string side;
+        std::string text;
+        long long glyphs = -1;
+        Part part;
+        if (kind != "part" || !(fields >> side >> part.type >> text >> glyphs) || glyphs < 0 ||
+            (side != "source" && side != "target"))
+            return "Manim の部分の構造の報告を読めません: " + line;
+        if (text != "none") {
+            if (!decodeHexText(text, part.text))
+                return "Manim の部分の構造の報告を読めません: " + line;
+            part.hasText = true;
+        }
+        parts[side == "source" ? 0 : 1].push_back(std::move(part));
+    }
+    if (!any)
+        return "Manim が部分の構造を報告しませんでした";
+    const std::vector<math::MathTexSegment>* expected[2] = {&source, &target};
+    const char* names[2] = {"変形前", "変形後"};
+    for (int side = 0; side < 2; ++side) {
+        const auto& want = *expected[side];
+        const auto& got = parts[side];
+        if (got.size() != want.size())
+            return std::string(names[side]) + "の式の部分の数が分けた数と違います (Manim " +
+                   std::to_string(got.size()) + "、mvm " + std::to_string(want.size()) + ")";
+        for (std::size_t at = 0; at < want.size(); ++at) {
+            if (got[at].type != "MathTexPart" || !got[at].hasText)
+                return std::string(names[side]) + "の式の " + std::to_string(at + 1) +
+                       " 番目の部分を Manim が部分として作りませんでした (" + got[at].type + ")";
+            if (got[at].text != want[at].text)
+                return std::string(names[side]) + "の式の " + std::to_string(at + 1) +
+                       " 番目の部分の文字列が分けた部分と違います (Manim \"" + got[at].text +
+                       "\"、mvm \"" + want[at].text + "\")";
+        }
+    }
+    return {};
+}
+
+math::MathTransformRenderResult
+renderManimMathTransform(const std::filesystem::path& manimExecutablePath,
+                         const math::MathTransformRenderRequest& request,
+                         const math::MathCoverageLoader& loader, const std::atomic<bool>* cancel) {
+    const auto& spec = request.spec;
+    if (!loader || !math::mathCoverageValid(request.sourceStatic) ||
+        !math::mathCoverageValid(request.targetStatic))
+        return transformFailure(math::MathRenderStatus::Failed,
+                                "数式の変形の端点の静止の画像が不正です");
+    ManimTransformPlan plan;
+    std::string planError;
+    if (!planManimMathTransform(spec, request.sourceStatic.width, request.sourceStatic.height,
+                                request.targetStatic.width, request.targetStatic.height, plan,
+                                planError))
+        return transformFailure(math::MathRenderStatus::Failed, planError);
+
+    // 前の実行の structure.txt を読まないよう、描く前に消す。
+    std::error_code error;
+    const auto structurePath = request.jobDirectory / L"structure.txt";
+    std::filesystem::remove(structurePath, error);
+    const SceneRun run =
+        runScene(manimExecutablePath, request.jobDirectory,
+                 std::string(kScriptPrelude) + kTransformScene, L"MvmMathTransform",
+                 manimMathTransformRequestJson(spec, plan), false, request.timeout, cancel);
+    if (run.status == math::MathRenderStatus::Cancelled ||
+        run.status == math::MathRenderStatus::TimedOut ||
+        run.status == math::MathRenderStatus::BackendUnavailable)
+        return transformFailure(run.status, run.message, run.log);
+    // 部分の構造の誤りは、それが原因で script が後で失敗した場合も含めて先に知らせる
+    // (代用された式全体の group では、部分の番号で組む変形が IndexError になる)。
+    if (std::filesystem::is_regular_file(structurePath, error)) {
+        const std::string structureError = checkManimTransformStructure(
+            readFile(structurePath), plan.sourceSegments, plan.targetSegments);
+        if (!structureError.empty())
+            return transformFailure(math::MathRenderStatus::Failed, structureError, run.log);
+    } else if (run.status == math::MathRenderStatus::Ok) {
+        return transformFailure(math::MathRenderStatus::Failed,
+                                "Manim が部分の構造を報告しませんでした", run.log);
+    }
+    if (run.status != math::MathRenderStatus::Ok)
+        return transformFailure(run.status, run.message, run.log);
+    if (run.width != plan.canvasWidth || run.height != plan.canvasHeight)
+        return transformFailure(math::MathRenderStatus::Failed,
+                                "Manim の変形の canvas の大きさが要求と違います (" +
+                                    std::to_string(run.width) + "x" + std::to_string(run.height) +
+                                    ")",
+                                run.log);
+    // frames 枚 + 終状態の 1 枚。足りない・多い連番を詰めたり補ったりしない。
+    const auto expectedFrames = static_cast<std::size_t>(spec.frames) + 1;
+    if (run.pngs.size() != expectedFrames)
+        return transformFailure(math::MathRenderStatus::Failed,
+                                "Manim の変形の PNG が " + std::to_string(expectedFrames) +
+                                    " 枚ではありません (件数=" + std::to_string(run.pngs.size()) +
+                                    ")",
+                                run.log);
+
+    const auto& placement = plan.placement;
+    math::MathRect artifact = math::mathRectUnion(
+        {placement.source.left, placement.source.top, plan.sourceWidth, plan.sourceHeight},
+        {placement.target.left, placement.target.top, plan.targetWidth, plan.targetHeight});
+    for (std::size_t index = 0; index < run.pngs.size(); ++index) {
+        if (cancel && cancel->load())
+            return transformFailure(math::MathRenderStatus::Cancelled, "数式の描画を中断しました",
+                                    run.log);
+        const std::string name = "変形の frame " + std::to_string(index);
+        math::MathCoverage frame;
+        std::string loadError;
+        if (!loader(run.pngs[index], frame, loadError))
+            return transformFailure(math::MathRenderStatus::Failed,
+                                    name + " を読めません: " + loadError, run.log);
+        if (!math::mathCoverageValid(frame) || frame.width != plan.canvasWidth ||
+            frame.height != plan.canvasHeight)
+            return transformFailure(math::MathRenderStatus::Failed,
+                                    name + " の大きさが canvas と違います (" +
+                                        std::to_string(frame.width) + "x" +
+                                        std::to_string(frame.height) + ")",
+                                    run.log);
+        const math::MathRect bounds = math::mathCoverageBounds(frame);
+        if (math::mathRectTouchesEdge(bounds, frame.width, frame.height))
+            return transformFailure(math::MathRenderStatus::Failed,
+                                    name + " の式が一時的な canvas の縁に触れました "
+                                           "(はみ出した可能性があります)",
+                                    run.log);
+        artifact = math::mathRectUnion(artifact, bounds);
+        // frame 0 は source の静止、最後 (照合の 1 枚) は target の静止と画素で一致する。
+        const bool last = index + 1 == run.pngs.size();
+        if (index == 0 || last) {
+            const auto& mask = last ? request.targetStatic : request.sourceStatic;
+            const auto& at = last ? placement.target : placement.source;
+            const std::int64_t different =
+                math::mathEndpointDifference(frame, mask, at.left, at.top);
+            if (different != 0)
+                return transformFailure(
+                    math::MathRenderStatus::Failed,
+                    std::string(last ? "変形の終状態が変形後" : "変形の最初の frame が変形前") +
+                        "の式の静止の描画と一致しません (違う画素 " + std::to_string(different) +
+                        ")",
+                    run.log);
+        }
+    }
+
+    math::MathTransformRenderResult result;
+    result.status = math::MathRenderStatus::Ok;
+    result.frames.assign(run.pngs.begin(), run.pngs.end() - 1);
+    result.canvasWidth = plan.canvasWidth;
+    result.canvasHeight = plan.canvasHeight;
+    result.artifact = artifact;
+    result.placement = placement;
     result.log = run.log;
     return result;
 }

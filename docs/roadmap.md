@@ -4,6 +4,11 @@
 
 ## 一般の音声・書き出し
 
+- [事実] P2-6 の通常 release gate で `ownership_soak_100` が音声 consumer の
+  60000 ms timeout により 100/130 回で終了した。通常試験は 1456 件中 1455 件通過。
+  再現コマンドは `pwsh scripts/test.ps1 -Preset ucrt64-release`、証拠は
+  `build/math-p26-release-alpha-20261006.log`。原因と今回の変更との因果関係は未特定。
+  音声 soak は別途調査する。成功するまでの再試行による選別はしていない。
 - [事実] P0-6.1 の同条件対照で、Math を含まない通常 Text と通常画像の音声付き MP4 も
   AAC の `Input contains (near) NaN/+-Inf`、frame 2〜4 の encode error、
   `tractor出力を検証できません` を再現した。Math Clip を必要条件としない既存の不具合。
@@ -12,6 +17,15 @@
   再現: 実 Manim smoke の対照。証拠は `build/math-p061-attribution-20261004-203505.log` と
   同名 directory の `audio-text.mvm` / `audio-image.mvm` / `acceptance.mvm`。
   Math Clip P0 の完了 gate には音声出力の成功を含めない。過去の P0-6 の失敗は保持する。
+- [事実] 2026-10-06、P2-7 の通常 release gate 一回で `m4_timeline_export_focused_tractor` が失敗した
+  (「末尾補完が必要なclipをtractorで書き出せません」、`padding-v1-effects.mp4` の tractor 出力を検証できない)。
+  1457 件中 1456 件通過。P2-7 は書き出しの経路を変えていない。再試行はしていない。
+  再現コマンドは `pwsh scripts/test.ps1 -Preset ucrt64-release`、証拠は `build/math-p27-release-20261006.log`。
+  原因と再現性は未調査。
+- [事実] 2026-10-06 (P2-8)、書き出しの成功の後に状態へ「Explorerで表示できません (HRESULT=0x80070057)」が
+  付いた (書き出しは成功)。`revealFileInExplorer` は `QUrl::toLocalFile` の "/" 区切りの path を
+  `SHParseDisplayName` へ渡しており、小さな program で "/" 区切りは 0x80070057、"\" 区切りは成功を確かめた。
+  数式とは無関係。[未検証] 実アプリの書き出しの dialog でも毎回起きるか。直すなら区切りを "\" にしてから渡す。
 
 ## 数式 clip
 
@@ -26,10 +40,42 @@
   更新で glyph が変わる場合に、artifact を明示的に無効化する操作が必要かを P0.5 で検討する。
 - backend の無い機械での artifact 利用と、session をまたぐ last-good の対応付けは P0 の対象外。
   必要なら provenance と利用者の明示的な判断を使う方式を別途検討する。
-- P2: 式から式への変形 (`TransformMatchingTex` など)。隣り合う 2 つの数式 clip の境に置く
-  transition として持ち、P1 の連番の artifact (`mvm-math-sequence/1`)・cache・preview の
-  `PreviewStillAnimation`・書き出しの区間分けを使う。部分式の同一性は TeX の AST を作らず、
-  Manim の `{{ }}` / `substrings_to_isolate` を式の文字列に書く方式から検討する。
+- P2: 式から式への変形。設計の結論と P2-1 (Project / timeline、schema 20) は
+  `docs/math-clips.md` の「式から式への変形 (P2)」にある。残りは次の段階で行う。
+  - (済: P2-2) mvm の分け方と n 番目の出現の照合、変形の key・端点の配置・色の補間の中立な契約
+  - (済: P2-4) 変形の artifact (`mvm-math-transform-artifact/1`、切り出した A8) と cache、
+    Write と共有する memory の上限
+  - P2-4 の変形の frame は圧縮しない A8 で disk に置く (1 frame = artifact の幅 x 高さ byte)。
+    長い変形で disk が大きくなる場合は、可逆の圧縮 (PNG の encode など) を検討する
+  - (済: P2-3) Manim の backend (`MathTex(*segments)` と明示の変形・fade、部分の構造の検査、
+    実測の bbox による artifact の矩形、半画素の補正、端点の照合)
+  - (済: P2-5) preview (A の layer と B の layer が同じ変形の frame を見せる、artifact の位置の規則) と
+    エフェクトコントロールの状態 (disk の描画と preview の memory を分けて示す)
+  - (済: P2-7) 製品の UI からの作成・長さ・削除 (`docs/math-clips.md` の「MathTransform の編集 UI」)
+  - (済: P2-8) 統合受け入れと手動の確認。MathTransform P2 は PASS/CLOSED
+    (`docs/math-clips.md` の「P2-8 統合受け入れ」と「最終判定」)。
+  - [事実] P2-8 で、数式の作業 directory の下の 260 文字を超える file を直した (extended-length の走査と
+    Win32 の木の削除)。残る制限: 作業 directory の下の directory 自体が 260 文字を超える深さの Project
+    (この開発機の作業 directory の作り方では、Project の directory と file 名の合計が約 100 文字を超える場合)
+    では、libstdc++ の列挙がその中を返さず、描画は「PNG が N 枚ではありません (件数=0)」で失敗する
+    (止まりはしない)。直すなら、作業 directory の名前から key (64 文字) を外して短くするか、走査も Win32 で行う。
+  - `extendedLengthPath` は drive の絶対 path・UNC・普通の相対 path だけを対象にしている
+    (`src/util/mvm_long_path.h`)。drive 相対 (`C:foo`)・root 相対 (`\foo`) が必要になったら、
+    Windows の意味を実装して試験を足す。
+  - [未検証] `mvm_remove_tree` は `FindFirstFileExW` に `FIND_FIRST_EX_LARGE_FETCH` を渡す。特殊な
+    file system (NAS など) に cache を置く場合に `ERROR_INVALID_PARAMETER` 等で断られるなら、
+    flag 無しで開き直す。今の local の cache では問題は観測していない。
+  - [推測] P2-8 で、試験の待ちが約 2 ms ごとに engine の status を読むと、試験の window の描画の周期が
+    止まり、paused の seek の提示が 30 秒待っても終わらなかった (20 ms ごとでは 5 / 5 通過)。
+    `math_write_native_playback` などの同じ形の待ち (`pump` の 2 ms) の一時的な失敗が同じ原因かは未検証。
+    仕組みも確かめていない。
+  - [事実] 2026-10-06、P2-7 の集中試験の一括実行で `math_write_native_playback` が 1 回失敗した
+    (一時停止中の mask の読み込みと再生の開始、22 検査中 3 件)。単独では 6 / 6 通過し、
+    同じ日の通常 release gate でも通過した。原因は未特定 (`build/math-p27-focused-20261006.log`)。
+  - 変形の mask の先読み: 今は前・後ろの clip が見える frame の合成が要求してから memory に読むので、
+    再生中に読み終えるまでは cut で見せる (読み終えた次の tick から、その時刻の変形の frame を見せる)
+- P2 の後: 手動の照合・部分式の ID・強調、背景の矩形の補間、区間の中で ClipEffects が
+  違う変形、変形と後ろの clip の Write の両立、トランジションごとのコピー / 貼り付け。
 - P2 の最適化: Write の書き出しは Write の区間の timeline frame ごとに出力全面の PNG を
   合成・encode・stage する (尺と解像度に比例)。mask の矩形だけを stage し、配置を MLT の
   affine に任せれば減らせる。preview と同じ画素の契約 (`composeMathPatch`) を保つこと。
@@ -135,6 +181,12 @@ clip の編集で字幕を置き直すとき、毎回 timeline の frame から�
   debug は `transition_preview` だけ失敗した (frame 110 の incoming 不透明度が −1、期待 0.025)。
   この形は下記の単独検証でも観測されている。新機能の解析・試聴・製品メニュー操作は両構成で通過。
   ログは `build/audio-adjustment-optimized-tests.log` に保存した。
+  [事実] 2026-10-06、P2-6.1 の通常 release gate 一回でも、frame 110 の incoming 不透明度が
+  −1 (期待 0.025) となり、`stale-engine-reset` の source 準備要求の前提も失敗した。
+  証拠は `build/math-p261-release-20261006.log`。preview の処理は変更していないが、
+  今回の発生原因は未特定。再試行による成功 run の選別はしていない。
+  [事実] 2026-10-06、P2-8 の集中試験 (24 件) でも同じ「frame 110: incoming の不透明度 -1.000
+  (期待 0.025)」で 1 回失敗した (`build/math-p28-focused-20261006.log`)。再試行はしていない。
 
 - [事実] 2026-10-04、release の通常テスト一式 (並列 8) の 1 回で
   `preview_engine_p5e_remove_fatal_event_order` が SEGFAULT で落ちた。単独では 5/5 通過。

@@ -13,7 +13,8 @@ set_target_properties(mvm_math_raster_cache PROPERTIES AUTOMOC ON)
 target_include_directories(mvm_math_raster_cache PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_math_raster_cache
     PUBLIC mvm::math mvm::still_image Qt6::Core
-    PRIVATE mvm::util mvm::warnings)
+    # 変形の backend の PNG は静止の mask と同じ decoder (loadMathCoverage) で読む。
+    PRIVATE mvm::math_clip_render mvm::util mvm::warnings)
 add_library(mvm::math_raster_cache ALIAS mvm_math_raster_cache)
 
 qt_add_executable(mvm
@@ -89,6 +90,7 @@ qt_add_qml_module(mvm
         TranscribeDialog.qml
         TextClipInspector.qml
         MathClipInspector.qml
+        MathDependencyGuidance.qml
         KeyframeInspector.qml
         TransitionInspector.qml
         TransitionEditorMath.js
@@ -136,6 +138,7 @@ set_target_properties(mvm PROPERTIES WIN32_EXECUTABLE OFF)
 find_package(Qt6 REQUIRED COMPONENTS Test)
 qt_add_executable(mvm_test_text_ui_input
     ${CMAKE_SOURCE_DIR}/tests/harness/test_text_ui_input.cpp
+    ${CMAKE_SOURCE_DIR}/tests/harness/math_p28_acceptance.cpp
     image_raster_cache.cpp
     media_bin_model.cpp
     media_import.cpp
@@ -199,6 +202,7 @@ qt_add_qml_module(mvm_test_text_ui_input
         TranscribeDialog.qml
         TextClipInspector.qml
         MathClipInspector.qml
+        MathDependencyGuidance.qml
         KeyframeInspector.qml
         TransitionInspector.qml
         TransitionEditorMath.js

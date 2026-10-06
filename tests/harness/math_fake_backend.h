@@ -8,19 +8,41 @@
 //   "SLOW"  cancel されるまで待つ (最長 30 秒)。Write の連番でも同じ
 //   "WIDE" を含む式  64x8 の白い帯 (位置で frame を見分ける試験用)。Write の frame i は
 //                    左から 64 * i / frames 列だけが不透明 (frame 0 は空)
+//   "GATE" を含む式  staticGate が true の間は静止の描画を終えない (cancel で止まる)
+//   "SIZE<w>x<h>" を含む式  w x h の全面が不透明 (alpha 255) な白の静止 (偶奇を変える試験用)。
+//                           Write の frame i は左から w * i / frames 列だけが不透明
 //   それ以外  3x2 の白い glyph の PNG (math_test_png.h) を書いて Ok。Write も各 frame が同じ PNG
+//
+// 変形 (renderTransform): canvas は大きい方の端点の静止 + 各辺 kFakeTransformPadding。端点は
+// mathTransformPlacement の位置に置く。frame 0 は source の静止の mask だけ、frame 1 以降は
+// target の静止の mask と、canvas の (2, 3) の 1 画素 (alpha 200)。artifact は両端の静止の矩形と
+// その 1 画素の和。受け取った両端の mask を記録する。
+//   transformCancellableGate が true の間は、cancel されるか gate が下りるまで待つ。cancel なら
+//   Cancelled を返し、transformSawCancel を立てる (取消を見る renderer を真似る)
+//   transformGate が true の間は終えない (cancel を見ずに待つ。取り消された後に結果を返す
+//   renderer を真似る)
+//   target が "BADT" を含む  InvalidSource
+//   target が "GONET" を含む BackendUnavailable (変形の描画中に toolchain が消えた)
+//   source が "LIE" を含む   artifact の矩形を (2, 3) の画素を含めずに報告する
+//   source が "SHIFT" を含む frame 0 の source を右へ 1 画素ずらして描く
 
 #include "math_raster_cache.h"
 #include "math_test_png.h"
+#include "media/math/math_transform.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include <QImage>
 #include <QString>
@@ -45,8 +67,150 @@ inline bool writeWidePng(const std::filesystem::path& path, int opaqueColumns) {
     return image.save(QString::fromStdWString(path.wstring()), "PNG");
 }
 
+// 式の "SIZE<w>x<h>" (例 "SIZE7x2") の大きさ。無ければ false。
+inline bool fakeMathSize(const std::string& source, int& width, int& height) {
+    const auto at = source.find("SIZE");
+    if (at == std::string::npos)
+        return false;
+    int w = 0;
+    int h = 0;
+    if (std::sscanf(source.c_str() + at, "SIZE%dx%d", &w, &h) != 2 || w <= 0 || h <= 0)
+        return false;
+    width = w;
+    height = h;
+    return true;
+}
+
+inline constexpr int kFakeTransformPadding = 6;
+inline constexpr int kFakeTransformExtraX = 2;
+inline constexpr int kFakeTransformExtraY = 3;
+inline constexpr std::uint8_t kFakeTransformExtraAlpha = 200;
+
+// 1 画素 1 byte の画像の (x, y) の位置。
+inline std::size_t coverageIndex(int width, int x, int y) {
+    return static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+           static_cast<std::size_t>(x);
+}
+
+inline bool writeCoveragePng(const std::filesystem::path& path,
+                             const math::MathCoverage& coverage) {
+    QImage image(coverage.width, coverage.height, QImage::Format_RGBA8888);
+    image.fill(Qt::transparent);
+    for (int y = 0; y < coverage.height; ++y)
+        for (int x = 0; x < coverage.width; ++x)
+            image.setPixelColor(
+                x, y, QColor(255, 255, 255, coverage.alpha[coverageIndex(coverage.width, x, y)]));
+    return image.save(QString::fromStdWString(path.wstring()), "PNG");
+}
+
+inline void stampCoverage(math::MathCoverage& canvas, const math::MathCoverage& mask, int left,
+                          int top) {
+    for (int y = 0; y < mask.height; ++y)
+        for (int x = 0; x < mask.width; ++x)
+            canvas.alpha[coverageIndex(canvas.width, left + x, top + y)] =
+                mask.alpha[coverageIndex(mask.width, x, y)];
+}
+
+// 偽の変形が受け取った両端の静止の mask と、描き終えた順の記録 (events)。
+// events は "static:<式>" (静止を描き終えた)・"transform:<target の式>" (変形を描き終えた)・
+// "transform-cancelled:<target の式>" (取消を見て止めた)。
+struct FakeTransformLog {
+    std::mutex mutex;
+    std::vector<std::pair<math::MathCoverage, math::MathCoverage>> received;
+    std::vector<std::string> events;
+
+    void record(std::string event) {
+        std::lock_guard lock(mutex);
+        events.push_back(std::move(event));
+    }
+};
+
+inline math::MathTransformRenderResult
+fakeRenderTransform(const math::MathTransformRenderRequest& request,
+                    const math::MathCoverageLoader& loader, const std::atomic<bool>* cancel,
+                    const std::shared_ptr<std::atomic<bool>>& gate,
+                    const std::shared_ptr<std::atomic<bool>>& held) {
+    math::MathTransformRenderResult result;
+    if (gate->load()) {
+        held->store(true);
+        for (int i = 0; i < 3000 && gate->load(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    (void)cancel;
+    if (!loader) {
+        result.message = "loader がありません";
+        return result;
+    }
+    const auto& source = request.spec.source.source;
+    if (request.spec.target.source.find("BADT") != std::string::npos) {
+        result.status = math::MathRenderStatus::InvalidSource;
+        result.message = "fake transform error";
+        return result;
+    }
+    if (request.spec.target.source.find("GONET") != std::string::npos) {
+        result.status = math::MathRenderStatus::BackendUnavailable;
+        result.message = "fake transform backend gone";
+        return result;
+    }
+    const auto& from = request.sourceStatic;
+    const auto& to = request.targetStatic;
+    const int canvasWidth = std::max(from.width, to.width) + 2 * kFakeTransformPadding;
+    const int canvasHeight = std::max(from.height, to.height) + 2 * kFakeTransformPadding;
+    math::MathTransformPlacement placement;
+    if (!math::mathTransformPlacement(from.width, from.height, to.width, to.height, canvasWidth,
+                                      canvasHeight, placement)) {
+        result.message = "配置できません";
+        return result;
+    }
+    const bool shift = source.find("SHIFT") != std::string::npos;
+    for (std::int64_t index = 0; index < request.spec.frames; ++index) {
+        math::MathCoverage canvas{
+            canvasWidth, canvasHeight,
+            std::vector<std::uint8_t>(coverageIndex(canvasWidth, 0, canvasHeight), 0)};
+        if (index == 0) {
+            stampCoverage(canvas, from, placement.source.left + (shift ? 1 : 0),
+                          placement.source.top);
+        } else {
+            stampCoverage(canvas, to, placement.target.left, placement.target.top);
+            canvas.alpha[coverageIndex(canvasWidth, kFakeTransformExtraX, kFakeTransformExtraY)] =
+                kFakeTransformExtraAlpha;
+        }
+        wchar_t name[32] = {};
+        std::swprintf(name, std::size(name), L"t%04lld.png", static_cast<long long>(index));
+        const auto png = request.jobDirectory / name;
+        if (!writeCoveragePng(png, canvas)) {
+            result.message = "PNG を書けません";
+            return result;
+        }
+        result.frames.push_back(png);
+    }
+    result.status = math::MathRenderStatus::Ok;
+    result.canvasWidth = canvasWidth;
+    result.canvasHeight = canvasHeight;
+    result.placement = placement;
+    result.artifact =
+        math::mathRectUnion({placement.source.left, placement.source.top, from.width, from.height},
+                            {placement.target.left, placement.target.top, to.width, to.height});
+    if (request.spec.frames > 1 && source.find("LIE") == std::string::npos)
+        result.artifact = math::mathRectUnion(result.artifact,
+                                              {kFakeTransformExtraX, kFakeTransformExtraY, 1, 1});
+    return result;
+}
+
 struct FakeMathBackend {
     std::shared_ptr<std::atomic<int>> renders = std::make_shared<std::atomic<int>>(0);
+    std::shared_ptr<std::atomic<int>> transformRenders = std::make_shared<std::atomic<int>>(0);
+    std::shared_ptr<std::atomic<bool>> staticGate = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> transformGate = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> transformHeld = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> transformCancellableGate =
+        std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> transformSawCancel =
+        std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<FakeTransformLog> transformLog = std::make_shared<FakeTransformLog>();
+    std::string transformTemplate = "fake-transform/1";
+    bool withTransform = true;
+    std::int64_t maximumTransformFrames = 9998;
     std::shared_ptr<std::atomic<int>> sequenceRenders = std::make_shared<std::atomic<int>>(0);
     std::shared_ptr<std::atomic<bool>> slowStarted = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::atomic<bool>> slowSawCancel = std::make_shared<std::atomic<bool>>(false);
@@ -60,15 +224,64 @@ struct FakeMathBackend {
     app::MathRasterCache::PreflightFunction preflight() const {
         return [renders = renders, sequenceRenders = sequenceRenders, started = slowStarted,
                 slow = slowSawCancel, canonical = canonical, sequenceTemplate = sequenceTemplate,
-                withSequence = withSequence, maximumSequenceFrames = maximumSequenceFrames](
+                withSequence = withSequence, maximumSequenceFrames = maximumSequenceFrames,
+                transformRenders = transformRenders, staticGate = staticGate,
+                transformGate = transformGate, transformHeld = transformHeld,
+                cancellableGate = transformCancellableGate, sawCancel = transformSawCancel,
+                transformLog = transformLog, transformTemplate = transformTemplate,
+                withTransform = withTransform, maximumTransformFrames = maximumTransformFrames](
                    const std::filesystem::path&, const std::atomic<bool>*) {
             math::MathPreflightResult result;
             result.status = math::MathPreflightStatus::Available;
             result.backend.fingerprint = {"fake", canonical};
-            result.backend.render = [renders, started,
-                                     slow](const math::MathStaticRenderRequest& request,
-                                           const std::atomic<bool>* cancel) {
+            if (withTransform) {
+                result.backend.transformTemplate = transformTemplate;
+                result.backend.maximumTransformFrames = maximumTransformFrames;
+                result.backend.renderTransform =
+                    [transformRenders, transformGate, transformHeld, cancellableGate, sawCancel,
+                     transformLog](const math::MathTransformRenderRequest& request,
+                                   const math::MathCoverageLoader& loader,
+                                   const std::atomic<bool>* cancel) {
+                        ++*transformRenders;
+                        {
+                            std::lock_guard lock(transformLog->mutex);
+                            transformLog->received.emplace_back(request.sourceStatic,
+                                                                request.targetStatic);
+                        }
+                        const auto& target = request.spec.target.source;
+                        if (cancellableGate->load()) {
+                            transformHeld->store(true);
+                            for (int i = 0; i < 3000 && cancellableGate->load() && !cancel->load();
+                                 ++i)
+                                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                            if (cancel->load()) {
+                                sawCancel->store(true);
+                                transformLog->record("transform-cancelled:" + target);
+                                math::MathTransformRenderResult cancelled;
+                                cancelled.status = math::MathRenderStatus::Cancelled;
+                                return cancelled;
+                            }
+                        }
+                        auto result = fakeRenderTransform(request, loader, cancel, transformGate,
+                                                          transformHeld);
+                        if (result.status == math::MathRenderStatus::Ok)
+                            transformLog->record("transform:" + target);
+                        return result;
+                    };
+            }
+            result.backend.render = [renders, started, slow, staticGate,
+                                     transformLog](const math::MathStaticRenderRequest& request,
+                                                   const std::atomic<bool>* cancel) {
                 ++*renders;
+                if (request.spec.source.find("GATE") != std::string::npos) {
+                    while (staticGate->load() && !cancel->load())
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    if (cancel->load()) {
+                        math::MathStaticRenderResult cancelled;
+                        cancelled.status = math::MathRenderStatus::Cancelled;
+                        return cancelled;
+                    }
+                }
                 math::MathStaticRenderResult rendered;
                 if (request.spec.source == "BAD") {
                     rendered.status = math::MathRenderStatus::InvalidSource;
@@ -90,7 +303,17 @@ struct FakeMathBackend {
                     return rendered;
                 }
                 const auto png = request.jobDirectory / L"out.png";
-                if (request.spec.source.find("WIDE") != std::string::npos) {
+                int sizedWidth = 0;
+                int sizedHeight = 0;
+                if (fakeMathSize(request.spec.source, sizedWidth, sizedHeight)) {
+                    writeCoveragePng(
+                        png, {sizedWidth, sizedHeight,
+                              std::vector<std::uint8_t>(static_cast<std::size_t>(sizedWidth) *
+                                                            static_cast<std::size_t>(sizedHeight),
+                                                        255)});
+                    rendered.width = sizedWidth;
+                    rendered.height = sizedHeight;
+                } else if (request.spec.source.find("WIDE") != std::string::npos) {
                     writeWidePng(png, kWideMathWidth);
                     rendered.width = kWideMathWidth;
                     rendered.height = kWideMathHeight;
@@ -101,6 +324,7 @@ struct FakeMathBackend {
                 }
                 rendered.status = math::MathRenderStatus::Ok;
                 rendered.png = png;
+                transformLog->record("static:" + request.spec.source);
                 return rendered;
             };
             if (!withSequence)
@@ -132,19 +356,36 @@ struct FakeMathBackend {
                     return rendered;
                 }
                 const bool wide = source.find("WIDE") != std::string::npos;
+                int sizedWidth = 0;
+                int sizedHeight = 0;
+                const bool sized = fakeMathSize(source, sizedWidth, sizedHeight);
                 for (std::int64_t index = 0; index < request.spec.frames; ++index) {
                     wchar_t name[32] = {};
                     std::swprintf(name, std::size(name), L"f%04lld.png",
                                   static_cast<long long>(index));
                     const auto png = request.jobDirectory / name;
-                    if (wide)
+                    if (sized) {
+                        // frame i は左から w * i / frames 列だけが不透明 (WIDE と同じ規則)。
+                        math::MathCoverage coverage{
+                            sizedWidth, sizedHeight,
+                            std::vector<std::uint8_t>(static_cast<std::size_t>(sizedWidth) *
+                                                          static_cast<std::size_t>(sizedHeight),
+                                                      0)};
+                        const auto columns =
+                            static_cast<int>(sizedWidth * index / request.spec.frames);
+                        for (int y = 0; y < sizedHeight; ++y)
+                            for (int x = 0; x < columns; ++x)
+                                coverage.alpha[coverageIndex(sizedWidth, x, y)] = 255;
+                        writeCoveragePng(png, coverage);
+                    } else if (wide) {
                         writeWidePng(png, wideRevealColumns(index, request.spec.frames));
-                    else
+                    } else {
                         std::ofstream(png, std::ios::binary) << mathTestPngBytes();
+                    }
                     rendered.frames.push_back(png);
                 }
-                rendered.width = wide ? kWideMathWidth : kMathTestPngWidth;
-                rendered.height = wide ? kWideMathHeight : kMathTestPngHeight;
+                rendered.width = sized ? sizedWidth : wide ? kWideMathWidth : kMathTestPngWidth;
+                rendered.height = sized ? sizedHeight : wide ? kWideMathHeight : kMathTestPngHeight;
                 rendered.status = math::MathRenderStatus::Ok;
                 return rendered;
             };

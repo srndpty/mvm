@@ -1,6 +1,7 @@
 #ifndef MVM_APP_TIMELINE_EXPORT_H
 #define MVM_APP_TIMELINE_EXPORT_H
 
+#include "media/math/math_transform.h"
 #include "project/project.h"
 
 #include <filesystem>
@@ -10,6 +11,15 @@
 #include <vector>
 
 namespace mvm::app {
+
+// 現在の key の disk artifact を検査した呼び出し側が渡す。preview の常駐状態は含めない。
+struct TimelineMathTransformArtifact {
+    math::MathTransformSpec spec;
+    int width = 0, height = 0;
+    int sourceX = 0, sourceY = 0, targetX = 0, targetY = 0;
+    std::int64_t frames = 0;
+    std::function<bool(std::size_t, std::vector<std::uint8_t>&, std::string&)> loadFrame;
+};
 
 // M4 の書き出し要求。Project の output size を呼び出し側が渡す。
 struct TimelineExportRequest {
@@ -30,6 +40,7 @@ struct TimelineExportRequest {
     // 数式 clip の ID -> Write の連番の PNG (cache の write/<key>/、frame 0 から順)。Write のある
     // 出力する数式 clip がここに無い・枚数が足りなければ失敗する。
     std::map<std::string, std::vector<std::filesystem::path>> mathWriteFrames;
+    std::map<std::string, TimelineMathTransformArtifact> mathTransforms;
     int renderThreads = 4;
     int encoderThreads = 0;
     // trueを返すとキャンセルする。worker threadから呼ばれる。
@@ -78,6 +89,7 @@ struct TimelineExportClipMapping {
     // 数式 clip の Write の区間。timeline の frame ごとの全画面の透過 PNG を連番で stage し、
     // qimage の連番で開く。Write の後は同じ clip の別の mapping (静止) が続く。
     bool mathWrite = false;
+    std::string mathTransformId;
     // MLT の映像 layer (下から 0, 1, ...)。track ごとに lane 0 と、トランジションがあれば
     // lane 1 (incoming を重ねる) を積む。トランジションが無ければ track の index と同じ。
     int videoTrackIndex = 0;
@@ -111,6 +123,7 @@ struct TimelineExportPlan {
     TimelineExportResult::Backend backend = TimelineExportResult::Backend::Sequential;
     std::int64_t totalDurationFrames = 0;
     std::vector<TimelineExportClipMapping> clips;
+    std::map<std::string, math::MathTransformRasterPlacement> mathTransformPlacements;
     std::string error;
 };
 

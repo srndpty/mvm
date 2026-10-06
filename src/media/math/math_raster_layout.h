@@ -43,6 +43,12 @@ bool mathRasterPlacement(int maskWidth, int maskHeight, int outputWidth, int out
 void composeMathPatch(const std::uint8_t* coverage, int maskWidth, int maskHeight,
                       const MathComposeStyle& style, std::uint8_t* out);
 
+// composeMathPatch と同じ画素を、幅 outWidth 画素の RGBA8 の画像 out の (left, top) から書く
+// (変形の artifact を、それより大きい書き換えの矩形の中へ置く)。範囲の検査は呼び出し側が行う。
+void composeMathPatchAt(const std::uint8_t* coverage, int maskWidth, int maskHeight,
+                        const MathComposeStyle& style, std::uint8_t* out, int outWidth, int left,
+                        int top);
+
 } // namespace mvm::math
 
 #endif // MVM_MEDIA_MATH_MATH_RASTER_LAYOUT_H

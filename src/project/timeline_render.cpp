@@ -24,6 +24,10 @@ bool transitionIsRendered(const Project& project, const ClipIdIndex& clipIndex,
     incoming = clipIndex.find(transition.incomingClipId);
     if (outgoing < 0 || incoming < 0)
         return false;
+    // 数式の変形は clip を延ばして重ねる混合ではない。区間分けでは cut として扱い、変形の画素は
+    // 両 clip の静止の区間の上に別に重ねる (docs/math-clips.md の P2)。
+    if (transition.kind != TransitionKind::Blend)
+        return false;
     const auto& a = project.timelineClips[static_cast<std::size_t>(outgoing)];
     const auto& b = project.timelineClips[static_cast<std::size_t>(incoming)];
     return a.enabled && b.enabled && a.track.kind == kind && b.track.kind == kind;

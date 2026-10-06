@@ -94,27 +94,8 @@ struct MathSequenceRenderResult {
 using MathSequenceRenderFunction = std::function<MathSequenceRenderResult(
     const MathSequenceRenderRequest& request, const std::atomic<bool>* cancel)>;
 
-// Project には入らない値。fingerprint が同じ backend は同じ入力から同じ画素を出す。
-struct MathRenderBackend {
-    MathToolchainFingerprint fingerprint;
-    MathRenderFunction render;
-    // 連番の描画 script の識別 (例 "manim-write/1")。静止の key に入れないよう fingerprint と
-    // 分けて持つ (連番の描き方を変えても静止の cache を無効にしない)。
-    std::string sequenceTemplate;
-    // 連番を描けない backend では空。
-    MathSequenceRenderFunction renderSequence;
-    // renderSequence が描ける最大の枚数 (backend の能力)。超える要求は描かずに未対応として
-    // 失敗させる。Project の値の正しさとは別 (Project は時間の意味だけで検証する)。
-    std::int64_t maximumSequenceFrames = 0;
-};
-
-enum class MathPreflightStatus { Available, Unavailable, Cancelled };
-
-struct MathPreflightResult {
-    MathPreflightStatus status = MathPreflightStatus::Unavailable;
-    MathRenderBackend backend; // Available のときだけ有効
-    std::string message;       // Unavailable の理由 (導入の案内を含む)
-};
+// backend の束 (MathRenderBackend) と preflight の結果は math_backend.h にある
+// (変形の描画関数の型が math_transform.h の型を使うため)。
 
 const char* mathRenderStatusName(MathRenderStatus status);
 

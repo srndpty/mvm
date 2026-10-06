@@ -100,4 +100,21 @@ void composeMathPatch(const std::uint8_t* coverage, int maskWidth, int maskHeigh
         composePixel(coverage[index], style.colorArgb, background, out + index * 4U);
 }
 
+void composeMathPatchAt(const std::uint8_t* coverage, int maskWidth, int maskHeight,
+                        const MathComposeStyle& style, std::uint8_t* out, int outWidth, int left,
+                        int top) {
+    const Straight background = fromArgb(style.backgroundArgb, 1.0);
+    for (int y = 0; y < maskHeight; ++y) {
+        const std::uint8_t* row =
+            coverage + static_cast<std::size_t>(y) * static_cast<std::size_t>(maskWidth);
+        std::uint8_t* target =
+            out + (static_cast<std::size_t>(top + y) * static_cast<std::size_t>(outWidth) +
+                   static_cast<std::size_t>(left)) *
+                      4U;
+        for (int x = 0; x < maskWidth; ++x)
+            composePixel(row[x], style.colorArgb, background,
+                         target + static_cast<std::size_t>(x) * 4U);
+    }
+}
+
 } // namespace mvm::math
