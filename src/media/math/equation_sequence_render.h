@@ -135,13 +135,28 @@ enum class EquationBackendFailure {
     FrameCountMismatch,
     FrameSizeMismatch,
     CorruptFrame,
-    EdgeContact,       // 一時的な canvas の縁に触れた (はみ出した可能性)
-    StaticMismatch,    // 状態の描画が通常の静止の描画と一致しない
-    EndpointMismatch,  // 変形の端点が両端の静止と一致しない
-    ActionMutatedState // action の後の式が静止と一致しない (端点を変えた)
+    EdgeContact,        // 一時的な canvas の縁に触れた (はみ出した可能性)
+    StaticMismatch,     // 状態の描画が通常の静止の描画と一致しない
+    EndpointMismatch,   // 変形の端点が両端の静止と一致しない
+    ActionMutatedState, // action の後の式が静止と一致しない (端点を変えた)
+    // pulse の base と、通常の大きさ・位置の対象を合成しても状態の静止と一致しない
+    // (base が対象を含む・別の segment を欠く・対象の層がずれている)
+    PulseBaseMismatch
 };
 
 const char* equationBackendFailureName(EquationBackendFailure failure);
+
+// ---- 層の合成 (A8) ----
+//
+// Equation Sequence の層の被覆 (alpha) の合成規則。下の層 under の上に over を重ねる
+// (source-over を alpha だけで行う)。1 画素ごとに整数で
+//   out = over + round(under * (255 - over) / 255)
+// round は最も近い整数 (x / 255 はちょうど半分にならない)。P3-4 の preview / export の合成も
+// この規則を使う。順序は base の上に accent (対象)。
+std::uint8_t equationCoverageOver(std::uint8_t under, std::uint8_t over);
+// 同じ大きさの 2 枚を合成する。大きさが不正・違うなら false。
+bool composeEquationCoverage(const MathCoverage& under, const MathCoverage& over,
+                             MathCoverage& out);
 
 // segment ごとの backend の事実 (診断・provenance 用。Project には保存しない)。
 struct EquationSegmentOwnership {
@@ -198,6 +213,10 @@ struct EquationTransitionRaster {
 struct EquationActionRaster {
     EquationIntervalRaster interval; // accent の N 枚
     std::filesystem::path base;
+    // pulse だけ: 拡大していない通常の大きさ・位置の対象だけの層 (作業 directory の中の照合用。
+    // artifact には保存しない)。composeEquationCoverage(base, normalTarget)
+    // が状態の静止に一致する。
+    std::filesystem::path normalTarget;
     MathEndpointPlacement placement; // canvas の中の状態の静止の配置
 };
 

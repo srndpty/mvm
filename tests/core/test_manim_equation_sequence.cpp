@@ -297,6 +297,9 @@ void testRender() {
     check(ok.result.actions.size() == 2 && ok.result.actions[0].interval.frames.size() == 2 &&
               ok.result.actions[1].interval.frames.size() == 3,
           "action は N 枚");
+    check(ok.result.actions.size() == 2 && ok.result.actions[0].normalTarget.empty() &&
+              !ok.result.actions[1].normalTarget.empty(),
+          "pulse だけが通常の対象の層 (照合用) を返す");
     const auto& artifact = ok.result.actions[0].interval.artifact;
     check(artifact.x == 2 && artifact.y == 3, "action の artifact は accent の画素を含む外接矩形");
 
@@ -326,6 +329,11 @@ void testRender() {
         {"FAKE_EQ_ENDPOINT", F::EndpointMismatch, true},
         {"FAKE_EQ_AFTER", F::ActionMutatedState, true},
         {"FAKE_EQ_EDGE", F::EdgeContact, true},
+        // P3-3.1: pulse の base と通常の対象を合成しても静止に戻らない。
+        {"FAKE_EQ_PULSE_FULL", F::PulseBaseMismatch, true},
+        {"FAKE_EQ_PULSE_OMIT", F::PulseBaseMismatch, true},
+        {"FAKE_EQ_PULSE_SHIFT", F::PulseBaseMismatch, true},
+        {"FAKE_EQ_PULSE_NO_TARGET", F::FrameCountMismatch, true},
     };
     for (const auto& c : cases) {
         const auto r = run(std::string("a") + c.marker);

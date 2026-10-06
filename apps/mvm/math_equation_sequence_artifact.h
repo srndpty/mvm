@@ -17,6 +17,9 @@
 //   outline base = 状態の色、accent (線) = kEquationActionAccentArgb。base の上に accent
 //   pulse   base (対象以外) = 状態の色、accent (拡大する対象) =
 //           mathTransformColorAt(状態の色, kEquationActionAccentArgb, 重みの分子, 分母)
+//           公開の前に、base と通常の大きさ・位置の対象 (backend の作業 directory の照合用の層。
+//           保存しない) を composeEquationCoverage で重ねると状態の静止と全画素一致することを
+//           確かめる (PulseBaseMismatch)。読むときは SHA-256 で公開時の base と同じことを確かめる。
 // preview・書き出しへの組み込み (P3-4 / P3-5) はまだ行わない。
 
 #include "media/math/equation_sequence_render.h"

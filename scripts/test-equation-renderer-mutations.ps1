@@ -41,13 +41,13 @@ $cacheLibraries = @((Join-Path $buildDir 'apps/mvm/libmvm_math_raster_cache.a'),
 $backend = @{
     File = 'src/media/manim/manim_equation_sequence.cpp'; Objects = $backendObjects; Libraries = $backendLibraries
     Include = @('-I', (Join-Path $repoRoot 'src'))
-    Arguments = { param($name) @($fakeManim, (Join-Path $outputDir "$name-io"), 'C:/msys64/ucrt64/bin') }
+    Arguments = { param($io) @($fakeManim, $io, 'C:/msys64/ucrt64/bin') }
     Timeout = 120000
 }
 $cache = @{
     File = 'apps/mvm/math_equation_sequence_artifact.cpp'; Objects = $cacheObjects; Libraries = $cacheLibraries
     Include = @('-I', (Join-Path $repoRoot 'src'), '-I', (Join-Path $repoRoot 'apps/mvm'))
-    Arguments = { param($name) @((Join-Path $outputDir "$name-io")) }
+    Arguments = { param($io) @($io) }
     Timeout = 300000
 }
 $mutations = @(
@@ -81,6 +81,15 @@ $mutations = @(
        From = 'after.coverage, still, place.placement.left, place.placement.top);'
        To = 'after.coverage, after.coverage, 0, 0);'
        Expected = 'FAKE_EQ_AFTER' },
+    # P3-3.1: pulse の base と通常の対象の合成による静止の分解の照合を外す。
+    @{ Name = 'pulse_reconstruction_removed_backend'; Target = $backend
+       From = '? math::mathEndpointDifference(composed, still, place.placement.left,'
+       To = '? 0 * math::mathEndpointDifference(composed, still, place.placement.left,'
+       Expected = 'FAKE_EQ_PULSE_FULL' },
+    @{ Name = 'pulse_reconstruction_removed_publication'; Target = $cache
+       From = 'composed, job.stateStatics[job.spec.actions[a].state], r.ax, r.ay)'
+       To = 'composed, composed, 0, 0)'
+       Expected = 'pulse の base が対象を含んだままなら Failed' },
     @{ Name = 'provenance_identity_ignored'; Target = $cache
        From = 'provenanceText(job, colors, parsed) == text;'; To = 'true;'
        Expected = '合成の色を書き換えた provenanceは使わず描き直す' },
@@ -108,7 +117,9 @@ foreach ($mutation in $mutations) {
         '-isystem' 'C:/msys64/ucrt64/include/qt6/QtCore' $source @($target.Objects) @($target.Libraries) '-o' $binary
     if ($LASTEXITCODE -ne 0) { throw "変異のコンパイルが失敗しました: $($mutation.Name)" }
     $startInfo = [Diagnostics.ProcessStartInfo]::new($binary)
-    foreach ($argument in (& $target.Arguments $mutation.Name)) { $startInfo.ArgumentList.Add($argument) }
+    # 試験の作業 directory は短い名前にする (長い変異名で cache の作業 path が 260 文字を超えない)。
+    $io = Join-Path $outputDir ("io-" + $killed)
+    foreach ($argument in (& $target.Arguments $io)) { $startInfo.ArgumentList.Add($argument) }
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true

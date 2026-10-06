@@ -15,6 +15,7 @@
 //   (同じ進み具合 1/2・重み 1。先行 frame の無い描画と同じ = 再生の履歴に依存しない)
 // - P3-1 の評価で source frame から区間と frame を引く (action の frame 0・中央・最後・直後)
 // - MathRasterCache で実際に公開し、provenance・全 frame の SHA-256・合成の色を確かめる
+// - pulse の base と通常の対象 (照合用の層) を読み直して合成し、静止と全画素一致 (P3-3.1)
 // 結果の生データは <証拠>/results.json (検査数・失敗・ケースごとの値)。
 
 #include "app/equation_sequence_compile.h"
@@ -444,8 +445,61 @@ BackendRun runCase(const CaseDef& c) {
                 emptyFrames += count == 0 ? 1 : 0;
                 coverage += (i > 0 ? ", " : "") + std::to_string(count);
             }
-            if (item.operation == math::EquationRenderOperation::Pulse)
+            std::string decomposition;
+            if (item.operation == math::EquationRenderOperation::Pulse) {
                 check(emptyFrames == 0, c.label + ": pulse の全 frame で対象が描かれる");
+                // P3-3.1: base と通常の対象を backend とは別に読み直し、合成して静止と照合する。
+                int w = 0;
+                int h = 0;
+                const auto base = loadAlpha(raster.base, w, h);
+                const math::MathCoverage baseCoverage{w, h, base};
+                const auto target = loadAlpha(raster.normalTarget, w, h);
+                const math::MathCoverage targetCoverage{w, h, target};
+                const auto& still = run.request.stateStatics[item.state];
+                math::MathCoverage composed;
+                const bool composedOk =
+                    math::composeEquationCoverage(baseCoverage, targetCoverage, composed);
+                const auto exact = composedOk ? math::mathEndpointDifference(composed, still,
+                                                                             raster.placement.left,
+                                                                             raster.placement.top)
+                                              : -1;
+                // base を式全体にした誤りなら合成は静止に戻らない (検査が空振りでない対照)。
+                math::MathCoverage fullBase;
+                std::int64_t fullBaseDifference = -1;
+                std::int64_t overlap = 0;
+                std::int64_t targetPixels = 0;
+                if (composedOk) {
+                    math::MathCoverage placedStatic{w, h,
+                                                    std::vector<std::uint8_t>(base.size(), 0)};
+                    for (int y = 0; y < still.height; ++y)
+                        for (int x = 0; x < still.width; ++x)
+                            placedStatic
+                                .alpha[static_cast<std::size_t>(raster.placement.top + y) *
+                                           static_cast<std::size_t>(w) +
+                                       static_cast<std::size_t>(raster.placement.left + x)] =
+                                still.alpha[static_cast<std::size_t>(y) *
+                                                static_cast<std::size_t>(still.width) +
+                                            static_cast<std::size_t>(x)];
+                    if (math::composeEquationCoverage(placedStatic, targetCoverage, fullBase))
+                        fullBaseDifference = math::mathEndpointDifference(
+                            fullBase, still, raster.placement.left, raster.placement.top);
+                    for (std::size_t i = 0; i < base.size(); ++i) {
+                        overlap += base[i] != 0 && target[i] != 0 ? 1 : 0;
+                        targetPixels += target[i] != 0 ? 1 : 0;
+                    }
+                }
+                check(exact == 0, c.label +
+                                      ": pulse の base と通常の対象の合成は静止と全画素一致 (" +
+                                      std::to_string(exact) + ")");
+                check(targetPixels > 0, c.label + ": 通常の対象の層は空でない");
+                check(fullBaseDifference > 0,
+                      c.label + ": 対照: base が式全体なら合成は静止と一致しない");
+                decomposition =
+                    ", \"pulse_decomposition_difference\": " + std::to_string(exact) +
+                    ", \"full_base_control_difference\": " + std::to_string(fullBaseDifference) +
+                    ", \"target_pixels\": " + std::to_string(targetPixels) +
+                    ", \"base_target_overlap_pixels\": " + std::to_string(overlap);
+            }
             if (item.duration >= 3)
                 check(hashes.size() > 1, c.label + ": action の frame が時間で変わる");
             if (a > 0)
@@ -456,7 +510,7 @@ BackendRun runCase(const CaseDef& c) {
                 ", \"segment\": " + std::to_string(item.segment) +
                 ", \"frames\": " + std::to_string(item.duration) +
                 ", \"distinct_frames\": " + std::to_string(hashes.size()) +
-                ", \"accent_nonzero\": [" + coverage + "]}";
+                ", \"accent_nonzero\": [" + coverage + "]" + decomposition + "}";
         }
     }
     actions += "]";

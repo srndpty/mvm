@@ -5,6 +5,7 @@
 #include "media/math/math_render.h"
 #include "media/math/math_transform.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <functional>
 #include <set>
@@ -207,6 +208,46 @@ void testKey() {
           "backend が key に入る");
 }
 
+// 層の合成 (P3-3.1)。期待値は out = over + round(under * (255 - over) / 255) の手計算。
+void testComposition() {
+    struct Case {
+        int under, over, expected;
+    };
+
+    // 128 + round(128*127/255 = 63.75) = 192、200 + round(64*55/255 = 13.80) = 214、
+    // 10 + round(100*245/255 = 96.08) = 106、0 + 37 = 37、254 + round(1/255) = 254。
+    const Case cases[] = {{0, 0, 0},      {255, 0, 255},  {0, 77, 77}, {128, 128, 192},
+                          {64, 200, 214}, {100, 10, 106}, {37, 0, 37}, {255, 255, 255},
+                          {1, 254, 254},  {255, 1, 255}};
+    for (const auto& c : cases)
+        check(math::equationCoverageOver(static_cast<std::uint8_t>(c.under),
+                                         static_cast<std::uint8_t>(c.over)) == c.expected,
+              "合成の手計算 under=" + std::to_string(c.under) + " over=" + std::to_string(c.over));
+    // alpha だけの source-over は順序によらない (整数の丸めでも)。全 65536 組で確かめる。
+    bool commutative = true;
+    bool bounded = true;
+    for (int a = 0; a < 256; ++a)
+        for (int b = 0; b < 256; ++b) {
+            const auto ab = math::equationCoverageOver(static_cast<std::uint8_t>(a),
+                                                       static_cast<std::uint8_t>(b));
+            commutative =
+                commutative && ab == math::equationCoverageOver(static_cast<std::uint8_t>(b),
+                                                                static_cast<std::uint8_t>(a));
+            bounded = bounded && ab >= std::max(a, b);
+        }
+    check(commutative, "合成は順序によらない");
+    check(bounded, "合成は両方の層以上 (被覆を失わない)");
+    // 重ならない 2 層の合成は、そのまま両方の画素になる (pulse の静止の分解の典型)。
+    math::MathCoverage out;
+    check(math::composeEquationCoverage({3, 1, {200, 0, 0}}, {3, 1, {0, 64, 0}}, out) &&
+              out.alpha == std::vector<std::uint8_t>{200, 64, 0},
+          "重ならない層の合成");
+    check(!math::composeEquationCoverage({3, 1, {0, 0, 0}}, {2, 1, {0, 0}}, out),
+          "大きさの違う層は合成しない");
+    check(!math::composeEquationCoverage({3, 1, {0, 0}}, {3, 1, {0, 0, 0}}, out),
+          "byte 数の合わない層は合成しない");
+}
+
 void testNames() {
     check(std::string(math::equationRenderOperationName(math::EquationRenderOperation::Outline)) ==
                   "outline" &&
@@ -214,12 +255,12 @@ void testNames() {
                   math::EquationRenderOperation::Pulse)) == "pulse",
           "operation の名前");
     std::set<std::string> names;
-    for (int f = 0; f <= static_cast<int>(math::EquationBackendFailure::ActionMutatedState); ++f)
+    for (int f = 0; f <= static_cast<int>(math::EquationBackendFailure::PulseBaseMismatch); ++f)
         names.insert(
             math::equationBackendFailureName(static_cast<math::EquationBackendFailure>(f)));
     check(names.size() ==
                   static_cast<std::size_t>(
-                      static_cast<int>(math::EquationBackendFailure::ActionMutatedState) + 1) &&
+                      static_cast<int>(math::EquationBackendFailure::PulseBaseMismatch) + 1) &&
               !names.count("unknown"),
           "失敗理由の名前は全て別");
     math::EquationBackendValidation validation;
@@ -233,6 +274,7 @@ int main() {
     testProgress();
     testValidation();
     testKey();
+    testComposition();
     testNames();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;

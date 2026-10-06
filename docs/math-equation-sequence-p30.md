@@ -933,3 +933,109 @@ binding loop の警告 (同じ log に `OpenThemeData() failed ... ハンドル�
 
 P3-3 の実装・検証を完了した。schema 21、P3-1 の時間の正、P3-2 の partition と照合の意味は維持した。
 P3-4 以降の residency・preview・export・製品 UI、commit、push は行っていない。
+
+## P3-3.1 pulse の base の静止の分解
+
+2026-10-07。P3-3 の artifact の正しさの穴を一つ塞ぐ。preview/residency/export/UI、schema 21、
+P3-1 / P3-2 の意味は変更していない。commit / push はしていない。
+
+### 問題
+
+pulse の artifact の契約は「base = 対象の segment を除いた通常の状態、accent = 動く対象」だが、
+P3-3 の公開と読み込みは pulse の base の大きさと SHA-256 しか検査していなかった。outline と違い、
+base が対象の正しい補集合であることを証明していない。backend が誤って base に式全体を返しても、
+無関係な segment を欠いても Ready になりえた。実際に P3-3 の偽の描画関数 (cache の試験) は
+pulse の base に式全体を返していた。
+
+### 合成規則と証明
+
+層の被覆 (A8) の合成規則を中立な契約に定義した (`equationCoverageOver` /
+`composeEquationCoverage`、`src/media/math/equation_sequence_render.*`)。下の層 under の上に over を重ねる
+alpha だけの source-over で、1 画素ごとに整数で
+
+```text
+out = over + round(under * (255 - over) / 255)      (x / 255 はちょうど半分にならない)
+```
+
+P3-4 の preview / export の合成もこの規則を使う (順序は base の上に accent)。
+
+Manim の job は pulse ごとに、拡大していない通常の大きさ・位置・色の対象だけの層 `target.png` を
+一時的に描く (artifact には保存しない)。次の等式を厳密に要求する。
+
+```text
+composeEquationCoverage(pulse の base, 通常の対象) == 状態の通常の静止 (全画素、同じ配置)
+```
+
+検査は 2 か所で行い、違えば型付きの失敗 `PulseBaseMismatch` で provenance を書かずに失敗する。
+
+- backend (`renderManimEquationSequence`): 一時 canvas の base と対象を合成し、静止を P2 の配置規則で
+  置いたものと比べる。対象の層が無ければ枚数の不一致 (`FrameCountMismatch`)。
+- 公開 (`renderEquationSequenceJob`): backend の報告を信じず、base と対象を同じ artifact の矩形で
+  切り出し直して合成し、静止と比べる。対象の層が無ければ `PulseBaseMismatch`。
+
+読み込みでは対象の層が無いので再合成しない。SHA-256 で公開時に証明した base と同じことを確かめる。
+
+この変更が確立するのは **静止の分解** だけで、動く 2 層の mvm 合成が Manim の 1 枚の scene で描いた
+pulse と等しいことは主張しない (P3-4 の別の問い。roadmap に残す)。
+
+### 証拠
+
+[事実] 開発中の確認として、実 Manim の scratch script (製品外) で 3 つの文字サイズ x 6 個の対象
+(`b^2-4ac`、`2ab`、`\beta`、`b_{1}`、`x`、`2x`) を同じ camera で描き、合成は全て静止と違う画素 0、
+base を式全体にした誤りは 259〜1690 画素の不一致だった。証拠ではなく設計の確認として扱う。
+
+[事実] 実 Manim の受け入れ `build/math-p331-acceptance-20261007-a` は **270 検査 / 0 失敗、終了コード 0**
+(log は同名の `.log`、生データは [results.json](../build/math-p331-acceptance-20261007-a/results.json))。
+toolchain は P3-3 と同じ (Manim 0.21.0、MiKTeX-pdfTeX 4.27 (MiKTeX 26.5)、dvisvgm 3.6)。
+harness は backend とは別に base と通常の対象を読み直して合成し、静止と照合する。pulse の 7 件
+(Greek、下付き、判別式、複数 glyph、action の後の変形、seek の N=3 と N=1) は全て違う画素 0。
+対照として base を式全体にした合成は 401〜1216 画素で静止と一致しない (空振りでない)。
+実 cache の公開 (公開前の照合を含む) も Ready。
+
+[事実] これらの実例では base と対象の被覆が重なる画素が 0 だった (results.json の
+`base_target_overlap_pixels`)。重なった画素での丸めは実例では通っておらず、規則の手計算値と全 65536 組の
+順序非依存性の単体試験だけで確かめた。重なる対象で厳密一致しない実例が出たら fail-closed で失敗する。
+
+偽の backend の負例 (実 Manim の証拠ではない):
+
+|試験|負例|結果|
+|---|---|---|
+|`manim_equation_sequence_focused`|base が対象を含んだまま (`FAKE_EQ_PULSE_FULL`)、別の部分を欠く (`FAKE_EQ_PULSE_OMIT`)、通常の対象を 1 画素ずらす (`FAKE_EQ_PULSE_SHIFT`)|`PulseBaseMismatch`|
+||通常の対象の層が無い|`FrameCountMismatch`|
+|`math_raster_cache_focused`|同じ 3 種と層の欠落を backend が Ok で返す (`EQPULSEFULL` / `EQPULSEOMIT` / `EQPULSESHIFT` / `EQPULSENOTARGET`)|公開前に `PulseBaseMismatch`、provenance も frame も残さない。対照の正しい分解は Ready|
+|`math_equation_sequence_render_contract`|合成の手計算値、順序非依存、被覆を失わない、大きさの不一致|通過|
+
+偽の描画関数の pulse は、静止の左半分の列を通常の対象、残りを base に分けるよう直した
+(P3-3 の式全体の base は今回の検査で拒否される)。
+
+[事実] 変異 runner に、backend と公開の両方で合成の照合を外す 2 件を足し **15 / 15 を検出**
+(`build/math-p331-mutations-final.log`、`build/ucrt64-release/equation-renderer-mutations-20261007-041351-940/`)。
+
+[事実] 途中の失敗を保持した。最初の変異の実行 (`build/math-p331-mutations.log`) は公開側の変異が
+検出ではなく 0xC0000409 で終わった。変異名が長くなり、試験の作業 directory の下の cache の作業 path が
+260 文字を超えて job directory を作れず、続く試験が書き換え箇所の無い文字列に `replace` を呼んで例外で
+止まった。runner の作業 directory を短い名前にし、試験は書き換え箇所が無ければ検査の失敗だけを記録して
+続けるよう直した。2 回目 (`build/math-p331-mutations-fixed.log`) は 15 / 15 だったが、直した runner に
+PSScriptAnalyzer の未使用 parameter が残り lint が失敗した (`build/math-p331-lint.log`)。
+直した後の変異 (上記 final) と lint (`build/math-p331-lint-final.log`) は通過。
+最初の全体ビルドと集中試験 (`build/math-p331-build.log`、`build/math-p331-focused.log`、12 / 12) は
+試験の修正の前の source で、最終は `build/math-p331-build-final.log`、`build/math-p331-focused-final.log`
+(12 / 12、`-N` で 12 件)。
+
+[事実] 集中 CTest 12 件は EquationSequence の domain・compiler・契約・橋渡し・backend・cache と、
+共有する P0-P2 の key・変形の契約・timeline・backend・書き出し。P2 の合成の code は変更していない
+(新しい合成規則は Equation Sequence だけが使う) ので、P2 の実 Manim の smoke は回していない。
+
+[事実] BuildIndependent は 1077 / 1078 通過。P3-3 と同じ `audio_mixer_controls_qml` (QML ScrollBar の
+binding loop の警告) が失敗した。原因は未特定で再試行していない。証拠: `build/math-p331-independent.log`。
+
+[事実] lint は format、層の隔離、producer service、PSScriptAnalyzer を含めて通過
+(`build/math-p331-lint-final.log`)。
+
+[事実] 通常 release gate は一回で **1463 / 1464 通過**、通常 gate は未通過。失敗は
+`audio_mixer_controls_qml` (QML ScrollBar の binding loop の警告) だけ。
+再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。証拠: `build/math-p331-release.log`。
+performance / stability を除外し、extended / workstation は短縮・除外していない。再試行はしていない。
+
+P3-3.1 の実装・検証を完了した。schema 21、P3-1 / P3-2 の意味を維持し、preview/residency/export/UI、
+commit、push は行っていない。

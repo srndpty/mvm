@@ -762,11 +762,10 @@ EquationSequenceOutcome renderEquationSequenceJob(const EquationSequenceJob& job
         return fail(EquationBackendFailure::InvalidRequest,
                     "Equation Sequence を cache へ保存できません: " + error.message());
 
-    // canvas の 1 枚を読み、artifact の矩形で切り出して書く。
-    const auto publishFrame = [&](const std::filesystem::path& canvasPath,
-                                  const IntervalRecord& r, const std::string& name,
-                                  FrameRecord& record, std::vector<std::uint8_t>& cropped,
-                                  std::string& message) -> EquationBackendFailure {
+    // canvas の 1 枚を読み、artifact の矩形で切り出す。
+    const auto cropFrame = [&](const std::filesystem::path& canvasPath, const IntervalRecord& r,
+                               const std::string& name, std::vector<std::uint8_t>& cropped,
+                               std::string& message) -> EquationBackendFailure {
         math::MathCoverage canvas;
         std::string loadError;
         if (!loadMathCoverage(canvasPath, canvas, loadError)) {
@@ -787,12 +786,24 @@ EquationSequenceOutcome renderEquationSequenceJob(const EquationSequenceJob& job
             message = name + " の式が artifact の矩形の外にあります";
             return EquationBackendFailure::EdgeContact;
         }
-        cropped.assign(static_cast<std::size_t>(record.bytes), 0);
+        cropped.assign(static_cast<std::size_t>(r.rect.width) *
+                           static_cast<std::size_t>(r.rect.height),
+                       0);
         for (int y = 0; y < r.rect.height; ++y)
             std::copy_n(canvas.alpha.begin() +
                             static_cast<std::ptrdiff_t>(r.rect.y + y) * canvas.width + r.rect.x,
                         r.rect.width,
                         cropped.begin() + static_cast<std::ptrdiff_t>(y) * r.rect.width);
+        return EquationBackendFailure::None;
+    };
+    // 切り出して書く。
+    const auto publishFrame = [&](const std::filesystem::path& canvasPath,
+                                  const IntervalRecord& r, const std::string& name,
+                                  FrameRecord& record, std::vector<std::uint8_t>& cropped,
+                                  std::string& message) -> EquationBackendFailure {
+        const auto failure = cropFrame(canvasPath, r, name, cropped, message);
+        if (failure != EquationBackendFailure::None)
+            return failure;
         record.sha = sha256Hex(cropped.data(), cropped.size());
         std::string writeError;
         if (record.sha.empty() ||
@@ -846,6 +857,31 @@ EquationSequenceOutcome renderEquationSequenceJob(const EquationSequenceJob& job
                 return fail(EquationBackendFailure::StaticMismatch,
                             "切り出した action " + std::to_string(a) +
                                 " の base が状態の静止と一致しません");
+        } else {
+            // pulse の base は「対象を除いた状態」。backend が作業 directory に残した通常の大きさ・
+            // 位置の対象の層を同じ矩形で切り出し、P3-4 と同じ合成規則で base の上に重ねると、
+            // 状態の静止と全画素一致しなければならない。対象の層は artifact に保存しない。
+            const std::string name = "action " + std::to_string(a) + " の通常の対象";
+            if (rendered.actions[a].normalTarget.empty())
+                return fail(EquationBackendFailure::PulseBaseMismatch,
+                            name + "の層を backend が返しませんでした");
+            std::vector<std::uint8_t> target;
+            failure = cropFrame(rendered.actions[a].normalTarget, r, name, target, message);
+            if (failure != EquationBackendFailure::None)
+                return fail(failure, message);
+            math::MathCoverage composed;
+            const auto different =
+                math::composeEquationCoverage({r.rect.width, r.rect.height, cropped},
+                                              {r.rect.width, r.rect.height, target}, composed)
+                    ? math::mathEndpointDifference(
+                          composed, job.stateStatics[job.spec.actions[a].state], r.ax, r.ay)
+                    : -1;
+            if (different != 0)
+                return fail(EquationBackendFailure::PulseBaseMismatch,
+                            "切り出した action " + std::to_string(a) +
+                                " の base と通常の対象を合成しても状態の静止と一致しません "
+                                "(違う画素 " +
+                                std::to_string(different) + ")");
         }
         for (std::size_t i = 0; i < r.frames.size(); ++i) {
             if (cancel->load()) {

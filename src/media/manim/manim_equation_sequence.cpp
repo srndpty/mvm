@@ -23,6 +23,8 @@ using math::EquationBackendFailure;
 //   自前の Camera で 1 枚ずつ PNG にする (再生の履歴に依存しない直接の標本化)。
 // - 変形の対は mvm の pairs・unmatched_* だけで組み、TransformMatchingTex を使わない。
 // - action は区間の後の式を描き直して照合用に書く (base の式は copy で変更しない)。
+// - pulse は通常の大きさ・位置の対象だけの層 (target.png) も書く。mvm は base と合成して
+//   状態の静止と照合し、base が「対象を除いた状態」であることを確かめる。
 //   action を変形より先に描くので、action が状態の object を変えれば、続く変形の frame 0 と
 //   静止の照合でも見つかる。
 constexpr char kEquationScene[] = R"PY(import logging
@@ -161,6 +163,8 @@ class MvmEquationSequence(Scene):
                 others = [part for index, part in enumerate(tex.submobjects)
                           if index != item["segment"]]
                 capture(camera, others, folder / "base.png")
+                # 拡大していない通常の対象だけの層 (照合用。artifact には保存しない)。
+                capture(camera, [target], folder / "target.png")
                 animation = Indicate(target.copy(), scale_factor=1.2, color=WHITE,
                                      rate_func=linear)
             else:
@@ -864,8 +868,9 @@ renderManimEquationSequence(const std::filesystem::path& manimExecutablePath,
         const auto folder = output / (L"a" + std::to_wstring(a));
         const std::string label = "action " + std::to_string(a);
         const auto& still = request.stateStatics[item.state];
-        // base・N 枚・after。
-        const auto expected = static_cast<std::size_t>(item.duration) + 2;
+        // base・N 枚・after (pulse は通常の対象の層 target を足す)。
+        const bool pulse = item.operation == math::EquationRenderOperation::Pulse;
+        const auto expected = static_cast<std::size_t>(item.duration) + (pulse ? 3 : 2);
         if (countPngs(folder) != expected)
             return invalid(EquationBackendFailure::FrameCountMismatch,
                            label + " の PNG が " + std::to_string(expected) +
@@ -891,6 +896,27 @@ renderManimEquationSequence(const std::filesystem::path& manimExecutablePath,
                                label + " の base が状態の静止と一致しません (違う画素 " +
                                    std::to_string(different) + ")",
                                log, item.state);
+        }
+        if (pulse) {
+            // base (対象以外) の上に通常の対象を合成すると状態の静止に戻る (静止の分解の証明)。
+            raster.normalTarget = folder / L"target.png";
+            auto target = loadCanvasFrame(loader, raster.normalTarget, place.canvasWidth,
+                                          place.canvasHeight, label + " の通常の対象");
+            if (target.failure != EquationBackendFailure::None)
+                return invalid(target.failure, target.message, log);
+            math::MathCoverage composed;
+            const auto different =
+                math::composeEquationCoverage(base.coverage, target.coverage, composed)
+                    ? math::mathEndpointDifference(composed, still, place.placement.left,
+                                                   place.placement.top)
+                    : -1;
+            if (different != 0)
+                return invalid(EquationBackendFailure::PulseBaseMismatch,
+                               label +
+                                   " の base と通常の対象を合成しても状態の静止と一致しません "
+                                   "(違う画素 " +
+                                   std::to_string(different) + ")",
+                               log, item.state, item.segment);
         }
         raster.interval.artifact =
             math::mathRectUnion(raster.interval.artifact, math::mathCoverageBounds(base.coverage));

@@ -46,6 +46,11 @@
 //     FAKE_EQ_STATIC / FAKE_EQ_ENDPOINT / FAKE_EQ_AFTER / FAKE_EQ_EDGE  静止・終状態・
 //                        action の後・action frame 0 の縁を壊す
 //     FAKE_EQ_RENDER_HANG / FAKE_EQ_RENDER_EXIT  描画の段階だけ終わらない・exit 3
+//     pulse の a<k>/ は base (模様の左半分を除く) と target.png (左半分 = 通常の対象) を書く。
+//     FAKE_EQ_PULSE_FULL   base が対象を含んだまま (式全体)
+//     FAKE_EQ_PULSE_OMIT   base が別の部分 (右端の列) を欠く
+//     FAKE_EQ_PULSE_SHIFT  通常の対象の層を右へ 1 画素ずらす
+//     FAKE_EQ_PULSE_NO_TARGET  通常の対象の層を書かない
 
 #include "math_test_png.h"
 #include "math_test_transform.h"
@@ -511,7 +516,46 @@ int renderEquationSequence(const std::filesystem::path& job, const std::string& 
                                         0);
         drawEquationState(still, w, static_cast<std::size_t>(state[0]), static_cast<int>(place[0]),
                           static_cast<int>(place[1]), box.width, box.height);
-        writeCoverage(folder / L"base.png", w, h, still);
+        const auto end = a + 1 < actionStarts.size() ? actionStarts[a + 1] : request.size();
+        const auto pulseAt = request.find("\"operation\": \"pulse\"", at);
+        if (pulseAt != std::string::npos && pulseAt < end) {
+            // pulse: 状態の模様を左半分 (通常の対象) と残り (base) に分ける。重ねると模様に戻る。
+            const int split = static_cast<int>(place[0]) + box.width / 2;
+            auto base = still;
+            std::vector<std::uint8_t> target(still.size(), 0);
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < split; ++x) {
+                    const auto index = static_cast<std::size_t>(y) * static_cast<std::size_t>(w) +
+                                       static_cast<std::size_t>(x);
+                    target[index] = still[index];
+                    base[index] = 0;
+                }
+            if (has(request, "FAKE_EQ_PULSE_FULL"))
+                base = still; // base が対象を含んだまま
+            if (has(request, "FAKE_EQ_PULSE_OMIT")) {
+                // base が別の部分 (右端の列) を欠く
+                const int last = static_cast<int>(place[0]) + box.width - 1;
+                for (int y = 0; y < h; ++y)
+                    base[static_cast<std::size_t>(y) * static_cast<std::size_t>(w) +
+                         static_cast<std::size_t>(last)] = 0;
+            }
+            if (has(request, "FAKE_EQ_PULSE_SHIFT")) {
+                // 通常の対象の層を右へ 1 画素ずらす
+                std::vector<std::uint8_t> shifted(target.size(), 0);
+                for (int y = 0; y < h; ++y)
+                    for (int x = 0; x + 1 < w; ++x)
+                        shifted[static_cast<std::size_t>(y) * static_cast<std::size_t>(w) +
+                                static_cast<std::size_t>(x + 1)] =
+                            target[static_cast<std::size_t>(y) * static_cast<std::size_t>(w) +
+                                   static_cast<std::size_t>(x)];
+                target = shifted;
+            }
+            writeCoverage(folder / L"base.png", w, h, base);
+            if (!has(request, "FAKE_EQ_PULSE_NO_TARGET"))
+                writeCoverage(folder / L"target.png", w, h, target);
+        } else {
+            writeCoverage(folder / L"base.png", w, h, still);
+        }
         for (long long i = 0; i < count; ++i) {
             std::vector<std::uint8_t> alpha(
                 static_cast<std::size_t>(w) * static_cast<std::size_t>(h), 0);

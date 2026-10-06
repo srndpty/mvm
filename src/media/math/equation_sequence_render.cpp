@@ -219,6 +219,23 @@ bool equationPulseWeight(std::int64_t frame, std::int64_t frames, std::int64_t& 
     return true;
 }
 
+std::uint8_t equationCoverageOver(std::uint8_t under, std::uint8_t over) {
+    const int rest = under * (255 - over);
+    return static_cast<std::uint8_t>(over + (rest + 127) / 255);
+}
+
+bool composeEquationCoverage(const MathCoverage& under, const MathCoverage& over,
+                             MathCoverage& out) {
+    if (!mathCoverageValid(under) || !mathCoverageValid(over) || under.width != over.width ||
+        under.height != over.height)
+        return false;
+    MathCoverage result{under.width, under.height, std::vector<std::uint8_t>(under.alpha.size())};
+    for (std::size_t i = 0; i < result.alpha.size(); ++i)
+        result.alpha[i] = equationCoverageOver(under.alpha[i], over.alpha[i]);
+    out = std::move(result);
+    return true;
+}
+
 const char* equationBackendFailureName(EquationBackendFailure failure) {
     switch (failure) {
     case EquationBackendFailure::None:
@@ -267,6 +284,8 @@ const char* equationBackendFailureName(EquationBackendFailure failure) {
         return "endpoint_mismatch";
     case EquationBackendFailure::ActionMutatedState:
         return "action_mutated_state";
+    case EquationBackendFailure::PulseBaseMismatch:
+        return "pulse_base_mismatch";
     }
     return "unknown";
 }

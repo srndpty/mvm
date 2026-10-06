@@ -205,6 +205,10 @@ fakeRenderTransform(const math::MathTransformRenderRequest& request,
 //   "EQFAIL"   構造検証の失敗 (EmptyActionTarget) を返す (Manim の終了コード 0 でも失敗)
 //   "EQSHORT"  変形 0 の frame を 1 枚少なく返す (status は Ok)
 //   "EQBADPNG" 変形 0 の frame 1 を読めない内容にする (status は Ok)
+// pulse の base は状態の静止の左半分の列を除いたもの、通常の対象の層は左半分。pulse の状態の
+// 式の印 (status は Ok のまま、cache の公開前の照合だけが見つける):
+//   "EQPULSEFULL" base が対象を含んだまま  "EQPULSEOMIT" base が右端の列を欠く
+//   "EQPULSESHIFT" 通常の対象を右へ 1 画素  "EQPULSENOTARGET" 通常の対象の層を返さない
 //   gate が true の間は終えない (cancel を見ずに待つ。取り消された後に結果を返す renderer)
 //   cancellableGate が true の間は cancel か gate が下りるまで待つ (取消を見たら Cancelled)
 struct FakeEquationLog {
@@ -310,6 +314,37 @@ inline math::EquationSequenceRenderResult fakeRenderEquationSequence(
                              still.height};
         auto base = blank(interval.canvasWidth, interval.canvasHeight);
         stampCoverage(base, still, raster.placement.left, raster.placement.top);
+        if (item.operation == math::EquationRenderOperation::Pulse) {
+            // pulse: 静止の左半分の列を通常の対象、残りを base にする (重ねると静止に戻る)。
+            const auto& source = spec.states[item.state].still.source;
+            const int split = raster.placement.left + still.width / 2;
+            auto target = blank(interval.canvasWidth, interval.canvasHeight);
+            for (int y = 0; y < base.height; ++y)
+                for (int x = 0; x < split; ++x) {
+                    const auto index = coverageIndex(base.width, x, y);
+                    target.alpha[index] = base.alpha[index];
+                    if (source.find("EQPULSEFULL") == std::string::npos)
+                        base.alpha[index] = 0; // EQPULSEFULL: base が対象を含んだまま
+                }
+            if (source.find("EQPULSEOMIT") != std::string::npos) // base が右端の列を欠く
+                for (int y = 0; y < base.height; ++y)
+                    base.alpha[coverageIndex(base.width, raster.placement.left + still.width - 1,
+                                             y)] = 0;
+            if (source.find("EQPULSESHIFT") != std::string::npos) { // 対象を右へ 1 画素
+                auto shifted = blank(target.width, target.height);
+                for (int y = 0; y < target.height; ++y)
+                    for (int x = 0; x + 1 < target.width; ++x)
+                        shifted.alpha[coverageIndex(target.width, x + 1, y)] =
+                            target.alpha[coverageIndex(target.width, x, y)];
+                target = shifted;
+            }
+            raster.normalTarget =
+                request.jobDirectory / (L"a" + std::to_wstring(a) + L"-target.png");
+            if (source.find("EQPULSENOTARGET") != std::string::npos)
+                raster.normalTarget.clear();
+            else
+                writeCoveragePng(raster.normalTarget, target);
+        }
         raster.base = request.jobDirectory / (L"a" + std::to_wstring(a) + L"-base.png");
         writeCoveragePng(raster.base, base);
         for (std::int64_t i = 0; i < item.duration; ++i) {

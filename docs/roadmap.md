@@ -82,8 +82,15 @@
 - 任意 TeX macro の支持は未検証。P3-3 は P3-2 の支持範囲の segment について、Manim 0.21 の
   点を持つ子孫の排他的所有を描画ごとに検査する (実装記録)。検査を通った範囲の成功を、
   任意範囲の renderer 分離保証へ一般化しない。
-- [未検証] pulse の 2 層 (base = 対象以外、accent = 拡大する対象を上に重ねる) の合成と、Manim が
-  1 枚の scene で描く見た目との画素の差。合成の順は定義したが、preview/export の合成 (P3-4/P3-5) で測る。
+- [未検証] 動く pulse の 2 層の mvm 合成 (base の上に拡大する対象) と、Manim が 1 枚の scene で描く
+  pulse との画素の差。静止の分解 (base + 通常の対象 = 静止) は P3-3.1 で厳密に検査するようにした
+  ([設計文書](math-equation-sequence-p30.md#p3-31-pulse-の-base-の静止の分解))。動く frame の等価は
+  主張しておらず、preview/export の合成 (P3-4/P3-5) で測る。実例では base と対象の被覆が重ならず、
+  重なる画素での丸めは単体試験だけで確かめた。
+- [事実] P3-3.1 の変異試験で、長い名前の作業 directory の下で cache の作業 path
+  (`jobs/<session>/<64 桁 key>-equation-sequence-<n>`) が 260 文字を超え、job directory を作れなかった。
+  P2 の変形の作業 path も同じ形。cache directory が深い Project で同じことが起きうる [推測]。
+  extended-length path で作るかは未判断。
 - P3-3 の key は色・hold・action の start も含むので、それらだけの編集でも sequence 全体を描き直す。
   区間ごとの小さな artifact (P3-0 の依存 DAG) への分割と、合成だけの値を key から外す条件は P3-4 で判断する。
 - [未検証] Equation Sequence の描画時間と disk 量。1 件ごとに Manim を 2 回起動する
@@ -95,6 +102,11 @@
   どちらも原因と P3-3 の変更との因果関係は未特定。再試行による選別はしていない。
   証拠: `build/math-p33-focused.log`、`build/math-p33-diag-native-write-1..3.log`、
   `build/math-p33-independent.log`。
+- [事実] `audio_mixer_controls_qml` は P3-3 の BuildIndependent・gate、P3-3.1 の BuildIndependent・gate の
+  4 回続けて同じ警告 (QML ScrollBar の binding loop) で失敗した。P3-2 の gate では通過していた。
+  失敗する log には `OpenThemeData() failed ... ハンドルが無効` が多数出る。QML とそれが読む file は
+  変更していない。原因は未特定 (環境の theme の状態か、別の変更か) で、再試行による選別はしていない。
+  証拠: `build/math-p331-independent.log`、`build/math-p331-release.log`。
 - retime を後段で許す条件は将来の判断とする。P3-1 の標本位相と短い action の消失の契約は
   [実装記録](math-equation-sequence-p30.md#時間と-fps-の確定契約) にある。
 - 既存 state 内の invalid/missing PartId の診断・修復 UI と書き出し拒否の境界を検証する。

@@ -1513,6 +1513,8 @@ void testEquationSequenceDisk(const std::filesystem::path& root) {
         auto changed = text;
         const auto at = changed.find(from);
         check(at != std::string::npos, "書き換える箇所がある: " + from);
+        if (at == std::string::npos)
+            continue; // 書き換えられない (前の検査が失敗した) ときに例外で止めない
         changed.replace(at, from.size(), to);
         writeText(provenance, changed);
         reopen(what + "は使わず描き直す", ++renders);
@@ -1577,6 +1579,36 @@ void testEquationSequenceFailures(const std::filesystem::path& root) {
         check(!cache->readyEquationSequence(s).has_value(),
               std::string(c.what) + ": Ready にしない");
     }
+    // P3-3.1: pulse の base の静止の分解。backend は Ok を返すが、公開の前に base と通常の
+    // 対象を合成して状態の静止と照合し、違えば provenance を書かない。pulse の状態の静止は
+    // 部分的な alpha を持つ 3x2 (base が対象を含むと合成で値が変わる)。
+    const Case pulses[] = {
+        {"y EQPULSEFULL", math::EquationBackendFailure::PulseBaseMismatch,
+         "pulse の base が対象を含んだままなら Failed"},
+        {"y EQPULSEOMIT", math::EquationBackendFailure::PulseBaseMismatch,
+         "pulse の base が別の部分を欠くなら Failed"},
+        {"y EQPULSESHIFT", math::EquationBackendFailure::PulseBaseMismatch,
+         "通常の対象の層が 1 画素ずれていれば Failed"},
+        {"y EQPULSENOTARGET", math::EquationBackendFailure::PulseBaseMismatch,
+         "通常の対象の層が無ければ Failed"},
+    };
+    for (const auto& c : pulses) {
+        const auto s = equationSpec("x", c.first);
+        const auto key = cache->equationSequenceKeyFor(s);
+        const auto entry = waitForEquation(*cache, s);
+        check(entry.state == MathRasterCache::State::Failed && entry.backendFailure == c.expected,
+              std::string(c.what) + " (" + math::equationBackendFailureName(entry.backendFailure) +
+                  "): " + entry.message.toStdString());
+        check(!std::filesystem::exists(equationProvenanceOf(directory, key)) &&
+                  !std::filesystem::exists(
+                      mvm::app::equationSequenceDirectory(directory, key.toStdString())),
+              std::string(c.what) + ": provenance も frame も残さない");
+    }
+    // 対照: 同じ 3x2 の静止で正しく分けた pulse は Ready。
+    const auto control = waitForEquation(*cache, equationSpec("x", "y pulse"));
+    check(control.state == MathRasterCache::State::Ready,
+          "対照: 正しく分けた pulse は Ready: " + control.message.toStdString());
+
     // 状態の静止が描けなければ sequence も描かない。
     const int before = *backend.equationRenders;
     const auto bad = waitForEquation(*cache, equationSpec("BAD"));
