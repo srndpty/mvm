@@ -8,7 +8,7 @@ target_link_libraries(mvm_audio_adjustment PUBLIC mvm::audio_analysis mvm::proje
 add_library(mvm::audio_adjustment ALIAS mvm_audio_adjustment)
 
 # 数式 clip の描画結果の cache。backend は preflight 関数で注入する (試験は偽の backend)。
-add_library(mvm_math_raster_cache STATIC math_raster_cache.cpp)
+add_library(mvm_math_raster_cache STATIC math_raster_cache.cpp math_equation_sequence_artifact.cpp)
 set_target_properties(mvm_math_raster_cache PROPERTIES AUTOMOC ON)
 target_include_directories(mvm_math_raster_cache PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_math_raster_cache

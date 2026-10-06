@@ -21,6 +21,13 @@ inline std::uint8_t mathTestEndpointAlpha(bool target, int x, int y) {
     return static_cast<std::uint8_t>(target ? (x * 5 + y * 29 + 7) % 256 : (x * 37 + y * 11) % 256);
 }
 
+// Equation Sequence (P3-3) の状態 state の静止の模様。状態ごとに違い、0 の画素も含む。
+inline std::uint8_t mathTestEquationAlpha(std::size_t state, int x, int y) {
+    return static_cast<std::uint8_t>((static_cast<std::size_t>(x) * (7 + 2 * state) +
+                                      static_cast<std::size_t>(y) * 13 + state * 31) %
+                                     256);
+}
+
 inline std::string mathTestCoverageBytes(int width, int height,
                                          const std::vector<std::uint8_t>& alpha) {
     char header[64] = {};

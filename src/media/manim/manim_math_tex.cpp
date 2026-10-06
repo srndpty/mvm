@@ -1,5 +1,7 @@
 #include "media/manim/manim_math_tex.h"
 
+#include "media/manim/manim_equation_sequence.h"
+#include "media/manim/manim_scene.h"
 #include "util/mvm_long_path.h"
 #include "util/mvm_process.h"
 #include "util/mvm_win_utf8.h"
@@ -496,6 +498,47 @@ void appendJsonString(std::string& json, const std::string& text) {
 
 } // namespace
 
+namespace detail {
+
+const char* manimScriptPrelude() {
+    return kScriptPrelude;
+}
+
+ManimSceneRun runManimScene(const std::filesystem::path& manimExecutablePath,
+                            const std::filesystem::path& jobDirectory,
+                            const std::string& scriptText, const std::wstring& sceneName,
+                            const std::string& requestJson, bool lastFrameOnly,
+                            std::chrono::milliseconds timeout, const std::atomic<bool>* cancel) {
+    SceneRun run = runScene(manimExecutablePath, jobDirectory, scriptText, sceneName, requestJson,
+                            lastFrameOnly, timeout, cancel);
+    ManimSceneRun result;
+    result.status = run.status;
+    result.message = std::move(run.message);
+    result.log = std::move(run.log);
+    result.width = run.width;
+    result.height = run.height;
+    result.pngs = std::move(run.pngs);
+    return result;
+}
+
+std::string readTextFile(const std::filesystem::path& path) {
+    return readFile(path);
+}
+
+std::string trimText(std::string line) {
+    return trimLine(std::move(line));
+}
+
+void appendJsonText(std::string& json, const std::string& text) {
+    appendJsonString(json, text);
+}
+
+std::string jsonNumber(double value) {
+    return numberText(value);
+}
+
+} // namespace detail
+
 double manimFontSizeFor(int emPixels) {
     return static_cast<double>(emPixels) * 12.0 / 17.0;
 }
@@ -599,6 +642,14 @@ math::MathPreflightResult preflightManimMathTex(const ManimMathTexConfig& config
         return renderManimMathTransform(manim, request, loader, renderCancel);
     };
     result.backend.maximumTransformFrames = kMaximumMathTransformFrames;
+    result.backend.equationSequenceTemplate = std::string(kEquationSequenceTemplateId) + "/" +
+                                              std::to_string(kEquationSequenceTemplateVersion);
+    result.backend.renderEquationSequence =
+        [manim](const math::EquationSequenceRenderRequest& request,
+                const math::MathCoverageLoader& loader, const std::atomic<bool>* renderCancel) {
+            return renderManimEquationSequence(manim, request, loader, renderCancel);
+        };
+    result.backend.maximumEquationSequenceFrames = kMaximumEquationIntervalFrames;
     return result;
 }
 
@@ -731,6 +782,14 @@ void appendTransformSide(std::string& json, const math::MathRenderSpec& spec,
 }
 
 } // namespace
+
+namespace detail {
+
+bool decodeHexToken(const std::string& token, std::string& text) {
+    return decodeHexText(token, text);
+}
+
+} // namespace detail
 
 bool planManimMathTransform(const math::MathTransformSpec& spec, int sourceWidth, int sourceHeight,
                             int targetWidth, int targetHeight, ManimTransformPlan& plan,

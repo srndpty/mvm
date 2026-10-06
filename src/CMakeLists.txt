@@ -60,6 +60,7 @@ target_link_libraries(mvm_project PRIVATE mvm::util)
 # --- 数式 renderer の中立な契約 ---------------------------------------------
 # backend (Manim など) の型も Project の型も含めない。cache key と出力 raster への配置。
 add_library(mvm_math STATIC
+    media/math/equation_sequence_render.cpp
     media/math/math_render.cpp
     media/math/math_raster_layout.cpp
     media/math/math_tex_segments.cpp
@@ -70,7 +71,8 @@ target_link_libraries(mvm_math PUBLIC mvm::util PRIVATE mvm::warnings)
 add_library(mvm::math ALIAS mvm_math)
 
 # Project の binding と P2 の純粋な計算を結ぶ。描画 backend / Qt は参照しない。
-add_library(mvm_equation_sequence_compile STATIC app/equation_sequence_compile.cpp)
+add_library(mvm_equation_sequence_compile STATIC app/equation_sequence_compile.cpp
+    app/equation_sequence_render.cpp)
 target_include_directories(mvm_equation_sequence_compile PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_equation_sequence_compile PUBLIC mvm::project mvm::math PRIVATE mvm::warnings)
 add_library(mvm::equation_sequence_compile ALIAS mvm_equation_sequence_compile)
@@ -80,6 +82,7 @@ add_library(mvm::equation_sequence_compile ALIAS mvm_equation_sequence_compile)
 # 依存の向きは manim -> math (中立な契約は manim を知らない)。
 add_library(mvm_manim STATIC
     media/manim/manim_fingerprint.cpp
+    media/manim/manim_equation_sequence.cpp
     media/manim/manim_math_tex.cpp
     media/manim/manim_renderer.cpp
 )

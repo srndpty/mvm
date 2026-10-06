@@ -1090,6 +1090,10 @@ void MathRasterCache::cancelAll() {
         if (record.cancel)
             record.cancel->store(true);
     }
+    for (const auto& record : std::as_const(equationSequences_)) {
+        if (record.cancel)
+            record.cancel->store(true);
+    }
     if (preflightCancel_)
         preflightCancel_->store(true);
     for (const auto& record : std::as_const(records_)) {
@@ -1108,6 +1112,7 @@ void MathRasterCache::clearRecords() {
     records_.clear();
     sequences_.clear();
     transforms_.clear();
+    equationSequences_.clear();
     resident_.clear();
     loading_.clear();
     overBudget_.clear();
@@ -1280,6 +1285,20 @@ void MathRasterCache::finishRender(const QString& key, std::uint64_t ticket, Ent
     found->cancel.reset();
     Q_EMIT entryChanged(key);
     advanceTransformsWaitingOn(key);
+    // この静止を待つ Equation Sequence を進める。
+    QStringList waiting;
+    for (auto it = equationSequences_.cbegin(); it != equationSequences_.cend(); ++it) {
+        if (it->launched || it->entry.state != State::Pending)
+            continue;
+        for (const auto& state : it->spec.states)
+            if (keyFor(state.still) == key) {
+                waiting.push_back(it.key());
+                break;
+            }
+    }
+    for (const auto& sequence : waiting)
+        if (advanceEquationSequence(sequence))
+            Q_EMIT entryChanged(sequence);
 }
 
 std::optional<std::filesystem::path>
@@ -1319,6 +1338,7 @@ void MathRasterCache::retainOnly(const QSet<QString>& keys) {
     {
         std::lock_guard gate(*publishGate_);
         retainKeys(transforms_, keys);
+        retainKeys(equationSequences_, keys);
     }
     retainKeys(records_, keys);
     retainKeys(sequences_, keys);
@@ -1332,6 +1352,7 @@ void MathRasterCache::forgetFailures() {
     forgetFailedRecords(records_);
     forgetFailedRecords(sequences_);
     forgetFailedRecords(transforms_);
+    forgetFailedRecords(equationSequences_);
     overBudget_.clear();
 }
 
@@ -1692,6 +1713,7 @@ void MathRasterCache::cancelPendingAnimations() {
     // 変形の worker は取消を見てから書くので、取り消した後に確定しない。
     std::lock_guard gate(*publishGate_);
     cancelPendingRecords(transforms_);
+    cancelPendingRecords(equationSequences_);
 }
 
 QString MathRasterCache::transformKeyFor(const math::MathTransformSpec& spec) const {
@@ -1878,6 +1900,200 @@ MathRasterCache::readyTransformForExport(const math::MathTransformSpec& spec) co
     MathTransformArtifact artifact;
     const std::atomic<bool> cancel{false};
     if (loadTransformArtifact(job, &cancel, artifact, false) != DiskLoad::Ready)
+        return std::nullopt;
+    return artifact;
+}
+
+// ---- Equation Sequence (P3-3) ----
+
+QString MathRasterCache::equationSequenceKeyFor(const math::EquationSequenceRenderSpec& spec) const {
+    if (backendState_ != BackendState::Available)
+        return {};
+    return QString::fromStdString(math::equationSequenceRenderKey(
+        spec, backend_.fingerprint, backend_.equationSequenceTemplate));
+}
+
+MathRasterCache::EquationSequenceEntry
+MathRasterCache::requestEquationSequence(const math::EquationSequenceRenderSpec& spec) {
+    if (backendState_ == BackendState::Checking)
+        return {};
+    if (backendState_ == BackendState::Unavailable) {
+        EquationSequenceEntry entry;
+        entry.state = State::Unavailable;
+        entry.status = math::MathRenderStatus::BackendUnavailable;
+        entry.message = backendMessage_;
+        return entry;
+    }
+    std::string specError;
+    if (!math::validateEquationSequenceRenderSpec(spec, specError)) {
+        EquationSequenceEntry entry;
+        entry.state = State::Failed;
+        entry.backendFailure = math::EquationBackendFailure::InvalidRequest;
+        entry.message = QStringLiteral("Equation Sequence の描画要求が不正です: %1")
+                            .arg(QString::fromStdString(specError));
+        return entry;
+    }
+    const QString key = equationSequenceKeyFor(spec);
+    if (key.isEmpty()) {
+        EquationSequenceEntry entry;
+        entry.state = State::Failed;
+        entry.message = QStringLiteral("Equation Sequence の cache key を計算できません");
+        return entry;
+    }
+    if (shutDown_)
+        return {};
+    if (!equationSequences_.contains(key)) {
+        EquationSequenceRecord record;
+        record.spec = spec;
+        std::int64_t longest = 0;
+        for (const auto& item : spec.transitions)
+            longest = std::max(longest, item.frames);
+        for (const auto& item : spec.actions)
+            longest = std::max(longest, item.duration);
+        // backend が描けない枚数は描かずに未対応として失敗させる (Project の値は正しいまま)。
+        if (!backend_.renderEquationSequence || longest > backend_.maximumEquationSequenceFrames) {
+            record.entry.state = State::Failed;
+            record.entry.status = math::MathRenderStatus::Failed;
+            record.entry.backendFailure = math::EquationBackendFailure::InvalidRequest;
+            record.entry.message =
+                backend_.renderEquationSequence
+                    ? QStringLiteral("この描画環境の Equation Sequence の区間は %1 frame までです "
+                                     "(要求 %2 frame)")
+                          .arg(backend_.maximumEquationSequenceFrames)
+                          .arg(longest)
+                    : QStringLiteral("数式の描画 backend は Equation Sequence を描けません");
+        }
+        equationSequences_.insert(key, record);
+    }
+    advanceEquationSequence(key);
+    return equationSequences_.value(key).entry;
+}
+
+EquationSequenceJob
+MathRasterCache::equationSequenceJob(const QString& key,
+                                     const math::EquationSequenceRenderSpec& spec) const {
+    EquationSequenceJob job;
+    job.directory = cacheDirectory_;
+    job.jobs = jobsDirectory();
+    job.key = key.toStdString();
+    job.spec = spec;
+    job.backend = backend_;
+    std::int64_t frames = 0;
+    for (const auto& item : spec.transitions)
+        frames += item.frames + 1;
+    for (const auto& item : spec.actions)
+        frames += item.duration + 2;
+    // 構造の段階と描画の段階の 2 回 Manim を起動する。
+    job.timeout = renderTimeout_ * 2 +
+                  sequenceTimeoutPerFrame_ *
+                      (frames + static_cast<std::int64_t>(spec.states.size()));
+    for (const auto& state : spec.states)
+        job.stateStaticKeys.push_back(keyFor(state.still).toStdString());
+    job.publishGate = publishGate_;
+    job.beforePublish = beforeEquationSequencePublish_;
+    return job;
+}
+
+bool MathRasterCache::advanceEquationSequence(const QString& key) {
+    const auto found = equationSequences_.constFind(key);
+    if (found == equationSequences_.constEnd() || found->launched ||
+        found->entry.state != State::Pending || shutDown_ || !authorized_ ||
+        backendState_ != BackendState::Available)
+        return false;
+    const math::EquationSequenceRenderSpec spec = found->spec;
+    // 全状態の今の静止 (この spec の key の静止そのもの)。前に描けた別の式の静止で代用しない。
+    std::vector<Entry> statics;
+    for (const auto& state : spec.states)
+        statics.push_back(request(state.still));
+    auto record = equationSequences_.find(key);
+    if (record == equationSequences_.end())
+        return false;
+    for (std::size_t s = 0; s < statics.size(); ++s) {
+        const auto& still = statics[s];
+        if (still.state != State::Failed && still.state != State::Unavailable)
+            continue;
+        record->entry = {};
+        record->entry.state = still.state;
+        record->entry.status = still.status;
+        record->entry.message =
+            QStringLiteral("状態 %1 の式の静止を描けないため、Equation Sequence を描けません: %2")
+                .arg(s)
+                .arg(still.message);
+        return true;
+    }
+    for (const auto& still : statics)
+        if (still.state != State::Ready || !still.mask)
+            return false; // 静止がまだ描けていない: 待つ (古い静止では描かない)
+
+    EquationSequenceJob job = equationSequenceJob(key, spec);
+    for (const auto& still : statics)
+        job.stateStatics.push_back(coverageOf(*still.mask));
+    record->launched = true;
+    record->ticket = nextTicket_++;
+    record->cancel = std::make_shared<std::atomic<bool>>(false);
+    job.ticket = record->ticket;
+    pool_.start([this, job = std::move(job), cancel = record->cancel, key] {
+        if (cancel->load())
+            return;
+        EquationSequenceOutcome outcome = renderEquationSequenceJob(job, cancel.get());
+        if (outcome.cancelled)
+            return;
+        EquationSequenceEntry entry;
+        entry.state = outcome.ready ? State::Ready
+                      : outcome.status == math::MathRenderStatus::BackendUnavailable
+                          ? State::Unavailable
+                          : State::Failed;
+        entry.status = outcome.status;
+        entry.backendFailure = outcome.backendFailure;
+        entry.message = QString::fromStdString(outcome.message);
+        entry.log = QString::fromStdString(outcome.log);
+        QMetaObject::invokeMethod(
+            this,
+            [this, key, ticket = job.ticket, entry = std::move(entry),
+             artifact = std::move(outcome.artifact)]() mutable {
+                finishEquationSequence(key, ticket, std::move(entry), std::move(artifact));
+            },
+            Qt::QueuedConnection);
+    });
+    return false;
+}
+
+void MathRasterCache::finishEquationSequence(const QString& key, std::uint64_t ticket,
+                                             EquationSequenceEntry entry,
+                                             EquationSequenceArtifact artifact) {
+    auto found = equationSequences_.find(key);
+    // 要求されなくなった (retainOnly で捨てた・世代が変わった) key の結果は残さない。
+    if (found == equationSequences_.end() || found->ticket != ticket || shutDown_)
+        return;
+    if (entry.state != State::Ready)
+        qWarning("Equation Sequence を描けません: %s", qUtf8Printable(entry.message));
+    found->entry = std::move(entry);
+    found->artifact = std::move(artifact);
+    found->cancel.reset();
+    Q_EMIT entryChanged(key);
+}
+
+std::optional<EquationSequenceArtifact>
+MathRasterCache::readyEquationSequence(const math::EquationSequenceRenderSpec& spec) const {
+    const QString key = equationSequenceKeyFor(spec);
+    const auto found = equationSequences_.constFind(key);
+    if (found == equationSequences_.constEnd() || found->entry.state != State::Ready)
+        return std::nullopt;
+    EquationSequenceJob job = equationSequenceJob(key, spec);
+    for (const auto& state : spec.states) {
+        // 静止の内容も現在の Ready の mask と disk の provenance で照合し、差し替えを拒否する。
+        const auto staticKey = keyFor(state.still);
+        const auto record = records_.constFind(staticKey);
+        const auto disk = loadArtifact(cacheDirectory_, staticKey, backend_.fingerprint, false);
+        if (record == records_.constEnd() || record->entry.state != State::Ready ||
+            !record->entry.mask || !disk || coverageOf(*disk) != coverageOf(*record->entry.mask))
+            return std::nullopt;
+        job.stateStatics.push_back(coverageOf(*record->entry.mask));
+    }
+    EquationSequenceArtifact artifact;
+    const std::atomic<bool> cancel{false};
+    if (loadEquationSequenceArtifact(job, &cancel, artifact, false) !=
+        EquationSequenceDiskLoad::Ready)
         return std::nullopt;
     return artifact;
 }

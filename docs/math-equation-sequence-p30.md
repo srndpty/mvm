@@ -652,3 +652,284 @@ schema 21、partition、照合、描画・cache・preview/export・UI は変更�
 extended / workstation は短縮・除外していない。
 証拠: `build/math-p321-release.log`、`build/math-p321-release-lasttest.log`。
 P3-2.1 の変更と集中検証を完了し、P3-3 の実装、commit、push は行っていない。
+
+## P3-3 sequence/action renderer
+
+2026-10-07。対象は実 Manim の EquationSequence renderer、backend の構造検証、disk の artifact の契約だけ。
+製品 UI、timeline preview、RAM residency/prefetch、export、inspector、authoring UI は追加していない。
+既存の EquationSequence の preview/export の fail-closed な拒否はそのまま。schema 21、P3-1 の時間の正、
+P3-2 の partition と照合の意味は変更していない (backend との矛盾は見つからなかった)。commit / push はしていない。
+
+### 境界と入力の正
+
+既存の数式 backend の束 (`math::MathRenderBackend`) に `renderEquationSequence` /
+`equationSequenceTemplate` / `maximumEquationSequenceFrames` を足し、`preflightManimMathTex` が
+静止・Write・P2 変形と同じ Manim executable・toolchain fingerprint で束ねる。別の Manim の正は作らない。
+process の起動・失敗の分類・取消 (job object で外部 process の木ごと停止) は P2 と同じ
+`runScene` を `src/media/manim/manim_scene.h` 経由で共有し、P0-P2 の script の byte 列は変えていない。
+
+入力の正は P3-2 の `EquationSequenceSpec` だけ。app 層の `equationSequenceRenderSpecFor`
+(`src/app/equation_sequence_render.*`) がそれを Project の型を含まない
+`math::EquationSequenceRenderSpec` (`src/media/math/equation_sequence_render.*`) へ一対一に写す
+(色は parse 済みの数値)。StateId / PartId / ActionId / TransitionId、revision、label、Project JSON の構造は
+backend に届かない。backend は状態・segment・handle の番号と、整数の枚数・進み具合だけを受け取る。
+
+### 実 target の検証 (backend の構造検証)
+
+各状態は P3-2 の segment の順のまま `MathTex(*segments)` で作る。Manim は 2 段階の別 process で起動する。
+
+1. structure: 何も描かずに、各状態の top-level の部分と点を持つ子孫を `structure.txt` に事実として書く。
+2. render: 1 を mvm が検証して通ったときだけ起動する。同じ報告を再び書き、1 と同じ所有でなければ
+   `StructureChangedBetweenPhases` で失敗する。
+
+「描画される非空の target」は Manim 0.21 では **点を持つ子孫 (`len(points) > 0` の family の member)
+が 1 個以上ある top-level の `MathTexPart`** と定義した。画素の推測ではなく object の木の構造で決める。
+segment ごとに次を記録する (backend の診断・provenance であり Project には保存しない)。
+
+```text
+neutral segment index (状態, segment)
+top-level の MathTex の子の種類 (MathTexPart)
+直接の子の数・子孫の数・点を持つ子孫の数
+非空か (点を持つ子孫 > 0)
+所有の集合 = 式全体の点を持つ子孫の並び (Manim の木の順) での番号
+```
+
+Python の `id()` と点列の buffer の address は同じ process の中の照合にだけ使い、所有の集合は
+式全体の並びの番号へ写して正準化する (process をまたいで決定的)。検査は fail-closed で、
+型付きの理由 `math::EquationBackendFailure` を返す。
+
+|検査|失敗理由|
+|---|---|
+|報告が無い・読めない・未知の行|`StructureReportMissing` / `StructureReportMalformed`|
+|Manim の SVG group の代用 log|`GroupingFallback`|
+|top-level の部分の数 ≠ segment の数|`SegmentCountMismatch`|
+|segment の番号の部分が無い|`MissingSegmentObject`|
+|`MathTexPart` でない・文字列が無い|`SegmentTypeMismatch`|
+|文字列が segment と違う|`SegmentTextMismatch`|
+|同じ子孫を 2 つの handle が所有、式の木に同じ object が 2 回|`SharedDescendant`|
+|別の子孫が同じ点列を共有、部分と式で点列が違う|`AliasedPointData`|
+|どの handle にも属さない glyph、式の木に無い object を部分が所有|`UnclaimedDescendant`|
+|action の対象の点を持つ子孫が 0|`EmptyActionTarget`|
+|変形の対の片側だけが空|`EmptyTransitionHandle`|
+
+空と空の対 (空白だけの auto segment どうし) と空の fade は許す。成功の判断に、Manim の終了コード 0・
+入力の文字列の数・object の同一性だけ・file の存在だけを使わない。P3-2 の `BackendValidationRequired` は、
+`equationTargetReadiness(proof, validation, state, segment)` (app 層の追加の overload) が検証済みかつ
+非空のときだけ `None` (実行可能) にする。P3-2 の既存の関数は変えていない。
+
+### 状態の raster と静止の同値
+
+hold (action の無い区間) は **通常の静止 Math の artifact (`mvm-math-static/1`) をそのまま使う**。
+別の配置の定義は作らない。代わりに render の段階で各状態を静止の大きさ + 各辺 200 px の canvas に
+P2 の配置規則 (`mathEndpointPlacement`、半画素の位相補正を含む) で描き、通常の静止の描画と全画素で
+照合する (`StaticMismatch`)。cache は全状態の今の静止 (同じ key) が Ready になるまで待ち、その mask を
+backend に渡す。状態ごとの font size と foreground color は異なってよい。背景は parse 後の alpha 0 だけ。
+
+### frame の意味
+
+時間の正は P3-1 の整数区間。進み具合は整数の分子 / 分母で mvm が決め、frame ごとの値を request.json で
+渡す (Python は時間を計算しない。Manim の秒は使わない)。各 frame は `Animation.interpolate(alpha)` の
+直接標本化で、自前の Camera で 1 枚ずつ描く。再生の履歴に依存しない。
+
+|区間|N 枚の frame i (0 <= i < N)|frame 0|最後に表示する frame|区間の直後|
+|---|---|---|---|---|
+|変形|進み具合 i/N (P2 と同じ)|前の状態の静止と全画素一致|(N−1)/N|後の状態の hold の frame 0 (静止)|
+|outline|進み具合 (2i+1)/(2N)|1/(2N)|(2N−1)/(2N)|通常の静止|
+|pulse|重み (N−\|2i+1−N\|)/N (進み具合 (2i+1)/(2N) の三角波)|重み 1/N|重み 1/N|通常の静止|
+
+変形の照合用の終状態 (N/N) は描いて後の状態の静止と全画素で照合するが、timeline の frame にも artifact
+にもしない。action は区間の全 frame が (0, 1) の内側にあり、N=1 でも中央 (outline 1/2、pulse 重み 1)
+を見せる。区間の前と後の frame は action の無い通常の静止。outline は `ShowPassingFlash` +
+`SurroundingRectangle` (Circumscribe の既定の分岐と同じ)、pulse は `Indicate` (拡大 1.2、rate は線形で
+重みをそのまま alpha に使う) を backend の内部でだけ使う。
+
+変形は P3-2 の handle の対だけで組む: 対は `ReplacementTransform`、余りは `FadeOut` / `FadeIn`
+(rate は P2 と同じ smooth)。`TransformMatchingTex` は使わず、backend は独自の照合をしない。
+
+### hold と action
+
+action は所有する状態の上の一時的な層で、状態の object を変えない。action の描画は状態の copy に対して
+行い、区間の後の式を描き直して静止と全画素で照合する (`ActionMutatedState`)。さらに action を変形より
+先に描くので、action が状態の object を変えれば、続く変形の frame 0 と静止の照合でも見つかる。
+P3 初期は同時 action を Project が拒否するので、汎用の多重 action 合成は作っていない。
+
+任意の source frame f の見え方は `equationSequenceFrameAt(data, spec, f)` が P3-1 の
+`evaluateEquationSequence` だけで決める (`Hold` / `HoldAction` (action の番号と区間内の frame) /
+`Transition` (変形の番号と frame))。描画側に別の時間の実装を持たない。
+
+### artifact と publication
+
+key の名前空間は **`mvm-equation-sequence/1`** (静止 `mvm-math-static/1`、Write `mvm-math-sequence/1`、
+P2 `mvm-math-transform/1` と別)。key の材料は compiler の版、全状態の partition (syntax/source/font/色/
+背景/hold/segmenter の版/segment の種類と文字列)、変形 (両端/尺/対と余り/matcher の版)、action
+(状態/segment/start/尺/operation)、raster の版 `a8-crop/1`、進み具合の規則の版、強調色、backend の id、
+toolchain fingerprint、描画 template `manim-equation-sequence/1`。所有 ID・revision・label は含まない
+ので、copy/remap した同じ意味の sequence は同じ key になる。色・hold・start を含めるため、それらの
+変更も sequence の再描画になる (未解決事項)。
+
+disk (`MathRasterCache` の cache directory の下):
+
+```text
+equation-sequence/<key>.txt              provenance (mvm-equation-sequence-artifact/1、最後に atomic に書く)
+equation-sequence/<key>/t<k>/00000.a8    変形 k の frame (artifact の矩形で切り出した A8)
+equation-sequence/<key>/a<k>/base.a8     action k の base 層 (区間中に変わらない)
+equation-sequence/<key>/a<k>/00000.a8    action k の accent 層の frame
+```
+
+層と合成の順: outline は base = 状態全体 (状態の色)、accent = 線 (強調色 `#FFFFFF00`)。pulse は
+base = 対象以外 (状態の色)、accent = 拡大する対象 (状態の色と強調色の重みの補間)。どちらも base の上に
+accent。変形の frame i の色は P2 の `mathTransformColorAt(前の色, 後の色, i, N)`。各 frame の色は
+provenance に記録する (P3-4/P3-5 が計算し直さない)。provenance は状態の静止の key と大きさ、segment の
+所有、区間ごとの canvas・artifact の矩形・端点 (静止) の切り出し座標、frame の byte 数と SHA-256、
+toolchain を持つ。
+
+publication は P2 の変形と同じ規則で、`MathRasterCache` の同じ worker・Project lock の権限・世代・
+publish の gate (`publishGate_`) の下で行う (`apps/mvm/math_equation_sequence_artifact.*`)。
+backend の一時 directory で描き、backend が全区間を検証した後、cache が再び切り出しと端点を検査する。
+古い provenance を消し、frame を書き、provenance を最後に書く。失敗・取消は Ready にならず provenance を
+書かない。取消は外部 process の木を止める。取り下げ・世代・権限の変更は gate と排他なので、古い世代が
+後から終わっても確定しない。読むたびに provenance を job から組み直した正準形と byte 単位で比べ、
+全 frame の SHA-256・変形の frame 0 と outline の base の静止との一致を確かめる。
+過去の artifact は消さず再解釈しない (toolchain が変われば別 key)。P2 の検証は弱めていない。
+
+raster の検査 (区間ごと): 枚数ちょうど、canvas の大きさ、byte 数 (幅 x 高さ、行間の余白なし)、
+SHA-256、一時 canvas の縁に触れない (= 外周の alpha が 0 で背景が透明)、全 frame の外接矩形と静止の
+矩形の和の内側だけを切り出す、変形の両端・状態・action の後の静止との全画素一致。
+
+### 実 Manim の受け入れ (実 toolchain の証拠)
+
+[事実] 実 toolchain は Manim Community v0.21.0、MiKTeX-pdfTeX 4.27 (MiKTeX 26.5)、dvisvgm 3.6
+(preflight の fingerprint、`results.json` の `toolchain`)。描画 template は `manim-equation-sequence/1`、
+key の名前空間は `mvm-equation-sequence/1`、artifact の形式は `mvm-equation-sequence-artifact/1`。
+
+受け入れは `tests/harness/mvm_equation_sequence_smoke.cpp` (CTest に登録しない手動の executable。
+P2 の `mvm_math_transform_smoke` と同じ扱い)。各ケースは Project の EquationSequenceClipData を作り、
+P3-2 の compile → `equationSequenceRenderSpecFor` → 実 backend を通す。静止は製品の静止の描画で描く。
+backend の合否に加え、変形の frame 0 と照合用の終状態を読み直して両端の静止と全画素一致・1 画素
+ずらすと不一致、action の frame の時間変化、P3-1 の評価による source frame の引き当て、実
+`MathRasterCache` での公開と provenance・全 frame の SHA-256・合成の色を backend とは別に確かめる。
+
+```powershell
+# 【操作可】画面の表示・音声・性能計測は行わない。証拠の directory が存在すれば起動を拒否する。
+pwsh scripts/build.ps1 -Target mvm_equation_sequence_smoke
+$env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
+.\build\ucrt64-release\bin\mvm_equation_sequence_smoke.exe "$env:USERPROFILE\.local\bin\manim.exe" build\math-p33-acceptance-<新しい名前>
+```
+
+[事実] 証拠の実行 `build/math-p33-acceptance-20261007-b` は **249 検査 / 0 失敗、終了コード 0**。
+log は `build/math-p33-acceptance-20261007-b.log`、生データは
+[results.json](../build/math-p33-acceptance-20261007-b/results.json)、公開した artifact は
+`build/math-p33-acceptance-20261007-b/cache/equation-sequence/` (provenance は `<key>.txt`)。
+集計値は results.json が正で、以下は観測の要約。
+
+|群|ケース|結果|
+|---|---|---|
+|partition / 構造検証|`x+x`、同じ文字の semantic 2 個、分数内部の `b^2-4ac`、Greek (`\beta`)、上付き/下付き (`b_{1}`, `c_n^3`)、空白だけの auto segment (`x x`)|全て構造検証を通る。空白の auto segment は点を持つ子孫 0 の空の handle で、空どうしの対として変形できた|
+|変形|P3-0 の S4→S5 (判別式の明示対応)、明示対応の入れ替え、重複する自動の項、fade-in/out、N=1、font 96→64、色 白→`#FFFF8040`、`\left`/`\right` を含む auto だけの段階|全て frame 0 = 前の静止 (違う画素 0)、1 画素ずらすと不一致、照合用の終状態 = 後の静止 (違う画素 0)|
+|action|判別式の outline、pulse、複数 glyph の対象 (`2ab`) に outline と pulse、action の後に変形|pulse の全 frame で対象が描かれ、frame が時間で変わる。action の後の式は静止と一致|
+|任意 seek|outline / pulse の N=3 の中央の frame と N=1 の唯一の frame|byte 単位で一致 (同じ進み具合 1/2・重み 1。先行 frame の無い描画と同じ)|
+|frame の引き当て|action の直前・frame 0・中央・最後・直後、変形の frame 0・最後・直後|P3-1 の評価で期待どおり。後ろから引いても同じ|
+|実 backend の負例|`a\,b` の `\,` を outline の対象|`empty_action_target`。`\,` の部分は点を持つ子孫 0 (results.json の ownership)。描画の段階は起動していない|
+||`\,` と `+` の明示対応|`empty_transition_handle`。描画の段階は起動していない|
+||`{{a}} + b` (Manim が `{{ }}` で分け直す)|`segment_text_mismatch` (Manim "a"、mvm "{{a}}")。描画の段階は起動していない|
+|artifact|S4→S5 (色 白→`#FF40C0FF`、font 72→64) に outline と pulse を公開|Ready、15 frame を SHA-256 付きで読み直し、合成の色が規則どおり、remap した複製は同じ key|
+
+[事実] 実 Manim で構造上空でない source 範囲から glyph が出ない例として、P3-2 の字句検査を通る
+`\,` (thin space) が確実に再現した。P3-0 の spike で調べた `\frac{` の片側は P3-2 が先に拒否するので
+P3-3 の経路には入らない。
+
+[事実] 開発中の実行 `build/math-p33-dev-1` (同じ harness、Python template の action と変形の順を
+入れ替える前) も 249 / 249。証拠ではなく開発の記録として保持した。
+
+[事実] 最初の証拠の実行 `build/math-p33-acceptance-20261007-a` と P2 smoke
+`build/math-p33-p2-transform-smoke-20261007-a` は、PowerShell の PATH に UCRT64 の bin が無く
+実行時 DLL を読めずに終了コード 0xC0000135 で起動しなかった (directory は作られていない)。
+log は `build/math-p33-acceptance-20261007-a.log` / `build/math-p33-p2-transform-smoke-20261007-a.log`。
+PATH を正して `-b` で一回ずつ実行した。
+
+### 偽の backend の試験 (実 Manim の証拠ではない)
+
+以下は偽の Manim (`tests/harness/fake_math_tex_cli.cpp` の `MvmEquationSequence`) と偽の描画関数
+(`tests/harness/math_fake_backend.h`) による検査で、実 toolchain の事実ではない。実では起こしにくい
+構造の失敗を、検査が本当に効くかの証明に使う。
+
+|試験 (CTest)|内容|検査数|
+|---|---|---|
+|`math_equation_sequence_render_contract`|進み具合の手計算値、値の検査の各違反、key の名前空間と各 field の効き|125|
+|`math_equation_sequence_render_bridge`|正準入力の写像、remap/label/revision で同じ描画要求と key、P3-1 の評価による引き当て (3 通りの順)、実行可能性|72|
+|`manim_equation_sequence_focused`|手で書いた構造の報告の全失敗理由と対照、偽の Manim での 2 段階起動 (構造の失敗で描画を起動しない)、枚数・壊れた frame・大きさ・縁・静止/端点/action の後の不一致、描画の段階の失敗、TeX の誤り、取消 (外部 process を停止)、timeout、preflight の束|114|
+|`math_raster_cache_focused`|既存 P0-P2 に加え、公開・provenance の内容と色の手計算値・開き直し・provenance の各書き換え (色/状態色/toolchain/template/operation/静止の大きさ/所有)・壊れた frame・欠けた frame・toolchain の変更・構造検証の失敗・枚数の不一致・読めない frame・静止の失敗・backend の上限・不正な要求・取消・古い spec の後からの完了・権限の喪失・provenance 直前の権限の喪失|335|
+
+実 Manim で起こしにくい負例 (部分の数の不一致、部分の欠落、共有・alias された子孫、どの handle にも
+属さない glyph、段階間の構造の変化、枚数の不一致、壊れた frame、古い toolchain/provenance、取消、
+spec の変更後の古い描画の完了) はこの偽の試験だけで確かめた。
+
+[事実] `scripts/test-equation-renderer-mutations.ps1` は build 配下の複製に変異を入れ、対象の試験を
+作り直して終了コード 1 と対象の検査のメッセージを照合する。共有子孫の見逃し、どの handle にも属さない
+glyph の見逃し、空の対象の受け入れ、検証前の描画、段階間の比較の削除、枚数の未検査、静止の同値の
+未検査、変形の端点の未検査、action の後の未検査、provenance の identity の無視、frame の SHA-256 の
+未検査、幾何の検査なしの公開、公開時の取消の無視の **13 / 13 を検出**。製品 source は変えていない。
+証拠: `build/math-p33-mutations-fixed.log` と
+`build/ucrt64-release/equation-renderer-mutations-20261007-032441-172/`。
+最初の実行は clang-format が折り返した変異箇所を見つけられず、変異の前に停止した (検出には数えない)。
+証拠: `build/math-p33-mutations.log`。開発中の 13/13 は
+`build/ucrt64-release/equation-renderer-mutations-20261007-031518-019/` (format 前の source)。
+
+### P0/P1/P2 の同値
+
+静止 (`mvm-math-static/1`)・Write (`mvm-math-sequence/1`)・P2 変形 (`mvm-math-transform/1`) の key、
+provenance の形式、script の byte 列、検証は変えていない。共有した変更は backend の束への field の追加、
+`manim_math_tex.cpp` の内部 helper の公開 (wrapper) と preflight での束ね、`MathRasterCache` の取消・
+世代・`retainOnly`・`forgetFailures`・`cancelPendingAnimations` への新しい record の追加。
+
+[事実] P2 の実 Manim の smoke `mvm_math_transform_smoke` は `build/math-p33-p2-transform-smoke-20261007-b`
+で **71 / 71、終了コード 0** (log は同名の `.log`)。P2-3 の記録と同じ検査数。
+
+### 検証の実行と結果
+
+```powershell
+pwsh scripts/build.ps1
+# 集中対象 20 件を -N で数えてから実行
+C:\msys64\ucrt64\bin\ctest.exe --test-dir build/ucrt64-release -R '<下の 20 件>' --output-on-failure --timeout 300 -V
+pwsh scripts/test-equation-renderer-mutations.ps1
+pwsh scripts/test.ps1 -Preset ucrt64-release -Group BuildIndependent
+pwsh scripts/lint.ps1
+pwsh scripts/test.ps1 -Preset ucrt64-release
+```
+
+[事実] 最終 source の全体ビルドは成功 (`build/math-p33-build-final.log`)。その前の全体ビルド
+(`build/math-p33-build.log`) も成功したが、その後に試験の型変換の警告を直したので最終としない。
+
+[事実] 集中 CTest は 20 件 (`-N` で確認、`build/math-p33-focused-count.log`) を一回実行し **19 / 20 通過**。
+P3-3 の新規 4 件、P3-1/P3-2 の domain・compiler・履歴、Math JSON、P0-P2 の key・変形の契約・timeline・
+backend・cache・controller・書き出し・変形の native 再生は通過した。
+`math_write_native_playback` (P1 Write の実 D3D11 再生) が 22 検査中 3 件失敗した
+(「一時停止中に mask を読み、合成に Write を付ける」「先頭から再生する」「再生が 60 frame まで進む」。
+同じ実行の後半の再生は通過)。実行時の利用者の無操作は約 1 分で、画面の消灯ではない。
+この試験は変更した `MathRasterCache` を link する。原因と今回の変更との因果関係は未特定。
+証拠: `build/math-p33-focused.log`。
+診断として同じ試験を単独で 3 回実行し 3 / 3 通過した (`build/math-p33-diag-native-write-1..3.log`)。
+これは間欠的であることの診断であり、失敗の記録を置き換えない。
+
+[事実] BuildIndependent は **1077 / 1078 通過**。`audio_mixer_controls_qml` が QML ScrollBar の
+binding loop の警告 (同じ log に `OpenThemeData() failed ... ハンドルが無効` が多数) で失敗した。
+今回は QML と、それが読む file を変更していない。原因は未特定で、再試行していない。
+証拠: `build/math-p33-independent.log`。
+
+[事実] lint は format、層の隔離、producer service、PSScriptAnalyzer を含めて通過
+(`build/math-p33-lint.log`)。開発中の lint は新規 file の未整形で失敗した (`build/math-p33-lint-dev.log`)。
+`scripts/format.ps1` で整形した。
+
+[事実] 通常 release gate は一回で **1463 / 1464 通過**、通常 gate は未通過。
+失敗は BuildIndependent と同じ `audio_mixer_controls_qml` (QML ScrollBar の binding loop の警告)。
+この試験は P3-2 の gate では通過していた。今回は QML と、それが読む file を変更していない。
+原因は未特定で、再試行による選別はしていない。集中試験で失敗した `math_write_native_playback` は、
+この gate では通過した。performance / stability を除外し、extended / workstation は短縮・除外していない。
+再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。証拠: `build/math-p33-release.log`。
+
+[事実] gate の後に受け入れ harness の先頭の注釈だけを直した (`summary.md` を書くという誤記。
+結果は results.json だけ)。当該 target の再ビルドと lint は通過
+(`build/math-p33-build-comment.log`、`build/math-p33-lint-final.log`)。挙動は変えていない。
+
+P3-3 の実装・検証を完了した。schema 21、P3-1 の時間の正、P3-2 の partition と照合の意味は維持した。
+P3-4 以降の residency・preview・export・製品 UI、commit、push は行っていない。

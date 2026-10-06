@@ -9,6 +9,8 @@
 // - Write の連番も同じ worker・権限・世代で扱い、静止と別の key と disk の置き場所を持つ
 // - 変形 (P2-4) は両端の今の静止を待ち、切り出した artifact を provenance の後書きで確定する。
 //   preview 用の mask は Write と同じ上限を共有する
+// - Equation Sequence (P3-3) は全状態の今の静止を待ち、検証済みの artifact を provenance の
+//   後書きで確定する。取消・世代・権限の規則は変形と同じ
 
 #include "math_fake_backend.h"
 #include "math_raster_cache.h"
@@ -24,6 +26,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <QCoreApplication>
@@ -1352,6 +1355,361 @@ void testDestroyWhileRendering(const std::filesystem::path& root) {
 
 } // namespace
 
+// ---- Equation Sequence (P3-3) ----
+//
+// 偽の backend の振る舞いの検査であり、実 Manim の証拠ではない (mvm_equation_sequence_smoke)。
+
+// 状態 "x" (3x2) → "WIDE t" (64x8)、変形 N=4、outline (状態 0、N=2)、pulse (状態 1、N=3)。
+math::EquationSequenceRenderSpec equationSpec(const std::string& first = "x",
+                                              const std::string& second = "WIDE t",
+                                              std::uint32_t secondColor = 0xFF00FF00u) {
+    math::EquationSequenceRenderSpec s;
+    s.compilerVersion = "equation-neutral/1";
+    math::EquationRenderState a;
+    a.still = spec(first);
+    a.holdFrames = 6;
+    a.segments = {{math::EquationRenderSegmentKind::Semantic, first}};
+    math::EquationRenderState b;
+    b.still = spec(second);
+    b.foregroundArgb = secondColor;
+    b.holdFrames = 6;
+    b.segments = {{math::EquationRenderSegmentKind::Semantic, second}};
+    s.states = {a, b};
+    math::EquationRenderTransition t;
+    t.fromState = 0;
+    t.toState = 1;
+    t.frames = 4;
+    t.matching.unmatchedSource = {0};
+    t.matching.unmatchedTarget = {0};
+    s.transitions = {t};
+    s.actions = {{0, 0, 1, 2, math::EquationRenderOperation::Outline},
+                 {1, 0, 2, 3, math::EquationRenderOperation::Pulse}};
+    return s;
+}
+
+MathRasterCache::EquationSequenceEntry waitForEquation(MathRasterCache& cache,
+                                                       const math::EquationSequenceRenderSpec& s) {
+    auto entry = cache.requestEquationSequence(s);
+    waitUntil([&] {
+        entry = cache.requestEquationSequence(s);
+        return entry.state != MathRasterCache::State::Pending;
+    });
+    return entry;
+}
+
+std::filesystem::path equationProvenanceOf(const std::filesystem::path& directory,
+                                           const QString& key) {
+    return mvm::app::equationSequenceProvenancePath(directory, key.toStdString());
+}
+
+std::filesystem::path equationFrameOf(const std::filesystem::path& directory, const QString& key,
+                                      const std::string& name) {
+    return mvm::app::equationSequenceDirectory(directory, key.toStdString()) / name;
+}
+
+void testEquationSequenceDisk(const std::filesystem::path& root) {
+    const auto directory = root / L"equation sequence 日本語";
+    FakeBackend backend;
+    const auto s = equationSpec();
+    QString key;
+    {
+        auto cache = readyCache(directory, backend);
+        key = cache->equationSequenceKeyFor(s);
+        check(key.size() == 64 && key != cache->keyFor(s.states[0].still) &&
+                  key != cache->transformKeyFor(transformSpec("x", "WIDE t")) &&
+                  key != cache->sequenceKeyFor(writeSpec("x", 4)),
+              "Equation Sequence の key は静止・Write・変形と別の 64 桁");
+        const auto entry = waitForEquation(*cache, s);
+        check(entry.state == MathRasterCache::State::Ready &&
+                  entry.backendFailure == math::EquationBackendFailure::None &&
+                  *backend.equationRenders == 1,
+              "Equation Sequence が Ready (構造検証を通る): " + entry.message.toStdString());
+        const auto artifact = cache->readyEquationSequence(s);
+        check(artifact && artifact->transitions.size() == 1 && artifact->actions.size() == 2 &&
+                  artifact->transitions[0].frames.size() == 4 &&
+                  artifact->actions[0].accent.size() == 2 &&
+                  artifact->actions[1].accent.size() == 3,
+              "artifact は変形 4 枚、action 2 枚・3 枚");
+        if (artifact) {
+            const auto& t = artifact->transitions[0];
+            bool sized = true;
+            for (const auto& frame : t.frames)
+                sized = sized && std::filesystem::file_size(frame.path) ==
+                                     static_cast<std::uintmax_t>(t.width) *
+                                         static_cast<std::uintmax_t>(t.height);
+            check(sized, "各 frame は切り出した大きさの A8");
+            check(!std::filesystem::exists(equationFrameOf(directory, key, "t0/00004.a8")),
+                  "照合用の終状態は保存しない (timeline の frame にしない)");
+            // 合成の色 (手計算): 白 → 緑の i/4 は #FFFFFFFF, #FFBFFFBF, #FF80FF80, #FF40FF40。
+            const std::uint32_t transition[] = {0xFFFFFFFFu, 0xFFBFFFBFu, 0xFF80FF80u, 0xFF40FF40u};
+            bool colors = true;
+            for (int i = 0; i < 4; ++i)
+                colors = colors && t.frames[static_cast<std::size_t>(i)].colorArgb == transition[i];
+            check(colors, "変形の frame の色は前後の状態の色の i/N の補間");
+            check(artifact->actions[0].base.colorArgb == 0xFFFFFFFFu &&
+                      artifact->actions[0].accent[0].colorArgb == 0xFFFFFF00u &&
+                      artifact->actions[0].accent[1].colorArgb == 0xFFFFFF00u,
+                  "outline: base は状態の色、線は強調の色");
+            // pulse: 緑 → 強調色 (#FFFFFF00) の重み 1/3, 1, 1/3 は #FF55FF00, #FFFFFF00,
+            // #FF55FF00。
+            check(artifact->actions[1].base.colorArgb == 0xFF00FF00u &&
+                      artifact->actions[1].accent[0].colorArgb == 0xFF55FF00u &&
+                      artifact->actions[1].accent[1].colorArgb == 0xFFFFFF00u &&
+                      artifact->actions[1].accent[2].colorArgb == 0xFF55FF00u,
+                  "pulse: 対象の色は状態の色と強調の色の重みの補間");
+            std::vector<std::uint8_t> bytes;
+            std::string error;
+            check(mvm::app::loadEquationArtifactFrame(t.frames[0], t.width, t.height, bytes, error),
+                  "frame を SHA-256 付きで読める: " + error);
+            check(artifact->ownership.size() == 2 && artifact->ownership[0].nonEmpty,
+                  "backend の所有を artifact の診断に持つ");
+        }
+        const auto text = readText(equationProvenanceOf(directory, key));
+        const auto has = [&](const std::string& line) {
+            return text.find("\n" + line + "\n") != std::string::npos;
+        };
+        check(
+            text.rfind("mvm-equation-sequence-artifact/1\n", 0) == 0 &&
+                has("key=" + key.toStdString()) && has("template=fake-equation-sequence/1") &&
+                has("compiler=equation-neutral/1") && has("raster=a8-crop/1") && has("states=2") &&
+                has("state index=0 static_key=" + cache->keyFor(spec("x")).toStdString() +
+                    " static=3x2 foreground=#FFFFFFFF") &&
+                has("ownership state=1 segment=0 type=MathTexPart children=1 descendants=1 "
+                    "point_bearing=1 set=0") &&
+                text.find("\naction index=1 state=1 segment=0 operation=pulse start=2 frames=3 ") !=
+                    std::string::npos &&
+                text.find("\nlayer path=a1/base.a8 ") != std::string::npos &&
+                text.find(" role=accent color=#FF55FF00\n") != std::string::npos &&
+                text.find("\ntoolchain:\nbackend=fake\nversion=1\n") != std::string::npos,
+            "provenance に版・key・template・静止の key "
+            "と大きさ・所有・区間・層・色・toolchain:\n" +
+                text);
+        check(text.find("StateId") == std::string::npos && text.find("S0") == std::string::npos,
+              "provenance に所有 ID を書かない");
+    }
+    const auto reopen = [&](const std::string& what, int expected) {
+        auto cache = readyCache(directory, backend);
+        const auto entry = waitForEquation(*cache, s);
+        check(entry.state == MathRasterCache::State::Ready && *backend.equationRenders == expected,
+              what + " (描画 " + std::to_string(backend.equationRenders->load()) + " 回)");
+    };
+    reopen("開き直した instance は disk の Equation Sequence を描かずに読む", 1);
+    const auto provenance = equationProvenanceOf(directory, key);
+    const auto text = readText(provenance);
+    int renders = 1;
+    std::filesystem::remove(provenance);
+    reopen("provenance の無い sequence は未完了として描き直す", ++renders);
+    for (const auto& [from, to, what] :
+         std::vector<std::tuple<std::string, std::string, std::string>>{
+             {"color=#FF55FF00", "color=#FF56FF00", "合成の色を書き換えた provenance"},
+             {"foreground=#FFFFFFFF", "foreground=#FFFFFFFE", "状態の色を書き換えた provenance"},
+             {"version=1\n", "version=2\n", "toolchain の違う provenance (古い toolchain)"},
+             {"template=fake-equation-sequence/1", "template=fake-equation-sequence/0",
+              "template の違う provenance"},
+             {"operation=pulse", "operation=outline", "operation を書き換えた provenance"},
+             {"static=3x2", "static=3x3", "静止の大きさを書き換えた provenance"},
+             {"point_bearing=1 set=0", "point_bearing=0 set=0", "所有を書き換えた provenance"},
+         }) {
+        auto changed = text;
+        const auto at = changed.find(from);
+        check(at != std::string::npos, "書き換える箇所がある: " + from);
+        changed.replace(at, from.size(), to);
+        writeText(provenance, changed);
+        reopen(what + "は使わず描き直す", ++renders);
+    }
+    // 同じ大きさで中身を壊した frame。今の instance は Ready のままでも readyEquationSequence
+    // が検査し直して拒否し、次の instance は描き直す。
+    {
+        auto cache = readyCache(directory, backend);
+        check(waitForEquation(*cache, s).state == MathRasterCache::State::Ready &&
+                  cache->readyEquationSequence(s).has_value(),
+              "対照: 壊す前は検査し直しても読める");
+        const auto frame = equationFrameOf(directory, key, "a1/00001.a8");
+        writeText(frame, std::string(readText(frame).size(), 'x'));
+        check(!cache->readyEquationSequence(s).has_value(),
+              "中身の壊れた frame は検査し直しで拒否する");
+    }
+    reopen("中身の壊れた frame がある sequence は描き直す", ++renders);
+    std::filesystem::remove(equationFrameOf(directory, key, "t0/00002.a8"));
+    reopen("欠けた frame がある sequence は描き直す", ++renders);
+    reopen("対照: 壊していない sequence は描き直さない", renders);
+
+    // toolchain が変われば別の key。古い artifact は消さず、別の key として描く (再解釈しない)。
+    FakeBackend newer;
+    newer.canonical = "backend=fake\nversion=9\n";
+    auto cache = readyCache(directory, newer);
+    const auto newKey = cache->equationSequenceKeyFor(s);
+    check(newKey != key && waitForEquation(*cache, s).state == MathRasterCache::State::Ready &&
+              *newer.equationRenders == 1 && std::filesystem::exists(provenance),
+          "toolchain が変われば別の key で描き、古い artifact は残す");
+}
+
+void testEquationSequenceFailures(const std::filesystem::path& root) {
+    const auto directory = root / L"equation sequence failures";
+    FakeBackend backend;
+    auto cache = readyCache(directory, backend);
+
+    struct Case {
+        const char* first;
+        math::EquationBackendFailure expected;
+        const char* what;
+    };
+
+    const Case cases[] = {
+        {"x EQFAIL", math::EquationBackendFailure::EmptyActionTarget,
+         "構造検証の失敗 (process は成功でも) は Failed"},
+        {"x EQSHORT", math::EquationBackendFailure::FrameCountMismatch,
+         "backend が Ok でも枚数が違えば Failed"},
+        {"x EQBADPNG", math::EquationBackendFailure::CorruptFrame,
+         "backend が Ok でも読めない frame があれば Failed"},
+    };
+    for (const auto& c : cases) {
+        const auto s = equationSpec(c.first);
+        const auto key = cache->equationSequenceKeyFor(s);
+        const auto entry = waitForEquation(*cache, s);
+        check(entry.state == MathRasterCache::State::Failed && entry.backendFailure == c.expected,
+              std::string(c.what) + " (" + math::equationBackendFailureName(entry.backendFailure) +
+                  ")");
+        check(!std::filesystem::exists(equationProvenanceOf(directory, key)) &&
+                  !std::filesystem::exists(
+                      mvm::app::equationSequenceDirectory(directory, key.toStdString())),
+              std::string(c.what) + ": provenance も frame も残さない");
+        check(!cache->readyEquationSequence(s).has_value(),
+              std::string(c.what) + ": Ready にしない");
+    }
+    // 状態の静止が描けなければ sequence も描かない。
+    const int before = *backend.equationRenders;
+    const auto bad = waitForEquation(*cache, equationSpec("BAD"));
+    check(bad.state == MathRasterCache::State::Failed && *backend.equationRenders == before &&
+              bad.message.contains(QStringLiteral("状態 0")),
+          "状態の静止が描けなければ Equation Sequence も描かない");
+    // backend の能力を超える区間は描かずに未対応。
+    auto tooLong = equationSpec("x long");
+    tooLong.transitions[0].frames = 9999;
+    const auto longEntry = cache->requestEquationSequence(tooLong);
+    check(longEntry.state == MathRasterCache::State::Failed &&
+              longEntry.message.contains(QStringLiteral("9998")),
+          "backend の上限を超える区間は描かずに Failed");
+    auto invalid = equationSpec("x invalid");
+    invalid.states[0].backgroundArgb = 0xFF000000u;
+    check(cache->requestEquationSequence(invalid).backendFailure ==
+              math::EquationBackendFailure::InvalidRequest,
+          "不正な描画要求 (不透明な背景) は描かずに InvalidRequest");
+    FakeBackend without;
+    without.withEquationSequence = false;
+    auto old = readyCache(root / L"equation sequence unsupported", without);
+    check(waitForEquation(*old, equationSpec()).state == MathRasterCache::State::Failed,
+          "Equation Sequence を描けない backend では Failed");
+}
+
+void testEquationSequenceCancelAndGeneration(const std::filesystem::path& root) {
+    {
+        // (a) 取り下げると描画を止め、確定しない。
+        const auto directory = root / L"equation sequence cancel";
+        FakeBackend backend;
+        auto cache = readyCache(directory, backend);
+        const auto s = equationSpec();
+        const auto key = cache->equationSequenceKeyFor(s);
+        backend.equationCancellableGate->store(true);
+        cache->requestEquationSequence(s);
+        check(waitUntil([&] { return backend.equationHeld->load(); }), "取消: 描画が始まる");
+        cache->retainOnly({});
+        check(waitUntil([&] {
+                  std::lock_guard lock(backend.equationLog->mutex);
+                  return !backend.equationLog->events.empty();
+              }),
+              "取消: renderer が取消を見る");
+        waitUntil([] { return false; }, 200);
+        check(!std::filesystem::exists(equationProvenanceOf(directory, key)) &&
+                  cache->equationSequenceRecordCount() == 0,
+              "取り消した sequence は確定せず、record も残さない");
+        backend.equationCancellableGate->store(false);
+    }
+    {
+        // (b) 古い要求の描画が後から終わっても確定しない (編集で spec が変わった)。
+        const auto directory = root / L"equation sequence stale";
+        FakeBackend backend;
+        auto cache = readyCache(directory, backend);
+        const auto oldSpec = equationSpec("x");
+        const auto newSpec = equationSpec("x", "WIDE t", 0xFF0000FFu);
+        const auto oldKey = cache->equationSequenceKeyFor(oldSpec);
+        const auto newKey = cache->equationSequenceKeyFor(newSpec);
+        check(oldKey != newKey, "色を変えた spec は別の key");
+        backend.equationGate->store(true); // 取消を見ずに結果を返す renderer
+        cache->requestEquationSequence(oldSpec);
+        check(waitUntil([&] { return backend.equationHeld->load(); }), "古い描画が始まる");
+        cache->requestEquationSequence(newSpec);
+        QSet<QString> keep{newKey, cache->keyFor(newSpec.states[0].still),
+                           cache->keyFor(newSpec.states[1].still)};
+        cache->retainOnly(keep);
+        backend.equationGate->store(false);
+        const auto entry = waitForEquation(*cache, newSpec);
+        check(entry.state == MathRasterCache::State::Ready &&
+                  std::filesystem::exists(equationProvenanceOf(directory, newKey)),
+              "今の spec の sequence は Ready");
+        check(!std::filesystem::exists(equationProvenanceOf(directory, oldKey)) &&
+                  !cache->readyEquationSequence(oldSpec).has_value(),
+              "取り下げた古い spec の描画は後から終わっても確定しない");
+    }
+    {
+        // (c) 描画中に権限を失う。
+        const auto directory = root / L"equation sequence authority";
+        FakeBackend backend;
+        auto cache = readyCache(directory, backend);
+        const auto s = equationSpec();
+        const auto key = cache->equationSequenceKeyFor(s);
+        backend.equationGate->store(true);
+        cache->requestEquationSequence(s);
+        check(waitUntil([&] { return backend.equationHeld->load(); }), "権限: 描画が始まる");
+        cache->setAuthority(directory, false, QStringLiteral("他のプロセスが編集中です"));
+        backend.equationGate->store(false);
+        waitUntil([] { return false; }, 300);
+        check(!std::filesystem::exists(equationProvenanceOf(directory, key)) &&
+                  !std::filesystem::exists(
+                      mvm::app::equationSequenceDirectory(directory, key.toStdString())),
+              "権限を失った後は描き終えた sequence を書かない");
+        check(cache->requestEquationSequence(s).state == MathRasterCache::State::Unavailable &&
+                  cache->equationSequenceRecordCount() == 0,
+              "権限が無ければ Unavailable で、古い世代の record を残さない");
+    }
+    {
+        // (d) provenance を書く直前に権限を失う: frame は揃っていても確定しない。
+        const auto directory = root / L"equation sequence publish race";
+        FakeBackend backend;
+        auto cache = readyCache(directory, backend);
+        const auto s = equationSpec();
+        const auto key = cache->equationSequenceKeyFor(s);
+        auto atPublish = std::make_shared<std::atomic<bool>>(false);
+        auto proceed = std::make_shared<std::atomic<bool>>(false);
+        auto provenanceSeen = std::make_shared<std::atomic<bool>>(true);
+        auto lastFrameSeen = std::make_shared<std::atomic<bool>>(false);
+        cache->setBeforeEquationSequencePublishForTest(
+            [=](const std::filesystem::path& provenance) {
+                provenanceSeen->store(std::filesystem::exists(provenance));
+                lastFrameSeen->store(std::filesystem::is_regular_file(
+                    equationFrameOf(directory, key, "a1/00002.a8")));
+                atPublish->store(true);
+                for (int i = 0; i < 3000 && !proceed->load(); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            });
+        cache->requestEquationSequence(s);
+        check(waitUntil([&] { return atPublish->load(); }), "provenance を書く直前に着く");
+        check(!provenanceSeen->load() && lastFrameSeen->load(),
+              "provenance を書く前に全 frame が揃っている (provenance が最後)");
+        cache->setAuthority(directory, false, QStringLiteral("他のプロセスが編集中です"));
+        proceed->store(true);
+        waitUntil([] { return false; }, 300);
+        check(!std::filesystem::exists(equationProvenanceOf(directory, key)),
+              "provenance を書く直前に権限を失えば確定しない");
+        FakeBackend next;
+        next.equationRenders = backend.equationRenders;
+        auto reopened = readyCache(directory, next);
+        check(waitForEquation(*reopened, s).state == MathRasterCache::State::Ready &&
+                  *backend.equationRenders == 2,
+              "provenance の無い (未完了の) sequence は使わずに描き直す");
+    }
+}
+
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     if (argc != 2) {
@@ -1388,6 +1746,9 @@ int main(int argc, char** argv) {
     testTransformCorruptResident(root);
     testLeftoverDeepJobs(root);
     testDestroyWhileRendering(root);
+    testEquationSequenceDisk(root);
+    testEquationSequenceFailures(root);
+    testEquationSequenceCancelAndGeneration(root);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;

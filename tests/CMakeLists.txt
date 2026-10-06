@@ -812,6 +812,16 @@ mvm_add_test(math_raster_cache_focused
     COMMAND mvm_test_math_raster_cache "${CMAKE_CURRENT_BINARY_DIR}/math-raster-cache"
     PROPERTIES TIMEOUT 120)
 
+add_executable(mvm_test_equation_sequence_render core/test_equation_sequence_render.cpp)
+target_link_libraries(mvm_test_equation_sequence_render PRIVATE mvm::math mvm::warnings)
+mvm_add_test(math_equation_sequence_render_contract COMMAND mvm_test_equation_sequence_render
+    PROPERTIES TIMEOUT 30)
+add_executable(mvm_test_equation_render_bridge harness/test_equation_render_bridge.cpp)
+target_link_libraries(mvm_test_equation_render_bridge PRIVATE mvm::equation_sequence_compile
+    mvm::warnings)
+mvm_add_test(math_equation_sequence_render_bridge COMMAND mvm_test_equation_render_bridge
+    PROPERTIES TIMEOUT 30)
+
 add_executable(mvm_test_math_render core/test_math_render.cpp)
 target_link_libraries(mvm_test_math_render PRIVATE mvm::math mvm::warnings)
 mvm_add_test(math_render_key_and_layout COMMAND mvm_test_math_render PROPERTIES TIMEOUT 30)
@@ -832,6 +842,16 @@ mvm_add_test(manim_math_tex_focused
         "${CMAKE_CURRENT_BINARY_DIR}/manim-math-tex" "${MVM_UCRT64_ROOT}/bin"
     PROPERTIES TIMEOUT 120)
 
+# Equation Sequence (P3-3) の Manim backend を偽の Manim で検査する (実 Manim の証拠ではない)。
+add_executable(mvm_test_manim_equation_sequence core/test_manim_equation_sequence.cpp)
+target_link_libraries(mvm_test_manim_equation_sequence PRIVATE mvm::manim mvm::util mvm::warnings)
+target_include_directories(mvm_test_manim_equation_sequence PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+add_dependencies(mvm_test_manim_equation_sequence mvm_fake_math_tex_cli)
+mvm_add_test(manim_equation_sequence_focused
+    COMMAND mvm_test_manim_equation_sequence "$<TARGET_FILE:mvm_fake_math_tex_cli>"
+        "${CMAKE_CURRENT_BINARY_DIR}/manim-equation-sequence" "${MVM_UCRT64_ROOT}/bin"
+    PROPERTIES TIMEOUT 120)
+
 # 実 Manim + MiKTeX の smoke。mvm_manim_smoke と同じく CTest には登録しない
 # (Manim と LaTeX の導入を build・通常試験の必須条件にしない)。手順は docs/math-clips.md。
 add_executable(mvm_math_manim_smoke harness/mvm_math_manim_smoke.cpp)
@@ -844,6 +864,11 @@ target_compile_definitions(mvm_math_manim_smoke PRIVATE ${MVM_MLT_PATH_DEFS}
 add_executable(mvm_math_transform_smoke harness/mvm_math_transform_smoke.cpp)
 target_link_libraries(mvm_math_transform_smoke PRIVATE
     mvm::manim mvm::math_clip_render mvm::util mvm::warnings)
+# Equation Sequence (P3-3) の実 Manim の受け入れ。同じ理由で CTest に登録しない。
+add_executable(mvm_equation_sequence_smoke harness/mvm_equation_sequence_smoke.cpp)
+target_link_libraries(mvm_equation_sequence_smoke PRIVATE
+    mvm::manim mvm::equation_sequence_compile mvm::math_clip_render mvm::math_raster_cache
+    mvm::util Qt6::Core mvm::warnings)
 # directory の拒否は実 Manim を使わないので通常試験へ入れる。
 mvm_add_test(math_smoke_existing_workspace_rejected
     COMMAND ${MVM_PWSH} -NoProfile -File

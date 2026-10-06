@@ -63,11 +63,12 @@
   [設計文書の P3-2](math-equation-sequence-p30.md#p3-2-semantic-binding-と-renderer-中立-plan) に移した。
   UTF-8/UTF-16 境界、信頼編集、明示 rebind、semantic partition、explicit 優先と所有の排他性、
   ID 非依存の正準入力を扱う。非空の実 glyph の証明は `BackendValidationRequired` として P3-3 に残す。
-- P3-3: sequence transition と action renderer。静止/Write/P2 の処理を小さな部品として共有し、
-  透明背景と状態ごとの font/foreground color の契約、outline/pulse、新 key namespace、
-  複数 A8 layer、端点・bbox・枚数・hash、任意 seek を実 toolchain で検証。
-  set_color/reveal/conceal と styled endpoint、同時 action は初期実装に含めない。
-- P3-4: cache と residency。Project lock・世代・取消・atomic publication を保ち、
+- P3-3 の実 Manim renderer・backend の構造検証・disk の artifact の契約は
+  [設計文書の P3-3](math-equation-sequence-p30.md#p3-3-sequenceaction-renderer) に移した。
+  key namespace `mvm-equation-sequence/1`、2 段階の Manim 起動 (構造検証の後だけ描く)、
+  点を持つ子孫による非空・排他的所有、静止の artifact で hold を出す同値、outline/pulse の 2 層 A8、
+  P2 と同じ publication の規則を扱う。set_color/reveal/conceal と styled endpoint、同時 action は含めない。
+- P3-4: residency と preview。disk の公開は P3-3 で実装済み。Project lock・世代・取消を保ち、
   全 layer を既存 Write/transform の共有予算に数える。編集後の旧 artifact を出力に使わない負例を用意。
 - P3-5: 製品 UI。既存の暗色 panel と共通部品で状態の追加/削除/順序/hold/変形、part の指定、
   既存 state 内の invalid/missing PartId の修正、outline/pulse の preview と一回の Undo を実装。
@@ -78,9 +79,22 @@
 
 未解決の判断・検証:
 
-- 任意 TeX macro と実 SVG glyph 所有の排他性は P3-3 の検証事項。
-  P3-2 の保守的な支持範囲と命令/comment/group 境界の拒否は実装記録に記載した。
-  中立 plan の成功や分数内部の支持を、実 glyph 存在や任意範囲の renderer 分離保証へ一般化しない。
+- 任意 TeX macro の支持は未検証。P3-3 は P3-2 の支持範囲の segment について、Manim 0.21 の
+  点を持つ子孫の排他的所有を描画ごとに検査する (実装記録)。検査を通った範囲の成功を、
+  任意範囲の renderer 分離保証へ一般化しない。
+- [未検証] pulse の 2 層 (base = 対象以外、accent = 拡大する対象を上に重ねる) の合成と、Manim が
+  1 枚の scene で描く見た目との画素の差。合成の順は定義したが、preview/export の合成 (P3-4/P3-5) で測る。
+- P3-3 の key は色・hold・action の start も含むので、それらだけの編集でも sequence 全体を描き直す。
+  区間ごとの小さな artifact (P3-0 の依存 DAG) への分割と、合成だけの値を key から外す条件は P3-4 で判断する。
+- [未検証] Equation Sequence の描画時間と disk 量。1 件ごとに Manim を 2 回起動する
+  (実測は受け入れの results.json の ms のみで、性能計測ではない)。
+- [事実] P3-3 の集中 CTest で `math_write_native_playback` が 22 検査中 3 件失敗し、単独の診断 3 回は
+  通過した。BuildIndependent で `audio_mixer_controls_qml` が ScrollBar の binding loop で失敗した。
+  通常 release gate 一回は 1463/1464 で、同じ `audio_mixer_controls_qml` だけが失敗した
+  (`build/math-p33-release.log`。`math_write_native_playback` は通過)。
+  どちらも原因と P3-3 の変更との因果関係は未特定。再試行による選別はしていない。
+  証拠: `build/math-p33-focused.log`、`build/math-p33-diag-native-write-1..3.log`、
+  `build/math-p33-independent.log`。
 - retime を後段で許す条件は将来の判断とする。P3-1 の標本位相と短い action の消失の契約は
   [実装記録](math-equation-sequence-p30.md#時間と-fps-の確定契約) にある。
 - 既存 state 内の invalid/missing PartId の診断・修復 UI と書き出し拒否の境界を検証する。
