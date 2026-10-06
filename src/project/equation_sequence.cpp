@@ -1,5 +1,6 @@
 #include "project/equation_sequence.h"
 
+#include "core/text_offsets.h"
 #include "project/project.h"
 
 #include <algorithm>
@@ -26,9 +27,8 @@ const SemanticPart* part(const EquationState& state, const PartId& id) {
 }
 
 bool byteBoundary(const std::string& source, std::int64_t offset) {
-    return offset >= 0 && static_cast<std::uint64_t>(offset) <= source.size() &&
-           (static_cast<std::uint64_t>(offset) == source.size() ||
-            (static_cast<unsigned char>(source[static_cast<std::size_t>(offset)]) & 0xc0) != 0x80);
+    return offset >= 0 &&
+           core::utf8ToUtf16Offset(source, static_cast<std::size_t>(offset)).has_value();
 }
 
 template<class Id>
@@ -54,6 +54,16 @@ std::optional<std::size_t> stateIndex(const EquationSequenceClipData& data, Stat
     return std::nullopt;
 }
 } // namespace
+
+bool equationBindingMatchesSource(const EquationState& state, const SourceBinding& binding) {
+    return binding.status == BindingStatus::Bound && binding.begin >= 0 &&
+           binding.end > binding.begin && binding.revision == state.revision &&
+           byteBoundary(state.equation.source, binding.begin) &&
+           byteBoundary(state.equation.source, binding.end) &&
+           state.equation.source.substr(static_cast<std::size_t>(binding.begin),
+                                        static_cast<std::size_t>(binding.end - binding.begin)) ==
+               binding.expectedText;
+}
 
 bool equationIntervals(const EquationSequenceClipData& data,
                        std::vector<EquationInterval>& intervals, std::int64_t& length,
@@ -110,11 +120,7 @@ bool validateEquationSequence(const EquationSequenceClipData& data, int height,
                 return fail(error, "部分式の範囲長と expectedText が一致しません");
             // invalid は旧 revision の証人を保持する。新 source の範囲へ黙って移さない。
             if (b.status == BindingStatus::Bound) {
-                if (b.revision != state.revision || !byteBoundary(state.equation.source, b.begin) ||
-                    !byteBoundary(state.equation.source, b.end) ||
-                    state.equation.source.substr(static_cast<std::size_t>(b.begin),
-                                                 static_cast<std::size_t>(b.end - b.begin)) !=
-                        b.expectedText)
+                if (!equationBindingMatchesSource(state, b))
                     return fail(error, "部分式の binding の証人が一致しません");
                 boundRanges.emplace_back(b.begin, b.end);
             }

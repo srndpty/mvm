@@ -10,6 +10,7 @@ add_library(mvm_core STATIC
     core/presentation_opportunity_mapper.cpp
     core/source_frame_mapping.cpp
     core/timecode.cpp
+    core/text_offsets.cpp
     core/waveform_peaks.cpp
 )
 target_include_directories(mvm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -24,6 +25,7 @@ add_library(mvm_project STATIC
     project/math_clip.cpp
     project/equation_sequence.cpp
     project/equation_sequence_edit.cpp
+    project/equation_binding_edit.cpp
     project/media_bin.cpp
     project/path_identity.cpp
     project/subtitles.cpp
@@ -66,6 +68,12 @@ add_library(mvm_math STATIC
 target_include_directories(mvm_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_math PUBLIC mvm::util PRIVATE mvm::warnings)
 add_library(mvm::math ALIAS mvm_math)
+
+# Project の binding と P2 の純粋な計算を結ぶ。描画 backend / Qt は参照しない。
+add_library(mvm_equation_sequence_compile STATIC app/equation_sequence_compile.cpp)
+target_include_directories(mvm_equation_sequence_compile PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_equation_sequence_compile PUBLIC mvm::project mvm::math PRIVATE mvm::warnings)
+add_library(mvm::equation_sequence_compile ALIAS mvm_equation_sequence_compile)
 
 # --- Manim external renderer ------------------------------------------------
 # Python を埋め込まず、明示された Manim CLI を外部プロセスとして実行する。

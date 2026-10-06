@@ -47,6 +47,8 @@ struct MathTexSegment {
 // 空の入力は 0 個の部分。空白だけの入力は key が空の 1 個の部分。
 // 中括弧が釣り合わない式も分ける (深さ 0 に戻らない範囲では分けない)。描けるかどうかは見ない。
 std::vector<MathTexSegment> segmentMathTex(const std::string& source);
+// P2 の key 規則を semantic partition でも共有する。先頭末尾の ASCII 空白だけを除く。
+std::string mathTexSegmentKey(const std::string& text);
 
 struct MathSegmentPair {
     std::size_t source = 0; // source の部分の番号

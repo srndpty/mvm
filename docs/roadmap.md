@@ -50,9 +50,10 @@
 - P3-1.1 の外側 source 範囲修正は [設計文書](math-equation-sequence-p30.md#p3-11-外側-source-範囲の修正) に記録。
   schema 21 の domain、素材原点の frame 始点標本化、構造編集、参照 remap、通常 Undo を扱う。
   renderer・cache・製品 UI は後続段階のまま。
-- P3-2: annotation の binding と renderer 中立 plan。UTF-8/UTF-16 の変換、editor delta、
-  重複式の別 ID、明示 rebind、copy/paste の ID remap、semantic partition と自動照合の
-  重なり排除を検証。Manim grouping の代用、glyph 0、範囲の構文不適合を fail-closed にする。
+- P3-2 の binding と renderer 中立 plan の実装は
+  [設計文書の P3-2](math-equation-sequence-p30.md#p3-2-semantic-binding-と-renderer-中立-plan) に移した。
+  UTF-8/UTF-16 境界、信頼編集、明示 rebind、semantic partition、explicit 優先と所有の排他性、
+  ID 非依存の正準入力を扱う。非空の実 glyph の証明は `BackendValidationRequired` として P3-3 に残す。
 - P3-3: sequence transition と action renderer。静止/Write/P2 の処理を小さな部品として共有し、
   透明背景と状態ごとの font/foreground color の契約、outline/pulse、新 key namespace、
   複数 A8 layer、端点・bbox・枚数・hash、任意 seek を実 toolchain で検証。
@@ -68,8 +69,9 @@
 
 未解決の判断・検証:
 
-- 任意 TeX macro に対する annotation の対応保証の限界。SVG の glyph 所有の排他性と
-  命令/コメント境界の検証範囲を P3-2 で確定する。今回の分数内部の成功を任意範囲へ一般化しない。
+- 任意 TeX macro と実 SVG glyph 所有の排他性は P3-3 の検証事項。
+  P3-2 の保守的な支持範囲と命令/comment/group 境界の拒否は実装記録に記載した。
+  中立 plan の成功や分数内部の支持を、実 glyph 存在や任意範囲の renderer 分離保証へ一般化しない。
 - retime を後段で許す条件は将来の判断とする。P3-1 の標本位相と短い action の消失の契約は
   [実装記録](math-equation-sequence-p30.md#時間と-fps-の確定契約) にある。
 - 既存 state 内の invalid/missing PartId の診断・修復 UI と書き出し拒否の境界を検証する。

@@ -490,3 +490,133 @@ focused 証拠: `build/math-p311-focused-final.log`。
 再試行していない。一般の書き出しの未解決事項として roadmap に記録。
 証拠: `build/math-p311-independent.log`、`build/math-p311-release.log`、
 `build/math-p311-release-lasttest.log`。performance/stability は除外した。
+
+## P3-2 semantic binding と renderer 中立 plan
+
+### 保存の正と編集境界
+
+schema 21 と P3-1 の `PartId + UTF-8 byte [begin,end) + revision + expectedText + Bound/Invalid`
+を維持する。partition と plan は派生値であり保存しない。glyph/submobject index は持たない。
+UTF-8/UTF-16 変換は `src/core/text_offsets.*` に置き、文字列全体の不正 UTF-8、継続 byte、
+surrogate pair の内部、終端外を拒否する。結合文字の前後は個別の codepoint 境界として有効。
+書記素 cluster の意味を推測せず、binding の正は byte / code unit の境界である。
+Bound の証人検査は `equationBindingMatchesSource` に一本化し、Project 検証・明示 rebind・compiler が共有する。
+
+`editEquationSourceTrusted` は旧 source、UTF-16 編集区間、UTF-8 replacement、新 source、
+新 revision を要求する。実際の置換結果が新 source と一致しない場合は候補を確定しない。
+編集区間を UTF-8 の `[u,v)` へ変換し、part の `[b,e)` に対して次を適用する。
+
+| 条件 | 結果 |
+| --- | --- |
+| `v <= b`（begin に一致する挿入を含む） | replacement byte 長との差で begin/end を移動 |
+| `u >= e`（end に一致する挿入を含む） | 範囲は維持 |
+| 上記以外 | PartId と旧証人を維持して Invalid |
+
+Bound を維持した part だけ新 revision に更新する。既存 Invalid は移動も復旧もしない。
+無効になった part の correspondence を除き、無傷の対応は保持する。
+未信頼の source 置換は P3-1 の一括無効化と対応除去を使い、同じ文字列でも再 binding しない。
+`rebindEquationPart` は既存 state / PartId、現在 revision、非空かつ正しい UTF-8 境界、
+source slice と完全一致する expectedText、他の Bound part と非重複を要求する。
+同じ ID に対する action は再解決可能になるが、除去済み correspondence は復旧しない。
+
+### partition と TeX の支持範囲
+
+`src/app/equation_sequence_compile.*` は Project と既存 P2 計算の橋渡しであり、Qt / Manim に依存しない。
+`src/media/math` へ Project 型を持ち込まない。semantic を source 順で配置し、各未被覆区間だけを
+既存の `segmentMathTex` に渡す。自動 segment は semantic 境界を越えず、全 byte を一回ずつ覆う。
+等しい文字の part は別の PartId と別の handle を持つ。P2 の契約に独立の literal 種別はないため、
+未被覆領域は Auto とし、照合できない handle を fade に回す。
+
+初期の字句検査は UTF-8 境界、制御命令の名前、escape、comment、group 深さと内部の最低深さ、
+引数の欠けた既知命令を検査する。`frac` / `sqrt` は中括弧の引数を要求する。
+一般 macro 展開、optional argument、environment、`left/right` は支持しない。
+未知の制御命令が source 内にある場合も保守的に `UnsupportedTexBoundary` にする。
+comment を含む semantic 範囲、comment 内の境界、命令名の途中、裸の escape、
+`begin/end` token の途中、group の片側だけを含む範囲を拒否する。
+分数内部の `b^2-4ac` は支持範囲だが、任意の TeX byte 範囲を renderer が分離できるとは主張しない。
+
+Project として構造が有効でも compiler は失敗しうる。失敗理由は機械可読の enum で
+`InvalidBinding`、`MissingPart`、`UnsupportedTexBoundary`、`PartitionConflict`、
+`InvalidCorrespondencePlan`、`UnsupportedEmptyTarget`、`InvalidSequence` を区別する。
+
+### transition・action・正準入力
+
+explicit correspondence を最初に handle 対へ解決し、一対一の所有を確保する。
+残った semantic / auto handle だけを pinned P2 matcher に渡す。自動照合 pool の同じ key は
+nth-occurrence 順で対応し、explicit に確保した handle は自動照合へ再投入しない。
+semantic / auto の key は共通の `mathTexSegmentKey` で先頭末尾の ASCII 空白だけを除く。
+既存 P2 の segmenter / matcher の規則と版は変更していない。
+全 source/target handle は transform または fade-out/fade-in の一つだけへ所属する。
+pair は source handle 順へ正規化する。実 backend の object index は出力しない。
+
+action の解決用 plan は StateId / PartId、派生 semantic handle、局所 start/duration、operation を持つ。
+Missing、Invalid、危険な境界、明らかに空の空白/group target は失敗する。
+非空の文字列でも glyph の存在は証明できないため、全支持 target の proof は
+`BackendValidationRequired` のままとする。`equationTargetReadiness` はこの状態を実行可能と判定しない。
+P3-3 は実 glyph/submobject が非空であり、所有が排他的であることを検証して初めて描画へ進める。
+P3-2 の plan 導出成功を renderer 成功とみなさない。
+
+`EquationPartitionSpec` / `EquationTransitionSpec` / `EquationActionSpec` が正準の値型。
+source/style、範囲、segment kind、handle 対、整数尺、operation、規則の版を含む。
+StateId / PartId / ActionId / TransitionId、revision、label は含めず、所有参照は source 順の index へ解決する。
+正準 action 順は state index / start 順。等値比較で copy/remap の同値性を検証する。
+cache key の hash、cache publication、Manim rendering、preview/export、製品 UI は追加していない。
+
+### 検証証拠
+
+[事実] 初回集中試験は 175 検査中 1 失敗。分数の命令だけを切り出す拒否条件が、
+命令を含まない引数内部にも適用されていた。begin が命令を含む場合だけに限定して修正した。
+失敗を `build/math-p32-compile-first.log` に保持した。
+
+[事実] 変異 runner の初回は、括弧なしの for body を二つの文へ置換したため compile error で停止。
+検出成功とは数えず、`build/math-p32-mutations.log` と
+`build/ucrt64-release/equation-compile-mutations-20261007-014626-516/` を保持した。
+変異文を block に修正後、等しい文字による自動再 binding、begin 挿入の内部扱い、
+自動 segment の semantic 境界越え、explicit の二重照合、raw PartId に依存する正準入力の
+5/5 を、それぞれ対応する検査の終了コード 1 で検出した。
+証拠: `build/math-p32-mutations-fixed.log` と
+`build/ucrt64-release/equation-compile-mutations-20261007-014702-933/`。
+製品 source は変異させていない。
+
+[事実] sandbox 内の最小ビルドは compiler 不在、Ninja の CPU と `.ninja_log` の進行停止を確認した。
+当該実行を終了し、公式 build 入口の sandbox 外実行で成功した。Ninja metadata は変更していない。
+証拠: `build/math-p32-build-first.log`、`build/math-p32-build-unsandboxed.log`。
+
+[事実] 最終 source の集中 CTest は 5/5 通過。新規 compiler は 191 検査 / 0 失敗、
+既存 P3-1 domain は 263 検査、履歴は 54 検査、Math JSON は 114 検査、
+P2 timeline は 131 検査で失敗 0。実ファイル保存・再読込も新規試験に含む。
+証拠: `build/math-p32-focused-gates.log`。
+集中対象を `-N` で 5 件と確認し、`--timeout 60` 付きで実行した。
+
+[事実] 単独 BuildIndependent は 1078/1078 通過。
+再現: `pwsh scripts/test.ps1 -Preset ucrt64-release -Group BuildIndependent`。
+証拠: `build/math-p32-independent.log`。
+
+[事実] 最終 source の変異試験も 5/5 検出した。各変異は対応する負例のメッセージと
+終了コード 1 を照合しており、単なる保存失敗などを検出証拠に数えない。
+証拠: `build/math-p32-mutations-final.log` と
+`build/ucrt64-release/equation-compile-mutations-20261007-015412-157/`。
+lint は format、層の隔離、producer service、PSScriptAnalyzer を含めて通過した。
+証拠: `build/math-p32-lint-final.log`。最終全 target のビルドは
+`build/math-p32-build-gates.log` に保存した。
+
+[事実] 通常 release gate は一回で 1461/1461 通過。
+再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。
+performance / stability を除外し、extended / workstation は短縮・除外していない。
+最終 source に対する非依存試験もこの gate に含む。成功するまでの再試行や有効 run の選別はしていない。
+証拠: `build/math-p32-release.log` と `build/math-p32-release-lasttest.log`。
+過去の P3-1.1 の tractor 失敗記録と未解決事項は保持し、今回の通過だけで原因解消とはしない。
+P3-2 の実装・検証を完了した。schema 21 を維持し、P3-3 以降の rendering/cache/preview/export/製品 UI、
+commit、push は行っていない。
+
+再現入口:
+
+```powershell
+pwsh scripts/build.ps1 -Target mvm_test_equation_compile
+C:\msys64\ucrt64\bin\ctest.exe --test-dir build/ucrt64-release `
+  -R 'math_equation_sequence|math_project_json|math_transform_timeline' `
+  --output-on-failure --timeout 60
+pwsh scripts/test-equation-compile-mutations.ps1
+pwsh scripts/lint.ps1
+pwsh scripts/test.ps1 -Preset ucrt64-release
+```

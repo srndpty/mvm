@@ -787,6 +787,11 @@ add_executable(mvm_test_equation_sequence harness/test_equation_sequence.cpp)
 target_link_libraries(mvm_test_equation_sequence PRIVATE mvm::project mvm::util mvm::warnings)
 mvm_add_test(math_equation_sequence_domain COMMAND mvm_test_equation_sequence
     PROPERTIES TIMEOUT 30)
+
+add_executable(mvm_test_equation_compile harness/test_equation_compile.cpp)
+target_link_libraries(mvm_test_equation_compile PRIVATE mvm::equation_sequence_compile mvm::warnings)
+mvm_add_test(math_equation_sequence_compile COMMAND mvm_test_equation_compile
+    "${CMAKE_CURRENT_BINARY_DIR}/equation-p32" PROPERTIES TIMEOUT 30)
 target_link_libraries(mvm_test_project_math PRIVATE mvm::project mvm::util mvm::warnings)
 mvm_add_test(math_project_json_focused COMMAND mvm_test_project_math PROPERTIES TIMEOUT 30)
 

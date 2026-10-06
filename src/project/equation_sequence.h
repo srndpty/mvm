@@ -105,6 +105,8 @@ bool equationIntervals(const EquationSequenceClipData&, std::vector<EquationInte
                        std::int64_t& length, std::string& error);
 bool validateEquationSequence(const EquationSequenceClipData&, int outputHeight,
                               std::string& error);
+// 現在の source / revision に対する Bound の証人検査を domain と compiler で共有する。
+bool equationBindingMatchesSource(const EquationState&, const SourceBinding&);
 std::optional<EquationEvaluation> evaluateEquationSequence(const EquationSequenceClipData&,
                                                            std::int64_t sourceFrame,
                                                            std::string& error);
