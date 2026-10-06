@@ -1,3 +1,4 @@
+#include "app/preview/test_window_mode.h"
 #include "app/timeline_export.h"
 #include "audio_adjustment_job.h"
 #include "clip_sample_reader.h"
@@ -1092,7 +1093,8 @@ int main(int argc, char** argv) {
     require(pump([&] { return !component.isLoading(); }), "自動調整 UI のロード期限");
     if (component.isError())
         std::fprintf(stderr, "%s\n", qPrintable(component.errorString()));
-    std::unique_ptr<QObject> windowObject(component.create());
+    std::unique_ptr<QObject> windowObject(component.createWithInitialProperties(
+        {{QStringLiteral("flags"), QVariant::fromValue(mvm::app::testBackgroundWindowFlags())}}));
     require(windowObject != nullptr, "自動調整 UI を実生成");
     auto* window = qobject_cast<QQuickWindow*>(windowObject.get());
     require(window != nullptr, "描画対象の window");
@@ -1160,7 +1162,8 @@ int main(int argc, char** argv) {
             .toUtf8(),
         QUrl("file:///audio-adjustment-empty-test.qml"));
     require(pump([&] { return !emptyComponent.isLoading(); }), "空一覧 UI のロード期限");
-    std::unique_ptr<QObject> emptyWindowObject(emptyComponent.create());
+    std::unique_ptr<QObject> emptyWindowObject(emptyComponent.createWithInitialProperties(
+        {{QStringLiteral("flags"), QVariant::fromValue(mvm::app::testBackgroundWindowFlags())}}));
     auto* emptyWindow = qobject_cast<QQuickWindow*>(emptyWindowObject.get());
     require(emptyWindow != nullptr, "空一覧・長いエラーを持つ実 window を生成");
     QElapsedTimer emptyPaintTime;

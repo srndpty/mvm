@@ -14,6 +14,7 @@
  */
 
 #include "app/preview/preview_rhi_item.h"
+#include "app/preview/test_window_mode.h"
 #include "spike_controller.h"
 
 #include <QGuiApplication>
@@ -144,6 +145,7 @@ int main(int argc, char** argv) {
     // 黙って別の backend で動いた結果を「動いた」と報告しないため。
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
 
+    mvm::app::prepareTestFixedWindowEnvironment();
     QGuiApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("mvm preview_spike"));
 
@@ -158,8 +160,10 @@ int main(int argc, char** argv) {
     controller.setMeasureConfig(cfg);
 
     QQmlApplicationEngine engine;
-    engine.setInitialProperties({{QStringLiteral("spike"), QVariant::fromValue(&controller)},
-                                 {QStringLiteral("measureMode"), cfg.enabled}});
+    auto properties = mvm::app::testFixedWindowInitialProperties();
+    properties.insert(QStringLiteral("spike"), QVariant::fromValue(&controller));
+    properties.insert(QStringLiteral("measureMode"), cfg.enabled);
+    engine.setInitialProperties(properties);
 
     engine.load(QUrl(QStringLiteral("qrc:/mvm/preview_spike/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

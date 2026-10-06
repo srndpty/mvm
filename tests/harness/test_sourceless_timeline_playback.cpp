@@ -1,3 +1,4 @@
+#include "app/preview/test_window_mode.h"
 // 映像 clip の無い timeline を controller 経由で 1x 再生し、音声が鳴ることを検査する。
 //
 // 以前の controller は映像の無い区間で engine を再生せず時計だけを進めていた
@@ -10,6 +11,7 @@
 #include "media/audio_preview/audio_types.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
+#include "test_event_wait.h"
 
 #include <algorithm>
 #include <chrono>
@@ -34,15 +36,7 @@ void check(bool value, const char* message) {
     }
 }
 
-bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    while (!predicate() && std::chrono::steady_clock::now() < deadline) {
-        QCoreApplication::processEvents();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    QCoreApplication::processEvents();
-    return predicate();
-}
+using mvm::test::pumpUntil;
 
 // wav_48k.wav は -6dBFS 程度の正弦波。無音なら meter は下限 (-60dB 以下) に留まる。
 constexpr double kAudibleDb = -30.0;
@@ -88,13 +82,14 @@ int main(int argc, char** argv) {
     {
         mvm::app::MvmController controller(projectPath, {}, project);
         QQuickWindow window;
+        window.setFlags(mvm::app::testBackgroundWindowFlags());
         window.setWidth(640);
         window.setHeight(360);
         auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
         surface->setWidth(640);
         surface->setHeight(360);
-        window.show();
         controller.attachPreview(surface);
+        window.show();
         // 検証用の音量 (audio_types.h)。session volume なので meter の値は変わらない。
         controller.setMasterVolume(mvm::audio::kVerificationSessionVolume);
 

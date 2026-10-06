@@ -1,3 +1,4 @@
+#include "app/preview/test_window_mode.h"
 // Equation Sequence の product preview (P3-4) を MvmController 経由で検査する。
 //
 //   (引数なし)              偽の backend、GPU なし (CTest:
@@ -1105,7 +1106,7 @@ struct PreviewWindowHarness {
 
     void attach(MvmController& controller) {
         // 入力を送らない。前面とフォーカスを奪わず、OS のマウス入力も透過させる。
-        window.setFlags(Qt::Window | Qt::WindowDoesNotAcceptFocus | Qt::WindowTransparentForInput);
+        window.setFlags(mvm::app::testBackgroundWindowFlags());
         window.resize(640, 360);
         surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
         surface->setWidth(640);

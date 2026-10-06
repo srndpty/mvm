@@ -20,8 +20,7 @@ void prepareTestFixedWindowEnvironment() {
 }
 
 Qt::WindowFlags testFixedWindowFlags() {
-    return Qt::Window | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus |
-           Qt::WindowTransparentForInput;
+    return testBackgroundWindowFlags() | Qt::FramelessWindowHint;
 }
 
 namespace {

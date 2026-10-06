@@ -1,3 +1,4 @@
+#include "app/preview/test_window_mode.h"
 // 数式 clip を MvmController 経由で検査する (偽の backend、GPU なし)。
 //
 // - 作成・確定は Undo 1 回分。描けない式も確定でき、Project に残る (巻き戻さない)
@@ -1435,6 +1436,18 @@ bool submittedHasWrite(const MvmController& controller) {
                        [](const auto& layer) { return layer.stillImage && layer.stillAnimation; });
 }
 
+// engine が前の組み直し (cache の結果による preview の更新) を seek している間は seek を受け付け
+// ないので、受け付けるまで繰り返す。
+bool seekWhenReady(MvmController& controller, qint64 frame) {
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        if (controller.seekTimelineFrame(frame))
+            return true;
+        settle(50);
+    }
+    std::fprintf(stderr, "seek できません: %s\n", qUtf8Printable(controller.statusText()));
+    return false;
+}
+
 int nativeWritePlayback() {
     QTemporaryDir temp;
     check(temp.isValid(), "native: 作業フォルダー");
@@ -1447,7 +1460,7 @@ int nativeWritePlayback() {
     QQuickWindow window;
     // 入力を送らない試験だが、利用者の作業を止めないよう前面とフォーカスを奪わず、OS の
     // マウス入力も透過させる (tests/harness/test_window_focus.h と同じ flags)。
-    window.setFlags(Qt::Window | Qt::WindowDoesNotAcceptFocus | Qt::WindowTransparentForInput);
+    window.setFlags(mvm::app::testBackgroundWindowFlags());
     window.resize(640, 360);
     auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
     surface->setWidth(640);
@@ -1491,7 +1504,7 @@ int nativeWritePlayback() {
     };
 
     // 1. 再生前に mask が memory にある。
-    check(controller->seekTimelineFrame(0) && pump([&] {
+    check(seekWhenReady(*controller, 0) && pump([&] {
               return submittedHasWrite(*controller) && controller->previewPresentedLatest();
           }),
           "1: 一時停止中に mask を読み、合成に Write を付ける");
@@ -1513,7 +1526,7 @@ int nativeWritePlayback() {
     controller->mathRastersForTest().setResidentMemoryBudget(
         mvm::app::MathRasterCache::kDefaultResidentMemoryBudget);
     controller->mathRastersForTest().holdResidentLoadsForTest(true);
-    check(controller->seekTimelineFrame(0) && pump([&] {
+    check(seekWhenReady(*controller, 0) && pump([&] {
               return controller->previewPresentedLatest() && !submittedHasWrite(*controller) &&
                      controller->mathRastersForTest().heldResidentLoadCountForTest() == 1;
           }),
@@ -1606,7 +1619,7 @@ struct PreviewWindowHarness {
     void attach(MvmController& controller) {
         // 入力を送らない試験だが、利用者の作業を止めないよう前面とフォーカスを奪わず、OS の
         // マウス入力も透過させる (tests/harness/test_window_focus.h と同じ flags)。
-        window.setFlags(Qt::Window | Qt::WindowDoesNotAcceptFocus | Qt::WindowTransparentForInput);
+        window.setFlags(mvm::app::testBackgroundWindowFlags());
         window.resize(640, 360);
         surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
         surface->setWidth(640);
@@ -1615,18 +1628,6 @@ struct PreviewWindowHarness {
         window.show();
     }
 };
-
-// engine が前の組み直し (cache の結果による preview の更新) を seek している間は seek を受け付け
-// ないので、受け付けるまで繰り返す。
-bool seekWhenReady(MvmController& controller, qint64 frame) {
-    for (int attempt = 0; attempt < 100; ++attempt) {
-        if (controller.seekTimelineFrame(frame))
-            return true;
-        settle(50);
-    }
-    std::fprintf(stderr, "seek できません: %s\n", qUtf8Printable(controller.statusText()));
-    return false;
-}
 
 int nativeTransformPlayback() {
     QTemporaryDir temp;

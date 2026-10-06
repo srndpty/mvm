@@ -1,3 +1,4 @@
+#include "app/preview/test_window_mode.h"
 // トランジションを実際の preview engine で表示・再生できることを検査する。
 //
 // 同じ素材を 2 つに分けた clip の cut に前後 10 frame のトランジションを置く (分割してから
@@ -11,6 +12,7 @@
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "preview_engine/preview_engine_internal.h"
+#include "test_event_wait.h"
 #include "test_media_fixture.h"
 
 #include <algorithm>
@@ -112,18 +114,9 @@ void check(bool value, const char* message) {
     }
 }
 
-bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    while (!predicate() && std::chrono::steady_clock::now() < deadline) {
-        QCoreApplication::processEvents();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    QCoreApplication::processEvents();
-    return predicate();
-}
+using mvm::test::pumpUntil;
 
-// 副作用のある操作 (seek・再生) を受理されるまで繰り返す。pumpUntil は最後にもう一度 predicate
-// を呼ぶので、受理された操作を重ねて呼ばないよう結果を覚えておく。
+// 副作用のある操作 (seek・再生) を受理されるまで繰り返す。受理した結果を覚えておく。
 bool retryUntilAccepted(const std::function<bool()>& operation, int timeoutMs) {
     bool accepted = false;
     pumpUntil([&] { return accepted || (accepted = operation()); }, timeoutMs);
@@ -276,13 +269,14 @@ int main(int argc, char** argv) {
     {
         mvm::app::MvmController controller(projectPath, {}, project);
         QQuickWindow window;
+        window.setFlags(mvm::app::testBackgroundWindowFlags());
         window.setWidth(640);
         window.setHeight(360);
         auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
         surface->setWidth(640);
         surface->setHeight(360);
-        window.show();
         controller.attachPreview(surface);
+        window.show();
 
         const auto run = [&]() -> int {
             if (!pumpUntil([&] { return controller.previewReady(); }, 30000)) {
@@ -415,13 +409,14 @@ int main(int argc, char** argv) {
                     .toStdWString());
             mvm::app::MvmController controller(cutPath, {}, cutProject);
             QQuickWindow window;
+            window.setFlags(mvm::app::testBackgroundWindowFlags());
             window.setWidth(640);
             window.setHeight(360);
             auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
             surface->setWidth(640);
             surface->setHeight(360);
-            window.show();
             controller.attachPreview(surface);
+            window.show();
             const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
             const bool sought =
                 ready &&
@@ -543,13 +538,14 @@ int main(int argc, char** argv) {
                 directory.filePath(QStringLiteral("cut-audio-unsupported.mvm")).toStdWString());
             mvm::app::MvmController controller(audioPath, {}, audioProject);
             QQuickWindow window;
+            window.setFlags(mvm::app::testBackgroundWindowFlags());
             window.setWidth(640);
             window.setHeight(360);
             auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
             surface->setWidth(640);
             surface->setHeight(360);
-            window.show();
             controller.attachPreview(surface);
+            window.show();
             const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
             const bool sought =
                 ready &&
@@ -618,13 +614,14 @@ int main(int argc, char** argv) {
                     .toStdWString());
             mvm::app::MvmController controller(stalePath, {}, staleProject);
             QQuickWindow window;
+            window.setFlags(mvm::app::testBackgroundWindowFlags());
             window.setWidth(640);
             window.setHeight(360);
             auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
             surface->setWidth(640);
             surface->setHeight(360);
-            window.show();
             controller.attachPreview(surface);
+            window.show();
             const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
             const bool sought =
                 ready &&
@@ -786,13 +783,14 @@ int main(int argc, char** argv) {
                         .toStdWString());
                 mvm::app::MvmController controller(playPath, {}, playProject);
                 QQuickWindow window;
+                window.setFlags(mvm::app::testBackgroundWindowFlags());
                 window.setWidth(640);
                 window.setHeight(360);
                 auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
                 surface->setWidth(640);
                 surface->setHeight(360);
-                window.show();
                 controller.attachPreview(surface);
+                window.show();
                 // 準備ができた直後に controller が初期 frame の seek を始めるので、ready はすぐ
                 // false に戻りうる。ready で打ち切らず、seek を受理されるまで繰り返す。
                 const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
@@ -950,13 +948,14 @@ int main(int argc, char** argv) {
                     .toStdWString());
             mvm::app::MvmController controller(blockedPath, {}, blockedProject);
             QQuickWindow window;
+            window.setFlags(mvm::app::testBackgroundWindowFlags());
             window.setWidth(640);
             window.setHeight(360);
             auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
             surface->setWidth(640);
             surface->setHeight(360);
-            window.show();
             controller.attachPreview(surface);
+            window.show();
             const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
             const bool sought =
                 ready &&
@@ -1059,13 +1058,14 @@ int main(int argc, char** argv) {
                     .toStdWString());
             mvm::app::MvmController controller(threadPath, {}, threadProject);
             QQuickWindow window;
+            window.setFlags(mvm::app::testBackgroundWindowFlags());
             window.setWidth(640);
             window.setHeight(360);
             auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
             surface->setWidth(640);
             surface->setHeight(360);
-            window.show();
             controller.attachPreview(surface);
+            window.show();
             const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
             const bool limited =
                 ready &&
@@ -1118,13 +1118,14 @@ int main(int argc, char** argv) {
                 directory.filePath(QStringLiteral("noop-edits-while-playing.mvm")).toStdWString());
             mvm::app::MvmController controller(noopPath, {}, noopProject);
             QQuickWindow window;
+            window.setFlags(mvm::app::testBackgroundWindowFlags());
             window.setWidth(640);
             window.setHeight(360);
             auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
             surface->setWidth(640);
             surface->setHeight(360);
-            window.show();
             controller.attachPreview(surface);
+            window.show();
             const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
             const bool sought =
                 ready && retryUntilAccepted([&] { return controller.seekTimelineFrame(0); }, 30000);
@@ -1199,13 +1200,14 @@ int main(int argc, char** argv) {
                     .toStdWString());
             mvm::app::MvmController controller(failPath, {}, failProject);
             QQuickWindow window;
+            window.setFlags(mvm::app::testBackgroundWindowFlags());
             window.setWidth(640);
             window.setHeight(360);
             auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
             surface->setWidth(640);
             surface->setHeight(360);
-            window.show();
             controller.attachPreview(surface);
+            window.show();
             const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
             const bool sought =
                 ready &&
@@ -1479,17 +1481,31 @@ int main(int argc, char** argv) {
                         directory.filePath(QStringLiteral("ntsc.mvm")).toStdWString()),
                     {}, ntscProject);
                 QQuickWindow window;
+                window.setFlags(mvm::app::testBackgroundWindowFlags());
                 window.setWidth(640);
                 window.setHeight(360);
                 auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
                 surface->setWidth(640);
                 surface->setHeight(360);
-                window.show();
                 controller.attachPreview(surface);
+                window.show();
                 // 起動直後の frame 0 の提示を送りの計測に混ぜない。
-                check(pumpUntil([&] { return controller.previewReady(); }, 30000) &&
-                          pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000),
-                      "23.976fps の preview が準備できません");
+                // ReadyPaused の通知後に初回 seek が始まると ready は一時的に戻る。
+                // ready だけで待ちを終えず、初回提示まで同じ predicate で待つ。
+                const bool initialPresented = pumpUntil(
+                    [&] {
+                        return controller.previewReady() && controller.previewPresentedLatest();
+                    },
+                    30000);
+                check(initialPresented, "23.976fps の preview が準備できません");
+                if (!initialPresented) {
+                    const auto telemetry = controller.previewTelemetry();
+                    std::fprintf(stderr,
+                                 "初期提示の状態: engine=%d、提示=%llu、window の expose=%d: %s\n",
+                                 static_cast<int>(telemetry.status.state),
+                                 static_cast<unsigned long long>(telemetry.presentedFrameCount),
+                                 window.isExposed(), qPrintable(controller.statusText()));
+                }
                 for (qint64 frame = regionStart - 3; frame <= regionStart + 3; ++frame)
                     check(stepAndCompare(controller, ntscProject, frame).second,
                           "23.976fps: 区間の始まりのフレーム送りで mapping と違う frame "
