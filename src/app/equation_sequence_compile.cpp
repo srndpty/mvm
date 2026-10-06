@@ -258,19 +258,7 @@ EquationCompileResult<EquationActionPlan> compileEquationAction(const EquationPa
 EquationCompileResult<EquationSequenceSpec>
 compileEquationSequence(const project::EquationSequenceClipData& d) {
     using F = EquationCompileFailure;
-    // 参照の診断を構造エラーへ潰さない。
-    for (const auto& a : d.actions) {
-        const auto s = std::find_if(d.states.begin(), d.states.end(),
-                                    [&](const auto& state) { return state.id == a.state; });
-        if (s == d.states.end() || a.targetStatus == project::EquationTargetStatus::Missing)
-            return {{}, F::MissingPart};
-        const auto p = std::find_if(s->parts.begin(), s->parts.end(),
-                                    [&](const auto& part) { return part.id == a.target; });
-        if (p == s->parts.end())
-            return {{}, F::MissingPart};
-        if (p->binding.status != project::BindingStatus::Bound)
-            return {{}, F::InvalidBinding};
-    }
+    // partition / correspondence の固有の失敗は維持し、action は構造検証後に解決する。
     std::vector<EquationPartition> partitions;
     EquationSequenceSpec result;
     for (const auto& s : d.states) {

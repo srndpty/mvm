@@ -314,8 +314,8 @@ void plans() {
           "State/Part/Action/Transition ID と revision/label は正準 plan に依存しない");
     auto bad = d;
     bad.actions[0].targetStatus = EquationTargetStatus::Missing;
-    check(compileEquationSequence(bad).failure == EquationCompileFailure::MissingPart,
-          "missing action 拒否");
+    check(compileEquationSequence(bad).failure == EquationCompileFailure::InvalidSequence,
+          "実在する PartId の missing status は構造不正");
     bad = d;
     bad.states[0].parts[0].binding.status = BindingStatus::Invalid;
     check(compileEquationSequence(bad).failure == EquationCompileFailure::InvalidBinding,
@@ -326,8 +326,8 @@ void plans() {
           "二重 explicit 拒否");
     bad = d;
     bad.actions[0].target = {"unknown"};
-    check(compileEquationSequence(bad).failure == EquationCompileFailure::MissingPart,
-          "存在しない action 対象拒否");
+    check(compileEquationSequence(bad).failure == EquationCompileFailure::InvalidSequence,
+          "present の存在しない action 対象は構造不正");
     auto a = state("x+x+x"), b = state("x+x");
     b.id = {"other"};
     const auto pa = compileEquationPartition(a), pb = compileEquationPartition(b);
@@ -371,6 +371,65 @@ void plans() {
               EquationCompileFailure::UnsupportedTexBoundary,
           "action の分離不能な target はコンパイル失敗");
 }
+
+void actionFailureClasses() {
+    std::string error;
+    auto good = sequence();
+    good.actions = {{{"classification"},
+                     {"s"},
+                     {"first"},
+                     EquationTargetStatus::Present,
+                     0,
+                     1,
+                     EquationOperation::Outline}};
+    check(validateEquationSequence(good, 1080, error) &&
+              compileEquationSequence(good).value.has_value(),
+          "action 分類の有効な対照");
+
+    auto bad = good;
+    bad.actions[0].state = {"absent-state"};
+    auto result = compileEquationSequence(bad);
+    check(!validateEquationSequence(bad, 1080, error) && !result.value &&
+              result.failure == EquationCompileFailure::InvalidSequence,
+          "存在しない StateId は InvalidSequence");
+
+    bad = good;
+    bad.actions[0].target = {"absent-part"};
+    result = compileEquationSequence(bad);
+    check(!validateEquationSequence(bad, 1080, error) && !result.value &&
+              result.failure == EquationCompileFailure::InvalidSequence,
+          "present の存在しない PartId は InvalidSequence");
+
+    auto missing = good;
+    check(deleteEquationPart(missing, {"s"}, {"first"}, 1080, error),
+          "修復可能な persisted Missing-Part を作る");
+    result = compileEquationSequence(missing);
+    check(validateEquationSequence(missing, 1080, error) &&
+              missing.actions[0].targetStatus == EquationTargetStatus::Missing && !result.value &&
+              result.failure == EquationCompileFailure::MissingPart,
+          "missing の存在しない PartId は MissingPart");
+    auto p = createDefaultProject();
+    check(addEquationSequence(p, missing, "classification-clip", "数式", {TrackKind::Video, 0}, 0)
+              .success,
+          "Missing-Part を Project に保持できる");
+    const auto path = std::filesystem::absolute("build/equation-classification.mvm");
+    const auto serialized = serializeProjectJson(p, path);
+    check(serialized.success, "Missing-Part の JSON 保存形式が有効");
+    if (serialized.success) {
+        const auto reopened = parseProjectJsonText(serialized.json, path);
+        check(reopened.success && reopened.project.timelineClips[0].equationSequence == missing &&
+                  compileEquationSequence(reopened.project.timelineClips[0].equationSequence)
+                          .failure == EquationCompileFailure::MissingPart,
+              "保存再読込後も合法な Missing-Part と分類を維持");
+    }
+
+    bad = good;
+    bad.states[0].parts[0].binding.status = BindingStatus::Invalid;
+    result = compileEquationSequence(bad);
+    check(validateEquationSequence(bad, 1080, error) && !result.value &&
+              result.failure == EquationCompileFailure::InvalidBinding,
+          "実在する Invalid binding は InvalidBinding");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -378,6 +437,7 @@ int main(int argc, char** argv) {
     edits(argc > 1 ? std::filesystem::path(argv[1]) : std::filesystem::path("build/equation-p32"));
     partitionTests();
     plans();
+    actionFailureClasses();
     std::printf("%d 検査 / %d 失敗\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

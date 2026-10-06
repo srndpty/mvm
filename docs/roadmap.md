@@ -2,6 +2,15 @@
 
 「このアプリの今後の改善策は何か」に答えるための一覧。着手したら該当の文書 (例: `docs/subtitles.md`) へ移し、ここからは消す。記述の印は `docs/phase0-findings.md` と同じ (`[事実]` `[推測]` `[未検証]`)。
 
+## 一般の preview
+
+- [事実] 2026-10-07、P3-2.1 の通常 release gate 一回で `transition_preview` が
+  「23.976fps の preview が準備できません」と「区間の始まりのフレーム送りで mapping と違う frame を提示しました」で失敗した。
+  原因と今回の compiler 分類変更との因果関係は未特定。再試行はしていない。
+  再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。
+  通常試験は 1460/1461 通過、通常 gate は未通過。
+  証拠: `build/math-p321-release.log`、`build/math-p321-release-lasttest.log`。
+
 ## 一般の音声・書き出し
 
 - [事実] 2026-10-07、P3-1.1 の通常 release gate 一回は 1459/1460 通過。

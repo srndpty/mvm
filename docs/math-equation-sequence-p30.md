@@ -620,3 +620,35 @@ pwsh scripts/test-equation-compile-mutations.ps1
 pwsh scripts/lint.ps1
 pwsh scripts/test.ps1 -Preset ucrt64-release
 ```
+
+## P3-2.1 action の失敗分類
+
+`compileEquationSequence` の早期 action 分類を除き、既存の構造検証を通過した
+action だけを解決する。partition / correspondence の固有の失敗分類は維持する。
+存在しない StateId、および `present` の存在しない PartId は `InvalidSequence`。
+合法な `missing` の存在しない PartId は `MissingPart`、実在する Invalid binding は
+`InvalidBinding` とする。実在する PartId に `missing` を付けた状態も構造不正として拒否する。
+schema 21、partition、照合、描画・cache・preview/export・UI は変更しない。
+
+[事実] 集中 compiler/domain CTest は 2/2 通過（200 / 263 検査、失敗 0）。
+4 ケースの分類と合法な Missing-Part の JSON 保存形式・再読込を検証した。
+証拠: `build/math-p321-focused.log`。
+
+[事実] `action_failure_conflation` は build 配下の複製に旧 preflight を戻す変異。
+存在しない StateId と present の存在しない PartId の両方の回帰試験が失敗し、
+終了コード 1 と両メッセージを確認した。既存分を含め 6/6 検出、製品 source は変異させていない。
+証拠: `build/math-p321-mutations.log` と
+`build/ucrt64-release/equation-compile-mutations-20261007-021739-526/`。
+
+[事実] BuildIndependent は 1078/1078 通過、lint は通過。
+証拠: `build/math-p321-independent.log`、`build/math-p321-lint.log`。
+最小 target のビルドは `build/math-p321-build.log` に保持した。
+
+[事実] 通常 release gate の `transition_preview` が 23.976fps の preview 準備と
+区間始点の frame mapping 検査で失敗した。原因と分類変更との因果関係は未特定。
+再試行せず失敗を保持し、未解決事項を roadmap に記録した。
+最終結果は 1460/1461 通過、失敗はこの 1 件であり通常 gate は未通過。
+再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。performance / stability を除外し、
+extended / workstation は短縮・除外していない。
+証拠: `build/math-p321-release.log`、`build/math-p321-release-lasttest.log`。
+P3-2.1 の変更と集中検証を完了し、P3-3 の実装、commit、push は行っていない。

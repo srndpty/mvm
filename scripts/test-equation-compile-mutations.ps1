@@ -11,12 +11,28 @@ $outputDir = Join-Path $buildDir ("equation-compile-mutations-" + (Get-Date -For
 [void](New-Item -ItemType Directory -Path $outputDir)
 $testObject = Join-Path $buildDir 'tests/CMakeFiles/mvm_test_equation_compile.dir/harness/test_equation_compile.cpp.obj'
 if (-not (Test-Path -LiteralPath $testObject)) { throw '先に scripts/build.ps1 -Target mvm_test_equation_compile を実行してください' }
+$oldActionClassification = @'
+for (const auto& a : d.actions) {
+    const auto s = std::find_if(d.states.begin(), d.states.end(),
+                               [&](const auto& state) { return state.id == a.state; });
+    if (s == d.states.end() || a.targetStatus == project::EquationTargetStatus::Missing)
+        return {{}, F::MissingPart};
+    const auto p = std::find_if(s->parts.begin(), s->parts.end(),
+                               [&](const auto& part) { return part.id == a.target; });
+    if (p == s->parts.end())
+        return {{}, F::MissingPart};
+    if (p->binding.status != project::BindingStatus::Bound)
+        return {{}, F::InvalidBinding};
+}
+std::vector<EquationPartition> partitions;
+'@
 $mutations = @(
     @{ Name = 'equal_text_rebinding'; File = 'project/equation_sequence.cpp'; From = 'p.binding.status = BindingStatus::Invalid;'; To = '{ p.binding.status = BindingStatus::Bound; p.binding.revision = revision; }'; Expected = '文字一致で自動再 binding しない' },
     @{ Name = 'begin_insertion_inside'; File = 'project/equation_binding_edit.cpp'; From = '*end <= static_cast<std::size_t>(b.begin)'; To = '*end < static_cast<std::size_t>(b.begin)'; Expected = '境界の手計算 status' },
     @{ Name = 'auto_crosses_semantic'; File = 'app/equation_sequence_compile.cpp'; From = 'autoRegion(begin);'; To = 'autoRegion(end);'; Expected = '原 byte を一回ずつ再構成' },
     @{ Name = 'explicit_double_matching'; File = 'app/equation_sequence_compile.cpp'; From = 'usedFrom[*a] = usedTo[*b] = true;'; To = 'usedFrom[*a] = usedTo[*b] = false;'; Expected = '一つの segment を二度 transform しない' },
-    @{ Name = 'canonical_raw_part_id'; File = 'app/equation_sequence_compile.cpp'; From = 'auto matchKey = p->binding.expectedText;'; To = 'auto matchKey = p->binding.expectedText + p->id.value;'; Expected = '正準 plan に依存しない' }
+    @{ Name = 'canonical_raw_part_id'; File = 'app/equation_sequence_compile.cpp'; From = 'auto matchKey = p->binding.expectedText;'; To = 'auto matchKey = p->binding.expectedText + p->id.value;'; Expected = '正準 plan に依存しない' },
+    @{ Name = 'action_failure_conflation'; File = 'app/equation_sequence_compile.cpp'; From = 'std::vector<EquationPartition> partitions;'; To = $oldActionClassification; Expected = '存在しない StateId は InvalidSequence'; ExpectedAlso = 'present の存在しない PartId は InvalidSequence' }
 )
 $compileArguments = @('-std=c++20', '-O2', '-I', (Join-Path $repoRoot 'src'))
 $libraries = @((Join-Path $buildDir 'src/libmvm_equation_sequence_compile.a'),
@@ -46,7 +62,10 @@ foreach ($mutation in $mutations) {
     $log = $stdoutTask.GetAwaiter().GetResult() + $stderrTask.GetAwaiter().GetResult()
     [IO.File]::WriteAllText((Join-Path $outputDir "$($mutation.Name).log"), $log, [Text.UTF8Encoding]::new($false))
     # クラッシュ・timeout・compile error は変異検出に数えない。
-    if ($process.ExitCode -ne 1 -or -not $log.Contains($mutation.Expected)) { throw "変異を対象の検査で検出できません: $($mutation.Name) / 終了 $($process.ExitCode)" }
+    if ($process.ExitCode -ne 1 -or -not $log.Contains($mutation.Expected) -or
+        ($mutation.ContainsKey('ExpectedAlso') -and -not $log.Contains($mutation.ExpectedAlso))) {
+        throw "変異を対象の検査で検出できません: $($mutation.Name) / 終了 $($process.ExitCode)"
+    }
     ++$killed
     Write-Host "変異検出: $($mutation.Name)"
 }
