@@ -1819,6 +1819,9 @@ int checkMathTransformAuthoring(const std::filesystem::path& projectPath) {
     return result;
 }
 
+// tests/harness/math_p28_acceptance.cpp
+int runMathP28Acceptance(const std::filesystem::path& manim, const std::filesystem::path& work);
+
 int main(int argc, char** argv) {
     mvm::app::prepareTestFixedWindowEnvironment();
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
@@ -1839,6 +1842,23 @@ int main(int argc, char** argv) {
     application.setApplicationName(QStringLiteral("project-panel"));
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+
+    // P2-8 の統合受け入れ (実 Manim、CTest に登録しない。tests/harness/math_p28_acceptance.cpp)。
+    if (const auto at = application.arguments().indexOf(QStringLiteral("--math-p28-acceptance"));
+        at >= 0) {
+        const auto arguments = application.arguments();
+        if (arguments.size() != at + 3) {
+            std::fprintf(stderr, "使い方: mvm_test_text_ui_input --math-p28-acceptance "
+                                 "<manim.exe> <作業 directory (存在しないこと)>\n");
+            mvm_mlt_runtime_shutdown();
+            return 2;
+        }
+        const int result =
+            runMathP28Acceptance(std::filesystem::path(arguments[at + 1].toStdWString()),
+                                 std::filesystem::path(arguments[at + 2].toStdWString()));
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
 
     if (application.arguments().contains(QStringLiteral("--math-transform-inspector"))) {
         const int result = checkMathTransformInspector(

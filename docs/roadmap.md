@@ -22,6 +22,10 @@
   1457 件中 1456 件通過。P2-7 は書き出しの経路を変えていない。再試行はしていない。
   再現コマンドは `pwsh scripts/test.ps1 -Preset ucrt64-release`、証拠は `build/math-p27-release-20261006.log`。
   原因と再現性は未調査。
+- [事実] 2026-10-06 (P2-8)、書き出しの成功の後に状態へ「Explorerで表示できません (HRESULT=0x80070057)」が
+  付いた (書き出しは成功)。`revealFileInExplorer` は `QUrl::toLocalFile` の "/" 区切りの path を
+  `SHParseDisplayName` へ渡しており、小さな program で "/" 区切りは 0x80070057、"\" 区切りは成功を確かめた。
+  数式とは無関係。[未検証] 実アプリの書き出しの dialog でも毎回起きるか。直すなら区切りを "\" にしてから渡す。
 
 ## 数式 clip
 
@@ -48,6 +52,16 @@
   - (済: P2-5) preview (A の layer と B の layer が同じ変形の frame を見せる、artifact の位置の規則) と
     エフェクトコントロールの状態 (disk の描画と preview の memory を分けて示す)
   - (済: P2-7) 製品の UI からの作成・長さ・削除 (`docs/math-clips.md` の「MathTransform の編集 UI」)
+  - (済: P2-8) 統合受け入れ (`docs/math-clips.md` の「P2-8 統合受け入れ」)。手動の確認は未実施。
+  - [事実] P2-8 で、数式の作業 directory の下の 260 文字を超える file を直した (extended-length の走査と
+    Win32 の木の削除)。残る制限: 作業 directory の下の directory 自体が 260 文字を超える深さの Project
+    (この開発機の作業 directory の作り方では、Project の directory と file 名の合計が約 100 文字を超える場合)
+    では、libstdc++ の列挙がその中を返さず、描画は「PNG が N 枚ではありません (件数=0)」で失敗する
+    (止まりはしない)。直すなら、作業 directory の名前から key (64 文字) を外して短くするか、走査も Win32 で行う。
+  - [推測] P2-8 で、試験の待ちが約 2 ms ごとに engine の status を読むと、試験の window の描画の周期が
+    止まり、paused の seek の提示が 30 秒待っても終わらなかった (20 ms ごとでは 5 / 5 通過)。
+    `math_write_native_playback` などの同じ形の待ち (`pump` の 2 ms) の一時的な失敗が同じ原因かは未検証。
+    仕組みも確かめていない。
   - [事実] 2026-10-06、P2-7 の集中試験の一括実行で `math_write_native_playback` が 1 回失敗した
     (一時停止中の mask の読み込みと再生の開始、22 検査中 3 件)。単独では 6 / 6 通過し、
     同じ日の通常 release gate でも通過した。原因は未特定 (`build/math-p27-focused-20261006.log`)。
@@ -164,6 +178,8 @@ clip の編集で字幕を置き直すとき、毎回 timeline の frame から�
   −1 (期待 0.025) となり、`stale-engine-reset` の source 準備要求の前提も失敗した。
   証拠は `build/math-p261-release-20261006.log`。preview の処理は変更していないが、
   今回の発生原因は未特定。再試行による成功 run の選別はしていない。
+  [事実] 2026-10-06、P2-8 の集中試験 (24 件) でも同じ「frame 110: incoming の不透明度 -1.000
+  (期待 0.025)」で 1 回失敗した (`build/math-p28-focused-20261006.log`)。再試行はしていない。
 
 - [事実] 2026-10-04、release の通常テスト一式 (並列 8) の 1 回で
   `preview_engine_p5e_remove_fatal_event_order` が SEGFAULT で落ちた。単独では 5/5 通過。

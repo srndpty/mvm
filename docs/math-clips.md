@@ -1107,6 +1107,202 @@ Manim の描画・cache と artifact の形・preview と書き出しの意味�
   (`build/math-p271-focused-20261006.log`)。lint は、追加した行の整形 (`scripts/format.ps1`) の後に通過した
   (`build/math-p271-lint-20261006.log`)。通常 release gate は回していない (製品のコードは変えていない)。
 
+### P2-8 統合受け入れ
+
+P2 を動機にした二次方程式の導出 E1 → E2 → E3 を、製品の UI で作り、保存・開き直し、実 Manim +
+MiKTeX で描き、実 D3D11 の preview と映像のみの製品の書き出しで確かめた。MathTransform の意味・
+Project の field・照合・描画・cache の形・preview と書き出しの規則は変えていない。受け入れが
+見つけた不具合 (260 文字を超える作業 path、下の「受け入れが見つけた不具合」) だけを直した。
+
+#### 受け入れの入口
+
+CTest に登録しない (実 Manim + MiKTeX を必要とする。既存の実 Manim の受け入れと同じ方針)。
+作業 directory は存在しない新しい path を指定し、既存なら終了コード 2 で拒否する。
+画面を表示するが、window は入力を透過し前面を取らないので、実行中も通常の PC 操作をしてよい。
+画面の消灯を止める (`SetThreadExecutionState(ES_DISPLAY_REQUIRED)`) 下で、MiKTeX を含む新しい
+shell の PATH で回した。
+
+```powershell
+pwsh scripts/build.ps1 -Target mvm_test_text_ui_input
+.\build\ucrt64-release\bin\mvm_test_text_ui_input.exe --math-p28-acceptance `
+    "$env:USERPROFILE\.local\bin\manim.exe" <作業 directory>
+```
+
+実装は `tests/harness/math_p28_acceptance.cpp` (`mvm_test_text_ui_input` に入れ、製品の `Main.qml` の
+module を使う)。期待値は手で数えた値で、実装の配置・時間の関数から作らない。
+
+#### 受け入れの内容 (最終の run)
+
+- A. 製品の UI で作る (60 fps・1920x1080 の既定 Project)。
+  - fixture は clip もトランジションも持たない。一般の前提として timeline の終端 (frame 900) に
+    marker を 1 つ置く (再生ヘッドは timeline の外へ動かせず、追加メニューは再生ヘッドの位置に置くため)。
+  - ファイルメニューの「数式 clip を追加」を 3 回 (再生ヘッド 0 / 300 / 600)。各回、式の入力欄に
+    E1 / E2 / E3 を入れて Ctrl+Enter で確定する。V1 の 0..300 / 300..600 / 600..900 に接して並ぶ。
+  - 3 本に等しい不透明度 80% (controller の `setClipEffectValues`、エフェクトコントロールと同じ操作)。
+  - E1 の inspector の「Write」の欄を押し (既定 1 秒 = 60 frame)、Write の長さ欄をダブルクリックして
+    `1.5` を入力する (90 frame、frame 0..89)。
+  - E1 → E2 の編集点で「数式の変形を適用」(cut で開始 0 / 60)、配置の一覧で「中央」→ 30 / 30
+    (区間 270..329)。E2 → E3 も同じボタンで作り、長さ欄に `0.5` (0 / 30)、「中央」→ 15 / 15
+    (区間 585..614)。E1 の Write (0..89) は最初の変形と重ならない。E2・E3 は Write を持たない。
+  - 両方の変形で、timeline の帯と inspector の題が「数式の変形」、向きが「変形前 → 変形後」。
+  - `saveProject` で保存する。作成時の cache は `authoring-cache` へ退避して保持し (消さない)、
+    開き直した Project から実 Manim で描かせる。
+- B. 開き直し: 新しい `MvmController` と新しい `Main.qml` で開く。
+  - file の schema は 20。読んだ Project は保存前と等しい (E1 / E2 / E3 の式、E1 の Write 90 frame、
+    2 つの変形の ID・`TransitionKind::MathTransform`・前後 30 / 30 と 15 / 15)。開いた直後は dirty でない。
+  - 数式 clip とトランジションの JSON の field は契約のものだけで、派生の値 (segment・match・
+    backend・cache・toolchain・manim・provenance・artifact・sha256・`.a8`) を含まない。
+    この検査の負の対照として、`segments` を足したトランジションと `backend` を足した数式の JSON は検出する。
+  - 静止 3・Write 1・変形 2 を実 Manim で描くのに 17.7 秒。`readyTransformForExport` が今の端点の
+    artifact (60 枚・30 枚、1456x265 の `.a8`) を返し、provenance は変形の key と両端の静止の key を持つ。
+  - 共有の時間の関数 (`mathIntroFrameAt`・`mathTransformFrameAt`) が手で数えた境界と一致する。
+- C. 実 D3D11 preview (製品の `Main.qml` の preview surface、engine が提示した合成で比べる)。
+  - Write: frame 1 / 10 / 45 / 89 で engine の Write の frame = timeline の frame。被覆は
+    15479 / 181216 / 1005052 / 1395727 (静止 1399380) と増える。Write の layer は 1 枚で ClipEffects は静止と同じ。
+  - frame 90・269 は E1 の静止と、584 は E2 の静止と全画素一致。
+  - 両方の変形: 区間の先頭の frame 0 は変形前の静止と全画素一致。cut の前は前の layer、後は後ろの
+    layer で、engine の変形の frame は `mathTransformFrameAt`。区間の全 frame で前・後ろの layer の
+    画素が一致する (A/B の受け渡しで進み具合が飛ばない)。最後の frame の artifact の位置は、
+    変形後の静止が普通の静止に重なる位置 (左上 (232,407) → (232,407))。直後の frame は普通の静止。
+    合成の数式 layer は常に 1 枚、不透明度 0.8 は layer が 1 回だけ掛け、patch の被覆は 255 のまま。
+    inspector の preview の状態は ready。
+  - 通し再生 (frame 0 → 645): 記録 1199 件 (Write 90・変形 90) がすべて timeline の frame どおりで、
+    両方の変形を cut の前後の layer で見せた。
+  - mask が遅れて届く (P1.2 / P2-5 の `holdResidentLoadsForTest`): Write は frame 30 で届け、最初に
+    見せたのは frame 35。変形は frame 282 で届け、最初に見せたのは frame 286 (変形の frame 16)。
+    どちらも再生を止めず、組み直しも無く、frame 0 からやり直さない。変形は cut の後も後ろの layer で続く。
+- D. 映像のみの書き出し (製品の `exportTimelineWithQuality(..., "high")`、CRF 18)。
+  - 書き出しの前に preview の memory の上限を 1 byte にし、変形の preview が OverBudget
+    (inspector に memory の理由、提示した合成は cut) であることを確かめた。disk の変形は ready のまま。
+  - 書き出しは 19.4 秒で成功し、900 frame・1920x1080・音声の stream 0 (Project に音声 clip は無い)。
+    cache の file (一覧と更新時刻) は書き出しの前後で同じ (Manim で描き直していない)。
+  - 復号した 20 frame (Write 10・45・89、90、269・270、285・299・300・314・329・330、584・585・592・
+    599・600・607・614・615) を製品の preview の画素と比べた。lossy なので P2-6 の許容
+    (誤差和 < 非零被覆 x 50、差 60 超 < 濃い被覆の画素数) を使い、全 frame が通過した (大差は全 frame で 0)。
+  - 負の対照: 16 px ずらした期待は全 frame で許容を外れ、誤差和は 24.7 倍以上 (最小は frame 285)。
+    不透明度を二重に掛けた期待の誤差和は 3.27 倍以上 (frame 285)。cut の前後 8 frame は hard cut の
+    対照の誤差和が 4.77 倍以上 (frame 607)。
+  - Write の frame 1 は濃い被覆が 61 画素で、P2-6 の非空の下限 (100 画素) に届かない。下限を緩めず、
+    書き出しの比較は frame 10 から行う (preview では frame 1 も確かめた)。
+  - 復号した frame 269 と 270 (静止と変形 frame 0) は全 byte 一致、584 と 585 は 213 byte 違った
+    (lossy な符号化。preview の画素では両方とも全画素一致)。
+- E. 負例 (保存した Project の file は全負例の後も byte 単位で同じ。Blend に置き換えない)。
+  - 変形の frame 10 の中身を 1 byte 変える / file を退避する: 書き出しは開始時に
+    「数式の変形の現在の disk 成果物を検証できません」で拒否し、出力を作らない。戻すと同じ artifact を
+    再び検証でき、cache の file は消さず描き直さない。
+  - E2 の式を E1 と同じにする: 変形の key が変わり、古い key の provenance と frame は disk に残るが、
+    今の端点の変形は書き出しに使えず、開始時に拒否する。Undo で保存した Project に戻る。
+  - 同じ Project の複写を、無い Manim の path で開く: 2 つの変形は Project に残り (kind は
+    math_transform)、状態は unavailable / backend。書き出しは拒否し、Project・file は変わらない。
+
+#### 受け入れが見つけた不具合: 260 文字を超える作業 path
+
+- [事実] 作業 directory の名前を 6 文字長くした run (`build/math-p28-acceptance-final-20261006-070010`)
+  で、B の変形の描画が終わらず、process が 12 分で CPU 時間 1133 秒を使い続けた。gdb の stack
+  (`build/math-p28-acceptance-final-20261006-070010-stacks.txt`) で、cache の worker が
+  `renderTransformJob` の失敗時の掃除 (`std::filesystem::remove_all(作業 directory)`) から戻っていなかった。
+  Manim の子 process は残っておらず、作業 directory の file を開いている process も無かった。
+  stack の採取の後、この run の process を PID で止めた。
+  - 変形の作業 directory は `<cache>/jobs/<session>/<key 64 文字>-transform-<n>` で、Manim はその下に
+    `media\images\mvm_math_tex\MvmMathTransform0000.png` を相対 path で書く。この run では最長 262 文字。
+    それまでの run は作業 directory の名前が 6〜11 文字短く、256 文字以下だった。LongPathsEnabled は無効。
+- [事実] 同じ木の写しで切り分けた (`build/math-p28-attrib-removeall-*`)。MSYS2 UCRT64 の GCC 16.1 の
+  libstdc++ で:
+  - 通常の path の `recursive_directory_iterator` は、260 文字を超える PNG を error 無しで 0 件にした。
+    "\\?\" 付きなら 61 件見つけ、FFmpeg (`ffprobe`) は 266 文字の PNG を読めた。
+    → 変形の描画は「PNG が 61 枚ではありません (件数=0)」で失敗する経路に入っていた。
+  - `remove_all(path, error)` は 264 文字の木で 20 秒以内に返らなかった。同じ木を短い path に写すと
+    すぐに返り、"\\?\" 付きでも返った。
+  - "\\?\" 付きでも、directory 自体の path が 260 文字を超えると、その中を error 無しで列挙しなかった。
+    [未検証] `GetFullPathNameW` (`std::filesystem::absolute` が使う) が 260 文字を超える入力を扱えるか。
+    最初の版の helper はこれを使い、深い木で失敗したが、その木は directory 自体も 260 文字を超えていた。
+    いずれにしても使わず、字句的に変換する。
+- 修正 (`src/util/mvm_long_path.h`・`.c`、新規)。静止・Write・変形の作業 directory の扱いが共通なので、
+  3 つとも同じ修正で直る (変形の名前が最も長いので最初に出た)。
+  - `extendedLengthPath`: 字句的に絶対 path にして "\\?\" (UNC は "\\?\UNC\") を付ける。
+    Manim の backend は出力の PNG と TeX の log をこの形で走査する。
+  - `removeTree` / `mvm_remove_tree`: Win32 (`FindFirstFileExW`・`DeleteFileW`・`RemoveDirectoryW`) で
+    各項目を 1 回だけ試す木の削除。必ず返り、最初の error を返す。cache の作業 directory・Write と
+    変形の artifact の directory・起動時の `jobs` の残りの削除をすべてこれにした。
+- 試験 (いずれも通常の CTest)
+  - `long_path_focused` (新規、`tests/core/test_long_path.cpp`): 形式 (drive・"/" と ".."・UNC・
+    既に付いている・device・相対・空・300 文字の入力) を手で書いた文字列と比べる。260 文字未満の
+    directory の 260 文字を超える file 5 件を見つける。directory が 330 文字の木 (読み取り専用の
+    file を含む) を `removeTree` が 30 秒以内に消す (返らなければ失敗にして終わる)。
+  - `math_raster_cache_focused` の `testLeftoverDeepJobs`: 前の session の作業 directory の残りに
+    300 文字を超える file があっても、backend の確認が終わって Available になり、残りを消し、その後も描ける。
+  - [事実] `removeTree` を libstdc++ の `remove_all` (extended-length の path) に戻す変異で、両方の試験が
+    30 秒の上限で失敗した (`build/math-p28-longpath-mutation-removeall.log`)。元に戻したことは
+    file の SHA-256 で確かめた。
+  - [事実] 修正の後、作業 directory の名前を失敗した run より 1 文字長くした受け入れ
+    (`build/math-p28-acceptance-final2-20261006-073636`、変形の PNG は同じ作り方なので計算上 263 文字) が通過した。
+- 残る制限は [roadmap](roadmap.md#数式-clip) に置いた (作業 directory の下の directory 自体が 260 文字を
+  超える深さの Project は、描画が失敗で終わる。止まりはしない)。
+
+#### 受け入れの試験側の誤りと、帰属の run
+
+すべての run の log と作業 directory を `build/` に残した。合否の選別はしていない。
+
+| run | 結果 | 内容 |
+|---|---|---|
+| `math-p28-acceptance-20261006-061914` | 322 中 3 失敗 | 試験の誤り 3 件: JSON の検査が既存の空の `manim_assets` に反応した / Write frame 1 が P2-6 の非空の下限 (61 < 100) で落ちた (誤差は許容内、対照は大きく外れた) / 端点を変えた間も古い変形を `readyTransformForExport` が返すと仮定した (cache は記録を外すので返さない。書き出しは正しく拒否した) |
+| `math-p28-acceptance-20261006-062259` | 315 中 1 失敗 | 書き出しの前の OverBudget の待ち (診断を出していなかった) |
+| `math-p28-acceptance-20261006-062539` | 317 中 1 失敗 | 同じ待ちで、提示の完了を 30 秒待てなかった (inspector は memory、合成は cut で正しかった) |
+| `math-p28-acceptance-20261006-062815` | 118 で中断 | frame 450 の提示を 30 秒待てなかった |
+| `math-p28-acceptance-20261006-062954` | 317 中 0 失敗 | (診断の追加の後の 1 回目) |
+| `math-p28-diag-*` (4 回) | 2 通過・2 失敗 | 提示を待てない失敗を診断付きで再現 |
+| `math-p28-diag2-*` (5 回) | 1 通過・4 失敗 | swap の回数の記録付き |
+| `math-p28-diag3-*` (5 回) | 5 通過 | 提示の待ちの条件の評価を 20 ms ごとにした |
+| `math-p28-acceptance-final-20261006-070010` | B で停止 | 上の 260 文字の不具合 (process を止めた) |
+| `math-p28-acceptance-final2-20261006-073636` | **317 中 0 失敗** | 最終の run (修正の後、深い作業 directory) |
+
+- [事実] 提示を待てない失敗の帰属: 診断 (`diagnosePreview`) で、待っている 30 秒の間に試験の window の
+  swap は 3 回だけで、engine は Seeking のままだった。待ちを抜けた直後から swap は約 66 回/秒に戻り、
+  0.5 秒以内に seek が終わって提示した。window は exposed、利用者の無操作は短かった (画面は点いていた)。
+  待ちの条件 (engine の status を lock して読む) を約 2 ms ごとに評価していた。20 ms ごとにする
+  (`waitPresented`) と 5 / 5 回通過した (同じ build の 2 ms では 5 回中 1 回)。製品は 2 ms ごとに
+  status を読まない。[推測] 試験の process の GUI thread が詰めて回る待ちで、window の描画の周期が
+  止まる。仕組みは確かめていない。P2-7 の `math_write_native_playback` の一時的な失敗も同じ形の待ち
+  (2 ms ごとに `previewPresentedLatest`) だが、同じ原因かは確かめていない [未検証]。
+
+#### P2-8 の gate (2026-10-06)
+
+| gate | 結果 | 証拠 |
+|---|---|---|
+| 集中 (Math / transition / preview / export / 製品 UI、25 件) | 25 / 25 通過 (修正の後) | `build/math-p28-focused-2-20261006.log` |
+| 同上 (修正の前、24 件) | 24 件中 23 件通過、`transition_preview` 失敗 | `build/math-p28-focused-20261006.log` |
+| `-Group BuildIndependent` | 1078 / 1078 (修正の前と後の両方) | `build/math-p28-build-independent-20261006.log` (前)・`build/math-p28-build-independent-2-20261006.log` (後) |
+| `scripts/lint.ps1` | 通過 | `build/math-p28-lint-final-20261006.log` |
+| 実 Manim の P2-8 受け入れ | 317 / 317、終了コード 0 | `build/math-p28-acceptance-final2-20261006-073636.log` と同名の directory |
+| 通常 release gate (`pwsh scripts/test.ps1 -Preset ucrt64-release`、1 回) | 1458 / 1458 通過 (756 秒) | `build/math-p28-release-20261006.log` |
+
+- 集中の選択:
+  `ctest --test-dir build/ucrt64-release -R '^(m5_timeline_edit_focused|m7b_4_transition_editor_qml|transition_preview|text_ui_direct_input|math_.*|manim_math_tex_focused|.*timeline_export.*|long_path_focused)$' -LE 'performance|stability' --timeout 300`。
+  `-N` で件数を確かめてから実行した (`build/math-p28-focused-list-2-20261006.log`)。
+- [事実] 修正の前の集中の `transition_preview` の失敗は「frame 110: incoming の不透明度 -1.000 (期待 0.025)」
+  「再生中のトランジションで incoming の不透明度が進み具合で上がりません」。同じ frame・同じ値の失敗を
+  2026-10-04 に単独・負荷なしの 5 回中 1 回で観測しており ([roadmap](roadmap.md#既知の未解決の問題))、
+  これは最初の数式の commit (`d232723`、2026-10-05) より前である。したがって P2 とは独立と分類した。
+  再試行はしていない。修正の後の集中と通常 release gate では通過したが、解消したとは扱わない。
+- toolchain: `manim-mathtex` template 1、Manim Community v0.21.0、MiKTeX-pdfTeX 4.27 (MiKTeX 26.5)、
+  dvisvgm 3.6。GCC 16.1.0 (MSYS2 UCRT64)。
+- 証拠の Project と MP4: `build/math-p28-acceptance-final2-20261006-073636/quadratic-p28.mvm`・
+  `quadratic-p28.mp4` (900 frame)。作成時の cache は同じ directory の `authoring-cache`。
+- [事実] 書き出しの直後、製品は「Explorerで表示できません (HRESULT=0x80070057)」を状態に足した
+  (書き出しは成功)。`SHParseDisplayName` は "/" 区切りの path で 0x80070057 を返し、"\" 区切りでは
+  成功した (切り分けの小さな program で確認)。数式とは無関係の一般の書き出しの問題として
+  [roadmap](roadmap.md#一般の音声書き出し) に置いた。
+
+#### 手動の確認 (製品の UI)
+
+[未検証] 受け入れの Project を実アプリで開き、Write と両方の変形の inspector を見て、2 つの変形を
+scrub・再生する手動の確認は、まだ実施していない (自動の検査の代わりにしない)。
+
+#### P2 の closure に含めないもの
+
+手動の照合、部分式の安定した ID、強調 (Circumscribe / Indicate)、Equation Sequence、背景の補間、
+変形の区間の中で変わる ClipEffects、変形の mask の先読み (prefetch)・性能の改善。
+
 ### P2-1 の gate (2026-10-05)
 
 - [事実] 通常の release gate (`build/math-p21-release-gate.log`) は 1452 件中 1444 件が通過し、

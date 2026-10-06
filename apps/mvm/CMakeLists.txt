@@ -138,6 +138,7 @@ set_target_properties(mvm PROPERTIES WIN32_EXECUTABLE OFF)
 find_package(Qt6 REQUIRED COMPONENTS Test)
 qt_add_executable(mvm_test_text_ui_input
     ${CMAKE_SOURCE_DIR}/tests/harness/test_text_ui_input.cpp
+    ${CMAKE_SOURCE_DIR}/tests/harness/math_p28_acceptance.cpp
     image_raster_cache.cpp
     media_bin_model.cpp
     media_import.cpp

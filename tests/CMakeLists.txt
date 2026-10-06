@@ -774,6 +774,13 @@ add_executable(mvm_test_sha256 core/test_sha256.cpp)
 target_link_libraries(mvm_test_sha256 PRIVATE mvm::util mvm::warnings)
 mvm_add_test(sha256_known_vectors COMMAND mvm_test_sha256 PROPERTIES TIMEOUT 30)
 
+# 260 文字を超える path の走査と削除 (P2-8、src/util/mvm_long_path.h)。
+add_executable(mvm_test_long_path core/test_long_path.cpp)
+target_link_libraries(mvm_test_long_path PRIVATE mvm::util mvm::warnings)
+mvm_add_test(long_path_focused
+    COMMAND mvm_test_long_path "${CMAKE_CURRENT_BINARY_DIR}/long-path"
+    PROPERTIES TIMEOUT 60)
+
 # --- 数式 clip: renderer の中立な契約と manim-mathtex backend ---------------
 add_executable(mvm_test_project_math harness/test_project_math.cpp)
 target_link_libraries(mvm_test_project_math PRIVATE mvm::project mvm::util mvm::warnings)
@@ -791,7 +798,7 @@ mvm_add_test(math_transform_timeline_focused COMMAND mvm_test_math_transform_tim
 add_executable(mvm_test_math_raster_cache harness/test_math_raster_cache.cpp)
 # Qt6::Gui は偽の backend が Write の連番の PNG を QImage で書くために使う。
 target_link_libraries(mvm_test_math_raster_cache PRIVATE
-    mvm::math_raster_cache Qt6::Core Qt6::Gui mvm::warnings)
+    mvm::math_raster_cache mvm::util Qt6::Core Qt6::Gui mvm::warnings)
 mvm_add_test(math_raster_cache_focused
     COMMAND mvm_test_math_raster_cache "${CMAKE_CURRENT_BINARY_DIR}/math-raster-cache"
     PROPERTIES TIMEOUT 120)

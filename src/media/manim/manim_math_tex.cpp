@@ -1,5 +1,6 @@
 #include "media/manim/manim_math_tex.h"
 
+#include "util/mvm_long_path.h"
 #include "util/mvm_process.h"
 #include "util/mvm_win_utf8.h"
 
@@ -303,7 +304,8 @@ math::MathPreflightResult unavailable(std::string message) {
 std::string texErrorLines(const std::filesystem::path& mediaDirectory) {
     std::vector<std::string> lines;
     std::error_code error;
-    const auto texDirectory = mediaDirectory / L"Tex";
+    // Manim が作業 directory の下に書いた file は 260 文字を超えうる (util/mvm_long_path.h)。
+    const auto texDirectory = util::extendedLengthPath(mediaDirectory / L"Tex");
     for (std::filesystem::directory_iterator it(texDirectory, error), end; !error && it != end;
          it.increment(error)) {
         if (it->path().extension() != L".log")
@@ -326,11 +328,14 @@ std::string texErrorLines(const std::filesystem::path& mediaDirectory) {
 
 // directory の下の PNG を file 名の順に返す。Manim は連番を固定桁 (<Scene>0000.png)
 // で名付けるので、 名前の順が frame の順になる。
+// 通常の path で走査すると、260 文字を超える file は error 無しで 0 件になる (P2-8 で実測)。
+// extended-length の path で走査し、見つけた path もその形のまま返す (decoder は受け付ける)。
 std::vector<std::filesystem::path> findPngs(const std::filesystem::path& directory) {
     std::vector<std::filesystem::path> found;
     std::error_code error;
     for (std::filesystem::recursive_directory_iterator
-             it(directory, std::filesystem::directory_options::skip_permission_denied, error),
+             it(util::extendedLengthPath(directory),
+                std::filesystem::directory_options::skip_permission_denied, error),
          end;
          !error && it != end; it.increment(error)) {
         if (it->is_regular_file(error) && it->path().extension() == L".png")

@@ -3,6 +3,7 @@
 #include "app/math_clip_render.h"
 #include "media/still_image/static_image.h"
 #include "util/mvm_atomic_write.h"
+#include "util/mvm_long_path.h"
 #include "util/mvm_sha256.h"
 
 #include <QMetaObject>
@@ -154,7 +155,7 @@ Outcome renderJob(const std::filesystem::path& directory, const std::filesystem:
     request.timeout = timeout;
     request.jobDirectory = jobs / (key.toStdWString() + L"-" + std::to_wstring(ticket));
     std::error_code error;
-    std::filesystem::remove_all(request.jobDirectory, error);
+    util::removeTree(request.jobDirectory, error);
     std::filesystem::create_directories(request.jobDirectory, error);
     if (error)
         return failed(math::MathRenderStatus::Failed,
@@ -162,7 +163,7 @@ Outcome renderJob(const std::filesystem::path& directory, const std::filesystem:
     const auto rendered = backend.render(request, cancel);
     const auto cleanup = [&] {
         std::error_code ignored;
-        std::filesystem::remove_all(request.jobDirectory, ignored);
+        util::removeTree(request.jobDirectory, ignored);
     };
     if (rendered.status == math::MathRenderStatus::Cancelled || cancel->load()) {
         cleanup();
@@ -247,7 +248,7 @@ std::string sequenceProvenanceText(const QString& key, int width, int height,
 void removeSequenceArtifact(const std::filesystem::path& directory, const QString& key) {
     std::error_code error;
     std::filesystem::remove(sequenceProvenancePath(directory, key), error);
-    std::filesystem::remove_all(sequenceDirectory(directory, key), error);
+    util::removeTree(sequenceDirectory(directory, key), error);
 }
 
 // PNG の alpha だけを取り出す (glyph の被覆)。大きさが違えば空。
@@ -392,7 +393,7 @@ SequenceOutcome renderSequenceJob(const std::filesystem::path& directory,
     request.timeout = timeout;
     request.jobDirectory = jobs / (key.toStdWString() + L"-write-" + std::to_wstring(ticket));
     std::error_code error;
-    std::filesystem::remove_all(request.jobDirectory, error);
+    util::removeTree(request.jobDirectory, error);
     std::filesystem::create_directories(request.jobDirectory, error);
     if (error)
         return sequenceFailed(math::MathRenderStatus::Failed,
@@ -400,7 +401,7 @@ SequenceOutcome renderSequenceJob(const std::filesystem::path& directory,
     const auto rendered = backend.renderSequence(request, cancel);
     const auto cleanup = [&] {
         std::error_code ignored;
-        std::filesystem::remove_all(request.jobDirectory, ignored);
+        util::removeTree(request.jobDirectory, ignored);
     };
     if (rendered.status == math::MathRenderStatus::Cancelled || cancel->load()) {
         cleanup();
@@ -490,7 +491,7 @@ std::string transformFrameName(std::size_t index) {
 void removeTransformArtifact(const std::filesystem::path& directory, const QString& key) {
     std::error_code error;
     std::filesystem::remove(transformProvenancePath(directory, key), error);
-    std::filesystem::remove_all(transformDirectory(directory, key), error);
+    util::removeTree(transformDirectory(directory, key), error);
 }
 
 std::string sha256Hex(const void* data, std::size_t size) {
@@ -863,7 +864,7 @@ TransformOutcome renderTransformJob(const TransformJob& job, const std::atomic<b
     request.jobDirectory =
         job.jobs / (job.key.toStdWString() + L"-transform-" + std::to_wstring(job.ticket));
     std::error_code error;
-    std::filesystem::remove_all(request.jobDirectory, error);
+    util::removeTree(request.jobDirectory, error);
     std::filesystem::create_directories(request.jobDirectory, error);
     if (error)
         return transformFailed(math::MathRenderStatus::Failed,
@@ -872,7 +873,7 @@ TransformOutcome renderTransformJob(const TransformJob& job, const std::atomic<b
     const auto rendered = job.backend.renderTransform(request, loadMathCoverage, cancel);
     const auto cleanup = [&] {
         std::error_code ignored;
-        std::filesystem::remove_all(request.jobDirectory, ignored);
+        util::removeTree(request.jobDirectory, ignored);
     };
     if (rendered.status == math::MathRenderStatus::Cancelled || cancel->load()) {
         cleanup();
@@ -923,7 +924,7 @@ TransformOutcome renderTransformJob(const TransformJob& job, const std::atomic<b
     const auto provenancePath = transformProvenancePath(job.directory, job.key);
     if (!underGate(job, cancel, [&] {
             std::filesystem::remove(provenancePath, error);
-            std::filesystem::remove_all(frames, error);
+            util::removeTree(frames, error);
             if (!error)
                 std::filesystem::create_directories(frames, error);
         })) {
@@ -1176,8 +1177,9 @@ void MathRasterCache::startPreflight() {
             return;
         // 前回の作業 directory の残り (強制終了など) を消す。この cache directory は Project
         // ごとに分けてあり、権限 (Project lock) があるので、他の instance が使っていない。
+        // 残りは 260 文字を超える file を含みうる (util/mvm_long_path.h)。
         std::error_code error;
-        std::filesystem::remove_all(directory / L"jobs", error);
+        util::removeTree(directory / L"jobs", error);
         auto result = preflight(jobs / L"preflight", cancel.get());
         if (cancel->load())
             return;

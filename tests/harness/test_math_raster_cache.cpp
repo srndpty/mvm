@@ -12,6 +12,7 @@
 
 #include "math_fake_backend.h"
 #include "math_raster_cache.h"
+#include "util/mvm_long_path.h"
 
 #include <atomic>
 #include <chrono>
@@ -1298,6 +1299,45 @@ void testTransformCorruptResident(const std::filesystem::path& root) {
           "forgetFailures の後は描き直して読める");
 }
 
+// P2-8: 前の session の作業 directory の残り (強制終了など) に 260 文字を超える file がある。
+// backend の確認の前の掃除が返らないと、worker が止まったまま Checking から動かない
+// (実測: libstdc++ の remove_all に通常の path を渡すと返らない)。確認が終わり、残りが消えること。
+void testLeftoverDeepJobs(const std::filesystem::path& root) {
+    const auto directory = root / L"deep-jobs";
+    auto deepest = directory / L"jobs" / L"crashed-session";
+    while (deepest.native().size() < 300)
+        deepest /= L"0123456789abcdef0123456789abcdef-transform-1";
+    std::error_code error;
+    std::filesystem::create_directories(mvm::util::extendedLengthPath(deepest), error);
+    {
+        std::ofstream out(mvm::util::extendedLengthPath(deepest) / L"MvmMathTransform0000.png",
+                          std::ios::binary);
+        out << "x";
+    }
+    check(!error && std::filesystem::exists(mvm::util::extendedLengthPath(deepest) /
+                                            L"MvmMathTransform0000.png"),
+          "前提: 260 文字を超える作業 directory の残りを作る");
+    FakeBackend backend;
+    auto cache = std::make_unique<MathRasterCache>("session-deep", backend.preflight());
+    cache->setAuthority(directory, true);
+    const bool checked = waitUntil(
+        [&] { return cache->backendState() != MathRasterCache::BackendState::Checking; }, 20000);
+    if (!checked) {
+        // worker が掃除から戻らない。破棄は worker を待つので、ここで終える。
+        std::fprintf(stderr,
+                     "FAIL: 深い作業 directory の残りの掃除で backend の確認が終わらない\n");
+        std::fflush(stderr);
+        std::_Exit(1);
+    }
+    check(cache->backendState() == MathRasterCache::BackendState::Available,
+          "深い作業 directory の残りがあっても backend の確認が終わる");
+    check(!std::filesystem::exists(
+              mvm::util::extendedLengthPath(directory / L"jobs" / L"crashed-session")),
+          "深い作業 directory の残りを消す");
+    const auto entry = waitForResult(*cache, spec("x"));
+    check(entry.state == MathRasterCache::State::Ready, "掃除の後も描ける");
+}
+
 void testDestroyWhileRendering(const std::filesystem::path& root) {
     FakeBackend backend;
     auto cache = readyCache(root / L"destroy", backend);
@@ -1321,7 +1361,8 @@ int main(int argc, char** argv) {
     const std::filesystem::path root =
         std::filesystem::absolute(QString::fromLocal8Bit(argv[1]).toStdWString());
     std::error_code error;
-    std::filesystem::remove_all(root, error);
+    // 前回の残りは 260 文字を超える file を含みうる (testLeftoverDeepJobs)。
+    mvm::util::removeTree(root, error);
     std::filesystem::create_directories(root);
 
     testUnavailable(root);
@@ -1345,6 +1386,7 @@ int main(int argc, char** argv) {
     testTransformValidation(root);
     testTransformResidency(root);
     testTransformCorruptResident(root);
+    testLeftoverDeepJobs(root);
     testDestroyWhileRendering(root);
 
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);

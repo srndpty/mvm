@@ -41,6 +41,7 @@ add_library(mvm::project ALIAS mvm_project)
 add_library(mvm_util STATIC
     util/mvm_atomic_write.c
     util/mvm_win_utf8.c
+    util/mvm_long_path.c
     util/mvm_reveal_in_explorer.c
     util/mvm_file_identity.c
     util/mvm_process.c
