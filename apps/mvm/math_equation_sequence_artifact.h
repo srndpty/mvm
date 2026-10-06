@@ -73,7 +73,14 @@ struct EquationSequenceArtifact {
     std::vector<EquationActionArtifact> actions;
     // backend の構造検証の結果 (診断・provenance。Project には書かない)。
     std::vector<math::EquationSegmentOwnership> ownership;
+    // 検証した provenance の全文 (P3-4)。preview が層を 1 枚ずつ memory へ読むとき、disk の
+    // provenance がこれと byte 単位で同じか (消された・書き換えられていないか) を確かめる。
+    std::string provenance;
 };
+
+// P3-4: disk の provenance が検証した時と同じ byte 列か (消された・書き換えられたなら false)。
+bool equationSequenceProvenanceCurrent(const std::filesystem::path& directory,
+                                       const std::string& key, const std::string& provenance);
 
 // frame を読み、大きさと SHA-256 を provenance と照合する。
 bool loadEquationArtifactFrame(const EquationArtifactFrame& frame, int width, int height,

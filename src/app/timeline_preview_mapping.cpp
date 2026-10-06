@@ -78,15 +78,24 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
             continue;
         const int slot = plan.slotBases[static_cast<std::size_t>(track)] + segment.lane;
         const auto& clip = segment.clip;
-        if (clip.kind == project::TimelineClipKind::EquationSequence) {
-            result.error = "EquationSequence の描画は未実装です (P3-1 は構造編集のみ)";
+        // Equation Sequence (P3-4) は数式と同じ静止画 layer として合成し、内部の区間は controller
+        // の animation が output frame から決める。timeline のトランジションで素材範囲を延ばした
+        // 区間は内部の時間の正 (P3-1) の外なので、preview でも未対応として拒否する。
+        const bool sequence = clip.kind == project::TimelineClipKind::EquationSequence;
+        if (sequence && (segment.fadeIn || segment.fadeOut ||
+                         clip.timelineStartFrame != segment.original.timelineStartFrame ||
+                         clip.sourceInFrame != segment.original.sourceInFrame ||
+                         clip.sourceOutFrame != segment.original.sourceOutFrame)) {
+            result.error = "EquationSequence と timeline のトランジションの重なりは preview "
+                           "未対応です: " +
+                           clip.name;
             result.layers.clear();
             result.stillLayers.clear();
             return result;
         }
         const double transitionOpacity =
             segment.fadeIn ? project::transitionProgress(*segment.fadeIn, timelineFrame) : 1.0;
-        if (project::isStillClipKind(clip.kind)) {
+        if (sequence || project::isStillClipKind(clip.kind)) {
             // 文字・画像の不透明度は書き出しと同じ区間の評価 (値・key・fade を素材 frame で
             // 数え、トランジションを掛ける) を使う。
             const auto opacity = project::renderSegmentOpacity(

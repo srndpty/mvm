@@ -107,6 +107,7 @@ target_link_libraries(mvm PRIVATE
     mvm::project
     mvm::util
     mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
+    mvm::equation_sequence_compile
     mvm::timeline_playback
     mvm::timeline_preview_mapping
     mvm::timeline_export
@@ -215,6 +216,7 @@ target_include_directories(mvm_test_text_ui_input PRIVATE ${CMAKE_CURRENT_SOURCE
 target_link_libraries(mvm_test_text_ui_input PRIVATE
     mvm::audio_adjustment
     mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
+    mvm::equation_sequence_compile
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::text_raster mvm::audio_waveform mvm::still_image mvm::mlt mvm::preview_engine
     mvm::audio_preview

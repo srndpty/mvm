@@ -1039,3 +1039,238 @@ performance / stability を除外し、extended / workstation は短縮・除外
 
 P3-3.1 の実装・検証を完了した。schema 21、P3-1 / P3-2 の意味を維持し、preview/residency/export/UI、
 commit、push は行っていない。
+
+## P3-4 residency と product preview
+
+2026-10-07。既存の schema 21 の EquationSequence clip を製品の timeline preview (D3D11/QRhi) で
+任意 seek・再生できるようにした。書き出しと authoring/editor UI は追加していない (書き出しの
+fail-closed な拒否はそのまま)。schema 21、P3-1 の時間の正、P3-2 の compile・照合、P3-3 の
+artifact・provenance の意味は変更していない。以前の契約との矛盾は見つからなかった。commit / push はしていない。
+
+### 正の分担と経路
+
+```text
+Project (schema 21)        意味の正
+P3-2 compileEquationSequence   partition・照合・action の plan (今の data の compile だけ)
+P3-1 clipSourceFrameAt + equationSequenceFrameAt   output frame → source frame → 区間と frame
+P3-3 provenance / artifact     大きさ・配置・各層の色 (preview で計算し直さない)
+MathRasterCache residency      cache (Write・変形と同じ上限)
+preview (EquationPreviewModel) 提示だけ。再生の履歴を持たない
+```
+
+純粋な部分は `src/app/equation_sequence_preview.*` (Qt・cache に依存しない)。製品の経路は
+`timeline_preview_mapping` が sequence clip を数式と同じ静止画 layer として写し、
+`MvmController::equationSequencePreviewAnimation` が 1 本の clip の全区間を 1 つの
+`PreviewStillAnimation` にまとめる。render thread の `stateAt(output frame)` が model に問い合わせ、
+P3-1 の写像で区間と frame を決める。再生中に合成の差し替えが提示より遅れて届いても、
+同じ output frame は同じ画素になる。QML は sequence の内部を見ない (提示は engine の layer だけ)。
+timeline のトランジションで素材範囲を延ばした sequence の区間は P3-1 の時間の正の外なので、
+preview でも未対応として拒否する (書き出しは従来どおり拒否)。
+
+### 提示の代用の契約
+
+| 区間 | 揃っているとき | 揃わないとき (読み込み中・OverBudget・無効・artifact 無し) |
+| --- | --- | --- |
+| `Hold(s)` | 状態 s の通常の静止 (静止の artifact、通常の Math と同じ key・配置・色) | 何も見せない (別の式・前に描けた静止で代用しない) |
+| `HoldAction(s, a, i)` | action a の frame i の base と accent | 状態 s の通常の静止 |
+| `Transition(t, i)` | 変形 t の frame i | 区間の全 frame で前の状態の静止。後の状態へは target hold の frame 0 で切り替わる |
+
+```text
+変形を省いた代用: source 静止 ... source 静止 | target 静止   (区間の後、P3-1 の終端)
+```
+
+Blend の合成や区間の中央での cut は作らない。compile に失敗した sequence は P3-1 の評価で状態だけを
+決めて静止を見せ、前に成功した spec の action・変形を出さない (失敗の理由は保持する)。Project は
+直さない。この代用は preview だけのもので、書き出し (P3-5 以降) は fail-closed のまま引き継がない。
+
+### 層の合成の契約
+
+provenance の A8 と色が正。変形の frame は provenance の frame の色で着色し、位置は P2 と同じ
+`mathTransformRasterPlacement` / `mathTransformArtifactOriginAt` (artifact の source/target の位置から)。
+action は base と accent を同じ原点 (状態の静止の配置 − artifact の中の静止の位置) に置き、別々に
+中央へ寄せない。外側の ClipEffects は数式と同じく layer に 1 回だけ掛ける。
+
+2 層の色付きの合成 (`composeEquationLayerPixel`、`src/media/math/equation_sequence_render.*`):
+
+```text
+a = base の被覆 * base の色の alpha、b = accent の被覆 * accent の色の alpha  (0..255*255)
+alpha = equationCoverageOver(round(a / 255), round(b / 255))        (P3-3.1 の規則)
+色    = round((C_accent * b * 65025 + C_base * a * (65025 - b)) / (b * 65025 + a * (65025 - b)))
+```
+
+両方の色が不透明なら alpha は `composeEquationCoverage` と同じ値 (全 65536 組で試験)。accent の無い
+画素は単層の `composeMathPatch` と byte 単位で同じ。合成は CPU で行い、GPU には結果の RGBA
+(straight alpha) を 1 枚の静止画 layer として渡す (shader・QML に別の丸めを持たない)。
+
+### residency
+
+Write・変形と同じ `MathResidencyBudget` (別の上限・別の cache を持たない)。層は 1 枚ごとの key
+(`<sequence key>/t<変形>/<frame>`、`/a<action>/base`、`/a<action>/<frame>`、派生の cache の識別) で、
+予約は実 byte (幅 × 高さ)。disk の Ready と memory の Resident は別の状態。
+
+- 今の frame の束: 変形は 1 枚、action は base と今の accent の 2 枚。束の足りない層の byte を
+  まとめて予約し、収まらなければ束全体を OverBudget (片方だけ読まない)。読み込みは優先度付き
+- 先読み: 今の束が揃ったときだけ、今の区間の残りと次の区間 (上限 240 束)。何も追い出さず、
+  OverBudget を記録しない。広い先読みはしない (roadmap)
+- 追い出しは cache だけが持つ層 (preview が使っていない) を LRU で。束の中の層は外さない
+- 読むたびに disk の provenance が検証した時と byte 単位で同じか、frame の大きさと SHA-256 を
+  確かめる。合わなければ artifact を消し、sequence を Failed (CorruptFrame) にして静止で見せる
+- 要求するのは再生位置に掛かる (preview に見える) sequence だけ。残すのは今の sequence の key と
+  全状態の今の静止。層の key は owner の sequence の key が残る間だけ残る
+
+### 世代と古い結果
+
+編集で sequence の key が変わると `retainOnly` が前の key の record・層・読み込みを捨てる。
+前の key の読み込みが後から終わっても、ticket の照合で捨てる。新しい key の artifact が揃うまでは
+代用 (静止) で見せ、前の key の変形・action を使わない (last-good を正にしない)。Ready の artifact の
+状態の静止の key が今の静止の key と違えば使わない。
+
+### 状態の区別
+
+`MvmController::equationSequencePreviewStatus(clipId, frame)` が、見た目が同じ代用でも内部の状態を
+区別して返す: compile の失敗 (InvalidBinding など)、backend (Checking / Available / Unavailable)、
+disk (Pending / Ready / Failed / Unavailable と backend の理由、壊れ・古い artifact は CorruptFrame)、
+今の frame の residency (NotReady / Loading / Resident / OverBudget)、見せたもの。UI への表示は P3-5。
+
+### 試験
+
+|試験 (CTest)|内容|検査数|
+|---|---|---|
+|`math_equation_sequence_render_contract`|P3-3 の契約に加え、2 層の色付き合成の手計算値、不透明な 2 色の alpha = 被覆の合成規則 (全 65536 組)、accent の無い画素 = 単層の静止の合成、矩形への書き込み|149|
+|`math_equation_sequence_preview_model`|P3-1 の写像の手の表 (clip の先頭・hold の最後・action の先頭/中央/最後/直後・変形の frame 0/N−1・target hold 0・N=1 の action と変形・左 trim が hold/action/変形の途中・24→60・逆向きの seek)、代用の規則、配置、provenance の色 (Project の色と別の値) での合成、2 層の原子性、古い・数の合わない artifact、compile の失敗、ClipEffects を含めない、今の束と先読みの層|82|
+|`math_equation_sequence_preview_controller`|偽の backend で製品の controller を通す。全 91 frame の提示、受け入れの frame の画素と独立の参照の全画素一致 (対照: 1 画素ずらす・色の取り違え・accent を省く)、遅延した直接 seek (pulse の中央・変形の中央)、上限 (2 層の束・変形の 1 枚・戻すと同じ frame へ)、Write と同じ上限、編集後の古い key・遅れて届く古い層、壊れた変形の frame / base / accent と provenance の削除、compile の失敗、backend 不在、ClipEffects を 1 回、見えない sequence を描かない|166|
+|`math_equation_sequence_native_preview` (workstation)|schema 21 の fixture (`tests/fixtures/equation-sequence/p34-preview.mvm`) を実 D3D11 の preview で。一時停止中の直接 seek で層が遅れて届く (pulse・変形)、再生中に届く、受け入れの 16 frame を engine と同じ手順 (更新可能な静止画の texture へ patch) で product compositor に通して全画素を読む|68|
+
+参照は試験の側で独立に組んだ合成 (artifact の provenance の大きさ・位置・色と disk の `.a8`、手の配置の式、
+規則を書き直した 2 層の式) で、製品の合成関数を呼ばない。
+
+### 変異試験
+
+`scripts/test-equation-preview-mutations.ps1` は変異した file を `compile_commands.json` の同じ命令で
+compile し、ninja の同じ link 命令で対象の試験を作り直す (製品 source は変えない)。
+変形に (i+1)/N の frame、片方の層だけで action、届いた action の先頭からのやり直し、新しい key が
+揃うまで前の key の animation、変形の色を Project から作り直す、ClipEffects の不透明度を 2 回、
+編集後も前の key の層を memory に残す、層を読むときに provenance を照合しない、action の 2 層を
+1 層ずつ予約する、の **9 / 9 を検出** (終了コード 1 と対象の検査のメッセージを照合)。
+
+[事実] 最終 source の証拠: `build/math-p34-mutations-final.log` と
+`build/ucrt64-release/equation-preview-mutations-20261007-054825-441/`。format 前の source でも 9 / 9
+(`build/math-p34-mutations.log`、`.../equation-preview-mutations-20261007-053744-642/`)。
+P3-3 の artifact の file を変えたので P3-3 の変異も再実行し 15 / 15 (`build/math-p34-p33-renderer-mutations.log`)。
+
+### animated pulse の同値 (実 Manim)
+
+`tests/harness/mvm_equation_pulse_equivalence.cpp` (手動、CTest に入れない) が製品の `MathRasterCache` と
+実 backend で通常の P3-3 の artifact を公開し、公開の直前に写した backend の `request.json` を
+`scripts/spikes/math-p34-pulse-reference.py` (製品外) に渡す。参照は同じ canvas・配置・font・segment・
+重みで、状態の色の式の対象に Indicate (強調色、線形) を掛けて 1 回で描いた Cairo の premultiplied RGBA。
+`scene` は式全体を 1 回で描き、`ordered` は対象を最後に描く。製品の側は artifact の層を
+`composeEquationLayersAt` で置いて premultiplied にする。
+
+```powershell
+# 【操作可】画面の表示・音声・性能計測は行わない。証拠の directory が存在すれば起動を拒否する。
+pwsh scripts/build.ps1 -Target mvm_equation_pulse_equivalence
+$env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
+.\build\ucrt64-release\bin\mvm_equation_pulse_equivalence.exe "$env:USERPROFILE\.local\bin\manim.exe" `
+  "$env:APPDATA\uv\tools\manim\Scripts\python.exe" scripts/spikes/math-p34-pulse-reference.py build\math-p34-pulse-<新しい名前>
+```
+
+参照の script は Manim の TeX cache を実行時の作業 directory の `media/Tex` に作る。repository の直下で
+実行した今回は、計測の後にその生成物だけを消した (証拠には含まれない)。
+
+[事実] 証拠の実行は `build/math-p34-pulse-20261007-g` (**139 検査 / 0 失敗**、終了コード 0)。生データは
+[results.json](../build/math-p34-pulse-20261007-g/results.json)、log は同名の `.log`、参照と製品の PNG は
+`reference/<ケース>/`。toolchain は Manim 0.21.0、MiKTeX-pdfTeX 4.27 (MiKTeX 26.5)、dvisvgm 3.6。
+状態の色 `#FF40C0FF`、強調色 `#FFFFFF00`、文字 72。ケースは判別式 `b^2-4ac` (N=5 の frame 0・中央 2・
+最後 4 と N=1)、複数 glyph `2ab`、Greek `\beta`、下付き `b_{1}`。以下は results.json の要約。
+
+- **厳密には一致しない。** alpha は全ケース・全 frame で違う画素 0 (base と拡大した対象の重なりを含む)
+- premultiplied の色 channel の最大差は 1。違う画素は判別式で 17〜36、`2ab` 19、`\beta` 7、`b_{1}` 17
+- 違う画素はすべて部分被覆の画素: antialias の縁 (7〜19) と、重みが最大 (中央の frame、N=1) の
+  判別式で base と拡大した対象が重なる画素 (20)。内部の画素 (被覆 0 か 255 で重ならない) は 0
+- `scene` と `ordered` は全て同じ値 (描く順は効いていない)
+- 違う channel の参照の値は全て、同じ実数の合成値 (2 層の premultiplied を丸める前) の floor か ceil
+  (`differing_channels_outside_rounding` = 0)。製品の値もその隣に入らないのは重なる画素の 1 channel
+  だけ (straight の 8 bit を経てから premultiplied にする二重の丸め)
+- 外接矩形は対象の付近 (results.json の `bbox`)。対照: accent を省いた合成は 638〜3302 画素違い、
+  別の進み具合の参照とも自分の参照より多く違う (比較は空振りではない)
+
+[推測] Cairo は path ごとに 8 bit の premultiplied で source-over し、mvm は白で描いた最終の被覆に色を
+1 回だけ掛けるので、同じ画素に複数の path が掛かると丸めの順が違う。alpha が一致し色が丸めの隣だけで
+違うことは、この説明と矛盾しない。Cairo の内部は確かめていない。
+この差は正の検査の許容差にしていない (preview の正は P3-3 の A8 と provenance の色と上の規則)。
+1/255 の違いを製品の品質として受け入れるかは未判断として roadmap に残した。
+
+[事実] 途中の失敗を保持した。`-a` / `-b` は harness が cache directory を相対 path で渡し、Manim が
+script の path を二重に解決して静止の描画が終了コード 1 (`-b` は失敗の log を残すよう直した後)。
+`-c` は作業 directory の写しの親を作らず (260 文字を超えうる path も含む) request.json を見つけられなかった。
+`-d` は最初に通った実行で、`-e` で丸めの分類を足した。`-e` / `-f` は results.json の toolchain の改行を
+escape せず JSON として不正 (計測値は `-g` と同一。log を比べて確かめた)。いずれも harness の誤りで、
+製品の変更はしていない。`-g` の後に clang-format で harness と製品の整形だけを直した。
+
+### 実 D3D11 の product preview の受け入れ
+
+`math_equation_sequence_native_preview` (偽の backend、CTest) に加え、同じ区間の表で式を実の TeX にした
+実 Manim の実行 (`mvm_test_equation_preview_controller --real-manim <manim.exe>`、CTest に入れない、
+画面を表示するが入力は送らない、操作可):
+
+[事実] `build/math-p34-real-preview-20261007-a.log` は **67 検査 / 0 失敗**。実 Manim の sequence の描画
+約 10 秒。受け入れの 16 frame (H0、outline の先頭/中央/最後、outline の後、pulse の先頭/中央/最後、
+pulse の後、T0 の frame 0/中央/最後に見せる frame、H1 frame 0、N=1 の pulse、N=1 の変形、H2 frame 0)
+で、product compositor の readback は CPU の参照を黒へ source-over した値と、alpha 0/255 の画素も
+半透明の画素 (frame ごとに 850〜7483 画素) も全て一致 (最大差 0、許容差なし)。対照の 1 画素ずらし・
+色の取り違え・accent の省略は全て検出した。再生中の engine の評価は全て区間の frame かその代用で、
+届いた pulse は区間の途中 (frame 20) から始まり frame 0 からやり直さない。
+偽の backend の CTest (68 検査) も同じく最大差 0。`-a` の後に整形だけを直した。
+
+### gate
+
+```powershell
+pwsh scripts/build.ps1
+# 集中対象 28 件を -N で数えてから実行
+C:\msys64\ucrt64\bin\ctest.exe --test-dir build/ucrt64-release `
+  -R '^(transition_preview|math_.*|manim_.*|m7b_2_timeline_preview_mapping_focused|still_layer_compositor)$' `
+  --output-on-failure --timeout 300
+pwsh scripts/test-equation-preview-mutations.ps1
+pwsh scripts/test.ps1 -Preset ucrt64-release -Group BuildIndependent
+pwsh scripts/lint.ps1
+pwsh scripts/test.ps1 -Preset ucrt64-release
+```
+
+[事実] 最終 source の全体ビルドは成功 (`build/math-p34-build-final.log`)。
+
+[事実] 集中 CTest は 28 件 (`-N`、`build/math-p34-focused-count.log`) を一回実行し **27 / 28 通過**。
+EquationSequence の新規 3 件 (model・controller・実 D3D11)、P3-1〜P3-3 の domain・compile・契約・橋渡し・
+backend・cache・履歴、静止 (`math_controller_focused`)、P2 の変形 (`math_transform_native_playback` を含む)、
+書き出し、inspector の product UI、`transition_preview`、preview の写像、静止画 layer の compositor は通過。
+`math_write_native_playback` が 22 検査中 3 件失敗した (「一時停止中に mask を読み、合成に Write を付ける」
+「先頭から再生する」「再生が 60 frame まで進む」)。P3-3 の集中試験の失敗と同じ 3 件。
+証拠: `build/math-p34-focused.log`。P3-4 は Write の経路とこの試験を変更していないが、共有の
+`MathRasterCache` と controller を link する。原因と今回の変更との因果関係は未特定。
+診断として同じ試験を単独で 3 回実行し、通過・失敗 (同じ 3 件)・通過
+(`build/math-p34-diag-native-write-1..3.log`)。間欠的であることの診断であり、失敗の記録を置き換えない。
+
+[事実] BuildIndependent は **1077 / 1078 通過**。`audio_mixer_controls_qml` が P3-3 以来と同じ
+QML ScrollBar の binding loop の警告 (`OpenThemeData() failed` が 193 行) で失敗した。今回は QML と、
+それが読む file を変更していない。原因は未特定で、再試行していない。証拠: `build/math-p34-independent.log`。
+
+[事実] lint は format、層の隔離、producer service、PSScriptAnalyzer を含めて通過 (`build/math-p34-lint.log`)。
+開発中の lint は新規 file の未整形で失敗し (log は保存していない)、`scripts/format.ps1` で整形した。
+
+[事実] 通常 release gate は一回で **1466 / 1467 通過**、通常 gate は未通過。失敗は BuildIndependent と同じ
+`audio_mixer_controls_qml` (QML ScrollBar の binding loop、`OpenThemeData() failed` が 193 行) だけ。
+新規の `math_equation_sequence_preview_controller` / `math_equation_sequence_native_preview`、
+`transition_preview`、集中試験で失敗した `math_write_native_playback` はこの gate では通過した
+(通過は失敗の記録を置き換えない)。performance / stability を除外し、extended / workstation は
+短縮・除外していない。再試行はしていない。
+再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。証拠: `build/math-p34-release.log`。
+
+[事実] 開発中の記録: controller の集中試験の初回は 166 検査中 4 件が試験の側の誤りで失敗した
+(変形の frame 0 は provenance の色が前の状態の色そのものなので「色の取り違え」の対照にならない、
+frame 19 で組んだ animation を持たない区間の frame で評価した、OverBudget の印を前の上限の予約の返却が
+消す競合)。試験を直して 166 / 166。log は保存していない。実 D3D11 の開発中の実行は
+`build/math-p34-native-dev-1.log` / `-dev-2.log`。
+
+P3-4 の実装・検証を完了した。schema 21、P3-1〜P3-3 の意味を維持し、書き出し・authoring UI、
+commit、push は行っていない。
+

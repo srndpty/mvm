@@ -236,6 +236,52 @@ bool composeEquationCoverage(const MathCoverage& under, const MathCoverage& over
     return true;
 }
 
+std::uint8_t equationLayerAlpha(std::uint8_t coverage, std::uint32_t argb) {
+    // coverage * alpha / 255 はちょうど半分にならない (255 は奇数) ので、半分の扱いは効かない。
+    const std::uint32_t product = static_cast<std::uint32_t>(coverage) * (argb >> 24);
+    return static_cast<std::uint8_t>((product * 2U + 255U) / 510U);
+}
+
+void composeEquationLayerPixel(std::uint8_t baseCoverage, std::uint32_t baseArgb,
+                               std::uint8_t accentCoverage, std::uint32_t accentArgb,
+                               std::uint8_t* out) {
+    constexpr std::int64_t kFull = 255 * 255;
+    const std::int64_t a = static_cast<std::int64_t>(baseCoverage) * (baseArgb >> 24);
+    const std::int64_t b = static_cast<std::int64_t>(accentCoverage) * (accentArgb >> 24);
+    const std::int64_t accentWeight = b * kFull;
+    const std::int64_t baseWeight = a * (kFull - b);
+    const std::int64_t total = accentWeight + baseWeight;
+    if (total == 0) {
+        out[0] = out[1] = out[2] = out[3] = 0;
+        return;
+    }
+    for (int channel = 0; channel < 3; ++channel) {
+        const int shift = 16 - 8 * channel;
+        const std::int64_t accentValue = (accentArgb >> shift) & 0xFFU;
+        const std::int64_t baseValue = (baseArgb >> shift) & 0xFFU;
+        const std::int64_t numerator = accentValue * accentWeight + baseValue * baseWeight;
+        out[channel] = static_cast<std::uint8_t>((numerator * 2 + total) / (total * 2));
+    }
+    out[3] = equationCoverageOver(equationLayerAlpha(baseCoverage, baseArgb),
+                                  equationLayerAlpha(accentCoverage, accentArgb));
+}
+
+void composeEquationLayersAt(const std::uint8_t* base, std::uint32_t baseArgb,
+                             const std::uint8_t* accent, std::uint32_t accentArgb, int width,
+                             int height, std::uint8_t* out, int outWidth, int left, int top) {
+    for (int y = 0; y < height; ++y) {
+        const std::size_t row = static_cast<std::size_t>(y) * static_cast<std::size_t>(width);
+        std::uint8_t* target =
+            out + (static_cast<std::size_t>(top + y) * static_cast<std::size_t>(outWidth) +
+                   static_cast<std::size_t>(left)) *
+                      4U;
+        for (int x = 0; x < width; ++x)
+            composeEquationLayerPixel(base[row + static_cast<std::size_t>(x)], baseArgb,
+                                      accent[row + static_cast<std::size_t>(x)], accentArgb,
+                                      target + static_cast<std::size_t>(x) * 4U);
+    }
+}
+
 const char* equationBackendFailureName(EquationBackendFailure failure) {
     switch (failure) {
     case EquationBackendFailure::None:

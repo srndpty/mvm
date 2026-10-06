@@ -280,6 +280,51 @@ public:
     std::optional<EquationSequenceArtifact>
     readyEquationSequence(const math::EquationSequenceRenderSpec& spec) const;
     int equationSequenceRecordCount() const { return static_cast<int>(equationSequences_.size()); }
+    // request せずに今の状態を返す (record が無ければ既定の Pending)。
+    EquationSequenceEntry equationSequenceEntryOf(const math::EquationSequenceRenderSpec& spec) const;
+    // Ready の record が持つ検証済みの artifact (P3-4 の preview の配置と色)。disk は読まない
+    // (provenance と各層は memory へ読むときに 1 枚ずつ照合する)。
+    std::optional<EquationSequenceArtifact>
+    equationSequenceArtifactOf(const math::EquationSequenceRenderSpec& spec) const;
+
+    // ---- Equation Sequence の preview 用の層 (P3-4) ----
+    //
+    // 1 枚の A8 の層を、Write・変形と同じ上限 (MathResidencyBudget)・同じ LRU で memory に置く。
+    // 別の上限・別の cache を持たない。disk の Ready (書き出しが使える) と memory の Resident は
+    // 別の状態で、上限に収まらなくても disk の artifact は Ready のまま。
+    enum class EquationLayerRole { TransitionFrame, ActionBase, ActionAccent };
+    struct EquationLayerRef {
+        EquationLayerRole role = EquationLayerRole::TransitionFrame;
+        std::size_t interval = 0; // 変形・action の番号 (spec の順)
+        std::int64_t frame = 0;   // TransitionFrame / ActionAccent の区間内の frame
+        bool operator==(const EquationLayerRef&) const = default;
+    };
+    // residency の key (派生の cache の識別で、Project の正ではない):
+    //   <sequence の key>/t<変形>/<frame>、/a<action>/base、/a<action>/<frame>
+    static QString equationLayerKey(const QString& sequenceKey, const EquationLayerRef& layer);
+    struct ResidentEquationLayers {
+        Residency state = Residency::NotReady;
+        // Resident のとき refs の順の層 (各 1 枚)。
+        std::vector<std::shared_ptr<const MathCoverageSequence>> layers;
+        QString message;
+    };
+    // refs の層を 1 つの束として memory に置く。disk の artifact が今の key で Ready でなければ
+    // NotReady。束の全層が揃ったときだけ Resident (action の base と accent の片方だけを見せない)。
+    // 足りない層の byte をまとめて予約し、収まらなければ束全体を OverBudget にする (1 層だけ
+    // 読んで上限を使わない)。
+    //   current  今の frame の束。先に読み (優先度)、上限に足りなければ cache だけが持つ mask を
+    //            外す (preview が使っている mask は外さない)
+    //   先読み   何も外さない (今の frame に要る層を追い出さない)。OverBudget を記録しない
+    // 読むときに disk の provenance が検証した時と同じことと、frame の大きさ・SHA-256 を確かめる。
+    // 合わなければ artifact を消して sequence を Failed (CorruptFrame) にする。
+    ResidentEquationLayers residentEquationLayers(const math::EquationSequenceRenderSpec& spec,
+                                                  const std::vector<EquationLayerRef>& refs,
+                                                  bool current);
+    // 同じ状態を、読み始めずに返す (状態の表示・試験用)。
+    ResidentEquationLayers equationLayersResidencyOf(const math::EquationSequenceRenderSpec& spec,
+                                                     const std::vector<EquationLayerRef>& refs) const;
+    // memory にある (読み終えた) 層の数 (試験用)。
+    int residentEquationLayerCount() const;
     // 試験用: provenance を書く直前に (worker の thread で) 呼ぶ。
     void setBeforeEquationSequencePublishForTest(
         std::function<void(const std::filesystem::path& provenance)> hook) {
@@ -382,7 +427,8 @@ private:
                                             const math::EquationSequenceRenderSpec& spec) const;
     // memory に置いた mask と、読んでいる途中の要求。Write と変形は key の名前空間が別なので
     // 同じ表に置き、同じ上限・LRU で扱う。
-    enum class ResidentKind { Write, Transform };
+    // Equation Sequence の層は 1 枚ごとの key (owner の sequence の key の下) で同じ表に置く。
+    enum class ResidentKind { Write, Transform, EquationLayer };
     struct ResidentRecord {
         std::shared_ptr<const MathCoverageSequence> frames;
         std::uint64_t lastUse = 0;
@@ -392,6 +438,15 @@ private:
         std::shared_ptr<std::atomic<bool>> cancel;
         ResidentKind kind = ResidentKind::Write;
     };
+    // EquationLayer の key の owner (sequence の key)。それ以外は key そのもの。
+    static QString residentOwner(const QString& key);
+    // 予約済みの層を読み始める (読めたら finishResident)。
+    void startEquationLayerLoad(const QString& key, int width, int height,
+                                std::shared_ptr<const MathResidencyReservation> reservation,
+                                EquationArtifactFrame frame, std::string sequenceKey,
+                                std::string provenance, bool current);
+    // 壊れた・古い層を見つけた: sequence を Failed にし、その層をすべて手放す。
+    void failEquationSequence(const QString& sequenceKey, const QString& error);
     // 読み込み (取消を見て、読めなければ nullptr。取消なら cancelled を立てる)。
     using ResidentDecoder = std::function<std::shared_ptr<MathCoverageSequence>(
         const std::atomic<bool>* cancel, bool& cancelled)>;

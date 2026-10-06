@@ -596,6 +596,7 @@ EquationSequenceDiskLoad loadEquationSequenceArtifact(const EquationSequenceJob&
                  provenanceText(job, colors, parsed) == text;
     if (valid) {
         artifact = artifactFrom(job, colors, parsed);
+        artifact.provenance = text;
         std::vector<std::uint8_t> bytes;
         std::string error;
         for (std::size_t t = 0; valid && t < artifact.transitions.size(); ++t) {
@@ -900,8 +901,9 @@ EquationSequenceOutcome renderEquationSequenceJob(const EquationSequenceJob& job
         job.beforePublish(provenancePath);
     std::string writeError;
     bool written = false;
+    const std::string provenance = provenanceText(job, colors, p);
     if (!underGate(job, cancel, [&] {
-            written = writeAtomically(provenancePath, provenanceText(job, colors, p), writeError);
+            written = writeAtomically(provenancePath, provenance, writeError);
         })) {
         cleanup();
         return cancelledOutcome();
@@ -916,7 +918,14 @@ EquationSequenceOutcome renderEquationSequenceJob(const EquationSequenceJob& job
     outcome.backendFailure = EquationBackendFailure::None;
     outcome.log = rendered.log;
     outcome.artifact = artifactFrom(job, colors, p);
+    outcome.artifact.provenance = provenance;
     return outcome;
+}
+
+bool equationSequenceProvenanceCurrent(const std::filesystem::path& directory,
+                                       const std::string& key, const std::string& provenance) {
+    return !provenance.empty() &&
+           readFile(equationSequenceProvenancePath(directory, key)) == provenance;
 }
 
 } // namespace mvm::app

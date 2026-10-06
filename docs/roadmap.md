@@ -68,8 +68,11 @@
   key namespace `mvm-equation-sequence/1`、2 段階の Manim 起動 (構造検証の後だけ描く)、
   点を持つ子孫による非空・排他的所有、静止の artifact で hold を出す同値、outline/pulse の 2 層 A8、
   P2 と同じ publication の規則を扱う。set_color/reveal/conceal と styled endpoint、同時 action は含めない。
-- P3-4: residency と preview。disk の公開は P3-3 で実装済み。Project lock・世代・取消を保ち、
-  全 layer を既存 Write/transform の共有予算に数える。編集後の旧 artifact を出力に使わない負例を用意。
+- P3-4 の residency と product preview は
+  [設計文書の P3-4](math-equation-sequence-p30.md#p3-4-residency-と-product-preview) に移した。
+  output frame だけから決まる提示、代用の契約 (変形は区間の全 frame で前の静止)、Write・変形と
+  共有の上限での 1 層ごとの residency と action の 2 層の束、provenance の色での合成、前の key の
+  結果を使わない世代の扱いを扱う。書き出し・authoring UI は含めない。
 - P3-5: 製品 UI。既存の暗色 panel と共通部品で状態の追加/削除/順序/hold/変形、part の指定、
   既存 state 内の invalid/missing PartId の修正、outline/pulse の preview と一回の Undo を実装。
   狭幅・低い panel・長文・空一覧を実描画で検証。state 削除は所有 action の削除も同じ操作として示す。
@@ -82,17 +85,24 @@
 - 任意 TeX macro の支持は未検証。P3-3 は P3-2 の支持範囲の segment について、Manim 0.21 の
   点を持つ子孫の排他的所有を描画ごとに検査する (実装記録)。検査を通った範囲の成功を、
   任意範囲の renderer 分離保証へ一般化しない。
-- [未検証] 動く pulse の 2 層の mvm 合成 (base の上に拡大する対象) と、Manim が 1 枚の scene で描く
-  pulse との画素の差。静止の分解 (base + 通常の対象 = 静止) は P3-3.1 で厳密に検査するようにした
-  ([設計文書](math-equation-sequence-p30.md#p3-31-pulse-の-base-の静止の分解))。動く frame の等価は
-  主張しておらず、preview/export の合成 (P3-4/P3-5) で測る。実例では base と対象の被覆が重ならず、
-  重なる画素での丸めは単体試験だけで確かめた。
+- 動く pulse の 2 層の合成と Manim の 1 つの scene の差は P3-4 で測った
+  ([設計文書](math-equation-sequence-p30.md#p3-4-residency-と-product-preview))。alpha は全画素一致、
+  premultiplied の色は部分被覆の画素だけで最大 1 違う (同じ実数の丸め方の違い)。この差を製品の
+  品質として受け入れるか (書き出しの受け入れ基準に含めるか) は未判断。許容差を正の検査には入れていない。
+- P3-4 の先読みは今の区間の残りと次の区間だけ。再生中に先読みが間に合わない frame は代用 (静止) で
+  見せる。広い lookahead・区間の先頭の事前読み込みは性能の課題として残す。
+- P3-4 の Equation Sequence の layer は出力の大きさの透明な静止画を下地にし、animation の instance
+  ごとに GPU texture を作る (数式の Write・変形と同じ方式)。層が届くたびに instance を作り直すので、
+  再生中の texture の作り直しの回数と時間は未測定。
+- timeline のトランジション (Blend など) と EquationSequence clip の重なりは preview でも未対応として
+  拒否する。sequence の可視範囲の外へ素材範囲を延ばす意味を決めてから扱う。
 - [事実] P3-3.1 の変異試験で、長い名前の作業 directory の下で cache の作業 path
   (`jobs/<session>/<64 桁 key>-equation-sequence-<n>`) が 260 文字を超え、job directory を作れなかった。
   P2 の変形の作業 path も同じ形。cache directory が深い Project で同じことが起きうる [推測]。
   extended-length path で作るかは未判断。
 - P3-3 の key は色・hold・action の start も含むので、それらだけの編集でも sequence 全体を描き直す。
-  区間ごとの小さな artifact (P3-0 の依存 DAG) への分割と、合成だけの値を key から外す条件は P3-4 で判断する。
+  区間ごとの小さな artifact (P3-0 の依存 DAG) への分割と、合成だけの値を key から外す条件は未判断。
+  P3-4 は正しさに必要ないので sequence 全体の key と artifact の構造をそのまま使った (性能の課題)。
 - [未検証] Equation Sequence の描画時間と disk 量。1 件ごとに Manim を 2 回起動する
   (実測は受け入れの results.json の ms のみで、性能計測ではない)。
 - [事実] P3-3 の集中 CTest で `math_write_native_playback` が 22 検査中 3 件失敗し、単独の診断 3 回は
@@ -107,6 +117,11 @@
   失敗する log には `OpenThemeData() failed ... ハンドルが無効` が多数出る。QML とそれが読む file は
   変更していない。原因は未特定 (環境の theme の状態か、別の変更か) で、再試行による選別はしていない。
   証拠: `build/math-p331-independent.log`、`build/math-p331-release.log`。
+  P3-4 の BuildIndependent と通常 gate でも同じ警告で失敗した (6 回続けて。QML は変更していない)。
+  証拠: `build/math-p34-independent.log`、`build/math-p34-release.log`。
+- [事実] P3-4 の集中 CTest で `math_write_native_playback` が P3-3 と同じ 3 件で失敗した
+  (`build/math-p34-focused.log`)。単独の診断 3 回は通過・失敗・通過 (`build/math-p34-diag-native-write-1..3.log`)、
+  通常 gate では通過。Write の経路と試験は変更していない。原因と因果関係は未特定。
 - retime を後段で許す条件は将来の判断とする。P3-1 の標本位相と短い action の消失の契約は
   [実装記録](math-equation-sequence-p30.md#時間と-fps-の確定契約) にある。
 - 既存 state 内の invalid/missing PartId の診断・修復 UI と書き出し拒否の境界を検証する。

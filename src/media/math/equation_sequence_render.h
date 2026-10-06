@@ -158,6 +158,32 @@ std::uint8_t equationCoverageOver(std::uint8_t under, std::uint8_t over);
 bool composeEquationCoverage(const MathCoverage& under, const MathCoverage& over,
                              MathCoverage& out);
 
+// ---- 色付きの層の合成 (P3-4) ----
+//
+// preview (と後の書き出し) が A8 の層に provenance の色を付けて重ねる規則。合成は CPU で行い、
+// GPU には結果の RGBA (straight alpha) を 1 枚の静止画 layer として渡す (shader に別の丸めを
+// 持たない)。
+//
+// 1 層の画素の alpha は round(coverage * 色の alpha / 255)。単層の静止・Write・変形の
+// composeMathPatch (背景が透明のとき) と同じ値になる。
+std::uint8_t equationLayerAlpha(std::uint8_t coverage, std::uint32_t argb);
+// base (下) の上に accent (上) を重ねた 1 画素 (RGBA8 straight alpha)。整数で
+//   a = baseCoverage * base の alpha、b = accentCoverage * accent の alpha  (0..255*255)
+//   alpha = equationCoverageOver(equationLayerAlpha(base), equationLayerAlpha(accent))
+//   色    = round((C_accent * b * 65025 + C_base * a * (65025 - b)) / (b * 65025 + a * (65025 -
+//   b)))
+// 分母が 0 (どちらの層も何も無い) なら (0, 0, 0, 0)。両方の色が不透明なら alpha は
+// composeEquationCoverage と同じ値。accent が無い (被覆 0) 画素は base だけの composeMathPatch と
+// byte 単位で同じになる。
+void composeEquationLayerPixel(std::uint8_t baseCoverage, std::uint32_t baseArgb,
+                               std::uint8_t accentCoverage, std::uint32_t accentArgb,
+                               std::uint8_t* out);
+// 同じ大きさ (width x height) の 2 層を、幅 outWidth 画素の RGBA8 の画像 out の (left, top) から
+// 書く (矩形の画素を置き換える)。範囲の検査は呼び出し側が行う。
+void composeEquationLayersAt(const std::uint8_t* base, std::uint32_t baseArgb,
+                             const std::uint8_t* accent, std::uint32_t accentArgb, int width,
+                             int height, std::uint8_t* out, int outWidth, int left, int top);
+
 // segment ごとの backend の事実 (診断・provenance 用。Project には保存しない)。
 struct EquationSegmentOwnership {
     std::size_t state = 0;

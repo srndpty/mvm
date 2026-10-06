@@ -2,6 +2,7 @@
 // 期待値は手で計算した値 (実装の式を共有しない)。
 
 #include "media/math/equation_sequence_render.h"
+#include "media/math/math_raster_layout.h"
 #include "media/math/math_render.h"
 #include "media/math/math_transform.h"
 
@@ -248,6 +249,75 @@ void testComposition() {
           "byte 数の合わない層は合成しない");
 }
 
+// 色付きの層の合成 (P3-4)。期待値は手計算。
+std::vector<int> layerPixel(int base, std::uint32_t baseArgb, int accent,
+                            std::uint32_t accentArgb) {
+    std::uint8_t out[4] = {1, 2, 3, 4};
+    math::composeEquationLayerPixel(static_cast<std::uint8_t>(base), baseArgb,
+                                    static_cast<std::uint8_t>(accent), accentArgb, out);
+    return {out[0], out[1], out[2], out[3]};
+}
+
+void testLayerComposition() {
+    // base だけ: 色はそのまま、alpha は被覆。
+    check(layerPixel(255, 0xFF4080C0u, 0, 0xFFFFFF00u) == std::vector<int>{0x40, 0x80, 0xC0, 255},
+          "base だけの画素は base の色");
+    check(layerPixel(255, 0xFF4080C0u, 255, 0xFFFFFF00u) == std::vector<int>{255, 255, 0, 255},
+          "不透明な accent は base を隠す");
+    // 白い base (255) の上に黄色の accent (128): b = 128*255 = 32640。
+    // 青 = 255 * 65025 * (65025 - 32640) / 65025^2 = 255 * 32385 / 65025 = 127 (割り切れる)。
+    // alpha = 128 + round(255 * 127 / 255) = 255。
+    check(layerPixel(255, 0xFFFFFFFFu, 128, 0xFFFFFF00u) == std::vector<int>{255, 255, 127, 255},
+          "白の上の半分の黄色");
+    // 青 (被覆 100) の上に赤 (被覆 50): a = 25500、b = 12750。
+    // 赤 = 255 * 12750*65025 / (12750*65025 + 25500*52275) = 97.78 -> 98、
+    // 青 = 255 * 25500*52275 / 同 = 157.22 -> 157、alpha = 50 + (100*205 + 127) / 255 = 130。
+    check(layerPixel(100, 0xFF0000FFu, 50, 0xFFFF0000u) == std::vector<int>{98, 0, 157, 130},
+          "半透明の 2 層の手計算");
+    // 色の alpha を被覆に掛ける: round(255 * 128 / 255) = 128。
+    check(layerPixel(255, 0x80FFFFFFu, 0, 0) == std::vector<int>{255, 255, 255, 128},
+          "色の alpha を掛ける");
+    check(layerPixel(0, 0xFFFFFFFFu, 0, 0xFFFFFF00u) == std::vector<int>{0, 0, 0, 0},
+          "何も無い画素は透明の 0");
+
+    // 不透明な色どうしの alpha は composeEquationCoverage (P3-3.1) と全 65536 組で同じ。
+    bool sameAlpha = true;
+    for (int a = 0; a < 256; ++a)
+        for (int b = 0; b < 256; ++b)
+            sameAlpha = sameAlpha && layerPixel(a, 0xFF336699u, b, 0xFFFFFF00u)[3] ==
+                                         math::equationCoverageOver(static_cast<std::uint8_t>(a),
+                                                                    static_cast<std::uint8_t>(b));
+    check(sameAlpha, "不透明な 2 層の alpha は層の被覆の合成規則と同じ");
+    // accent の無い画素は単層の composeMathPatch (静止・変形と同じ式) と byte 単位で同じ。
+    bool sameAsSingle = true;
+    for (const std::uint32_t color : {0xFFFFFFFFu, 0xFF40C0FFu, 0x80FF2010u, 0x01ABCDEFu})
+        for (int c = 0; c < 256; ++c) {
+            std::uint8_t single[4] = {};
+            const auto coverage = static_cast<std::uint8_t>(c);
+            math::composeMathPatch(&coverage, 1, 1, {color, 0}, single);
+            const auto pair = layerPixel(c, color, 0, 0xFFFFFF00u);
+            sameAsSingle = sameAsSingle &&
+                           pair == std::vector<int>{single[0], single[1], single[2], single[3]};
+        }
+    check(sameAsSingle, "accent の無い画素は単層の静止の合成と同じ");
+
+    // 矩形への書き込み: 2x1 の層を幅 4 の画像の (1, 0) に置く。外は触らない。
+    std::vector<std::uint8_t> image(4 * 4, 9);
+    const std::uint8_t base[] = {255, 0};
+    const std::uint8_t accent[] = {0, 255};
+    math::composeEquationLayersAt(base, 0xFF102030u, accent, 0xFFFFFF00u, 2, 1, image.data(), 4, 1,
+                                  0);
+    check(std::vector<std::uint8_t>(image.begin(), image.begin() + 4) ==
+                  std::vector<std::uint8_t>{9, 9, 9, 9} &&
+              std::vector<std::uint8_t>(image.begin() + 4, image.begin() + 8) ==
+                  std::vector<std::uint8_t>{0x10, 0x20, 0x30, 255} &&
+              std::vector<std::uint8_t>(image.begin() + 8, image.begin() + 12) ==
+                  std::vector<std::uint8_t>{255, 255, 0, 255} &&
+              std::vector<std::uint8_t>(image.begin() + 12, image.end()) ==
+                  std::vector<std::uint8_t>{9, 9, 9, 9},
+          "2 層を矩形の位置へ書き、外は変えない");
+}
+
 void testNames() {
     check(std::string(math::equationRenderOperationName(math::EquationRenderOperation::Outline)) ==
                   "outline" &&
@@ -275,6 +345,7 @@ int main() {
     testValidation();
     testKey();
     testComposition();
+    testLayerComposition();
     testNames();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;

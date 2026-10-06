@@ -1343,9 +1343,15 @@ void MathRasterCache::retainOnly(const QSet<QString>& keys) {
     retainKeys(records_, keys);
     retainKeys(sequences_, keys);
     // 連番・変形が要求されなくなれば、preview 用の mask も手放す (読んでいる途中なら止める)。
+    // Equation Sequence の層は owner の sequence の key が残る間だけ残す。
     for (const auto& key : resident_.keys() + loading_.keys() + overBudget_.keys())
-        if (!keys.contains(key))
+        if (!keys.contains(residentOwner(key)))
             dropResident(key);
+}
+
+QString MathRasterCache::residentOwner(const QString& key) {
+    const auto slash = key.indexOf(QLatin1Char('/'));
+    return slash < 0 ? key : key.left(slash);
 }
 
 void MathRasterCache::forgetFailures() {
@@ -1503,6 +1509,7 @@ MathRasterCache::ResidentSequence MathRasterCache::acquireResident(const QString
         reserved = residency_->tryReserve(bytes);
     }
     if (!reserved) {
+        // Equation Sequence の層は residentEquationLayers が束で予約する (ここへは来ない)。
         const auto message =
             (kind == ResidentKind::Write
                  ? QStringLiteral(
@@ -1569,6 +1576,17 @@ void MathRasterCache::finishResident(const QString& key, std::uint64_t ticket,
     }
     const ResidentKind kind = found->kind;
     loading_.erase(found);
+    if (kind == ResidentKind::EquationLayer) {
+        if (!frames) {
+            // 壊れた・provenance の変わった層: sequence ごと使わない (Failed、artifact を消す)。
+            failEquationSequence(residentOwner(key), error);
+            Q_EMIT entryChanged(residentOwner(key));
+            return;
+        }
+        resident_.insert(key, {std::move(frames), ++useTick_});
+        Q_EMIT entryChanged(residentOwner(key));
+        return;
+    }
     if (!frames) {
         // disk の連番・変形が壊れている。消して Failed にする (forgetFailures・再試行で描き直す)。
         // cache directory の変更は権限がある間だけ行う。
@@ -2096,6 +2114,293 @@ MathRasterCache::readyEquationSequence(const math::EquationSequenceRenderSpec& s
         EquationSequenceDiskLoad::Ready)
         return std::nullopt;
     return artifact;
+}
+
+MathRasterCache::EquationSequenceEntry
+MathRasterCache::equationSequenceEntryOf(const math::EquationSequenceRenderSpec& spec) const {
+    if (backendState_ == BackendState::Unavailable) {
+        EquationSequenceEntry entry;
+        entry.state = State::Unavailable;
+        entry.status = math::MathRenderStatus::BackendUnavailable;
+        entry.message = backendMessage_;
+        return entry;
+    }
+    const auto found = equationSequences_.constFind(equationSequenceKeyFor(spec));
+    return found == equationSequences_.constEnd() ? EquationSequenceEntry{} : found->entry;
+}
+
+std::optional<EquationSequenceArtifact>
+MathRasterCache::equationSequenceArtifactOf(const math::EquationSequenceRenderSpec& spec) const {
+    const auto found = equationSequences_.constFind(equationSequenceKeyFor(spec));
+    if (found == equationSequences_.constEnd() || found->entry.state != State::Ready)
+        return std::nullopt;
+    return found->artifact;
+}
+
+// ---- Equation Sequence の preview 用の層 (P3-4) ----
+
+QString MathRasterCache::equationLayerKey(const QString& sequenceKey,
+                                          const EquationLayerRef& layer) {
+    switch (layer.role) {
+    case EquationLayerRole::TransitionFrame:
+        return QStringLiteral("%1/t%2/%3").arg(sequenceKey).arg(layer.interval).arg(layer.frame);
+    case EquationLayerRole::ActionBase:
+        return QStringLiteral("%1/a%2/base").arg(sequenceKey).arg(layer.interval);
+    case EquationLayerRole::ActionAccent:
+        return QStringLiteral("%1/a%2/%3").arg(sequenceKey).arg(layer.interval).arg(layer.frame);
+    }
+    return {};
+}
+
+namespace {
+
+// artifact の中の層 1 枚 (無ければ false)。
+bool equationLayerFrame(const EquationSequenceArtifact& artifact,
+                        const MathRasterCache::EquationLayerRef& layer, EquationArtifactFrame& frame,
+                        int& width, int& height) {
+    using Role = MathRasterCache::EquationLayerRole;
+    if (layer.role == Role::TransitionFrame) {
+        if (layer.interval >= artifact.transitions.size())
+            return false;
+        const auto& item = artifact.transitions[layer.interval];
+        if (layer.frame < 0 || layer.frame >= static_cast<std::int64_t>(item.frames.size()))
+            return false;
+        frame = item.frames[static_cast<std::size_t>(layer.frame)];
+        width = item.width;
+        height = item.height;
+        return true;
+    }
+    if (layer.interval >= artifact.actions.size())
+        return false;
+    const auto& item = artifact.actions[layer.interval];
+    width = item.width;
+    height = item.height;
+    if (layer.role == Role::ActionBase) {
+        frame = item.base;
+        return true;
+    }
+    if (layer.frame < 0 || layer.frame >= static_cast<std::int64_t>(item.accent.size()))
+        return false;
+    frame = item.accent[static_cast<std::size_t>(layer.frame)];
+    return true;
+}
+
+} // namespace
+
+MathRasterCache::ResidentEquationLayers
+MathRasterCache::equationLayersResidencyOf(const math::EquationSequenceRenderSpec& spec,
+                                           const std::vector<EquationLayerRef>& refs) const {
+    ResidentEquationLayers result;
+    const QString sequenceKey = equationSequenceKeyFor(spec);
+    const auto record = equationSequences_.constFind(sequenceKey);
+    if (sequenceKey.isEmpty() || record == equationSequences_.constEnd() ||
+        record->entry.state != State::Ready || refs.empty())
+        return result;
+    bool loading = false;
+    for (const auto& layer : refs) {
+        const auto one = residencyFor(equationLayerKey(sequenceKey, layer));
+        switch (one.state) {
+        case Residency::Resident:
+            result.layers.push_back(one.frames);
+            break;
+        case Residency::OverBudget:
+            result.state = Residency::OverBudget;
+            result.message = one.message;
+            result.layers.clear();
+            return result;
+        case Residency::Loading:
+            loading = true;
+            break;
+        case Residency::NotReady:
+        case Residency::Failed:
+            result.layers.clear();
+            return result;
+        }
+    }
+    if (loading) {
+        result.layers.clear();
+        result.state = Residency::Loading;
+        return result;
+    }
+    result.state = Residency::Resident;
+    return result;
+}
+
+MathRasterCache::ResidentEquationLayers
+MathRasterCache::residentEquationLayers(const math::EquationSequenceRenderSpec& spec,
+                                        const std::vector<EquationLayerRef>& refs, bool current) {
+    ResidentEquationLayers result;
+    const QString sequenceKey = equationSequenceKeyFor(spec);
+    const auto record = equationSequences_.constFind(sequenceKey);
+    if (sequenceKey.isEmpty() || record == equationSequences_.constEnd() ||
+        record->entry.state != State::Ready || refs.empty() || shutDown_)
+        return result;
+    const EquationSequenceArtifact& artifact = record->artifact;
+
+    struct Missing {
+        QString key;
+        EquationArtifactFrame frame;
+        int width = 0;
+        int height = 0;
+        std::size_t bytes = 0;
+    };
+    std::vector<Missing> missing;
+    std::vector<std::shared_ptr<const MathCoverageSequence>> layers;
+    QSet<QString> bundle;
+    bool loading = false;
+    for (const auto& layer : refs) {
+        const QString key = equationLayerKey(sequenceKey, layer);
+        bundle.insert(key);
+        if (const auto found = resident_.find(key); found != resident_.end()) {
+            found->lastUse = ++useTick_;
+            layers.push_back(found->frames);
+            continue;
+        }
+        if (loading_.contains(key)) {
+            loading = true;
+            continue;
+        }
+        Missing item;
+        item.key = key;
+        if (!equationLayerFrame(artifact, layer, item.frame, item.width, item.height) ||
+            item.width <= 0 || item.height <= 0)
+            return result; // artifact に無い層 (要求の誤り)
+        item.bytes = static_cast<std::size_t>(item.width) * static_cast<std::size_t>(item.height);
+        missing.push_back(std::move(item));
+    }
+    if (missing.empty()) {
+        if (loading) {
+            result.state = Residency::Loading;
+            return result;
+        }
+        result.state = Residency::Resident;
+        result.layers = std::move(layers);
+        return result;
+    }
+    std::size_t bytes = 0;
+    for (const auto& item : missing)
+        bytes += item.bytes;
+    // 足りない層をまとめて予約する。今の frame の束だけが、cache だけが持つ mask を LRU で外す
+    // (束の中の層と、preview が使っている mask は外さない)。先読みは何も外さない。
+    auto reserved = residency_->tryReserve(bytes);
+    while (!reserved && current && bytes <= residency_->limit()) {
+        auto oldest = resident_.end();
+        for (auto it = resident_.begin(); it != resident_.end(); ++it)
+            if (it->frames.use_count() == 1 && !bundle.contains(it.key()) &&
+                (oldest == resident_.end() || it->lastUse < oldest->lastUse))
+                oldest = it;
+        if (oldest == resident_.end())
+            break;
+        resident_.erase(oldest);
+        reserved = residency_->tryReserve(bytes);
+    }
+    if (!reserved) {
+        result.state = Residency::OverBudget;
+        result.message =
+            QStringLiteral("Equation Sequence の preview 用の層が memory の上限 (Write・変形と共通の"
+                           "合計 %1 KB) に収まらないため、静止で表示します (disk の artifact は"
+                           "使えます。書き出しには影響しません)。必要 %2 KB、使用中 %3 KB")
+                .arg(residency_->limit() >> 10)
+                .arg(bytes >> 10)
+                .arg(residency_->live() >> 10);
+        if (current)
+            for (const auto& item : missing)
+                overBudget_.insert(item.key, result.message);
+        return result;
+    }
+    // 束の byte をまとめて予約したので、層ごとの予約はその内訳 (破棄ごとに自分の分を返す)。
+    for (const auto& item : missing) {
+        overBudget_.remove(item.key);
+        auto reservation = std::make_shared<const MathResidencyReservation>(residency_, item.bytes);
+        startEquationLayerLoad(item.key, item.width, item.height, std::move(reservation), item.frame,
+                               sequenceKey.toStdString(), artifact.provenance, current);
+    }
+    result.state = Residency::Loading;
+    return result;
+}
+
+void MathRasterCache::startEquationLayerLoad(
+    const QString& key, int width, int height,
+    std::shared_ptr<const MathResidencyReservation> reservation, EquationArtifactFrame frame,
+    std::string sequenceKey, std::string provenance, bool current) {
+    LoadingRecord loading;
+    loading.ticket = nextTicket_++;
+    loading.cancel = std::make_shared<std::atomic<bool>>(false);
+    loading.kind = ResidentKind::EquationLayer;
+    loading_.insert(key, loading);
+    ++residentLoads_;
+    // 今の frame の層は先読みより先に読む (worker は 1 本で、待ち行列を優先度の順に取る)。
+    residentPool_.start(
+        [this, key, width, height, reservation = std::move(reservation), frame = std::move(frame),
+         sequenceKey = std::move(sequenceKey), provenance = std::move(provenance),
+         directory = cacheDirectory_, ticket = loading.ticket,
+         cancel = loading.cancel]() mutable {
+            if (cancel->load())
+                return;
+            QString error;
+            std::shared_ptr<MathCoverageSequence> decoded;
+            std::vector<std::uint8_t> coverage;
+            std::string loadError;
+            // provenance (確定の印) が検証した時のままか。消された・書き換えられた artifact の
+            // 層は、frame の SHA-256 が合っていても使わない。
+            if (!equationSequenceProvenanceCurrent(directory, sequenceKey, provenance)) {
+                error = QStringLiteral("Equation Sequence の provenance が無いか、検証した時と"
+                                       "違います。静止で表示します");
+            } else if (!loadEquationArtifactFrame(frame, width, height, coverage, loadError)) {
+                error = QStringLiteral("Equation Sequence の層を読めないか、大きさ・中身が "
+                                       "provenance と違います。静止で表示します: %1")
+                            .arg(QString::fromStdString(loadError));
+            } else {
+                decoded = std::make_shared<MathCoverageSequence>();
+                decoded->width = width;
+                decoded->height = height;
+                decoded->frames.push_back(std::move(coverage));
+                decoded->reservation = std::move(reservation);
+            }
+            if (cancel->load())
+                return;
+            QMetaObject::invokeMethod(
+                this,
+                [this, key, ticket, frames = std::shared_ptr<const MathCoverageSequence>(decoded),
+                 error]() mutable { finishResident(key, ticket, std::move(frames), error); },
+                Qt::QueuedConnection);
+        },
+        current ? 1 : 0);
+}
+
+void MathRasterCache::failEquationSequence(const QString& sequenceKey, const QString& error) {
+    qWarning("%s", qUtf8Printable(error));
+    {
+        std::lock_guard gate(*publishGate_);
+        if (auto record = equationSequences_.find(sequenceKey);
+            record != equationSequences_.end()) {
+            // cache directory の変更は権限がある間だけ行う。消した artifact は forgetFailures
+            // (再試行) で描き直す。
+            if (authorized_ && record->entry.state == State::Ready) {
+                std::error_code ignored;
+                std::filesystem::remove(
+                    equationSequenceProvenancePath(cacheDirectory_, sequenceKey.toStdString()),
+                    ignored);
+                util::removeTree(
+                    equationSequenceDirectory(cacheDirectory_, sequenceKey.toStdString()), ignored);
+            }
+            record->entry = {};
+            record->entry.state = State::Failed;
+            record->entry.backendFailure = math::EquationBackendFailure::CorruptFrame;
+            record->entry.message = error;
+            record->artifact = {};
+        }
+    }
+    for (const auto& key : resident_.keys() + loading_.keys() + overBudget_.keys())
+        if (residentOwner(key) == sequenceKey && key != sequenceKey)
+            dropResident(key);
+}
+
+int MathRasterCache::residentEquationLayerCount() const {
+    int count = 0;
+    for (auto it = resident_.cbegin(); it != resident_.cend(); ++it)
+        count += it.key().contains(QLatin1Char('/'));
+    return count;
 }
 
 } // namespace mvm::app
