@@ -4184,16 +4184,23 @@ MvmController::equationSequencePreviewStatus(const QString& clipId, qint64 outpu
         });
     if (found == project_.timelineClips.end() || !mathRasters_)
         return status;
+    // 問い合わせは読むだけ: 静止・sequence の描画を要求せず、cache の record も作らない
+    // (再生位置に無い選択中の clip を UI が問い合わせても描画を始めない)。描画の要求は見えている
+    // clip の合成 (equationSequencePreviewAnimation) と requestMathRenders だけが行う。
     status.found = true;
     status.backend = mathRasters_->backendState();
-    const auto compiled = compiledEquationSequence(*found);
+    // compile も memo を書き換えない (data が同じ memo があれば使い、無ければその場で compile)。
+    const auto memo = equationCompiles_.constFind(clipId);
+    const auto compiled = memo != equationCompiles_.constEnd() && memo->data == found->equationSequence
+                              ? memo->result
+                              : compileEquationSequence(found->equationSequence);
     status.compile = compiled.failure;
     std::string error;
     status.time = equationPreviewTimeAt(*found, project_.timelineFpsNum, project_.timelineFpsDen,
                                         compiled.value ? &*compiled.value : nullptr, outputFrame,
                                         error);
     for (const auto& state : found->equationSequence.states) {
-        const auto entry = mathRasters_->request(equationStateStaticSpec(state));
+        const auto entry = mathRasters_->entryOf(equationStateStaticSpec(state));
         status.staticsReady.push_back(entry.state == MathRasterCache::State::Ready && entry.mask);
     }
     // 見せるものは今の合成の animation の model が決める (animation が無ければ None)。

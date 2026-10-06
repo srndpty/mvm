@@ -1274,3 +1274,65 @@ frame 19 で組んだ animation を持たない区間の frame で評価した�
 P3-4 の実装・検証を完了した。schema 21、P3-1〜P3-3 の意味を維持し、書き出し・authoring UI、
 commit、push は行っていない。
 
+## P3-4.1 先読みの昇格と読むだけの状態の問い合わせ
+
+2026-10-07。P3-4 の preview と cache の結びつきの 2 点だけを直した。P3-4 の時間・代用・合成の規則、
+schema 21 は変更していない。P3-5 の UI・書き出しは追加していない。commit / push はしていない。
+
+### 先読みで待っている層の昇格
+
+P3-4 では、先読み (優先度 0) で待ち行列にある層へ直接 seek すると、`residentEquationLayers(..., current)`
+が「読み込み中」を見るだけで、その層は先読みの順のまま残っていた。今の frame は先読みより先という
+P3-4 の契約に反する。
+
+Equation Sequence の層の読み込みを cache が持つ待ち行列 (今の frame の列と先読みの列) に変えた。
+worker (1 本) の各仕事は、取り出す時点で今の frame の列を先に取る。今の frame の要求が、先読みで
+待っている層を見つけたら、同じ仕事を今の frame の列の末尾へ移し、優先度 1 の取り出しを足す
+(Write・変形の読み込みより先に走らせるため。余った取り出しは空の待ち行列を見て終わる)。
+移すのは仕事そのものなので、ticket・取消・予約はそのまま (予約は 1 回だけ)。既に読み始めた層は
+移さない。古い key の仕事は取消の印と ticket の照合で従来どおり捨てる。
+
+### 読むだけの状態の問い合わせ
+
+`equationSequencePreviewStatus()` は状態の静止を `request()` で引いていたので、再生位置に無い clip を
+問い合わせると静止の描画が始まり、cache の record ができた。P3-5 は選択中の clip を問い合わせる。
+読むだけの `MathRasterCache::entryOf()` (静止)、`equationSequenceEntryOf()`、
+`equationLayersResidencyOf()` だけを使い、compile も memo を書き換えずに行う。描画の要求は従来どおり、
+見えている clip の合成と `requestMathRenders` だけが行う。
+
+### 証拠
+
+`math_equation_sequence_preview_controller` に 2 つの回帰を足した (186 検査 / 0 失敗)。
+
+- 昇格: worker を止めて T0 の 10 枚と pulse の 6 束を先読みで待たせ、待っている T0 の frame 7
+  (output 37) へ直接行く。worker を再開すると、取り出した 19 件のうち対象が最初 (0 番目)。同じ
+  output frame で T0 frame 7 へ入り、再生位置は変わらない。全部読めた後の memory の量は層の実 byte
+  の和と一致 (予約は 1 回だけ)
+- 問い合わせ: 再生位置の外 (500〜) に式の違う 2 本目を置き、全 91 frame とも見えている側の全 frame
+  を問い合わせても、静止・sequence の cache の record 数、偽の backend の描画回数、層の読み込み回数は
+  変わらない。外の sequence は disk Pending・静止も未描画のまま
+
+[事実] 変異試験は既存の 9 件に、昇格を外す (`promotion_disabled`) と、問い合わせが静止の描画を要求する
+(`status_requests_render`) を足して **11 / 11 を検出**。証拠: `build/math-p341-mutations-fixed.log` と
+`build/ucrt64-release/equation-preview-mutations-20261007-064131-043/`。最初の実行は、読み込みを
+待ち行列へ移したことで provenance の照合の変異箇所の文字列が変わり、変異の前に runner が止まった
+(検出には数えない。`build/math-p341-mutations.log`)。変異箇所を直して再実行した。
+
+[事実] 開発中の controller の試験の初回は、昇格の試験の byte の期待値に、今の frame が揃った後の
+通常の先読み (次の区間の N=1 の pulse の 2 層) を入れ忘れて 1 件失敗した
+(`build/math-p341-controller-dev-1.log`)。期待値を直して通過 (`-dev-2.log`)。
+
+[事実] 最終 source の全体ビルドは成功 (`build/math-p341-build-final.log`)。集中 CTest は P3-4 と同じ
+28 件 (`-N`、`build/math-p341-focused-count.log`) を一回実行し **28 / 28 通過** (実 D3D11 の
+`math_equation_sequence_native_preview` と `math_write_native_playback` を含む。通過は P3-4 の
+`math_write_native_playback` の失敗の記録を置き換えない)。証拠: `build/math-p341-focused.log`。
+
+[事実] BuildIndependent は **1077 / 1078 通過**。失敗は P3-3 以来と同じ `audio_mixer_controls_qml`
+(`OpenThemeData() failed` が 193 行)。証拠: `build/math-p341-independent.log`。
+lint は通過 (`build/math-p341-lint.log`)。
+
+[事実] 通常 release gate は一回で **1466 / 1467 通過**、通常 gate は未通過。失敗は同じ
+`audio_mixer_controls_qml` だけ。再試行していない。証拠: `build/math-p341-release.log`。
+
+P3-4.1 の実装・検証を完了した。P3-5 の UI・書き出し、commit、push は行っていない。
+

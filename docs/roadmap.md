@@ -73,6 +73,8 @@
   output frame だけから決まる提示、代用の契約 (変形は区間の全 frame で前の静止)、Write・変形と
   共有の上限での 1 層ごとの residency と action の 2 層の束、provenance の色での合成、前の key の
   結果を使わない世代の扱いを扱う。書き出し・authoring UI は含めない。
+  P3-4.1 (先読みで待っている層の昇格、読むだけの状態の問い合わせ) も
+  [設計文書](math-equation-sequence-p30.md#p3-41-先読みの昇格と読むだけの状態の問い合わせ) に記録した。
 - P3-5: 製品 UI。既存の暗色 panel と共通部品で状態の追加/削除/順序/hold/変形、part の指定、
   既存 state 内の invalid/missing PartId の修正、outline/pulse の preview と一回の Undo を実装。
   狭幅・低い panel・長文・空一覧を実描画で検証。state 削除は所有 action の削除も同じ操作として示す。
@@ -119,6 +121,8 @@
   証拠: `build/math-p331-independent.log`、`build/math-p331-release.log`。
   P3-4 の BuildIndependent と通常 gate でも同じ警告で失敗した (6 回続けて。QML は変更していない)。
   証拠: `build/math-p34-independent.log`、`build/math-p34-release.log`。
+  P3-4.1 の BuildIndependent と通常 gate でも同じ (8 回続けて)。証拠: `build/math-p341-independent.log`、
+  `build/math-p341-release.log`。
 - [事実] P3-4 の集中 CTest で `math_write_native_playback` が P3-3 と同じ 3 件で失敗した
   (`build/math-p34-focused.log`)。単独の診断 3 回は通過・失敗・通過 (`build/math-p34-diag-native-write-1..3.log`)、
   通常 gate では通過。Write の経路と試験は変更していない。原因と因果関係は未特定。

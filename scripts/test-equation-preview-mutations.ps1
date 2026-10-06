@@ -76,9 +76,19 @@ $mutations = @(
        Expected = '前の key の層は memory から外す' },
     # 層を読むときに provenance を照合しない。
     @{ Name = 'provenance_unchecked'; Target = $cache
-       From = 'if (!equationSequenceProvenanceCurrent(directory, sequenceKey, provenance)) {'
-       To = 'if (false) {'
+       From = 'if (!equationSequenceProvenanceCurrent(job.directory, job.sequenceKey,'
+       To = 'if (false && !equationSequenceProvenanceCurrent(job.directory, job.sequenceKey,'
        Expected = '壊れ: provenance を読むと disk を Failed' },
+    # P3-4.1: 先読みで待っている層が今の frame になっても先読みの順のまま読む。
+    @{ Name = 'promotion_disabled'; Target = $cache
+       From = 'if (current && promoteEquationLayerLoad(key))'
+       To = 'if (false && promoteEquationLayerLoad(key))'
+       Expected = '今の frame になった層は残りの先読みより先に読む' },
+    # P3-4.1: 状態の問い合わせが静止の描画を要求する。
+    @{ Name = 'status_requests_render'; Target = $controller
+       From = 'const auto entry = mathRasters_->entryOf(equationStateStaticSpec(state));'
+       To = 'const auto entry = mathRasters_->request(equationStateStaticSpec(state));'
+       Expected = '問い合わせ: cache の record を作らない' },
     # action の 2 層を束でなく 1 層ずつ予約する (片方だけ読む)。
     @{ Name = 'bundle_not_atomic'; Target = $cache
        From = "    auto reserved = residency_->tryReserve(bytes);`n    while (!reserved && current"

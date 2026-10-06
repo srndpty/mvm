@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -325,6 +326,14 @@ public:
                                                      const std::vector<EquationLayerRef>& refs) const;
     // memory にある (読み終えた) 層の数 (試験用)。
     int residentEquationLayerCount() const;
+    // 試験用: true の間、Equation Sequence の層の読み込みの worker は待ち行列から取り出さずに待つ
+    // (1 本の worker を止め、待ち行列の順を試験が決めるため)。
+    void pauseEquationLayerLoadsForTest(bool paused);
+    // 試験用: 層の読み込みを待ち行列から取り出した順の key (取消で読まなかったものも含む)。
+    std::vector<QString> equationLayerLoadOrderForTest() const;
+    // 今の Ready の静止の状態を、要求せずに返す (record が無ければ既定の Pending。backend が
+    // 使えなければ Unavailable)。状態の問い合わせ用で、描画を始めない。
+    Entry entryOf(const math::MathRenderSpec& spec) const;
     // 試験用: provenance を書く直前に (worker の thread で) 呼ぶ。
     void setBeforeEquationSequencePublishForTest(
         std::function<void(const std::filesystem::path& provenance)> hook) {
@@ -445,6 +454,34 @@ private:
                                 std::shared_ptr<const MathResidencyReservation> reservation,
                                 EquationArtifactFrame frame, std::string sequenceKey,
                                 std::string provenance, bool current);
+    // Equation Sequence の層の読み込みの待ち行列 (P3-4.1)。worker は 1 本。待ち行列の仕事は
+    // 取り出す時点で今の frame の列を先に取る。先読みで待っている層が今の frame になったら、
+    // 同じ仕事 (ticket・取消・予約をそのまま) を今の frame の列の末尾へ移す。
+    struct EquationLoadJob {
+        QString key;
+        std::uint64_t ticket = 0;
+        std::shared_ptr<std::atomic<bool>> cancel;
+        std::shared_ptr<const MathResidencyReservation> reservation;
+        EquationArtifactFrame frame;
+        int width = 0;
+        int height = 0;
+        std::string sequenceKey;
+        std::string provenance;
+        std::filesystem::path directory;
+    };
+    struct EquationLoadQueue {
+        std::mutex mutex;
+        std::deque<EquationLoadJob> current;
+        std::deque<EquationLoadJob> prefetch;
+        std::vector<QString> taken; // 取り出した順 (試験用)
+        std::atomic<bool> paused{false};
+        std::atomic<bool> stopped{false};
+    };
+    std::shared_ptr<EquationLoadQueue> equationLoads_ = std::make_shared<EquationLoadQueue>();
+    // 待ち行列から 1 件取り出して読む仕事を worker へ出す。
+    void startEquationLoadDrain(int priority);
+    // 先読みで待っている key の仕事を今の frame の列へ移す。移したら true。
+    bool promoteEquationLayerLoad(const QString& key);
     // 壊れた・古い層を見つけた: sequence を Failed にし、その層をすべて手放す。
     void failEquationSequence(const QString& sequenceKey, const QString& error);
     // 読み込み (取消を見て、読めなければ nullptr。取消なら cancelled を立てる)。

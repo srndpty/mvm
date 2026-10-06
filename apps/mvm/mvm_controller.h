@@ -692,6 +692,7 @@ public:
     }
     // Equation Sequence clip の preview の状態 (P3-4)。見た目の代用が同じでも、内部の状態は
     // 区別したまま保つ (編集・修復の UI は P3-5)。outputFrame の区間について調べる。
+    // 読むだけで、静止・sequence の描画を要求せず cache の record も作らない (P3-4.1)。
     //   compile      今の Project の P3-2 compile (None 以外は spec が無く、静止だけを見せる)
     //   backend      数式の backend (Checking / Available / Unavailable)
     //   disk         disk の artifact (Pending / Ready / Failed / Unavailable)。Failed の

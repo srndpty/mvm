@@ -965,6 +965,118 @@ void testVisibleSetAndStatus() {
     controller.shutdown();
 }
 
+// P3-4.1: 先読みで待っている層へ直接 seek すると、その層を残りの先読みより先に読む。
+// worker (1 本) を止めて待ち行列を作り、取り出した順を見る。
+void testPrefetchPromotion() {
+    auto f = openFixture("昇格", fixtureProject());
+    auto& controller = *f->controller;
+    auto& cache = controller.mathRastersForTest();
+    check(waitDiskReady(controller), "昇格: disk の artifact が Ready");
+    const auto spec = renderSpecOf(controller);
+    if (!spec) {
+        check(false, "昇格: 描画要求");
+        return;
+    }
+    cache.setResidentMemoryBudget(MathRasterCache::kDefaultResidentMemoryBudget);
+    settle(100);
+    cache.pauseEquationLayerLoadsForTest(true);
+    const auto takenBefore = cache.equationLayerLoadOrderForTest().size();
+    using Role = MathRasterCache::EquationLayerRole;
+    // 先読みの待ち行列: T0 の 10 枚、pulse の 6 束 (base と accent)。
+    for (std::int64_t i = 0; i < 10; ++i)
+        cache.residentEquationLayers(*spec, {{Role::TransitionFrame, 0, i}}, false);
+    for (std::int64_t i = 0; i < 6; ++i)
+        cache.residentEquationLayers(*spec, {{Role::ActionBase, 1, 0}, {Role::ActionAccent, 1, i}},
+                                     false);
+    const QString key = cache.equationSequenceKeyFor(*spec);
+    const QString target = MathRasterCache::equationLayerKey(key, {Role::TransitionFrame, 0, 7});
+    check(cache.equationLayerLoadOrderForTest().size() == takenBefore,
+          "昇格: worker を止めている間は何も取り出さない");
+    // 待っている T0 の frame 7 (output 37) へ直接行く。今の frame の束になる。
+    const auto playhead = controller.playheadFrame();
+    check(shownAt(controller, 37) == fallbackOf(expectedAt(37)),
+          "昇格: 読み込みの前は前の状態の静止");
+    cache.pauseEquationLayerLoadsForTest(false);
+    check(waitShown(controller, 37, shownOf(expectedAt(37))),
+          "昇格: 届いた後は同じ output frame の T0 frame 7");
+    check(controller.playheadFrame() == playhead, "昇格: 再生位置は変えない");
+    const auto order = cache.equationLayerLoadOrderForTest();
+    std::size_t at = order.size();
+    for (std::size_t i = takenBefore; i < order.size(); ++i)
+        if (order[i] == target) {
+            at = i - takenBefore;
+            break;
+        }
+    std::fprintf(stderr, "昇格: 取り出した %zu 件のうち対象は %zu 番目\n",
+                 order.size() - takenBefore, at);
+    check(at == 0, "昇格: 今の frame になった層は残りの先読みより先に読む");
+    // 予約は 1 回だけ (移した仕事は予約をそのまま持つ): 全部読めた後の量は層の実 byte の和。
+    // 今の frame が揃った後の通常の先読みで、次の区間 (N=1 の pulse の base と accent) も読む。
+    const auto reference = referenceFor(controller);
+    if (reference) {
+        const auto& t0 = reference->artifact.transitions[0];
+        const auto& pulse = reference->artifact.actions[1];
+        const auto& single = reference->artifact.actions[2];
+        const std::size_t expected =
+            10U * static_cast<std::size_t>(t0.width) * static_cast<std::size_t>(t0.height) +
+            7U * static_cast<std::size_t>(pulse.width) * static_cast<std::size_t>(pulse.height) +
+            2U * static_cast<std::size_t>(single.width) * static_cast<std::size_t>(single.height);
+        check(pump([&] { return cache.residentEquationLayerCount() >= 19; }) &&
+                  cache.residentBytes() == expected,
+              "昇格: 予約は層ごとに 1 回だけ (" + std::to_string(cache.residentBytes()) + " / " +
+                  std::to_string(expected) + ")");
+    }
+    controller.shutdown();
+}
+
+// P3-4.1: 状態の問い合わせは読むだけ。再生位置に無い sequence を問い合わせても描画を始めない。
+void testStatusIsReadOnly() {
+    auto initial = fixtureProject();
+    auto other = fixtureData();
+    other.states[0].equation.source = "SIZE41x21+b";
+    other.states[1].equation.source = "SIZE31x25+b";
+    other.states[2].equation.source = "SIZE37x19+c";
+    for (auto& s : other.states)
+        for (auto& p : s.parts)
+            p.binding.revision = s.revision;
+    check(project::addEquationSequence(initial, other, "far", "再生位置の外",
+                                       {project::TrackKind::Video, 0}, 500)
+              .success,
+          "問い合わせ: 再生位置の外に 2 本目を置く");
+    auto f = openFixture("問い合わせ", initial);
+    auto& controller = *f->controller;
+    auto& cache = controller.mathRastersForTest();
+    check(waitDiskReady(controller), "問い合わせ: 見えている sequence は Ready");
+    settle(200);
+    const auto records = cache.recordCount();
+    const auto sequences = cache.equationSequenceRecordCount();
+    const auto renders = f->backend.renders->load();
+    const auto equationRenders = f->backend.equationRenders->load();
+    const auto loads = cache.residentLoadCount();
+    bool pending = true;
+    for (qint64 frame = 500; frame < 500 + kLength; ++frame) {
+        const auto status = controller.equationSequencePreviewStatus(QStringLiteral("far"), frame);
+        pending = pending && status.found && status.disk == MathRasterCache::State::Pending &&
+                  status.residency == MathRasterCache::Residency::NotReady &&
+                  std::none_of(status.staticsReady.begin(), status.staticsReady.end(),
+                               [](bool ready) { return ready; });
+    }
+    for (qint64 frame = 0; frame < kLength; ++frame)
+        controller.equationSequencePreviewStatus(kClip, frame);
+    settle(300);
+    check(pending, "問い合わせ: 再生位置の外の sequence は Pending・静止も未描画のまま");
+    check(cache.recordCount() == records && cache.equationSequenceRecordCount() == sequences,
+          "問い合わせ: cache の record を作らない (静止 " + std::to_string(cache.recordCount()) +
+              " / " + std::to_string(records) + "、sequence " +
+              std::to_string(cache.equationSequenceRecordCount()) + " / " +
+              std::to_string(sequences) + ")");
+    check(f->backend.renders->load() == renders &&
+              f->backend.equationRenders->load() == equationRenders &&
+              cache.residentLoadCount() == loads,
+          "問い合わせ: 描画・層の読み込みを始めない");
+    controller.shutdown();
+}
+
 } // namespace
 
 // ---- 実 D3D11 (--native) ----
@@ -1363,6 +1475,8 @@ int main(int argc, char** argv) {
     testStaleAndCorrupt();
     testCompileFailureBackendAndEffects();
     testVisibleSetAndStatus();
+    testPrefetchPromotion();
+    testStatusIsReadOnly();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;
 }

@@ -8,6 +8,7 @@
 
 #include <QMetaObject>
 #include <QStringList>
+#include <QThread>
 
 #include <algorithm>
 #include <cstdio>
@@ -1078,6 +1079,13 @@ void MathRasterCache::shutdown() {
     shutDown_ = true;
     cancelAll();
     pool_.clear();
+    // 止めている試験の drain も抜けさせ、待ち行列の予約を返す。
+    equationLoads_->stopped.store(true);
+    {
+        std::lock_guard lock(equationLoads_->mutex);
+        equationLoads_->current.clear();
+        equationLoads_->prefetch.clear();
+    }
     residentPool_.clear();
     pool_.waitForDone();
     residentPool_.waitForDone();
@@ -2257,6 +2265,10 @@ MathRasterCache::residentEquationLayers(const math::EquationSequenceRenderSpec& 
             continue;
         }
         if (loading_.contains(key)) {
+            // 先読みで待っている層が今の frame になった: 残りの先読みより先に読ませる
+            // (同じ仕事を移すので、予約・ticket・取消はそのまま)。
+            if (current && promoteEquationLayerLoad(key))
+                startEquationLoadDrain(1);
             loading = true;
             continue;
         }
@@ -2329,13 +2341,59 @@ void MathRasterCache::startEquationLayerLoad(
     loading.kind = ResidentKind::EquationLayer;
     loading_.insert(key, loading);
     ++residentLoads_;
-    // 今の frame の層は先読みより先に読む (worker は 1 本で、待ち行列を優先度の順に取る)。
+    EquationLoadJob job;
+    job.key = key;
+    job.ticket = loading.ticket;
+    job.cancel = loading.cancel;
+    job.reservation = std::move(reservation);
+    job.frame = std::move(frame);
+    job.width = width;
+    job.height = height;
+    job.sequenceKey = std::move(sequenceKey);
+    job.provenance = std::move(provenance);
+    job.directory = cacheDirectory_;
+    {
+        std::lock_guard lock(equationLoads_->mutex);
+        (current ? equationLoads_->current : equationLoads_->prefetch).push_back(std::move(job));
+    }
+    // 今の frame の層は先読みより先に読む (worker は 1 本で、各仕事は取り出す時点で今の frame の
+    // 列を先に取る。Write・変形の読み込みより先に走らせるため優先度も上げる)。
+    startEquationLoadDrain(current ? 1 : 0);
+}
+
+bool MathRasterCache::promoteEquationLayerLoad(const QString& key) {
+    const auto loading = loading_.constFind(key);
+    if (loading == loading_.constEnd() || loading->kind != ResidentKind::EquationLayer)
+        return false;
+    std::lock_guard lock(equationLoads_->mutex);
+    auto& prefetch = equationLoads_->prefetch;
+    const auto found = std::find_if(prefetch.begin(), prefetch.end(), [&](const auto& job) {
+        return job.key == key && job.ticket == loading->ticket;
+    });
+    if (found == prefetch.end())
+        return false; // 既に今の frame の列にあるか、読み始めた
+    equationLoads_->current.push_back(std::move(*found));
+    prefetch.erase(found);
+    return true;
+}
+
+void MathRasterCache::startEquationLoadDrain(int priority) {
     residentPool_.start(
-        [this, key, width, height, reservation = std::move(reservation), frame = std::move(frame),
-         sequenceKey = std::move(sequenceKey), provenance = std::move(provenance),
-         directory = cacheDirectory_, ticket = loading.ticket,
-         cancel = loading.cancel]() mutable {
-            if (cancel->load())
+        [this, queue = equationLoads_] {
+            // 試験が worker を止めている間は取り出さない (取り出す順を試験が決める)。
+            while (queue->paused.load() && !queue->stopped.load())
+                QThread::msleep(1);
+            EquationLoadJob job;
+            {
+                std::lock_guard lock(queue->mutex);
+                auto& list = !queue->current.empty() ? queue->current : queue->prefetch;
+                if (list.empty() || queue->stopped.load())
+                    return; // 移した仕事の分の余りの drain
+                job = std::move(list.front());
+                list.pop_front();
+                queue->taken.push_back(job.key);
+            }
+            if (job.cancel->load())
                 return;
             QString error;
             std::shared_ptr<MathCoverageSequence> decoded;
@@ -2343,29 +2401,53 @@ void MathRasterCache::startEquationLayerLoad(
             std::string loadError;
             // provenance (確定の印) が検証した時のままか。消された・書き換えられた artifact の
             // 層は、frame の SHA-256 が合っていても使わない。
-            if (!equationSequenceProvenanceCurrent(directory, sequenceKey, provenance)) {
+            if (!equationSequenceProvenanceCurrent(job.directory, job.sequenceKey,
+                                                   job.provenance)) {
                 error = QStringLiteral("Equation Sequence の provenance が無いか、検証した時と"
                                        "違います。静止で表示します");
-            } else if (!loadEquationArtifactFrame(frame, width, height, coverage, loadError)) {
+            } else if (!loadEquationArtifactFrame(job.frame, job.width, job.height, coverage,
+                                                  loadError)) {
                 error = QStringLiteral("Equation Sequence の層を読めないか、大きさ・中身が "
                                        "provenance と違います。静止で表示します: %1")
                             .arg(QString::fromStdString(loadError));
             } else {
                 decoded = std::make_shared<MathCoverageSequence>();
-                decoded->width = width;
-                decoded->height = height;
+                decoded->width = job.width;
+                decoded->height = job.height;
                 decoded->frames.push_back(std::move(coverage));
-                decoded->reservation = std::move(reservation);
+                decoded->reservation = std::move(job.reservation);
             }
-            if (cancel->load())
+            if (job.cancel->load())
                 return;
             QMetaObject::invokeMethod(
                 this,
-                [this, key, ticket, frames = std::shared_ptr<const MathCoverageSequence>(decoded),
+                [this, key = job.key, ticket = job.ticket,
+                 frames = std::shared_ptr<const MathCoverageSequence>(decoded),
                  error]() mutable { finishResident(key, ticket, std::move(frames), error); },
                 Qt::QueuedConnection);
         },
-        current ? 1 : 0);
+        priority);
+}
+
+void MathRasterCache::pauseEquationLayerLoadsForTest(bool paused) {
+    equationLoads_->paused.store(paused);
+}
+
+std::vector<QString> MathRasterCache::equationLayerLoadOrderForTest() const {
+    std::lock_guard lock(equationLoads_->mutex);
+    return equationLoads_->taken;
+}
+
+MathRasterCache::Entry MathRasterCache::entryOf(const math::MathRenderSpec& spec) const {
+    if (backendState_ == BackendState::Unavailable) {
+        Entry entry;
+        entry.state = State::Unavailable;
+        entry.status = math::MathRenderStatus::BackendUnavailable;
+        entry.message = backendMessage_;
+        return entry;
+    }
+    const auto found = records_.constFind(keyFor(spec));
+    return found == records_.constEnd() ? Entry{} : found->entry;
 }
 
 void MathRasterCache::failEquationSequence(const QString& sequenceKey, const QString& error) {
