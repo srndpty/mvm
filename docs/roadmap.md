@@ -29,6 +29,46 @@
 
 ## 数式 clip
 
+### P3: native Equation Sequence と部分式の強調
+
+- P3-0 は設計と製品外 renderer spike のみ。判断と再現手順は
+  [設計文書](math-equation-sequence-p30.md)。新しい `EquationSequence` kind を推奨し、
+  clip 内の整数 frame の hold/transform、永続 part ID と revision 付き source annotation、
+  中立な区間 action を Project の正とする。P2 PASS/CLOSED と schema 20 は維持する。
+- P3-1: domain と純粋な時間評価・編集。schema はこの段階で独立に更新する。
+  save/reopen、未知 field・重複 ID の拒否、明示 invalid/missing の保存、Undo、trim/split、
+  FPS 変更、overflow と action/transition 境界を独立な期待値と負例で検証する。
+  初期は retime・変形中の action・重複 action を拒否する。
+- P3-2: annotation の binding と renderer 中立 plan。UTF-8/UTF-16 の変換、editor delta、
+  重複式の別 ID、明示 rebind、copy/paste の ID remap、semantic partition と自動照合の
+  重なり排除を検証。Manim grouping の代用、glyph 0、範囲の構文不適合を fail-closed にする。
+- P3-3: sequence transition と action renderer。静止/Write/P2 の処理を小さな部品として共有し、
+  新 key namespace、複数 A8 layer、端点・bbox・枚数・hash、任意 seek を実 toolchain で検証。
+  styled endpoint と同時 action は、先に対応を保証できる最小契約を決める。
+- P3-4: cache と residency。Project lock・世代・取消・atomic publication を保ち、
+  全 layer を既存 Write/transform の共有予算に数える。編集後の旧 artifact を出力に使わない負例を用意。
+- P3-5: 製品 UI。既存の暗色 panel と共通部品で状態の追加/削除/順序/hold/変形、part の指定、
+  invalid の修正、強調の preview と一回の Undo を実装。狭幅・低い panel・長文・空一覧を実描画で検証。
+- P3-6: 実 D3D11 preview と映像のみ export。全区間が現在の入力で ready であることを要求し、
+  一つの clip の導出全段と判別式の強調を UI author→save/reopen→preview→export で検証する。
+  任意 seek、action 中の split、編集・失敗・backend 不在、画素をずらす負例を含める。
+
+未解決の判断・検証:
+
+- 任意 TeX macro に対する annotation の対応保証の限界。SVG の glyph 所有の排他性と
+  命令/コメント境界の検証範囲を P3-2 で確定する。今回の分数内部の成功を任意範囲へ一般化しない。
+- Project FPS と内部 FPS が異なる場合の標本位相、短い action の出力上の消失、
+  retime を後段で許す条件。Manim 秒へ権限を移さず evaluator と key の契約を固定する。
+- part がない invalid action を保持する UI と、state 削除時に action を削除する明示操作。
+  診断を保存する構造と書き出し拒否の境界を schema 導入時に検証する。
+- 部分色/opacity が残る hold からの transform、同時 action、入れ子/非連続 part。
+  初期に拒否する条件を明示し、必要なものだけ gate を増やす。
+- outline/pulse の拡張 bbox と layer 数に対する予算、RGBA と複数 A8 の実測比較。
+  renderer spike は性能・cache publication・製品 decoder の証明ではない。
+- 既存の複数 Math clip を一 clip に明示変換する際の hold/transform の消費時間の対応。
+  自動 migration は行わず、受け入れ対象に必要なら別操作として検証する。
+
+
 - 数式間のクロスディゾルブは P1+ へ延期する。静止数式 P0 の範囲は既存の fade と
   ClipEffects。既存の generic still-layer 契約も dissolve を許可しておらず、
   Video / Manim の全画面・不透明な layer に限定している。P0 の機能として追加しない。
