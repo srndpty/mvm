@@ -22,6 +22,8 @@ add_library(mvm_project STATIC
     project/audio_adjustment.cpp
     project/clip_effects.cpp
     project/math_clip.cpp
+    project/equation_sequence.cpp
+    project/equation_sequence_edit.cpp
     project/media_bin.cpp
     project/path_identity.cpp
     project/subtitles.cpp

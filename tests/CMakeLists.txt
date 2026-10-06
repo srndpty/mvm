@@ -783,6 +783,10 @@ mvm_add_test(long_path_focused
 
 # --- 数式 clip: renderer の中立な契約と manim-mathtex backend ---------------
 add_executable(mvm_test_project_math harness/test_project_math.cpp)
+add_executable(mvm_test_equation_sequence harness/test_equation_sequence.cpp)
+target_link_libraries(mvm_test_equation_sequence PRIVATE mvm::project mvm::util mvm::warnings)
+mvm_add_test(math_equation_sequence_domain COMMAND mvm_test_equation_sequence
+    PROPERTIES TIMEOUT 30)
 target_link_libraries(mvm_test_project_math PRIVATE mvm::project mvm::util mvm::warnings)
 mvm_add_test(math_project_json_focused COMMAND mvm_test_project_math PROPERTIES TIMEOUT 30)
 
@@ -4111,6 +4115,8 @@ target_link_libraries(mvm_test_math_controller PRIVATE ${_subtitle_controller_li
 target_compile_definitions(mvm_test_math_controller PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_math_controller PROPERTIES WIN32_EXECUTABLE OFF)
 mvm_add_test(math_controller_focused COMMAND mvm_test_math_controller PROPERTIES TIMEOUT 120)
+mvm_add_test(math_equation_sequence_history COMMAND mvm_test_math_controller --equation-domain
+    PROPERTIES TIMEOUT 30)
 # 実 D3D11 の preview で再生し、Write の mask が再生中に届いたときの表示を確かめる。
 add_test(NAME math_write_native_playback COMMAND mvm_test_math_controller --native-write)
 set_tests_properties(math_write_native_playback PROPERTIES

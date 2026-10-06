@@ -180,6 +180,12 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
 TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
                                          const TimelineExportRequest& request) {
     TimelineExportPlan plan;
+    for (const auto& clip : project.timelineClips) {
+        if (clip.enabled && clip.kind == project::TimelineClipKind::EquationSequence) {
+            plan.error = "EquationSequence の書き出しは未実装です (P3-1 は構造編集のみ)";
+            return plan;
+        }
+    }
     if (request.width <= 0 || request.height <= 0 || request.fpsNum <= 0 || request.fpsDen <= 0 ||
         request.videoCrf < 0 || request.videoCrf > 51 || request.fpsNum != project.timelineFpsNum ||
         request.fpsDen != project.timelineFpsDen) {

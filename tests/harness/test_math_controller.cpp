@@ -16,6 +16,7 @@
 #include "math_fake_backend.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
+#include "project/equation_sequence_edit.h"
 #include "project/project_json.h"
 
 #include <algorithm>
@@ -2141,6 +2142,130 @@ int realManimTransform(const std::filesystem::path& manim,
     return failures == 0 && checks > 0 ? 0 : 1;
 }
 
+void testEquationSequenceHistory() {
+    QTemporaryDir temp;
+    check(temp.isValid(), "sequence 履歴試験の作業 directory");
+    if (!temp.isValid())
+        return;
+    project::EquationSequenceClipData data;
+    project::EquationState state;
+    state.id = {"state"};
+    state.equation.source = "x+x";
+    state.revision = "r1";
+    state.holdFrames = 10;
+    state.parts.push_back({{"part"}, "項", {"r1", 0, 1, "x", project::BindingStatus::Bound}});
+    data.states.push_back(state);
+    auto middle = state;
+    middle.id = {"middle"};
+    middle.parts[0].id = {"middle-part"};
+    auto last = state;
+    last.id = {"last"};
+    last.parts[0].id = {"last-part"};
+    data.states.push_back(middle);
+    data.states.push_back(last);
+    data.transitions = {
+        {{"first-edge"}, {"state"}, {"middle"}, 2, {{{"part"}, {"middle-part"}}}},
+        {{"last-edge"}, {"middle"}, {"last"}, 2, {{{"middle-part"}, {"last-part"}}}}};
+    data.actions.push_back({{"action"},
+                            {"state"},
+                            {"part"},
+                            project::EquationTargetStatus::Present,
+                            2,
+                            4,
+                            project::EquationOperation::Pulse});
+    data.actions.push_back({{"owned-middle"},
+                            {"middle"},
+                            {"middle-part"},
+                            project::EquationTargetStatus::Present,
+                            0,
+                            1,
+                            project::EquationOperation::Outline});
+    auto initial = project::createDefaultProject();
+    check(project::addEquationSequence(initial, data, "sequence", "数式",
+                                       {project::TrackKind::Video, 0}, 0)
+              .success,
+          "sequence 履歴の対照 Project");
+    const auto path = std::filesystem::path(temp.path().toStdWString()) / L"sequence.mvm";
+    const auto initialSaved = project::saveProjectJson(initial, path);
+    check(initialSaved.success, "sequence の初期 Project を保存: " + initialSaved.error);
+    auto captured = std::make_shared<CapturedExport>();
+    auto controller = makeController(path, initial, captured);
+    check(controller->selectClip(0), "sequence の構造選択");
+    const auto depth = controller->undoDepthForTest();
+    const bool duplicatedOk = controller->duplicateSelectedClips();
+    check(duplicatedOk,
+          "sequence 複製は既存編集経路を使う: " + controller->statusText().toStdString());
+    const auto duplicated = controller->projectForTest();
+    check(duplicated.timelineClips.size() == 2 && controller->undoDepthForTest() == depth + 1,
+          "複製は Undo 一回");
+    if (duplicated.timelineClips.size() != 2) {
+        controller->shutdown();
+        return;
+    }
+    check(duplicated.timelineClips[1].equationSequence.states[0].id != state.id,
+          "製品の複製経路も内部 ID を発行する");
+    check(controller->undoLastEdit() && controller->projectForTest() == initial,
+          "複製 Undo は元の ID を復元");
+    check(controller->redoLastEdit() && controller->projectForTest() == duplicated,
+          "複製 Redo は確定した全 ID を復元し再発行しない");
+    check(controller->undoLastEdit(), "paste 前の Undo");
+    check(controller->selectClip(0) && controller->copySelectedClips() && controller->pasteClips(),
+          "sequence copy/paste");
+    const auto pasted = controller->projectForTest();
+    check(pasted.timelineClips.size() == 2 &&
+              pasted.timelineClips[1].equationSequence.states[0].id != state.id,
+          "paste も内部参照を remap");
+    check(controller->undoLastEdit() && controller->redoLastEdit() &&
+              controller->projectForTest() == pasted,
+          "paste Undo/Redo は確定 ID を維持");
+    check(controller->undoLastEdit(), "split 前の Undo");
+    check(controller->splitClipAt(QStringLiteral("sequence"), 3, false, false),
+          "pulse 内の controller 分割");
+    const auto split = controller->projectForTest();
+    check(controller->undoLastEdit() && controller->redoLastEdit() &&
+              controller->projectForTest() == split,
+          "split Undo/Redo は右側の全 ID を復元");
+    const auto before = controller->projectForTest();
+    const auto editDepth = controller->undoDepthForTest();
+    check(controller->editEquationSequenceData("sequence",
+                                               [](auto& d, auto& error) {
+                                                   return project::replaceEquationSource(
+                                                       d, {"state"}, "x+x", "r2", 1080, error);
+                                               }),
+          "sequence domain 編集の確定");
+    const auto edited = controller->projectForTest();
+    check(controller->undoDepthForTest() == editDepth + 1 &&
+              edited.timelineClips[0].equationSequence.states[0].parts[0].binding.status ==
+                  project::BindingStatus::Invalid,
+          "domain 一操作が Undo 一回で source binding を invalid にする");
+    check(controller->undoLastEdit() && controller->projectForTest() == before &&
+              controller->redoLastEdit() && controller->projectForTest() == edited,
+          "domain 編集の exact Undo/Redo");
+    const auto deleteDepth = controller->undoDepthForTest();
+    check(controller->editEquationSequenceData(
+              "sequence",
+              [](auto& d, auto& error) {
+                  return project::deleteEquationState(
+                      d, {"middle"},
+                      project::EquationStepTransition{{"new-edge"}, {"state"}, {"last"}, 1, {}},
+                      1080, error);
+              }),
+          "状態と所有 action を通常 transaction で削除");
+    const auto deleted = controller->projectForTest();
+    check(controller->undoDepthForTest() == deleteDepth + 1 &&
+              deleted.timelineClips[0].equationSequence.actions.size() == 1 &&
+              deleted.timelineClips[0].equationSequence.transitions[0].correspondence.empty(),
+          "状態削除と action 削除と辺の更新は Undo 一回");
+    check(controller->undoLastEdit() && controller->projectForTest() == edited &&
+              controller->redoLastEdit() && controller->projectForTest() == deleted &&
+              controller->undoLastEdit() && controller->projectForTest() == edited,
+          "状態削除 Undo は所有 action と旧辺を完全に復元");
+    check(controller->saveProject(), "sequence の実保存");
+    const auto loaded = project::loadProjectJson(path);
+    check(loaded.success && loaded.project == edited, "sequence の実 save/reopen");
+    controller->shutdown();
+}
+
 int main(int argc, char** argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--native-write") {
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
@@ -2173,6 +2298,11 @@ int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     QTemporaryDir temp;
     check(temp.isValid(), "作業フォルダー");
+    if (argc == 2 && std::string_view(argv[1]) == "--equation-domain") {
+        testEquationSequenceHistory();
+        std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
+        return failures == 0 && checks > 0 ? 0 : 1;
+    }
     const auto path = std::filesystem::path(temp.filePath("数式 project.mvm").toStdWString());
     const auto initial = project::createDefaultProject();
     check(project::saveProjectJson(initial, path).success, "初期プロジェクトの保存");
@@ -2549,6 +2679,7 @@ int main(int argc, char** argv) {
         check(*ownerBackend.slowSawCancel, "所有者の終了は自分の描画を止める");
     }
 
+    testEquationSequenceHistory();
     testWrite(temp, initial, captured);
     testWriteResidencyBudget(temp, initial, captured);
     testWriteBeyondBackendCapability(temp, initial, captured);

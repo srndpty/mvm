@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cwctype>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -30,8 +31,8 @@ constexpr char kFormatMarker[] = "mvm-project";
 //   18 -> 19: 数式 clip の時間の振る舞い ("math_animation" object、省略可) を追加
 //   19 -> 20: トランジションの種類 ("kind"、20 では必須) を追加。19 以前は blend だけ
 bool isReadableSchemaVersion(int schemaVersion) {
-    return schemaVersion == kSchemaVersion || schemaVersion == 19 || schemaVersion == 18 ||
-           schemaVersion == 17 || schemaVersion == 16;
+    return schemaVersion == kSchemaVersion || schemaVersion == 20 || schemaVersion == 19 ||
+           schemaVersion == 18 || schemaVersion == 17 || schemaVersion == 16;
 }
 
 std::string unsupportedSchemaMessage(int schemaVersion) {
@@ -323,6 +324,8 @@ public:
                                      " の file に transition の kind があります",
                                  error);
         // 16〜19 は field の追加だけなので、値を変えずに現行版として扱う。
+        if (project.schemaVersion < 21 && sawEquationSequence_)
+            return failAndFinish("EquationSequence には schema 21 が必要です", error);
         project.schemaVersion = kSchemaVersion;
         if (!hasFormat || format != kFormatMarker)
             return failAndFinish("mvm project ファイルではありません (format marker 不一致)",
@@ -348,6 +351,7 @@ private:
     bool missingAudioAdjustmentFields_ = false;
     // math_animation が 19 より前の版の file に現れたら壊れている (schema の確認は最後に行う)。
     bool sawMathAnimation_ = false;
+    bool sawEquationSequence_ = false;
     // transition の kind の有無。20 では全件に必須、19 以前には現れてはならない
     // (schema_version の位置に依らないよう、確認は最後に行う)。
     std::size_t transitionsWithKind_ = 0;
@@ -804,6 +808,8 @@ private:
             kind = TimelineClipKind::Image;
         else if (text == "math")
             kind = TimelineClipKind::Math;
+        else if (text == "equation_sequence")
+            kind = TimelineClipKind::EquationSequence;
         else
             return fail("未知の timeline clip kind です: " + text);
         return true;
@@ -1153,6 +1159,166 @@ private:
     }
 
     // 数式 clip の時間の振る舞い。object の中の field はすべて必須で、未知・重複を拒否する。
+    // Sequence の全 object は未知・重複・欠落 field を拒否する。既存 Math のパーサーを共有する。
+    using EquationFields = std::vector<std::pair<std::string, std::function<bool()>>>;
+
+    bool parseEquationObject(const EquationFields& fields) {
+        if (!consume('{'))
+            return false;
+        std::vector<bool> seen(fields.size(), false);
+        skipWhitespace();
+        if (!peek('}'))
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                auto it = std::find_if(fields.begin(), fields.end(),
+                                       [&](const auto& f) { return f.first == key; });
+                if (it == fields.end())
+                    return fail("数式 sequence に未知の field があります: " + key);
+                const auto index = static_cast<std::size_t>(it - fields.begin());
+                if (seen[index])
+                    return fail("数式 sequence の field が重複しています: " + key);
+                seen[index] = true;
+                if (!it->second())
+                    return false;
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        if (!consume('}'))
+            return false;
+        for (bool present : seen)
+            if (!present)
+                return fail("数式 sequence の必須 field がありません");
+        return true;
+    }
+
+    template<class T, class Parse>
+    bool parseEquationArray(std::vector<T>& items, Parse parse) {
+        if (!consume('['))
+            return false;
+        skipWhitespace();
+        if (consumeIf(']'))
+            return true;
+        while (true) {
+            T item;
+            if (!parse(item))
+                return false;
+            items.push_back(std::move(item));
+            skipWhitespace();
+            if (consumeIf(','))
+                continue;
+            break;
+        }
+        return consume(']');
+    }
+
+    bool parseEquationBinding(SourceBinding& b) {
+        return parseEquationObject({{"revision", [&] { return parseString(b.revision); }},
+                                    {"begin", [&] { return parseInteger64(b.begin); }},
+                                    {"end", [&] { return parseInteger64(b.end); }},
+                                    {"expected_text", [&] { return parseString(b.expectedText); }},
+                                    {"status", [&] {
+                                         std::string s;
+                                         if (!parseString(s))
+                                             return false;
+                                         if (s == "bound")
+                                             b.status = BindingStatus::Bound;
+                                         else if (s == "invalid")
+                                             b.status = BindingStatus::Invalid;
+                                         else
+                                             return fail("未知の binding 状態です: " + s);
+                                         return true;
+                                     }}});
+    }
+
+    bool parseEquationPart(SemanticPart& p) {
+        return parseEquationObject({{"id", [&] { return parseString(p.id.value); }},
+                                    {"label", [&] { return parseString(p.label); }},
+                                    {"binding", [&] { return parseEquationBinding(p.binding); }}});
+    }
+
+    bool parseEquationState(EquationState& s) {
+        return parseEquationObject(
+            {{"id", [&] { return parseString(s.id.value); }},
+             {"equation", [&] { return parseMathClipData(s.equation); }},
+             {"revision", [&] { return parseString(s.revision); }},
+             {"hold_frames", [&] { return parseInteger64(s.holdFrames); }},
+             {"parts", [&] {
+                  return parseEquationArray(s.parts, [&](auto& p) { return parseEquationPart(p); });
+              }}});
+    }
+
+    bool parseEquationTransition(EquationStepTransition& t) {
+        return parseEquationObject(
+            {{"id", [&] { return parseString(t.id.value); }},
+             {"from", [&] { return parseString(t.from.value); }},
+             {"to", [&] { return parseString(t.to.value); }},
+             {"frames", [&] { return parseInteger64(t.frames); }},
+             {"correspondence", [&] {
+                  return parseEquationArray(t.correspondence, [&](PartPair& p) {
+                      return parseEquationObject(
+                          {{"from", [&] { return parseString(p.from.value); }},
+                           {"to", [&] { return parseString(p.to.value); }}});
+                  });
+              }}});
+    }
+
+    bool parseEquationAction(EquationAction& a) {
+        return parseEquationObject({{"id", [&] { return parseString(a.id.value); }},
+                                    {"state", [&] { return parseString(a.state.value); }},
+                                    {"target", [&] { return parseString(a.target.value); }},
+                                    {"target_status",
+                                     [&] {
+                                         std::string s;
+                                         if (!parseString(s))
+                                             return false;
+                                         if (s == "present")
+                                             a.targetStatus = EquationTargetStatus::Present;
+                                         else if (s == "missing")
+                                             a.targetStatus = EquationTargetStatus::Missing;
+                                         else
+                                             return fail("未知の action 対象状態です: " + s);
+                                         return true;
+                                     }},
+                                    {"start", [&] { return parseInteger64(a.start); }},
+                                    {"duration", [&] { return parseInteger64(a.duration); }},
+                                    {"operation", [&] {
+                                         std::string s;
+                                         if (!parseString(s))
+                                             return false;
+                                         if (s == "outline")
+                                             a.operation = EquationOperation::Outline;
+                                         else if (s == "pulse")
+                                             a.operation = EquationOperation::Pulse;
+                                         else
+                                             return fail("未知の数式 operation です: " + s);
+                                         return true;
+                                     }}});
+    }
+
+    bool parseEquationSequence(EquationSequenceClipData& data) {
+        return parseEquationObject({{"states",
+                                     [&] {
+                                         return parseEquationArray(data.states, [&](auto& s) {
+                                             return parseEquationState(s);
+                                         });
+                                     }},
+                                    {"transitions",
+                                     [&] {
+                                         return parseEquationArray(data.transitions, [&](auto& t) {
+                                             return parseEquationTransition(t);
+                                         });
+                                     }},
+                                    {"actions", [&] {
+                                         return parseEquationArray(data.actions, [&](auto& a) {
+                                             return parseEquationAction(a);
+                                         });
+                                     }}});
+    }
+
     bool parseMathClipAnimation(MathClipAnimation& animation) {
         bool seen[2] = {};
         std::string intro;
@@ -1347,6 +1513,8 @@ private:
         bool hasText = false;
         bool hasMath = false;
         bool hasMathAnimation = false;
+        bool hasEquationSequence = false;
+        std::vector<std::string> unknownEquationClipFields;
         std::string kind;
         std::string media;
         std::string trackKind;
@@ -1494,13 +1662,20 @@ private:
                     if (hasMath || !parseMathClipData(clip.math))
                         return fail("timeline clip の math が重複または不正です");
                     hasMath = true;
+                } else if (key == "equation_sequence") {
+                    if (hasEquationSequence || !parseEquationSequence(clip.equationSequence))
+                        return fail("equation_sequence が重複または不正です");
+                    hasEquationSequence = true;
+                    sawEquationSequence_ = true;
                 } else if (key == "math_animation") {
                     if (hasMathAnimation || !parseMathClipAnimation(clip.mathAnimation))
                         return fail("timeline clip の math_animation が重複または不正です");
                     hasMathAnimation = true;
                     sawMathAnimation_ = true;
-                } else if (!skipValue()) {
-                    return false;
+                } else {
+                    unknownEquationClipFields.push_back(key);
+                    if (!skipValue())
+                        return false;
                 }
                 skipWhitespace();
                 if (consumeIf(','))
@@ -1521,6 +1696,11 @@ private:
             return fail("timeline clip の text と kind が一致しません");
         if (hasMath != (clip.kind == TimelineClipKind::Math))
             return fail("timeline clip の math と kind が一致しません");
+        if (hasEquationSequence != (clip.kind == TimelineClipKind::EquationSequence))
+            return fail("timeline clip の equation_sequence と kind が一致しません");
+        if (clip.kind == TimelineClipKind::EquationSequence && !unknownEquationClipFields.empty())
+            return fail("EquationSequence clip に未知の field があります: " +
+                        unknownEquationClipFields.front());
         // 省略は intro 無し。数式以外の clip には書けない (書き出しも数式 clip だけが書く)。
         if (hasMathAnimation && clip.kind != TimelineClipKind::Math)
             return fail("数式 clip 以外に math_animation は指定できません");
@@ -2106,15 +2286,86 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
                  << "        \"background_color\": \"" << escapeJson(text.backgroundColor)
                  << "\"\n      }";
         }
-        if (clip.kind == TimelineClipKind::Math) {
-            const auto& math = clip.math;
-            json << ",\n      \"math\": {\n"
+        auto writeMath = [&](const MathClipData& math) {
+            json << "{\n"
                  << "        \"syntax\": \"" << escapeJson(math.syntax) << "\",\n"
                  << "        \"source\": \"" << escapeJson(math.source) << "\",\n"
                  << "        \"font_size\": " << math.fontSize << ",\n"
                  << "        \"color\": \"" << escapeJson(math.color) << "\",\n"
                  << "        \"background_color\": \"" << escapeJson(math.backgroundColor)
                  << "\"\n      }";
+        };
+        if (clip.kind == TimelineClipKind::EquationSequence) {
+            const auto& sequence = clip.equationSequence;
+            auto quoted = [&](const std::string& s) { json << '"' << escapeJson(s) << '"'; };
+            json << ",\n      \"equation_sequence\": {\"states\": [";
+            for (std::size_t i = 0; i < sequence.states.size(); ++i) {
+                const auto& s = sequence.states[i];
+                json << (i ? "," : "") << "{\"id\":";
+                quoted(s.id.value);
+                json << ",\"equation\":";
+                writeMath(s.equation);
+                json << ",\"revision\":";
+                quoted(s.revision);
+                json << ",\"hold_frames\":" << s.holdFrames << ",\"parts\":[";
+                for (std::size_t j = 0; j < s.parts.size(); ++j) {
+                    const auto& p = s.parts[j];
+                    const auto& b = p.binding;
+                    json << (j ? "," : "") << "{\"id\":";
+                    quoted(p.id.value);
+                    json << ",\"label\":";
+                    quoted(p.label);
+                    json << ",\"binding\":{\"revision\":";
+                    quoted(b.revision);
+                    json << ",\"begin\":" << b.begin << ",\"end\":" << b.end
+                         << ",\"expected_text\":";
+                    quoted(b.expectedText);
+                    json << ",\"status\":";
+                    quoted(b.status == BindingStatus::Bound ? "bound" : "invalid");
+                    json << "}}";
+                }
+                json << "]}";
+            }
+            json << "],\"transitions\":[";
+            for (std::size_t i = 0; i < sequence.transitions.size(); ++i) {
+                const auto& t = sequence.transitions[i];
+                json << (i ? "," : "") << "{\"id\":";
+                quoted(t.id.value);
+                json << ",\"from\":";
+                quoted(t.from.value);
+                json << ",\"to\":";
+                quoted(t.to.value);
+                json << ",\"frames\":" << t.frames << ",\"correspondence\":[";
+                for (std::size_t j = 0; j < t.correspondence.size(); ++j) {
+                    json << (j ? "," : "") << "{\"from\":";
+                    quoted(t.correspondence[j].from.value);
+                    json << ",\"to\":";
+                    quoted(t.correspondence[j].to.value);
+                    json << '}';
+                }
+                json << "]}";
+            }
+            json << "],\"actions\":[";
+            for (std::size_t i = 0; i < sequence.actions.size(); ++i) {
+                const auto& a = sequence.actions[i];
+                json << (i ? "," : "") << "{\"id\":";
+                quoted(a.id.value);
+                json << ",\"state\":";
+                quoted(a.state.value);
+                json << ",\"target\":";
+                quoted(a.target.value);
+                json << ",\"target_status\":";
+                quoted(a.targetStatus == EquationTargetStatus::Missing ? "missing" : "present");
+                json << ",\"start\":" << a.start << ",\"duration\":" << a.duration
+                     << ",\"operation\":";
+                quoted(a.operation == EquationOperation::Outline ? "outline" : "pulse");
+                json << '}';
+            }
+            json << "]}";
+        }
+        if (clip.kind == TimelineClipKind::Math) {
+            json << ",\n      \"math\": ";
+            writeMath(clip.math);
             // intro が無ければ書かない (読み込みは省略を intro 無しとして扱う)。
             const auto& animation = clip.mathAnimation;
             if (animation != MathClipAnimation{})

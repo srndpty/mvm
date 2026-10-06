@@ -78,6 +78,12 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
             continue;
         const int slot = plan.slotBases[static_cast<std::size_t>(track)] + segment.lane;
         const auto& clip = segment.clip;
+        if (clip.kind == project::TimelineClipKind::EquationSequence) {
+            result.error = "EquationSequence の描画は未実装です (P3-1 は構造編集のみ)";
+            result.layers.clear();
+            result.stillLayers.clear();
+            return result;
+        }
         const double transitionOpacity =
             segment.fadeIn ? project::transitionProgress(*segment.fadeIn, timelineFrame) : 1.0;
         if (project::isStillClipKind(clip.kind)) {

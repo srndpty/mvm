@@ -865,6 +865,10 @@ public:
     Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);
     Q_INVOKABLE bool unlinkTimelineClip(const QString& clipId);
     Q_INVOKABLE bool undoLastEdit();
+    // P3-1 の domain 編集入口。UI と描画を作らず、通常の Project 履歴へ一回だけ確定する。
+    bool editEquationSequenceData(
+        const std::string& clipId,
+        const std::function<bool(project::EquationSequenceClipData&, std::string&)>& edit);
     Q_INVOKABLE bool redoLastEdit();
     Q_INVOKABLE QVariantMap exportSettingsSummary() const;
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);

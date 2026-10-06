@@ -40,13 +40,9 @@
   両片は完全な sequence と異なる可視 source 範囲を持つ。cache key は所有 ID に依存しない。
   state 削除時は所有 action も原子的に削除し、missing StateId と orphan-action store は認めない。
   修復可能な missing PartId は既存 state 内だけ。全状態の Math 背景は透明、初期 operation は outline/pulse のみ。
-- P3-1: domain と純粋な時間評価・編集。schema はこの段階で独立に更新する。
-  **出力 timeline frame → sequence source/内部時刻 → hold/transition/action 区間 → local frame/進み具合**
-  の評価契約を固定する。有理数 FPS 換算、丸め・標本位相、trim/split 境界、overflow を
-  独立な期待値と負例で検証する。save/reopen、種別ごとの sequence 内 ID 重複と missing StateId の拒否、
-  既存 state 内の invalid/missing PartId の保存、state と所有 action の原子的削除と Undo、
-  copy/split の全参照 remap、透明背景と outline/pulse 以外の operation の拒否も担当する。
-  初期は retime・変形中の action・重複 action を拒否する。
+- (実装・検証済み: P3-1) 記録は [設計文書の P3-1 実装](math-equation-sequence-p30.md#p3-1-実装) へ移した。
+  schema 21 の domain、素材原点の frame 始点標本化、構造編集、参照 remap、通常 Undo を扱う。
+  renderer・cache・製品 UI は後続段階のまま。
 - P3-2: annotation の binding と renderer 中立 plan。UTF-8/UTF-16 の変換、editor delta、
   重複式の別 ID、明示 rebind、copy/paste の ID remap、semantic partition と自動照合の
   重なり排除を検証。Manim grouping の代用、glyph 0、範囲の構文不適合を fail-closed にする。
@@ -67,8 +63,8 @@
 
 - 任意 TeX macro に対する annotation の対応保証の限界。SVG の glyph 所有の排他性と
   命令/コメント境界の検証範囲を P3-2 で確定する。今回の分数内部の成功を任意範囲へ一般化しない。
-- Project FPS と内部 FPS が異なる場合の標本位相と短い action の出力上の消失は P3-1 で
-  純粋な評価契約へ固定する。retime を後段で許す条件は将来の判断とする。
+- retime を後段で許す条件は将来の判断とする。P3-1 の標本位相と短い action の消失の契約は
+  [実装記録](math-equation-sequence-p30.md#時間と-fps-の確定契約) にある。
 - 既存 state 内の invalid/missing PartId の診断・修復 UI と書き出し拒否の境界を検証する。
   state 削除時の action の原子的削除は確定事項であり、missing StateId を保持する選択肢は設けない。
 - set_color/reveal/conceal は将来の設計候補。styled endpoint の保存と変形を仕様化し renderer で

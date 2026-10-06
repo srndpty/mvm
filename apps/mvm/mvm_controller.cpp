@@ -19,6 +19,7 @@
 #include "media_import.h"
 #include "preview_engine/preview_engine_internal.h"
 #include "project/clip_effects.h"
+#include "project/equation_sequence_edit.h"
 #include "project/path_identity.h"
 #include "project/project_json.h"
 #include "project/subtitles.h"
@@ -6148,6 +6149,14 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
         for (auto& copy : laneClips) {
             copy.track = {kind, chosen};
             copy.id = newClipId();
+            if (copy.kind == project::TimelineClipKind::EquationSequence) {
+                std::string error;
+                if (!project::remapEquationSequenceIds(
+                        copy.equationSequence, [this] { return newClipId(); }, error)) {
+                    setStatus(QString::fromStdString(error));
+                    return false;
+                }
+            }
             if (!copy.linkGroupId.empty()) {
                 if (linkCounts[copy.linkGroupId] == 2) {
                     auto& newId = newLinkIds[copy.linkGroupId];
@@ -7438,6 +7447,18 @@ bool MvmController::unlinkTimelineClip(const QString& clipId) {
     setTimelineSelection({clipId.toStdString()});
     return refreshPreviewAfterSavedEdit(clipId.toStdString(),
                                         QStringLiteral("clipのリンクを解除しました"));
+}
+
+bool MvmController::editEquationSequenceData(const std::string& clipId,
+    const std::function<bool(project::EquationSequenceClipData&, std::string&)>& edit) {
+    if (busy_ || !pauseTimeline()) return false;
+    auto candidate = project_;
+    const auto result = project::editEquationSequence(candidate, clipId, edit);
+    if (!result.success) {
+        setStatus(QString::fromStdString(result.error));
+        return false;
+    }
+    return commitProjectEdit(std::move(candidate), QStringLiteral("数式 sequence を更新できません: "));
 }
 
 bool MvmController::undoLastEdit() {

@@ -1,5 +1,8 @@
 # Equation Sequence と部分式の強調: P3-0
 
+本書の P3-0 / P3-0.1 は当時の設計と証拠として閉じている。P3-1 の実装と現在の schema は
+末尾の「P3-1 実装」で別に記録する。以下の schema 20 の記述は過去の段階を指す。
+
 2026-10-06。P2 MathTransform は PASS/CLOSED のまま。本書は設計提案と製品外の renderer 検証であり、
 Project schema 20、製品 UI、preview、export、cache publication は変更しない。
 P0/P1/P2 の実装・証拠を維持する。実装の段階と未解決事項の管理先は [roadmap.md](roadmap.md#数式-clip)。
@@ -302,3 +305,160 @@ P3-0 では migration code や新 schema fixture を追加しない。
 平方完成、平方根、x を分離する、二次方程式の解、判別式の強調を UI から author し、保存・再読込、
 実 D3D11 preview、映像のみ export で再現すること。今回の S0..S5 には割る/移項などを一段にまとめた
 箇所があり、最終 UI 受け入れの全中間状態を網羅したとは扱わない。段階計画と未解決の判断は roadmap に置く。
+
+## P3-1 実装
+
+2026-10-07。対象は Project/domain、純粋な評価、構造編集だけ。
+Manim、glyph の対応、partition compiler、cache/artifact、描画、書き出し、製品 UI は追加しない。
+既存の preview/export に新 kind が渡された場合は未実装と明示して拒否する。
+
+### 保存と構造
+
+schema **21** に `kind: "equation_sequence"` と `equation_sequence` object を追加した。
+20 の Math/Write/MathTransform はそのまま読み、Project の schema だけを 21 へ上げる。
+旧 Math の意味を Sequence へ変換しない。schema 20 以下に新 kind を入れた file は拒否する。
+過去の renderer 証拠や schema 20 の artifact は更新・削除しない。
+
+`src/project/equation_sequence.h/.cpp` は Qt・Manim・MLT に依存しない。
+StateId / TransitionId / ActionId / PartId は異なる C++ 型であり、各 sequence 内で種別ごとに
+一意。PartId は全 state を通じて一意で、ラベルと式の同じ文字は ID の解決に使わない。
+states の vector が唯一の順序で、辺はちょうど n−1 本、同じ順序の隣接状態だけを結ぶ。
+保存する値は状態・状態の式と revision・hold・部分式の binding・辺の尺と明示対応・action の
+所有状態と対象・開始 offset と尺・operation。絶対 state 開始 frame や renderer の派生値は持たない。
+新 object の全 field は必須で、未知・重複 field を拒否する。式の値は既存 Math パーサーを共有する。
+
+背景は既存 `parseArgbColor` の **parsed alpha == 0** が正。既存 grammar は大文字・小文字を許し、
+透明 RGB を黒へ正規化しないので `#00aBcDef` も有効。`#00000000` の文字列一致に限定しない。
+不透明・半透明は拒否する。foreground/font は既存 `validateMathClipData` を共有する。
+
+action は既存 state の hold 相対区間だけを持ち、変形中の配置は表現できない。
+尺は 1 以上、区間は hold 内。初期 operation は outline/pulse のみで、対象の同異によらず
+同時 action を拒否する。辺の correspondence は両隣接 state の bound part の一対一に限定する。
+整数和・区間の終端・FPS の積と変換結果は overflow を検査する。
+
+### 修復可能な参照
+
+`target_status: "present"` は所有 state の実在 part を要求する。
+part を削除すると元の ID を残して `target_status: "missing"` にする。
+その ID はどの state にも実在してはならず、同じ欠落 ID の参照は同じ所有 state に閉じる。
+missing StateId、別 state の part、明示 missing と実在 part の矛盾は拒否する。
+
+binding は `bound` / `invalid`。bound は revision、UTF-8 byte 境界、非空・非重複範囲、
+expectedText を検証する。revision は domain 呼び出し元が渡す不透明な識別値で、P3-1 は
+digest の生成や editor delta を実装しない。invalid は旧 revision の範囲と expectedText を保持し、
+置換後の source へ範囲を移さない。短い source への全置換でも旧範囲を消さず保存できる。
+全体の source 置換では文字が同じでも全 binding を invalid にし、関連 correspondence を消す。
+構造が有効でも invalid/missing や標本ゼロの action は `equationRenderability` が拒否する。
+これはデータと出力時間軸の検査であり、renderer の実装済みを意味しない。
+
+### 時間と FPS の確定契約
+
+`H0,T0,H1,...,Hn` の整数 `[begin,end)` を派生し、全長は hold と transition の和 L。
+`evaluateEquationSequence` は hold の状態・localFrame、transition の ID・両端状態・localFrame・尺、
+activeAction を返す。progress は **整数分子 i / 整数分母 N** であり浮動小数は authority にしない。
+N=1 は i=0 の一標本、その次は target hold 0。progress 1 の transition 標本は出さない。
+
+Sequence の source FPS は作成時の Project FPS。外側 clip の source FPS/frame count/in/out を正とし、
+sequence 内で同じ FPS を重複保存しない。R = output FPS / source FPS とすると:
+
+```text
+可視 source 範囲 [in,out) の output 位置: [ceil(in R), ceil(out R))
+clip local output frame k の素材原点からの位置: p = ceil(in R) + k
+標本位相: output frame 始点
+内部 sample s = floor(p / R)
+評価: s が属する [begin,end) を探索 → localFrame = s - begin
+timeline 配置: timelineStartFrame + k
+```
+
+丸める前の積、切り上げ、切り捨ては `core::convertFrameBoundary` の checked rational 演算を共有する。
+既存メディアの `floor(p/R + 1/2)` は変えない。Sequence では四捨五入すると exclusive out を
+左片が表示しうるため使わない。上の始点標本化なら全 sample が可視 source 範囲内に収まる。
+内部 sample を選んでから区間と action を同じ半開区間規則で判定し、境界だけ別の丸めを使わない。
+
+|source → output|先頭 output の内部 sample (手計算)|振る舞い|
+|---|---|---|
+|60 → 60|0,1,2,3,4,5|同一標本|
+|24 → 60|0,0,0,1,1,2,2,2|同じ内部標本を複数回表示|
+|60 → 24|0,2,5,7,10,12|内部標本の一部を飛ばす|
+|30000/1001 → 60|0,0,0,1,1,2,2,3|非整数比も整数式で確定|
+
+内部 action の絶対区間 [a,b) の output 区間は `[ceil(a R),ceil(b R))` と可視 output 範囲の交差。
+交差が空なら unsampledActions に ID を返し、尺を伸ばさない。可視 source 範囲から全体が除かれた
+action は出力対象外。例: 60→24 の source [1,2) は [1,1) となり標本がない。
+Project の構造検証とは独立に、この output FPS での renderability を検査する。
+
+### 編集と所有
+
+trim は可視範囲だけを変える。素材原点の p を維持するので hold/transition/action を再開しない。
+source [0,L) 外へ延長は拒否し、Sequence の端をメディア用 clamp で黙って止めない。
+split は完全データを左右へ保持し、可視範囲だけを割る。
+timeline split が整数 source 境界へ正確に戻らない場合は原子的に拒否する。
+例: 24→60 の output 5 は source 2 で分割でき、output 1 は整数 source 境界で表せない。
+左右とも任意の初回 seek が元の同じ output 位置を評価する。
+
+左片は全 ID を維持し、右片・copy/paste/duplicate は全内部 ID と参照を一括 remap する。
+欠落参照は新しい欠落 ID へ同じ対応で移す。発行時は実在・欠落 ID の両方を予約する。
+発行器が衝突し続ける場合は有限回で失敗し、候補を確定しない。
+所有 ID 以外の source/style/尺/operation は変えず、cache key の実装は追加しない。
+
+state の挿入・削除・hold/transition の尺変更・source 置換・part 削除は候補を作って全検証後に確定する。
+中間 state の削除は両辺と所有 action を同時に消し、呼び出し元の明示的な新辺を追加する。
+新辺へ旧 correspondence を継承しない。最後の state の削除と、既存可視範囲が新 L を超える
+内部編集は拒否する。`editEquationSequenceData` は通常の Project transaction と Undo 履歴へ
+一操作を一回で確定する C++ 入口であり、製品 UI ではない。
+Undo/Redo は既存の Project snapshot を復元し、ID 発行器を再実行しない。
+Project FPS 変更は timeline 位置だけを既存換算で移し、内部 FPS・整数尺・offset・ID を保持する。
+
+### 検証証拠
+
+[事実] UCRT64 release の全体ビルドが完了。集中 CTest は **8/8 通過**。
+新規 domain は **236 検査 / 0 失敗**、実 controller の保存・copy/paste/duplicate・split・
+状態削除・source 置換・Undo/Redo は **25 検査 / 0 失敗**。
+既存 Math JSON は 114 検査、MathTransform は 131 検査で失敗 0。
+他の集中対象は timeline edit、two-track Project、ClipEffects、字幕。
+証拠: `build/math-p31-focused-final-20261007.log` / `.xml` と
+`build/math-p31-focused-final-details-20261007.log`。
+
+```powershell
+pwsh scripts/build.ps1
+# 集中対象 8 件を -N で数えてから実行。CTest の環境を使い、実保存は sandbox 外で確認した。
+C:\msys64\ucrt64\bin\ctest.exe --test-dir build/ucrt64-release `
+  -R 'math_equation_sequence|math_project_json|math_transform_timeline|timeline_edit|clip_effects|two_track_project|subtitles' `
+  --output-on-failure --timeout 60
+pwsh scripts/test-equation-sequence-mutations.ps1
+pwsh scripts/test.ps1 -Preset ucrt64-release -Group BuildIndependent
+pwsh scripts/lint.ps1
+```
+
+[事実] **5/5 変異を検出**。inclusive end、`(i+1)/N`、状態削除後の action 残留、
+double による境界換算、同じ文字の別 PartId への自動付け替えを、実装の複製へ一つずつ入れた。
+各変異の実行は検査の終了コード 1。クラッシュ・timeout・compile error は検出として数えない。
+製品 source を書き換えず、変異 source と実行ログを
+`build/ucrt64-release/equation-mutations-20261007-003319/` に保存した。
+Undo の ID 再発行は controller の exact snapshot 比較で検査し、controller の変異コンパイルは行っていない。
+
+[事実] BuildIndependent は **1078/1078 通過** (`build/math-p31-independent-20261007.log`、
+詳細は `build/math-p31-independent-details-20261007.log`)。
+lint は format、層の隔離、producer service、PSScriptAnalyzer を含めて通過
+(`build/math-p31-lint-verified-20261007.log`)。
+
+[事実] 途中の失敗を保持した。初回 domain は JSON 変異の検索対象の空白が異なり 3 検査が失敗
+(`build/math-p31-domain-first-failed-20261007.log`)。検索箇所の存在を検査したため空振りの成功にはならなかった。
+全体ビルドの初回は既存 timeline 試験の schema 定数の名前空間漏れで失敗
+(`build/math-p31-build-20261007.log`)。集中 8 件の初回は旧 Math の「未来版 21 を拒否する」負例が失敗
+(`build/math-p31-focused-20261007.log` / `.xml`、`build/math-p31-focused-first-details-20261007.log`)。
+未来版を現行版+1 とし、schema 20 の MathTransform の対照も加えた後に集中 8/8 が通過した。
+
+[事実] sandbox 内の controller 保存・lock 試験は失敗し、同じ実保存試験は sandbox 外で通過した。
+失敗は `build/math-p31-history-first-20261007.log` と `build/math-p31-history-second-20261007.log`、
+対照は `build/math-p31-history-unsandboxed-20261007.log`。その後、状態削除ケースを追加した最終試験も
+sandbox 外の集中 CTest で通過。sandbox 内の最初のビルドは compiler 終了後に Ninja の CPU と
+`.ninja_log` が進まなくなり、診断後に当該実行を止めて公式入口を sandbox 外で実行した。
+build directory と Ninja metadata は削除しなかった。
+
+[事実] 通常 release gate は **一回で 1460/1460 通過**。
+再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。
+performance / stability を除外し、extended / workstation は短縮・除外しなかった。
+成功するまでの再試行や有効 run の選別はしていない。
+証拠: `build/math-p31-release-20261007.log` と `build/math-p31-release-details-20261007.log`。
+P3-1 の実装・検証は完了。P3-2 以降の実装、commit、push は行っていない。

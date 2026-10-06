@@ -98,6 +98,10 @@ bool clipInterval(const Project& project, const TimelineClip& clip, std::int64_t
 // left 端を動かしても右端 (clip の終端) は timeline 上で動かない。
 bool trimClipBoundary(const Project& project, TimelineClip& clip, TrimEdge edge,
                       std::int64_t projectFrameDelta, std::string& error) {
+    if (projectFrameDelta == std::numeric_limits<std::int64_t>::min()) {
+        error = "trim delta の絶対値を表せません";
+        return false;
+    }
     const auto originalDuration = timelineClipDuration(project, clip);
     if (!originalDuration.success) {
         error = originalDuration.error;
@@ -289,8 +293,15 @@ TimelineFrameResult mappedSourceFrameAt(const TimelineClip& clip, std::int64_t t
         return result;
     }
     // origin の換算が通っているので timebase は必ずある。
-    const auto source = core::sourceFrameAtOutputPosition(
-        origin.frame + clipLocalFrame, *clipTimebase(clip), {timelineFpsNum, timelineFpsDen});
+    // Sequence は標本を frame 始点へ置く。四捨五入では可視範囲の exclusive end を
+    // 左片が表示しうるため、内部区間と分割の authority に使わない。既存素材は従来どおり。
+    const auto source =
+        clip.kind == TimelineClipKind::EquationSequence
+            ? core::convertFrameBoundary(origin.frame + clipLocalFrame,
+                                         {timelineFpsNum, timelineFpsDen}, *clipTimebase(clip),
+                                         false)
+            : core::sourceFrameAtOutputPosition(origin.frame + clipLocalFrame, *clipTimebase(clip),
+                                                {timelineFpsNum, timelineFpsDen});
     if (!source) {
         result.error = "timeline frame を素材 frame へ換算できません";
         return result;
@@ -980,6 +991,22 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "数式 clip 以外が数式のデータを持っています: " + clip.name;
             return result;
         }
+        if (clip.kind == TimelineClipKind::EquationSequence) {
+            std::vector<EquationInterval> equationTimeline;
+            std::int64_t length = 0;
+            if (!validateEquationSequence(clip.equationSequence, project.outputHeight,
+                                          result.error) ||
+                !equationIntervals(clip.equationSequence, equationTimeline, length, result.error))
+                return result;
+            if (length != clip.sourceFrameCount || clip.speedNum != 1 || clip.speedDen != 1 ||
+                clip.preservePitch || clip.frameHold || !clip.linkGroupId.empty()) {
+                result.error = "数式 sequence の素材尺・速度・リンクが不正です";
+                return result;
+            }
+        } else if (clip.equationSequence != EquationSequenceClipData{}) {
+            result.error = "数式 sequence 以外が sequence データを持っています";
+            return result;
+        }
         if (clip.kind == TimelineClipKind::Math) {
             std::string animationError;
             if (!validateMathClipAnimation(
@@ -1224,6 +1251,9 @@ bool overwriteTrackRange(Project& candidate, TrackRef track, std::int64_t start,
             // 中に置いた: 左を start で止め、右を end から始まる別 clip にする。
             TimelineClip right = clip;
             right.id = newId();
+            if (right.kind == TimelineClipKind::EquationSequence &&
+                !remapEquationSequenceIds(right.equationSequence, newId, error))
+                return false;
             if (right.id.empty() || right.id == clip.id) {
                 error = "上書きで分けた clip の ID を作れません";
                 return false;
@@ -2014,9 +2044,12 @@ TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId,
         result.error = "trim する timeline clip がありません";
         return result;
     }
-    if (!clampedEdgeDelta(candidate, clipId, edge, EdgeEditKind::Trim, projectFrameDelta, linkMode,
-                          projectFrameDelta, result.error))
-        return result;
+    if (candidate.timelineClips[static_cast<std::size_t>(index)].kind !=
+        TimelineClipKind::EquationSequence) {
+        if (!clampedEdgeDelta(candidate, clipId, edge, EdgeEditKind::Trim, projectFrameDelta,
+                              linkMode, projectFrameDelta, result.error))
+            return result;
+    }
     for (const int target : editTargets(candidate, index, linkMode)) {
         if (!trimClipBoundary(candidate, candidate.timelineClips[static_cast<std::size_t>(target)],
                               edge, projectFrameDelta, result.error))
@@ -2126,6 +2159,10 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
             result.error = "分割位置を素材 frame へ一意に換算できません: " + left.name;
             return result;
         }
+        if (left.kind == TimelineClipKind::EquationSequence && right.timelineStartFrame != frame) {
+            result.error = "分割位置を sequence の整数素材境界で正確に表現できません";
+            return result;
+        }
         left.effects.fadeOutFrames = 0;
         left.effects.fadeInFrames =
             std::min(left.effects.fadeInFrames, left.sourceOutFrame - left.sourceInFrame);
@@ -2135,6 +2172,9 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
         right.effects.fadeOutFrames =
             std::min(right.effects.fadeOutFrames, right.sourceOutFrame - right.sourceInFrame);
         right.id = newId();
+        if (right.kind == TimelineClipKind::EquationSequence &&
+            !remapEquationSequenceIds(right.equationSequence, newId, result.error))
+            return result;
         if (right.id.empty() || right.id == left.id) {
             result.error = "分割後の clip ID を作れません";
             return result;
@@ -3090,6 +3130,14 @@ bool timeEditCandidate(Project& candidate, std::int64_t start, std::int64_t remo
             }
             if (a < start) {
                 right.id = timeEditId(candidate, original.id);
+                if (right.kind == TimelineClipKind::EquationSequence) {
+                    std::uint64_t serial = 0;
+                    if (!remapEquationSequenceIds(
+                            right.equationSequence,
+                            [&] { return right.id + "-internal-" + std::to_string(++serial); },
+                            error))
+                        return false;
+                }
                 // 同じリンクの両半分に同じ新規グループを割り当てる。
                 if (!original.linkGroupId.empty()) {
                     auto& group = rightGroups[original.linkGroupId];
