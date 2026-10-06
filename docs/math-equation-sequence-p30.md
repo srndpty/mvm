@@ -4,6 +4,10 @@
 Project schema 20、製品 UI、preview、export、cache publication は変更しない。
 P0/P1/P2 の実装・証拠を維持する。実装の段階と未解決事項の管理先は [roadmap.md](roadmap.md#数式-clip)。
 
+P3-0.1 は文書だけの明確化。状態削除時の action の原子的削除、sequence 内の ID の範囲、
+透明背景、初期 operation を outline/pulse に限定する規則を以下へ反映した。
+既存の renderer 証拠との矛盾はなく、spike は再実行しない。
+
 ## 推奨する所有境界
 
 **新しい `TimelineClipKind::EquationSequence` を推奨する。** 一つの native clip が順序付きの状態、
@@ -45,6 +49,37 @@ EquationAction { ActionId id; StateId state; PartId target; FrameOffset start; F
 初期段階は内部の cut を種類として足さない。先頭の Write は別の intro 区間として後段で検討し、
 現行 `MathClipAnimation` の「見えている先頭から始まる」意味を流用しない。
 
+### 内部 ID の範囲と独立所有
+
+StateId、TransitionId、ActionId、PartId はすべて **一つの EquationSequenceClipData 内で、
+それぞれの ID 種別ごとに一意** とする。PartId は state 内だけでなく sequence の全 state を通じて
+一意とする。種別間では同じ文字列を許すが、型を区別して解決する。Project 全体での一意性は要求しない。
+既存の TimelineClip の ID は Project 全体で一意だが、内部参照は sequence の外へ出さないため、
+その規則を内部 ID へ広げる具体的な理由はない。
+action の対象 `(StateId,PartId)` は、その sequence の既存 state とその state が所有する part を解決する。
+別 state に同じ PartId を探して補うことはしない。
+
+コピー・paste・複製は新しい外側 clip ID と全内部 ID を発行し、transition の両端、correspondence の
+part 参照、action の state/target を一括 remap する。missing PartId の修復可能な参照も新 ID へ
+一貫して remap し、参照が欠けている状態を保つ。同じ missing ID を参照する action は同じ新 ID を共有する。
+再発行時は実在 ID と保持中の missing 参照の ID に衝突させない。
+
+split は左片に元の外側 clip ID と全内部 ID を残し、独立所有する右片に新しい外側 clip ID と
+全内部 ID を発行して同じ規則で remap する。両片は完全な sequence を持ち、可視 source 範囲だけを
+境界で分ける。state 単体の複製でも、その state と part と所有 action に新 ID を発行する。
+保存・再読込と Undo/Redo は確定した ID と remap 結果を復元し、再発行しない。
+これらの所有 ID は cache key に含めず、描画の意味と正準化した参照関係だけを材料とする。
+
+### 初期の背景・style の不変条件
+
+P3 初期では **すべての EquationState の Math 背景を透明 `#00000000` に限定** する。
+既存 MathClipData の値の契約に加え、この sequence 固有の制約を検証する。背景補間は定義しない。
+不透明・半透明の背景を状態に持たせることや、その補間を暗黙に renderer へ任せることは拒否する。
+状態ごとの font size と foreground color の違いは、静止・変形端点・補間を renderer 契約が
+保証する範囲で許す。非対応の組合せは明示的に失敗とし、同じ style へ黙って揃えない。
+外側の配置・scale・rotation・opacity は Sequence clip の ClipEffects だけが所有する。
+今回の spike は font size の変化を扱うが、P3 の foreground color 契約を新たに検証した証拠ではない。
+
 **hold の尺を変形が消費しない。** `H0, T0, H1, T1, ... Hn` を隙間なく順に並べる。
 `h[i]` と `d[i]` は整数 frame。`stateStart[i] = Σ(j<i)(h[j]+d[j])`、
 全長 `L = Σh + Σd`。蓄積は overflow を検査する。絶対開始位置は派生値で保存しない。
@@ -66,14 +101,25 @@ Manim の run_time 秒は backend 内の正規化だけに使う。JSON に Mani
 |---|---|
 |移動|timeline 開始だけを変更。内部の時刻・ID・描画 key は不変|
 |左右 trim|可視範囲だけを変える。左 trim で導出や action を再開しない。L の外へ延長は拒否。状態の hold を伸ばすのは内部編集|
-|split|完全な sequence を両片へ独立コピーし、可視範囲を境界で分ける。途中の変形・action も同じ内部 frame から続く。右片から seek しても履歴実行不要|
+|split|完全な sequence を両片へ独立コピーし、可視範囲を境界で分ける。左片は元の ID、右片は新 ID と参照の remap。途中の変形・action も同じ内部時刻から続き、右片の seek に履歴実行は不要|
 |コピー・複製・paste|新 clip ID と全内部 ID を生成し参照を一括 remap。同じ式でも別所有者。描画に同じ入力なら cache は共有可能|
 |速度変更|P3 初期は拒否。将来追加時は正の有理数による `clipTimebase` の mapping のみを変え、内部 frame を書き直さない|
 |Project FPS 変更|既存の素材時間域と同様、内部 FPS と frame は維持し、timeline 開始を既存の境界換算で変更。同じ秒数を新 Project FPS で標本化。action が一 output frame にも現れないなら明示的な診断を出す|
 |内部の尺変更|hold/transition/action を明示編集。可視範囲が新 L の外へ出る変更は確認を含む別操作か拒否。暗黙の縮小・action の移動をしない|
 
-retime と FPS の異なる出力への renderer sampling は、新しい evaluation contract の担当。
-出力 frame → 内部時刻 → 区間/進み具合を純粋関数で求める。P2 の枚数だけを変える方法を
+P3-1 は以下の **純粋な評価契約の確定と検証** を担当する。
+
+```text
+出力 timeline frame
+  → sequence の source / 内部時刻
+  → hold / transition / action の区間
+  → 区間内の local frame と進み具合
+```
+
+有理数 FPS の換算、frame 境界の丸めと標本位相、trim/split の境界、整数演算の overflow を
+一つの契約へ固定する。区間探索前に内部時刻を丸めるか、有理数のまま比較するかも明示し、
+境界の片側だけを別の規則で判定しない。初期は retime を拒否するが、FPS の異なる出力の
+renderer sampling はこの契約に従う。P2 の枚数だけを変える方法を
 流用する場合も、出力 frame の格子に対する位相を key に含めなければならない。
 この対応の実装検証は P3-0 の対象外で、P3-1 の gate とする。
 
@@ -107,9 +153,14 @@ source の対応、glyph の存在、静止との画素配置を検査し、描�
 |構造ごとの copy/paste・state duplication|state/part/action の ID を新規発行し内部参照を remap。外部の state への correspondence は自動生成しない|
 |保存・再読込|ID・範囲・revision・明示 invalid 状態をそのまま復元。backend の glyph 対応は再生成|
 
-part を消したときは action の target を tombstone の ID として残し、`missing` と診断する。
-構造上の危険なデータ (重複 ID、範囲外の bound range、未知 operation) は JSON の読み込みで拒否するが、
-明示 invalid/missing reference は利用者が修正できる値として保存する。
+既存 state 内の part を消したときは action の target の PartId を残し、`missing` と診断する。
+この PartId の欠落と invalid binding は明示的に修復可能な対象として保存できる。
+一方、**有効な EquationAction record の StateId は必ず既存 state を参照する**。
+state の削除は、その state を所有者とするすべての action を同じ Project 編集・Undo transaction で
+原子的に削除する。missing StateId は修復可能な参照として保存せず、読み込み・確定時に拒否する。
+初期 P3 に orphan-action store は導入しない。
+構造上の危険なデータ (各 ID の範囲内での重複、範囲外の bound range、未知 operation、
+欠落 StateId、別 state の PartId を参照する action) は JSON の読み込みで拒否する。
 Project の構造検証と「出力可能」の検証を分ける。参照の無効な sequence は export を拒否する。
 
 P2 の n 番目の出現の照合は依然として派生値。P3 の明示 correspondence は利用者の意味の指定なので
@@ -117,26 +168,26 @@ P2 の n 番目の出現の照合は依然として派生値。P3 の明示 corr
 それによって action の永続対象を作らない。選択領域と自動 segment の交差から描画 partition を作り、
 同じ glyph を二重に Transform しないことを新しい compiler contract に要求する。
 
-## action は区間と終状態を持つ
+## 初期 action は一時的な強調区間
 
 瞬間の imperative event を再生履歴の正にしない。すべてに start と duration を持たせ、任意 frame の
 評価が seek 順序に依存しないようにする。表示名と保存用 operation を Manim の class 名から分ける。
+**初期 P3 の保存対象 operation は `outline` と `pulse` だけ** とする。
 
 |中立な operation|見た目の意味|区間の後|
 |---|---|---|
 |`outline`|選んだ部分の周囲に線を描いて消す。Circumscribe に対応可能|元の状態|
 |`pulse`|選んだ部分の拡大と強調色を一時的に変える。Indicate に対応可能|元の状態|
-|`set_color`|開始時の色から指定色へ補間。duration=1 も明示的な一 frame の変更|同じ state の hold の末尾まで指定色を維持|
-|`reveal`|対象の opacity 0→1。FadeIn に対応可能|同じ hold 内で 1 を維持|
-|`conceal`|対象の opacity を開始値→0。FadeOut に対応可能|同じ hold 内で 0 を維持|
 
-reveal の対象はその action 開始前から非表示とする。set_color/conceal の開始値は、それ以前の action の
-終状態から純粋に求める。action が存在しない対象は state の基本色・opacity 1。
-P3 初期は同じ対象への区間重複、および同じ hold 内の複数 reveal を拒否する。
+action が存在しない対象は state の基本色・opacity 1。
+P3 初期は同じ対象への区間重複を拒否する。
 異なる対象の同時 action は将来の合成 gate を通すまで拒否する。保存の順番で勝者を決めない。
-状態の終わりで action の効果をリセットする。色/opacity が基本状態へ戻らない終状態と次の
-transform の組合せは初期段階では拒否し、後段の renderer contract で styled endpoint を渡せるようにする。
 一時 outline/pulse は区間の直後に基本 state に戻る。境界の中途半端な効果を次の式へ暗黙に運ばない。
+
+`set_color`、`reveal`、`conceal` は将来の設計候補だけとする。部分色や可視性を持続させる場合の
+styled endpoint の保存・時間評価・次の変形への受け渡しを仕様化し、renderer で検証するまで導入しない。
+初期 schema ではこれらの operation 値・field・既定動作を予約せず、読み込み時も未知 operation として拒否する。
+本書の概念説明だけでは、その振る舞いを保存契約として承認したことにならない。
 
 線幅・余白は clip の local px、色は既存 `#AARRGGBB`、easing は中立な有限列挙。
 将来 geometry/graph は `ObjectId` の対象を同じ区間評価へ接続できるが、P3 で汎用 scene graph は作らない。
@@ -215,7 +266,7 @@ MiKTeX は sandbox でユーザー領域の log 書き込み拒否と更新確�
 同時に、新しい layer 合成と任意 seek の正しさを検証するまでは単独 action artifact の再利用を保証しない。
 
 cache key は renderer に効く正準入力 (source/font、partition、対応、operation/param、標本数/位相、
-compiler/renderer の版、toolchain) を含める。clip/state/part の UUID 自体ではなく正準順序で参照を
+compiler/renderer の版、toolchain) を含める。clip/StateId/TransitionId/ActionId/PartId 自体ではなく正準順序で参照を
 解決し、意味が同じ複製を共有できるようにする。色は合成-only ならその layer の mask key には不要だが、
 operation が renderer の形状を変えるなら入力へ含める。
 ID→派生 handle の map と cache key を Project に保存しない。旧 A8 format の意味は変更せず、
@@ -226,10 +277,10 @@ ID→派生 handle の map と cache key を Project に保存しない。旧 A8
 |編集・失敗|期待する処理|
 |---|---|
 |state の挿入|新 ID、新 hold を作る。旧 edge を取り除き新隣接 edge を明示生成。一回の Undo。対応/action は自動流用しない|
-|state の削除|state と両側 edge を同時削除。残る隣接に新 edge を明示作成し、旧対応を移さない。削除 state の action は削除候補を提示し、保留する場合は missing 参照として保存|
+|state の削除|state、両側 edge、その state が所有する全 action を同じ編集・Undo transaction で原子的に削除。残る隣接に新 edge を明示作成し、旧対応を移さない。orphan action は残さない|
 |一状態の source 変更|その静止、前後 edge、その状態の glyph map/action を無効化。範囲を delta で安全に移せない part は invalid。Project の確定を描画失敗で巻き戻さない|
 |font/color の変更|font は mask/map/前後 edge/action を再描画。色は合成層で反映できる範囲のみ再利用。pulse の開始色など評価依存も更新|
-|part の削除・target の無効化|action を別の同一文字列へ付け替えない。invalid/missing と理由を表示し export を拒否|
+|既存 state 内の part の削除・target の無効化|action を別の同一文字列へ付け替えない。invalid/missing PartId と理由を表示し export を拒否。StateId の欠落は保存・確定を拒否|
 |transition/action render の失敗|clip 全体の readiness を失敗にする。明示 stale preview のみ許可し、cut や action 無しを完成扱いしない|
 |backend 不在|unavailable。Project は保存可能、renderer の代用品を探さず出力を拒否|
 |編集前の cache|historical file を消さず、新しい依存 key 以外を現在の出力に使わない。世代の違う worker 完了通知を捨てる|

@@ -35,20 +35,30 @@
   [設計文書](math-equation-sequence-p30.md)。新しい `EquationSequence` kind を推奨し、
   clip 内の整数 frame の hold/transform、永続 part ID と revision 付き source annotation、
   中立な区間 action を Project の正とする。P2 PASS/CLOSED と schema 20 は維持する。
+- P3-0.1 は文書のみの明確化を完了。内部 ID は種別ごとに sequence 内で一意とし、
+  copy/paste/duplicate は全 ID を新規発行して remap、split は左片に元 ID を残し右片を新規発行する。
+  両片は完全な sequence と異なる可視 source 範囲を持つ。cache key は所有 ID に依存しない。
+  state 削除時は所有 action も原子的に削除し、missing StateId と orphan-action store は認めない。
+  修復可能な missing PartId は既存 state 内だけ。全状態の Math 背景は透明、初期 operation は outline/pulse のみ。
 - P3-1: domain と純粋な時間評価・編集。schema はこの段階で独立に更新する。
-  save/reopen、未知 field・重複 ID の拒否、明示 invalid/missing の保存、Undo、trim/split、
-  FPS 変更、overflow と action/transition 境界を独立な期待値と負例で検証する。
+  **出力 timeline frame → sequence source/内部時刻 → hold/transition/action 区間 → local frame/進み具合**
+  の評価契約を固定する。有理数 FPS 換算、丸め・標本位相、trim/split 境界、overflow を
+  独立な期待値と負例で検証する。save/reopen、種別ごとの sequence 内 ID 重複と missing StateId の拒否、
+  既存 state 内の invalid/missing PartId の保存、state と所有 action の原子的削除と Undo、
+  copy/split の全参照 remap、透明背景と outline/pulse 以外の operation の拒否も担当する。
   初期は retime・変形中の action・重複 action を拒否する。
 - P3-2: annotation の binding と renderer 中立 plan。UTF-8/UTF-16 の変換、editor delta、
   重複式の別 ID、明示 rebind、copy/paste の ID remap、semantic partition と自動照合の
   重なり排除を検証。Manim grouping の代用、glyph 0、範囲の構文不適合を fail-closed にする。
 - P3-3: sequence transition と action renderer。静止/Write/P2 の処理を小さな部品として共有し、
-  新 key namespace、複数 A8 layer、端点・bbox・枚数・hash、任意 seek を実 toolchain で検証。
-  styled endpoint と同時 action は、先に対応を保証できる最小契約を決める。
+  透明背景と状態ごとの font/foreground color の契約、outline/pulse、新 key namespace、
+  複数 A8 layer、端点・bbox・枚数・hash、任意 seek を実 toolchain で検証。
+  set_color/reveal/conceal と styled endpoint、同時 action は初期実装に含めない。
 - P3-4: cache と residency。Project lock・世代・取消・atomic publication を保ち、
   全 layer を既存 Write/transform の共有予算に数える。編集後の旧 artifact を出力に使わない負例を用意。
 - P3-5: 製品 UI。既存の暗色 panel と共通部品で状態の追加/削除/順序/hold/変形、part の指定、
-  invalid の修正、強調の preview と一回の Undo を実装。狭幅・低い panel・長文・空一覧を実描画で検証。
+  既存 state 内の invalid/missing PartId の修正、outline/pulse の preview と一回の Undo を実装。
+  狭幅・低い panel・長文・空一覧を実描画で検証。state 削除は所有 action の削除も同じ操作として示す。
 - P3-6: 実 D3D11 preview と映像のみ export。全区間が現在の入力で ready であることを要求し、
   一つの clip の導出全段と判別式の強調を UI author→save/reopen→preview→export で検証する。
   任意 seek、action 中の split、編集・失敗・backend 不在、画素をずらす負例を含める。
@@ -57,12 +67,13 @@
 
 - 任意 TeX macro に対する annotation の対応保証の限界。SVG の glyph 所有の排他性と
   命令/コメント境界の検証範囲を P3-2 で確定する。今回の分数内部の成功を任意範囲へ一般化しない。
-- Project FPS と内部 FPS が異なる場合の標本位相、短い action の出力上の消失、
-  retime を後段で許す条件。Manim 秒へ権限を移さず evaluator と key の契約を固定する。
-- part がない invalid action を保持する UI と、state 削除時に action を削除する明示操作。
-  診断を保存する構造と書き出し拒否の境界を schema 導入時に検証する。
-- 部分色/opacity が残る hold からの transform、同時 action、入れ子/非連続 part。
-  初期に拒否する条件を明示し、必要なものだけ gate を増やす。
+- Project FPS と内部 FPS が異なる場合の標本位相と短い action の出力上の消失は P3-1 で
+  純粋な評価契約へ固定する。retime を後段で許す条件は将来の判断とする。
+- 既存 state 内の invalid/missing PartId の診断・修復 UI と書き出し拒否の境界を検証する。
+  state 削除時の action の原子的削除は確定事項であり、missing StateId を保持する選択肢は設けない。
+- set_color/reveal/conceal は将来の設計候補。styled endpoint の保存と変形を仕様化し renderer で
+  検証してから別段階として導入する。概念説明を理由に初期 schema に値や振る舞いを予約しない。
+  同時 action と入れ子/非連続 part も初期に拒否し、必要なものだけ gate を増やす。
 - outline/pulse の拡張 bbox と layer 数に対する予算、RGBA と複数 A8 の実測比較。
   renderer spike は性能・cache publication・製品 decoder の証明ではない。
 - 既存の複数 Math clip を一 clip に明示変換する際の hold/transform の消費時間の対応。
