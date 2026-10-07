@@ -60,6 +60,7 @@ struct MediaImportResult;
 class TrackModel;
 class ScrubAudioPlayback;
 class ShuttleAudioPlayback;
+class EquationSequenceEditor;
 
 class MvmController : public QObject {
     Q_OBJECT
@@ -197,6 +198,8 @@ class MvmController : public QObject {
     Q_PROPERTY(double masterVolume READ masterVolume WRITE setMasterVolume NOTIFY stateChanged)
     Q_PROPERTY(int outputWidth READ outputWidth NOTIFY stateChanged)
     Q_PROPERTY(int outputHeight READ outputHeight NOTIFY stateChanged)
+    // P3-5: 選択中の EquationSequence clip の authoring (equation_sequence_editor.h)。
+    Q_PROPERTY(QObject* equationEditor READ equationEditor CONSTANT)
     Q_PROPERTY(double effectPositionX READ effectPositionX NOTIFY stateChanged)
     Q_PROPERTY(double effectPositionY READ effectPositionY NOTIFY stateChanged)
     Q_PROPERTY(double effectScaleX READ effectScaleX NOTIFY stateChanged)
@@ -651,6 +654,13 @@ public:
     // unavailableReason: backend / authority / 空、canRetry: この instance で再試行できるか。
     Q_INVOKABLE QVariantMap mathClipData(const QString& clipId) const;
     QVariantMap selectedMathClip() const;
+    // P3-5: 一つの状態 (透明背景・今の Project の FPS・既定の hold) だけを持つ数式 sequence を
+    // 再生位置に置いて選ぶ。Undo 1 回分。
+    Q_INVOKABLE bool createEquationSequenceClip(const QString& source);
+    QObject* equationEditor() const;
+    EquationSequenceEditor& equationEditorRef() const { return *equationEditor_; }
+    // 読むだけの今の Project (authoring の controller が表示の値を作るのに使う)。
+    const project::Project& currentProject() const { return project_; }
     // 試験用: 数式の backend の確認を差し替えて確かめ直す (偽の backend を注入する)。
     void setMathPreflightForTest(MathRasterCache::PreflightFunction preflight);
     MathRasterCache& mathRastersForTest() { return *mathRasters_; }
@@ -902,7 +912,8 @@ public:
     Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);
     Q_INVOKABLE bool unlinkTimelineClip(const QString& clipId);
     Q_INVOKABLE bool undoLastEdit();
-    // P3-1 の domain 編集入口。UI と描画を作らず、通常の Project 履歴へ一回だけ確定する。
+    // P3-1 の domain 編集入口。通常の Project 履歴へ一回だけ確定する。確定したら数式の描画を
+    // 要求し直し、preview を今の Project で組み直す (P3-4 の経路。再生位置は動かさない)。
     bool editEquationSequenceData(
         const std::string& clipId,
         const std::function<bool(project::EquationSequenceClipData&, std::string&)>& edit);
@@ -1556,6 +1567,8 @@ private:
     std::unique_ptr<ImageRasterCache> imageRasters_;
     // 数式 clip の描画結果 (key 単位、<project>/cache/math)。
     std::unique_ptr<MathRasterCache> mathRasters_;
+    // P3-5 の authoring。controller の stateChanged を購読するので controller より先に壊す。
+    std::unique_ptr<EquationSequenceEditor> equationEditor_;
     // clip ごとの最後に描けた mask。式を直して描き直している間・失敗した間はこれを出す。
     // 派生物なので Project には入れず、session の間だけ持つ。
     struct MathLastGood {

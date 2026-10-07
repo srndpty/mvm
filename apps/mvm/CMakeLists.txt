@@ -25,6 +25,7 @@ qt_add_executable(mvm
     press_focus.cpp
     subtitle_controller.cpp
     mvm_controller.cpp
+    equation_sequence_editor.cpp
     shuttle_audio_mix.cpp
     shuttle_audio_playback.cpp
     clip_sample_reader.cpp
@@ -90,6 +91,7 @@ qt_add_qml_module(mvm
         TranscribeDialog.qml
         TextClipInspector.qml
         MathClipInspector.qml
+        EquationSequenceInspector.qml
         MathDependencyGuidance.qml
         KeyframeInspector.qml
         TransitionInspector.qml
@@ -146,6 +148,7 @@ qt_add_executable(mvm_test_text_ui_input
     press_focus.cpp
     subtitle_controller.cpp
     mvm_controller.cpp
+    equation_sequence_editor.cpp
     shuttle_audio_mix.cpp
     shuttle_audio_playback.cpp
     clip_sample_reader.cpp
@@ -203,6 +206,7 @@ qt_add_qml_module(mvm_test_text_ui_input
         TranscribeDialog.qml
         TextClipInspector.qml
         MathClipInspector.qml
+        EquationSequenceInspector.qml
         MathDependencyGuidance.qml
         KeyframeInspector.qml
         TransitionInspector.qml

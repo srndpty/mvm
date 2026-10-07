@@ -13,6 +13,8 @@
 #include "core/checked_output_timebase.h"
 #include "core/export_eta.h"
 #include "core/timecode.h"
+#include "app/equation_sequence_authoring.h"
+#include "equation_sequence_editor.h"
 #include "image_raster_cache.h"
 #include "media_file_filters.h"
 #include "media/manim/manim_math_tex.h"
@@ -49,6 +51,7 @@
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QPointer>
+#include <QQmlEngine>
 #include <QTemporaryDir>
 #include <QUuid>
 #include <QVariantMap>
@@ -458,6 +461,8 @@ MvmController::MvmController(std::filesystem::path projectPath,
         Q_EMIT stateChanged();
     });
     syncMathCacheAuthority();
+    equationEditor_ = std::make_unique<EquationSequenceEditor>(*this);
+    QQmlEngine::setObjectOwnership(equationEditor_.get(), QQmlEngine::CppOwnership);
 
     recoveryDebounceTimer_.setSingleShot(true);
     recoveryDebounceTimer_.setInterval(2000);
@@ -4589,6 +4594,50 @@ bool MvmController::createMathClip(const QString& source) {
     return selectClip(placed.selectedIndex);
 }
 
+QObject* MvmController::equationEditor() const {
+    return equationEditor_.get();
+}
+
+bool MvmController::createEquationSequenceClip(const QString& source) {
+    if (busy_ || source.trimmed().isEmpty() || !pauseTimeline())
+        return false;
+    project::Project candidate = project_;
+    project::TimelineClip clip;
+    clip.kind = project::TimelineClipKind::EquationSequence;
+    clip.id = newClipId();
+    clip.name = "数式 sequence";
+    // 内部の時間は作成時の Project の FPS (P3-1)。最初の状態は数式 clip と同じ既定の尺。
+    clip.sourceFpsNum = candidate.timelineFpsNum;
+    clip.sourceFpsDen = candidate.timelineFpsDen;
+    clip.equationSequence = newEquationSequenceData(
+        source.trimmed().toStdString(),
+        project::defaultStillClipFrames(candidate.timelineFpsNum, candidate.timelineFpsDen),
+        newClipId);
+    auto& equation = clip.equationSequence.states.front().equation;
+    equation.fontSize = std::min(equation.fontSize, candidate.outputHeight);
+    std::string error;
+    std::vector<project::EquationInterval> intervals;
+    if (!project::validateEquationSequence(clip.equationSequence, candidate.outputHeight, error) ||
+        !project::equationIntervals(clip.equationSequence, intervals, clip.sourceFrameCount,
+                                    error)) {
+        setStatus(QString::fromStdString(error));
+        return false;
+    }
+    clip.sourceOutFrame = clip.sourceFrameCount;
+    const auto placed = project::placeStillClipAt(candidate, std::move(clip), playheadFrame_);
+    if (!placed.success) {
+        setStatus(QString::fromStdString(placed.error));
+        return false;
+    }
+    if (!commitProjectEdit(std::move(candidate),
+                           QStringLiteral("数式 sequence を作成できません: ")))
+        return false;
+    requestMathRenders();
+    Q_EMIT stateChanged();
+    refreshTextPreview();
+    return selectClip(placed.selectedIndex);
+}
+
 bool MvmController::updateMathClip(const QString& clipId, const QVariantMap& values) {
     if (busy_ || !pauseTimeline())
         return false;
@@ -7832,7 +7881,15 @@ bool MvmController::editEquationSequenceData(const std::string& clipId,
         setStatus(QString::fromStdString(result.error));
         return false;
     }
-    return commitProjectEdit(std::move(candidate), QStringLiteral("数式 sequence を更新できません: "));
+    if (!commitProjectEdit(std::move(candidate),
+                           QStringLiteral("数式 sequence を更新できません: ")))
+        return false;
+    // 数式 clip の確定と同じく、今の Project の key で描画を要求し直し preview を組み直す。
+    // 前の key の animation は P3-4 の retainOnly / memo が捨てる。再生位置は動かさない。
+    requestMathRenders();
+    Q_EMIT stateChanged();
+    refreshTextPreview();
+    return true;
 }
 
 bool MvmController::undoLastEdit() {

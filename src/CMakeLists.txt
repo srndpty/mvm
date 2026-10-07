@@ -72,7 +72,8 @@ add_library(mvm::math ALIAS mvm_math)
 
 # Project の binding と P2 の純粋な計算を結ぶ。描画 backend / Qt は参照しない。
 add_library(mvm_equation_sequence_compile STATIC app/equation_sequence_compile.cpp
-    app/equation_sequence_render.cpp app/equation_sequence_preview.cpp)
+    app/equation_sequence_render.cpp app/equation_sequence_preview.cpp
+    app/equation_sequence_authoring.cpp)
 target_include_directories(mvm_equation_sequence_compile PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_equation_sequence_compile PUBLIC mvm::project mvm::math PRIVATE mvm::warnings)
 add_library(mvm::equation_sequence_compile ALIAS mvm_equation_sequence_compile)

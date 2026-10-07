@@ -1,0 +1,1023 @@
+// P3-5: 製品の Main.qml と実 controller (D3D11 の preview) で、EquationSequence を UI だけで author する。
+//
+//   mvm_test_text_ui_input --equation-sequence-ui <証拠の directory> [--scratch]
+//
+// 証拠の directory が存在すれば起動を拒否する (過去の証拠を上書きしない)。--scratch は CTest 用で、
+// 既存の directory を消してから使う。描画は偽の数式 backend (math_fake_backend.h)。
+//
+//   A. 二次方程式の解の公式の導出 (8 状態) を、メニュー・ボタン・編集欄のキー入力・一覧の選択・
+//      combo の操作だけで作る (Project JSON は手で書かない)。判別式 b^2-4ac に outline と pulse。
+//      キーボード・focus の規則、保存・閉じる・開き直し・ID・JSON の往復、直接 seek の提示、
+//      破壊的 / 非破壊的な編集の Undo/Redo を確かめる。
+//   B. 修復 (Invalid binding・欠落した action の対象)、backend 不在、OverBudget、読むだけの状態の
+//      polling、狭い・低いパネル、長い内容 (10 状態・600 文字の式・12 部分式・長い名前と理由)。
+//
+// 各場面で実際に描画した window を PNG に保存し (grabWindow)、inspector の項目が親の幅の外へ
+// 描かれないこと、文字が欄からはみ出さないこと、主な操作へ縦スクロールで到達できることを検査する。
+// 結果は <証拠>/results.json と標準エラー。
+
+#include "app/preview/preview_engine_rhi_item.h"
+#include "app/preview/test_window_mode.h"
+#include "equation_sequence_editor.h"
+#include "math_fake_backend.h"
+#include "mvm_controller.h"
+#include "project/equation_sequence.h"
+#include "project/equation_sequence_edit.h"
+#include "project/project_json.h"
+#include "test_window_focus.h"
+#include "waveform_cache.h"
+
+#include <chrono>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <QCoreApplication>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QQmlApplicationEngine>
+#include <QQuickItem>
+#include <QQuickWindow>
+#include <QTest>
+
+namespace {
+namespace project = mvm::project;
+using mvm::app::MathRasterCache;
+using mvm::app::MvmController;
+using mvm::test::FakeMathBackend;
+
+int checks = 0;
+int failures = 0;
+QJsonArray results;
+QJsonArray shots;
+std::filesystem::path evidence;
+
+void check(bool ok, const std::string& message) {
+    ++checks;
+    results.append(QJsonObject{{QStringLiteral("check"), QString::fromStdString(message)},
+                               {QStringLiteral("ok"), ok}});
+    if (!ok) {
+        ++failures;
+        std::fprintf(stderr, "FAIL: %s\n", message.c_str());
+    }
+}
+
+bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs = 10000) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    QCoreApplication::processEvents();
+    return predicate();
+}
+
+void pump(int milliseconds = 100) {
+    pumpUntil([] { return false; }, milliseconds);
+}
+
+void collect(QQuickItem* item, QList<QQuickItem*>& out) {
+    out.push_back(item);
+    for (auto* child : item->childItems())
+        collect(child, out);
+}
+
+// 二次方程式の解の公式の導出 (P3-0 の最終受け入れの段階)。
+const char* const kQuadratic[] = {
+    "ax^2+bx+c=0",
+    "x^2+\\frac{b}{a}x+\\frac{c}{a}=0",
+    "x^2+\\frac{b}{a}x=-\\frac{c}{a}",
+    "x^2+\\frac{b}{a}x+\\frac{b^2}{4a^2}=\\frac{b^2}{4a^2}-\\frac{c}{a}",
+    "(x+\\frac{b}{2a})^2=\\frac{b^2-4ac}{4a^2}",
+    "x+\\frac{b}{2a}=\\pm\\sqrt{\\frac{b^2-4ac}{4a^2}}",
+    "x+\\frac{b}{2a}=\\pm\\frac{\\sqrt{b^2-4ac}}{2a}",
+    "x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}",
+};
+constexpr int kStates = 8;
+
+struct Session {
+    std::unique_ptr<MvmController> controller;
+    mvm::app::WaveformCache waveforms;
+    std::unique_ptr<QQmlApplicationEngine> engine;
+    QQuickWindow* window = nullptr;
+    FakeMathBackend backend;
+
+    ~Session() { close(); }
+    void close() {
+        if (controller)
+            controller->shutdown();
+        engine.reset();
+        controller.reset();
+        window = nullptr;
+    }
+    mvm::app::EquationSequenceEditor& editor() { return controller->equationEditorRef(); }
+    QVariantMap view() { return editor().view(); }
+    const project::Project& project() { return controller->projectForTest(); }
+    const project::TimelineClip* sequence() {
+        for (const auto& clip : project().timelineClips)
+            if (clip.kind == project::TimelineClipKind::EquationSequence)
+                return &clip;
+        return nullptr;
+    }
+    int sequenceCount() {
+        int n = 0;
+        for (const auto& clip : project().timelineClips)
+            n += clip.kind == project::TimelineClipKind::EquationSequence;
+        return n;
+    }
+    const project::EquationSequenceClipData& data() { return sequence()->equationSequence; }
+
+    QQuickItem* find(const QString& name) {
+        QList<QQuickItem*> items;
+        collect(window->contentItem(), items);
+        for (auto* item : items)
+            if (item->objectName() == name && item->isVisible())
+                return item;
+        return nullptr;
+    }
+    QQuickItem* scroll() { return find(QStringLiteral("effectControlsScroll")); }
+    QQuickItem* inspector() { return find(QStringLiteral("equationSequenceInspector")); }
+
+    // flickable を item が見える位置までスクロールする (利用者のスクロールの代わり)。
+    bool reach(QQuickItem* item) {
+        auto* flick = scroll();
+        if (!flick || !item)
+            return false;
+        auto* content = flick->property("contentItem").value<QQuickItem*>();
+        const qreal top = item->mapToItem(content, QPointF(0, 0)).y();
+        const qreal maxY =
+            std::max<qreal>(0, flick->property("contentHeight").toReal() - flick->height());
+        const qreal bottom = top + item->height();
+        qreal y = flick->property("contentY").toReal();
+        if (top < y)
+            y = top - 4;
+        else if (bottom > y + flick->height())
+            y = bottom - flick->height() + 4;
+        flick->setProperty("contentY", std::clamp<qreal>(y, 0, maxY));
+        pump(60);
+        const QRectF shown = item->mapRectToScene(QRectF(0, 0, item->width(), item->height()));
+        const QRectF view = flick->mapRectToScene(QRectF(0, 0, flick->width(), flick->height()));
+        return item->height() > 0 && shown.top() >= view.top() - 0.5 &&
+               shown.bottom() <= view.bottom() + 0.5 && shown.left() >= view.left() - 0.5 &&
+               shown.right() <= view.right() + 0.5;
+    }
+    QPoint center(QQuickItem* item) {
+        return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    }
+    bool click(const QString& name) {
+        auto* item = find(name);
+        if (!item || !reach(item)) {
+            check(false, "UI の操作へ到達できる: " + name.toStdString());
+            return false;
+        }
+        QTest::mouseClick(window, Qt::LeftButton, {}, center(item));
+        pump(120);
+        return true;
+    }
+    void key(Qt::Key k, Qt::KeyboardModifiers modifiers = {}) {
+        QTest::keyClick(window, k, modifiers);
+        pump(10);
+    }
+    void type(const std::string& text) {
+        for (char c : text)
+            QTest::keyClick(window, c);
+        pump(30);
+    }
+    QQuickItem* sourceEditor() { return find(QStringLiteral("equationSourceEditor")); }
+    // 式の編集欄に focus を置く (クリック)。
+    bool focusSource() {
+        auto* editor = sourceEditor();
+        if (!editor || !reach(editor))
+            return false;
+        QTest::mouseClick(window, Qt::LeftButton, {}, center(editor));
+        pump(60);
+        return editor->hasActiveFocus();
+    }
+    // 式を全部置き換えて Ctrl+Enter で確定する (キー入力だけ)。
+    bool replaceSource(const std::string& text) {
+        if (!focusSource())
+            return false;
+        key(Qt::Key_A, Qt::ControlModifier);
+        type(text);
+        key(Qt::Key_Return, Qt::ControlModifier);
+        pump(80);
+        return true;
+    }
+    // 編集欄の UTF-16 の範囲 [begin, end) をキーボードで選ぶ (Ctrl+Home → → … Shift+→ …)。
+    bool selectSource(int begin, int end) {
+        if (!focusSource())
+            return false;
+        key(Qt::Key_Home, Qt::ControlModifier);
+        for (int i = 0; i < begin; ++i)
+            QTest::keyClick(window, Qt::Key_Right);
+        for (int i = begin; i < end; ++i)
+            QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+        pump(30);
+        auto* editor = sourceEditor();
+        return editor->property("selectionStart").toInt() == begin &&
+               editor->property("selectionEnd").toInt() == end;
+    }
+    // 状態の一覧の行をクリックする (一覧の中を見える位置まで送る)。
+    bool clickStateRow(int index) {
+        auto* list = find(QStringLiteral("equationStateList"));
+        if (!list)
+            return false;
+        reach(list);
+        QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, index), Q_ARG(int, 4));
+        pump(60);
+        return click(QStringLiteral("equationStateRow_%1").arg(index));
+    }
+    bool clickPartRow(const QString& label) {
+        const auto parts = view().value("parts").toList();
+        for (int i = 0; i < parts.size(); ++i)
+            if (parts[i].toMap().value("label").toString() == label) {
+                auto* list = find(QStringLiteral("equationPartList"));
+                reach(list);
+                QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, i), Q_ARG(int, 4));
+                pump(60);
+                return click(QStringLiteral("equationPartRow_%1").arg(i));
+            }
+        check(false, "部分式の行がある: " + label.toStdString());
+        return false;
+    }
+    // 数値欄 (DragNumberField) をダブルクリックで直接入力にし、値を打って Enter。
+    bool enterNumber(const QString& name, int value) {
+        auto* field = find(name);
+        if (!field || !reach(field))
+            return false;
+        // 値の箱は label の右 (inline) にある。箱の中央をダブルクリックする。
+        const QPointF boxCenter(field->width() - 30, field->height() / 2);
+        QTest::mouseDClick(window, Qt::LeftButton, {}, field->mapToScene(boxCenter).toPoint());
+        pump(60);
+        key(Qt::Key_A, Qt::ControlModifier);
+        type(std::to_string(value));
+        key(Qt::Key_Return);
+        pump(80);
+        return true;
+    }
+    // combo を focus して上下キーで項目を選ぶ (activated で入力へ反映される)。
+    bool chooseCombo(const QString& name, const QString& text) {
+        auto* combo = find(name);
+        if (!combo || !reach(combo))
+            return false;
+        combo->forceActiveFocus(Qt::TabFocusReason);
+        pump(20);
+        const int count = combo->property("count").toInt();
+        for (int i = 0; i < count; ++i)
+            QTest::keyClick(window, Qt::Key_Up);
+        pump(10);
+        for (int i = 0; i <= count; ++i) {
+            if (combo->property("currentText").toString() == text)
+                return true;
+            QTest::keyClick(window, Qt::Key_Down);
+            pump(10);
+        }
+        return combo->property("currentText").toString() == text;
+    }
+
+    // ---- 描画の証拠と layout の検査 ----
+    void shot(const std::string& name) {
+        pump(150);
+        const QImage image = window->grabWindow();
+        const auto file = evidence / (name + ".png");
+        const bool saved = !image.isNull() && image.save(QString::fromStdWString(file.wstring()));
+        QRect panel;
+        if (auto* flick = scroll())
+            panel = flick->mapRectToScene(QRectF(0, 0, flick->width(), flick->height()))
+                        .toAlignedRect()
+                        .adjusted(-8, -40, 8, 8)
+                        .intersected(image.rect());
+        const auto crop = evidence / (name + "-panel.png");
+        const bool cropped =
+            !panel.isEmpty() && image.copy(panel).save(QString::fromStdWString(crop.wstring()));
+        check(saved && cropped, "描画の証拠を保存: " + name);
+        shots.append(QJsonObject{{QStringLiteral("name"), QString::fromStdString(name)},
+                                 {QStringLiteral("window"), QString::fromStdWString(file.filename().wstring())},
+                                 {QStringLiteral("panel"), QString::fromStdWString(crop.filename().wstring())},
+                                 {QStringLiteral("width"), image.width()},
+                                 {QStringLiteral("height"), image.height()}});
+    }
+    // inspector の見えている項目が親の幅の中に描かれ、文字が欄からはみ出さないこと。
+    // ListView・ScrollView の中は親が切り取るので、その親の矩形を検査する。
+    void layout(const std::string& name) {
+        auto* root = inspector();
+        auto* flick = scroll();
+        if (!root || !flick) {
+            check(false, "layout: inspector がある: " + name);
+            return;
+        }
+        const QRectF bound = flick->mapRectToScene(QRectF(0, 0, flick->width(), flick->height()));
+        QStringList problems;
+        int inspected = 0;
+        std::function<void(QQuickItem*)> walk = [&](QQuickItem* item) {
+            if (!item->isVisible() || item->width() <= 0 || item->height() <= 0)
+                return;
+            ++inspected;
+            const QRectF rect = item->mapRectToScene(QRectF(0, 0, item->width(), item->height()));
+            if (rect.left() < bound.left() - 1 || rect.right() > bound.right() + 1)
+                problems << QStringLiteral("%1(%2) x=[%3,%4] 幅の外")
+                                .arg(QString::fromLatin1(item->metaObject()->className()),
+                                     item->objectName())
+                                .arg(rect.left())
+                                .arg(rect.right());
+            const auto className = QString::fromLatin1(item->metaObject()->className());
+            if (className.startsWith(QStringLiteral("QQuickText")) &&
+                !className.contains(QStringLiteral("Edit")) &&
+                !className.contains(QStringLiteral("Input"))) {
+                const int elide = item->property("elide").toInt();
+                const int wrap = item->property("wrapMode").toInt();
+                if (elide == 0 && wrap == 0 &&
+                    item->property("contentWidth").toReal() > item->width() + 1)
+                    problems << QStringLiteral("文字がはみ出す: %1").arg(item->property("text").toString().left(40));
+            }
+            if (item->clip())
+                return; // 中は親が切り取る
+            for (auto* child : item->childItems())
+                walk(child);
+        };
+        walk(root);
+        check(root->width() <= flick->width() + 0.5,
+              "layout: inspector の幅は panel の幅以下: " + name);
+        check(problems.isEmpty(), "layout: 項目が幅の外へ描かれず文字がはみ出さない: " + name +
+                                      (problems.isEmpty()
+                                           ? std::string()
+                                           : " (" + problems.join(QStringLiteral("; ")).toStdString() + ")"));
+        check(inspected > 20, "layout: 検査した項目がある (" + std::to_string(inspected) + "): " + name);
+    }
+    // 主な操作に縦スクロールで到達できること。
+    void reachable(const std::string& name, const QStringList& names) {
+        for (const auto& item : names) {
+            auto* found = find(item);
+            if (!found)
+                continue; // この場面では出ない操作
+            check(reach(found), "到達できる: " + item.toStdString() + " (" + name + ")");
+        }
+    }
+};
+
+const QStringList kControls = {
+    QStringLiteral("equationStatusPanel"),  QStringLiteral("equationStateList"),
+    QStringLiteral("equationInsertAfter"),  QStringLiteral("equationDeleteState"),
+    QStringLiteral("equationSourceEditor"), QStringLiteral("equationHoldField"),
+    QStringLiteral("equationAddPart"),      QStringLiteral("equationRebindPart"),
+    QStringLiteral("equationAddAction"),    QStringLiteral("equationUpdateAction"),
+    QStringLiteral("equationDeleteAction"), QStringLiteral("equationAddPair_incoming"),
+    QStringLiteral("equationAddPair_outgoing")};
+
+std::unique_ptr<Session> open(const std::filesystem::path& path, const project::Project& initial,
+                              bool backendAvailable = true) {
+    auto s = std::make_unique<Session>();
+    s->controller = std::make_unique<MvmController>(path, std::filesystem::path{}, initial);
+    s->controller->setMathPreflightForTest(
+        backendAvailable ? s->backend.preflight() : FakeMathBackend::unavailable("試験: Manim が無い"));
+    s->engine = std::make_unique<QQmlApplicationEngine>();
+    auto properties = mvm::app::testFixedWindowInitialProperties();
+    properties.insert(QStringLiteral("mvmController"), QVariant::fromValue(s->controller.get()));
+    properties.insert(QStringLiteral("waveformCache"), QVariant::fromValue(&s->waveforms));
+    if (!mvm::app::testFixedWindowRequested())
+        properties.insert(QStringLiteral("flags"), mvm::test::backgroundWindowFlags());
+    s->engine->setInitialProperties(properties);
+    s->engine->load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
+    s->window = s->engine->rootObjects().isEmpty()
+                    ? nullptr
+                    : qobject_cast<QQuickWindow*>(s->engine->rootObjects().first());
+    if (!s->window)
+        return nullptr;
+    QString reason;
+    if (!QTest::qWaitForWindowExposed(s->window) || !mvm::test::focusWithoutForeground(s->window) ||
+        !mvm::test::isolatedFromUserInput(s->window, reason)) {
+        std::fprintf(stderr, "PROTOCOL_INVALID: 試験を操作から隔離できません: %s\n",
+                     qUtf8Printable(reason));
+        return nullptr;
+    }
+    s->window->setProperty("leftPanelTab", 0);
+    s->window->setProperty("leftPanelWidth", 520);
+    s->controller->attachPreview(
+        s->window->findChild<mvm::app::PreviewEngineRhiItem*>(QStringLiteral("previewSurface")));
+    pumpUntil([&] { return s->controller->previewReady(); }, 30000);
+    return s;
+}
+
+QString partId(Session& s, const QString& label) {
+    for (const auto& part : s.view().value("parts").toList())
+        if (part.toMap().value("label").toString() == label)
+            return part.toMap().value("id").toString();
+    return {};
+}
+
+// UI で部分式を足す: 範囲をキーボードで選び、名前を入れて「選択範囲を部分式に追加」。
+bool addPart(Session& s, const std::string& text, const QString& label, bool last = false) {
+    const auto source = s.view().value("state").toMap().value("source").toString();
+    const auto needle = QString::fromStdString(text);
+    const int at = last ? source.lastIndexOf(needle) : source.indexOf(needle);
+    if (at < 0 || !s.selectSource(at, at + needle.size()))
+        return false;
+    auto* field = s.find(QStringLiteral("equationPartLabelField"));
+    if (!field || !s.reach(field))
+        return false;
+    QTest::mouseClick(s.window, Qt::LeftButton, {}, s.center(field));
+    pump(30);
+    s.key(Qt::Key_A, Qt::ControlModifier);
+    s.type(label.toStdString()); // ASCII の名前だけ (IME は扱わない)
+    return s.click(QStringLiteral("equationAddPart")) && !partId(s, label).isEmpty();
+}
+
+bool addPair(Session& s, const QString& role, const QString& from, const QString& to) {
+    const auto ok = s.chooseCombo(QStringLiteral("equationPairFrom_") + role, from) &&
+                    s.chooseCombo(QStringLiteral("equationPairTo_") + role, to);
+    return ok && s.click(QStringLiteral("equationAddPair_") + role);
+}
+
+std::int64_t timelineFrameOfSource(const project::TimelineClip& clip, std::int64_t source) {
+    // 60fps の Project と同じ FPS の sequence (output = source)。
+    return clip.timelineStartFrame + source - clip.sourceInFrame;
+}
+
+// ---- A. 二次方程式の導出 ----
+int quadraticWorkflow(const std::filesystem::path& path) {
+    auto initial = project::createDefaultProject();
+    check(project::saveProjectJson(initial, path).success, "A: 空の Project を保存");
+    auto s = open(path, initial);
+    if (!s)
+        return 4;
+    // 作成: ファイルメニューの「数式 sequence を追加」。
+    auto* entry = s->window->findChild<QObject*>(QStringLiteral("addEquationSequenceMenuItem"));
+    const auto depth0 = s->controller->undoDepthForTest();
+    check(entry && QMetaObject::invokeMethod(entry, "triggered"), "A: メニューの作成を実行");
+    check(pumpUntil([&] { return s->sourceEditor() && s->sourceEditor()->hasActiveFocus(); }),
+          "A: 作成後に式の欄へ focus が移る");
+    check(s->sequenceCount() == 1 && s->data().states.size() == 1 && s->data().transitions.empty() &&
+              s->controller->undoDepthForTest() == depth0 + 1,
+          "A: 1 状態の sequence を Undo 1 回分で作る");
+    check(s->find(QStringLiteral("equationNoTransitions")) && s->find(QStringLiteral("equationNoParts")) &&
+              s->find(QStringLiteral("equationNoActions")) &&
+              s->find(QStringLiteral("equationLastStateNote")),
+          "A: 変形・部分式・強調の空の案内と、最後の状態を消せない案内");
+    s->shot("01-fresh-one-state");
+    s->layout("fresh");
+
+    // 8 状態: 先頭を書き換え、「後に挿入」+ 式の入力を 7 回。
+    const auto before = s->controller->undoDepthForTest();
+    check(s->replaceSource(kQuadratic[0]) && s->data().states[0].equation.source == kQuadratic[0] &&
+              s->controller->undoDepthForTest() == before + 1,
+          "A: 先頭の式をキー入力で確定 (Undo 1 回)");
+    for (int i = 1; i < kStates; ++i) {
+        const auto d = s->controller->undoDepthForTest();
+        check(s->click(QStringLiteral("equationInsertAfter")), "A: 後に挿入");
+        check(s->replaceSource(kQuadratic[i]), "A: 式を入力");
+        check(s->data().states.size() == static_cast<std::size_t>(i + 1) &&
+                  s->data().states[static_cast<std::size_t>(i)].equation.source == kQuadratic[i] &&
+                  s->controller->undoDepthForTest() == d + 2,
+              "A: 状態 " + std::to_string(i) + " を挿入して式を確定 (挿入 1 + 確定 1)");
+    }
+    // hold / 変形の長さを数値欄で。
+    check(s->clickStateRow(0) && s->enterNumber(QStringLiteral("equationHoldField"), 90) &&
+              s->data().states[0].holdFrames == 90,
+          "A: 状態 0 の hold を 90f");
+    check(s->clickStateRow(7) && s->enterNumber(QStringLiteral("equationHoldField"), 120) &&
+              s->data().states[7].holdFrames == 120,
+          "A: 状態 7 の hold を 120f");
+    check(s->clickStateRow(6) &&
+              s->enterNumber(QStringLiteral("equationTransitionFrames_outgoing"), 24) &&
+              s->data().transitions[6].frames == 24,
+          "A: 変形 6 の長さを 24f");
+
+    // 部分式: 判別式 b^2-4ac を状態 4〜7 に、状態 6・7 に分母 2a、状態 7 に -b。
+    for (int i = 4; i < kStates; ++i) {
+        check(s->clickStateRow(i) && addPart(*s, "b^2-4ac", QStringLiteral("disc")),
+              "A: 状態 " + std::to_string(i) + " に判別式の部分式");
+    }
+    check(s->clickStateRow(6) && addPart(*s, "2a", QStringLiteral("denom"), true),
+          "A: 状態 6 の分母 (同じ文字 2a の後ろの方)");
+    check(s->clickStateRow(7) && addPart(*s, "2a", QStringLiteral("denom")) &&
+              addPart(*s, "-b", QStringLiteral("minus-b")),
+          "A: 状態 7 の分母と -b");
+    const auto& last = s->data().states[7];
+    const auto disc = std::find_if(last.parts.begin(), last.parts.end(),
+                                   [](const auto& p) { return p.label == "disc"; });
+    check(disc != last.parts.end() && disc->binding.expectedText == "b^2-4ac" &&
+              disc->binding.status == project::BindingStatus::Bound,
+          "A: 最終状態の判別式が b^2-4ac に bound");
+    s->shot("02-state-with-parts");
+    s->layout("parts");
+
+    // 対応: 判別式 4→5→6→7、分母 6→7。
+    check(s->clickStateRow(5) &&
+              addPair(*s, QStringLiteral("incoming"), QStringLiteral("disc「b^2-4ac」"),
+                      QStringLiteral("disc「b^2-4ac」")) &&
+              addPair(*s, QStringLiteral("outgoing"), QStringLiteral("disc「b^2-4ac」"),
+                      QStringLiteral("disc「b^2-4ac」")),
+          "A: 判別式の対応 4→5 と 5→6");
+    check(s->clickStateRow(7) &&
+              addPair(*s, QStringLiteral("incoming"), QStringLiteral("disc「b^2-4ac」"),
+                      QStringLiteral("disc「b^2-4ac」")) &&
+              addPair(*s, QStringLiteral("incoming"), QStringLiteral("denom「2a」"),
+                      QStringLiteral("denom「2a」")),
+          "A: 判別式と分母の対応 6→7");
+    check(s->data().transitions[4].correspondence.size() == 1 &&
+              s->data().transitions[5].correspondence.size() == 1 &&
+              s->data().transitions[6].correspondence.size() == 2,
+          "A: 明示の対応が 3 辺に保存される");
+    check(s->clickStateRow(6), "A: 対応の場面");
+    s->shot("03-transition-correspondence");
+    s->layout("correspondence");
+
+    // 強調: 状態 7 の判別式に outline [10,40)、pulse [60,90)。
+    check(s->clickStateRow(7) && s->clickPartRow(QStringLiteral("disc")), "A: 判別式を選ぶ");
+    check(s->chooseCombo(QStringLiteral("equationActionTarget"), QStringLiteral("disc「b^2-4ac」")) &&
+              s->chooseCombo(QStringLiteral("equationActionOperation"), QStringLiteral("outline (囲み線)")) &&
+              s->enterNumber(QStringLiteral("equationActionStart"), 10) &&
+              s->enterNumber(QStringLiteral("equationActionDuration"), 30) &&
+              s->click(QStringLiteral("equationAddAction")),
+          "A: outline を追加");
+    check(s->click(QStringLiteral("equationNewAction")) &&
+              s->chooseCombo(QStringLiteral("equationActionOperation"), QStringLiteral("pulse (拡大と強調色)")) &&
+              s->enterNumber(QStringLiteral("equationActionStart"), 60) &&
+              s->enterNumber(QStringLiteral("equationActionDuration"), 30) &&
+              s->click(QStringLiteral("equationAddAction")),
+          "A: pulse を追加");
+    const auto& actions = s->data().actions;
+    check(actions.size() == 2 && actions[0].operation == project::EquationOperation::Outline &&
+              actions[0].start == 10 && actions[0].duration == 30 &&
+              actions[1].operation == project::EquationOperation::Pulse && actions[1].start == 60 &&
+              actions[1].duration == 30 && actions[0].target == disc->id &&
+              actions[1].target == disc->id && actions[0].state == last.id,
+          "A: 判別式への outline と pulse");
+    // 区間が hold を超える変更は拒否 (UI の案内と domain の両方)。
+    {
+        const auto before = s->project();
+        const auto d = s->controller->undoDepthForTest();
+        check(s->enterNumber(QStringLiteral("equationActionDuration"), 200), "A: 長さを打つ");
+        auto* hint = s->find(QStringLiteral("equationActionHint"));
+        check(hint && hint->property("text").toString().contains(QStringLiteral("超えています")),
+              "A: hold を超える区間を確定前に示す");
+        s->click(QStringLiteral("equationUpdateAction"));
+        check(s->project() == before && s->controller->undoDepthForTest() == d &&
+                  s->view().value("messageError").toBool(),
+              "A: hold を超える action の変更は Project を変えず理由を示す");
+    }
+    // action の行を選んで編集の場面を撮る。
+    auto selectActionRow = [&](int index) {
+        return s->click(QStringLiteral("equationActionRow_%1").arg(index));
+    };
+    check(selectActionRow(0), "A: outline を選ぶ");
+    s->shot("04-outline-action-editor");
+    s->layout("outline");
+    check(selectActionRow(1), "A: pulse を選ぶ");
+    s->shot("05-pulse-action-editor");
+    s->layout("pulse");
+    s->reachable("quadratic", kControls);
+    s->shot("06-quadratic-8-states");
+
+    // ---- キーボード・focus ----
+    {
+        const auto clips = s->project().timelineClips.size();
+        const auto d = s->controller->undoDepthForTest();
+        check(s->clickStateRow(3), "鍵: 状態の一覧に focus");
+        s->key(Qt::Key_Delete);
+        check(s->project().timelineClips.size() == clips && s->data().states.size() == kStates &&
+                  s->controller->undoDepthForTest() == d,
+              "鍵: 状態の一覧の Delete は clip も状態も消さない");
+        s->key(Qt::Key_Down);
+        check(s->view().value("state").toMap().value("index").toInt() == 4 &&
+                  s->data().states[3].equation.source == kQuadratic[3],
+              "鍵: 一覧の下は選択の移動で、並べ替えない");
+        check(s->clickStateRow(7) && s->clickPartRow(QStringLiteral("disc")), "鍵: 部分式の一覧に focus");
+        s->key(Qt::Key_Delete);
+        check(s->project().timelineClips.size() == clips && s->data().states[7].parts.size() == 3 &&
+                  s->controller->undoDepthForTest() == d,
+              "鍵: 部分式の一覧の Delete は clip も部分式も消さない");
+        // 編集欄: 矢印・Space・Ctrl+Z は文字の編集で、状態の順・再生・Project の履歴に効かない。
+        check(s->clickStateRow(0) && s->focusSource(), "鍵: 式の欄に focus");
+        s->key(Qt::Key_End);
+        s->key(Qt::Key_Up);
+        s->key(Qt::Key_Down);
+        s->key(Qt::Key_Space);
+        check(!s->controller->playing() && s->data().states[0].equation.source == kQuadratic[0],
+              "鍵: 編集欄の Space は再生せず、矢印は並べ替えない");
+        s->key(Qt::Key_Z, Qt::ControlModifier);
+        check(s->controller->undoDepthForTest() == d &&
+                  s->sourceEditor()->property("text").toString() == QString::fromLatin1(kQuadratic[0]),
+              "鍵: 編集欄の Ctrl+Z は入力を戻し、Project の Undo を使わない");
+        s->key(Qt::Key_Delete);
+        check(s->project().timelineClips.size() == clips,
+              "鍵: 編集欄の Delete は文字を消し clip を消さない");
+        s->key(Qt::Key_Escape);
+        check(s->data().states[0].equation.source == kQuadratic[0] &&
+                  s->controller->undoDepthForTest() == d,
+              "鍵: Esc で取り消すと Project は変わらない");
+        // Tab は tab 文字を入れず focus を移す (離れると確定。文字は変わっていない)。
+        check(s->focusSource(), "鍵: 式の欄に focus (Tab)");
+        s->key(Qt::Key_Tab);
+        check(!s->sourceEditor()->hasActiveFocus() &&
+                  s->data().states[0].equation.source == kQuadratic[0],
+              "鍵: Tab は focus を次の操作へ移し、tab 文字を入れない");
+        // 確定の後に focus を移してから Ctrl+Z / Ctrl+Shift+Z: Project の編集を 1 回ずつ戻す・やり直す。
+        const auto beforeEdit = s->project();
+        check(s->focusSource(), "鍵: 式の欄に focus (Undo)");
+        s->key(Qt::Key_End);
+        s->type(" ");
+        check(s->clickStateRow(1), "鍵: 別の行をクリックして確定");
+        const auto afterEdit = s->project();
+        check(s->data().states[0].equation.source == std::string(kQuadratic[0]) + " " &&
+                  s->controller->undoDepthForTest() == d + 1,
+              "鍵: focus を離すと 1 回だけ確定");
+        s->key(Qt::Key_Z, Qt::ControlModifier);
+        check(s->project() == beforeEdit && s->controller->undoDepthForTest() == d,
+              "鍵: Ctrl+Z は確定 1 回分だけ戻す");
+        s->key(Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        check(s->project() == afterEdit, "鍵: Ctrl+Shift+Z で同じ Project (ID を含む) に戻る");
+        s->key(Qt::Key_Z, Qt::ControlModifier);
+        check(s->project() == beforeEdit, "鍵: 非破壊的な編集の Undo");
+    }
+
+    // ---- 保存・閉じる・開き直す ----
+    s->window->contentItem()->forceActiveFocus();
+    s->key(Qt::Key_S, Qt::ControlModifier);
+    check(pumpUntil([&] { return !s->controller->dirty(); }), "保存: Ctrl+S で保存");
+    const auto saved = s->project();
+    const auto savedClip = *s->sequence();
+    s->close();
+    s.reset();
+    const auto loaded = project::loadProjectJson(path);
+    check(loaded.success && loaded.project.schemaVersion == 21, "再読込: schema 21: " + loaded.error);
+    if (!loaded.success)
+        return 1;
+    check(loaded.project.timelineClips == saved.timelineClips,
+          "再読込: clip (状態の順・尺・ID・binding・対応・action) が保存前と同じ");
+    {
+        std::ifstream file(path, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(file)), {});
+        const auto again = project::serializeProjectJson(loaded.project, path);
+        check(again.success && again.json == bytes, "再読込: JSON の往復で同じ byte 列");
+    }
+    auto reopened = open(path, loaded.project);
+    if (!reopened)
+        return 4;
+    s = std::move(reopened);
+    int clipIndex = -1;
+    for (std::size_t i = 0; i < s->project().timelineClips.size(); ++i)
+        if (s->project().timelineClips[i].kind == project::TimelineClipKind::EquationSequence)
+            clipIndex = static_cast<int>(i);
+    check(clipIndex >= 0 && s->controller->selectClip(clipIndex), "再読込: clip を選ぶ");
+    const auto& data = s->data();
+    bool order = data.states.size() == kStates;
+    for (int i = 0; order && i < kStates; ++i)
+        order = data.states[static_cast<std::size_t>(i)].equation.source == kQuadratic[i] &&
+                data.states[static_cast<std::size_t>(i)].id == savedClip.equationSequence.states[static_cast<std::size_t>(i)].id;
+    check(order && data == savedClip.equationSequence &&
+              s->view().value("stateCount").toInt() == kStates,
+          "再読込: 状態の順と全 ID が同じで、UI に 8 状態");
+
+    // ---- 直接 seek の提示 (P3-4 の経路) ----
+    const auto& clip = *s->sequence();
+    std::vector<project::EquationInterval> intervals;
+    std::int64_t length = 0;
+    std::string error;
+    project::equationIntervals(clip.equationSequence, intervals, length, error);
+    struct Probe {
+        const char* name;
+        std::int64_t source;
+        const char* preview;
+    };
+    const auto holdBegin = [&](int state) {
+        for (const auto& i : intervals)
+            if (!i.transition && i.index == static_cast<std::size_t>(state))
+                return i.begin;
+        return std::int64_t{-1};
+    };
+    const auto transitionBegin = [&](int t) {
+        for (const auto& i : intervals)
+            if (i.transition && i.index == static_cast<std::size_t>(t))
+                return i.begin;
+        return std::int64_t{-1};
+    };
+    const Probe probes[] = {{"hold 0 の frame 5", holdBegin(0) + 5, "static"},
+                            {"変形 6 の中央", transitionBegin(6) + 12, "transition"},
+                            {"outline の中央", holdBegin(7) + 25, "action"},
+                            {"pulse の中央", holdBegin(7) + 75, "action"},
+                            {"状態 7 の hold (action の間)", holdBegin(7) + 50, "static"}};
+    for (const auto& probe : probes) {
+        const auto frame = timelineFrameOfSource(clip, probe.source);
+        s->controller->seekTimelineFrame(frame);
+        const bool shown = pumpUntil(
+            [&] {
+                s->editor().refreshStatus();
+                return s->editor().status().value("preview").toString() ==
+                       QString::fromLatin1(probe.preview);
+            },
+            20000);
+        check(shown && s->controller->playheadFrame() == frame,
+              std::string("直接 seek: ") + probe.name + " で " + probe.preview + " を提示 (" +
+                  s->editor().status().value("previewText").toString().toStdString() + ")");
+    }
+    s->shot("07-reopened-seek-action");
+
+    // ---- 破壊的な編集の Undo/Redo (UI) ----
+    {
+        const auto before = s->project();
+        check(s->clickStateRow(3) && s->click(QStringLiteral("equationDeleteState")),
+              "破壊: 削除の確認を開く");
+        auto* text = s->find(QStringLiteral("equationDeleteStateText"));
+        check(text && text->property("text").toString().contains(QStringLiteral("隣接する変形 2 件")),
+              "破壊: 削除で消える action・変形・対応を示す");
+        s->shot("08-delete-state-confirm");
+        check(s->click(QStringLiteral("equationDeleteStateConfirmButton")) &&
+                  s->data().states.size() == kStates - 1,
+              "破壊: 状態を削除");
+        const auto after = s->project();
+        s->window->contentItem()->forceActiveFocus();
+        s->key(Qt::Key_Z, Qt::ControlModifier);
+        check(s->project() == before, "破壊: Ctrl+Z で元の ID の状態・辺・対応が戻る");
+        s->key(Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        check(s->project() == after, "破壊: Ctrl+Shift+Z で削除後と同じ Project");
+        s->key(Qt::Key_Z, Qt::ControlModifier);
+    }
+    s->close();
+    return 0;
+}
+
+// ---- B. 修復・状態・layout ----
+int repairAndLayouts(const std::filesystem::path& directory) {
+    const auto path = directory / L"repair.mvm";
+    auto initial = project::createDefaultProject();
+    check(project::saveProjectJson(initial, path).success, "B: Project を保存");
+    auto s = open(path, initial);
+    if (!s)
+        return 4;
+    auto* entry = s->window->findChild<QObject*>(QStringLiteral("addEquationSequenceMenuItem"));
+    check(entry && QMetaObject::invokeMethod(entry, "triggered"), "B: 作成");
+    pumpUntil([&] { return s->sourceEditor() && s->sourceEditor()->hasActiveFocus(); });
+    check(s->replaceSource("a+bc+d") && addPart(*s, "bc", QStringLiteral("bc")), "B: 部分式 bc");
+    check(s->click(QStringLiteral("equationInsertAfter")) && s->replaceSource("a+bc+d") &&
+              addPart(*s, "bc", QStringLiteral("bc2")),
+          "B: 2 つ目の状態");
+    s->shot("09-empty-correspondence");
+    check(s->clickStateRow(0) && s->clickPartRow(QStringLiteral("bc")) &&
+              s->enterNumber(QStringLiteral("equationActionStart"), 5) &&
+              s->enterNumber(QStringLiteral("equationActionDuration"), 20) &&
+              s->click(QStringLiteral("equationAddAction")),
+          "B: bc に outline");
+    const auto bcId = partId(*s, QStringLiteral("bc"));
+    // Invalid: 部分式の中に文字を打つ (信頼済み編集で Invalid)。
+    check(s->focusSource(), "B: 編集欄");
+    s->key(Qt::Key_Home, Qt::ControlModifier);
+    s->key(Qt::Key_Right);
+    s->key(Qt::Key_Right);
+    s->key(Qt::Key_Right);
+    s->type("Q");
+    s->key(Qt::Key_Return, Qt::ControlModifier);
+    check(s->data().states[0].equation.source == "a+bQc+d" &&
+              s->data().states[0].parts[0].binding.status == project::BindingStatus::Invalid,
+          "B: 部分式の中の入力で Invalid");
+    s->editor().refreshStatus();
+    check(s->clickPartRow(QStringLiteral("bc")) &&
+              s->view().value("selectedPart").toMap().value("status") == "invalid_binding",
+          "B: Invalid を修復の対象として示す");
+    s->shot("10-invalid-binding");
+    s->layout("invalid");
+    check(s->selectSource(2, 5) && s->click(QStringLiteral("equationRebindPart")) &&
+              s->data().states[0].parts[0].binding.status == project::BindingStatus::Bound &&
+              s->data().states[0].parts[0].id.value == bcId.toStdString(),
+          "B: 選び直した範囲で同じ PartId を修復");
+    check(s->view().value("message").toString().contains(QStringLiteral("対応は自動では戻りません")),
+          "B: 修復した後、対応は戻らないことを示す");
+    s->shot("11-invalid-repaired");
+    // 欠落: 部分式を消す (確認付き) → action は missing。
+    check(s->clickPartRow(QStringLiteral("bc")) && s->click(QStringLiteral("equationDeletePart")) &&
+              s->click(QStringLiteral("equationDeletePartConfirmButton")),
+          "B: 部分式を削除");
+    check(s->data().actions[0].targetStatus == project::EquationTargetStatus::Missing &&
+              s->view().value("selectedPart").toMap().value("status") == "missing_target",
+          "B: action の対象が欠落し、作り直せる状態として選ばれている");
+    s->shot("12-missing-action-target");
+    s->layout("missing");
+    check(s->selectSource(2, 5) && s->click(QStringLiteral("equationRebindPart")) &&
+              s->data().actions[0].targetStatus == project::EquationTargetStatus::Present &&
+              s->data().actions[0].target.value == bcId.toStdString(),
+          "B: 欠落した部分式を同じ ID で作り直し、action を有効に戻す");
+
+    // backend 不在 (環境の問題として示し、内容の修復を出さない)。
+    s->controller->setMathPreflightForTest(FakeMathBackend::unavailable("試験: Manim が無い"));
+    check(pumpUntil([&] {
+              s->editor().refreshStatus();
+              return s->editor().status().value("renderer") == "unavailable";
+          }),
+          "B: backend 不在の状態");
+    check(s->find(QStringLiteral("equationDependencyGuidance")) &&
+              s->find(QStringLiteral("equationRetryButton")) &&
+              s->editor().status().value("category") == "environment",
+          "B: 導入の案内と再試行、分類は環境");
+    s->reach(s->find(QStringLiteral("equationStatusPanel")));
+    s->shot("13-backend-unavailable");
+    s->controller->setMathPreflightForTest(s->backend.preflight());
+
+    // OverBudget: action の frame で memory の上限を 1 byte に。
+    const auto& clip = *s->sequence();
+    s->controller->seekTimelineFrame(clip.timelineStartFrame + 10);
+    check(pumpUntil(
+              [&] {
+                  s->editor().refreshStatus();
+                  return s->editor().status().value("preview") == "action";
+              },
+              20000),
+          "B: action の frame を提示");
+    auto& cache = s->controller->mathRastersForTest();
+    cache.setResidentMemoryBudget(1);
+    s->controller->seekTimelineFrame(clip.timelineStartFrame + 12);
+    check(pumpUntil(
+              [&] {
+                  s->editor().refreshStatus();
+                  return s->editor().status().value("residency") == "over_budget";
+              },
+              20000),
+          "B: OverBudget の状態");
+    check(s->editor().status().value("category") == "memory" &&
+              s->editor().status().value("compile") == "ready" &&
+              !s->find(QStringLiteral("equationRetryButton")),
+          "B: OverBudget は memory の問題で、Project の破損や修復として示さない");
+    s->reach(s->find(QStringLiteral("equationStatusPanel")));
+    s->shot("14-over-budget");
+    cache.setResidentMemoryBudget(MathRasterCache::kDefaultResidentMemoryBudget);
+
+    // 読むだけの polling: 再生位置の外の sequence を選んでも描画を始めない。
+    {
+        auto far = s->project();
+        auto data = s->data();
+        std::string error;
+        check(project::remapEquationSequenceIds(data, [] {
+                  static int n = 0;
+                  return "far-" + std::to_string(n++);
+              }, error),
+              "B: 外の sequence の ID");
+        data.states[0].equation.source = "q+r";
+        data.states[1].equation.source = "q+r";
+        for (auto& st : data.states)
+            st.parts.clear();
+        data.actions.clear();
+        for (auto& t : data.transitions)
+            t.correspondence.clear();
+        check(project::addEquationSequence(far, data, "far", "外", {project::TrackKind::Video, 0}, 9000)
+                  .success,
+              "B: 再生位置の外に 2 本目");
+        s->close();
+        s.reset();
+        check(project::saveProjectJson(far, path).success, "B: 2 本目を含めて保存");
+        s = open(path, far);
+        if (!s)
+            return 4;
+        // 再生位置の sequence の描画が終わってから数え始める (見えている clip の要求と混ぜない)。
+        const auto nearId = QString::fromStdString(s->project().timelineClips[0].id);
+        check(pumpUntil(
+                  [&] {
+                      return s->controller->equationSequencePreviewStatus(nearId, 0).disk ==
+                             MathRasterCache::State::Ready;
+                  },
+                  20000),
+              "B: 再生位置の sequence の描画が終わる");
+        pump(500);
+        auto& c = s->controller->mathRastersForTest();
+        int index = -1;
+        for (std::size_t i = 0; i < s->project().timelineClips.size(); ++i)
+            if (s->project().timelineClips[i].id == "far")
+                index = static_cast<int>(i);
+        check(index >= 0 && s->controller->selectClip(index) &&
+                  s->view().value("clipId").toString() == "far",
+              "B: 外の sequence を UI で選ぶ");
+        pump(300);
+        const auto records = c.recordCount();
+        const auto sequences = c.equationSequenceRecordCount();
+        const auto renders = s->backend.renders->load();
+        const auto equationRenders = s->backend.equationRenders->load();
+        const auto polls = s->editor().statusRefreshCountForTest();
+        pump(2000);
+        check(s->editor().statusRefreshCountForTest() >= polls + 4,
+              "B: QML の polling が状態を問い合わせている (" +
+                  std::to_string(s->editor().statusRefreshCountForTest() - polls) + " 回)");
+        check(c.recordCount() == records && c.equationSequenceRecordCount() == sequences &&
+                  s->backend.renders->load() == renders &&
+                  s->backend.equationRenders->load() == equationRenders,
+              "B: polling は描画を要求せず cache の record も作らない");
+        check(s->editor().status().value("preview") == "outside",
+              "B: 再生位置の外と示す");
+    }
+
+    // 狭い panel と低い window。
+    s->window->setProperty("leftPanelWidth", 240);
+    pump(200);
+    s->layout("narrow");
+    s->reachable("narrow", kControls);
+    s->shot("15-narrow-panel");
+    s->window->setProperty("leftPanelWidth", 520);
+    const QSize size = s->window->size();
+    s->window->resize(size.width(), 560);
+    pump(300);
+    s->layout("low-height");
+    s->reachable("low-height", kControls);
+    if (auto* flick = s->scroll())
+        flick->setProperty("contentY", 0);
+    s->shot("16-low-height-top");
+    if (auto* flick = s->scroll())
+        flick->setProperty("contentY", std::max<qreal>(0, flick->property("contentHeight").toReal() -
+                                                              flick->height()));
+    s->shot("17-low-height-bottom");
+    s->window->resize(size);
+    pump(200);
+    s->close();
+    return 0;
+}
+
+// 長い内容: 10 状態・600 文字の式・12 部分式・長い名前・長い理由。
+int longContent(const std::filesystem::path& directory) {
+    const auto path = directory / L"long.mvm";
+    auto initial = project::createDefaultProject();
+    project::EquationSequenceClipData data;
+    std::string longSource;
+    for (int i = 0; i < 60; ++i)
+        longSource += "x_" + std::to_string(i % 10) + "+";
+    longSource += "y=0";
+    for (int i = 0; i < 10; ++i) {
+        project::EquationState st;
+        st.id = {"long-s" + std::to_string(i)};
+        st.revision = "long-r" + std::to_string(i);
+        st.equation.source = i == 0 ? longSource : "a_" + std::to_string(i) + "+b=c";
+        st.holdFrames = 30;
+        data.states.push_back(st);
+        if (i > 0)
+            data.transitions.push_back({{"long-t" + std::to_string(i)},
+                                        data.states[static_cast<std::size_t>(i - 1)].id,
+                                        st.id,
+                                        10,
+                                        {}});
+    }
+    auto& first = data.states[0];
+    for (int k = 0; k < 12; ++k) {
+        const auto at = static_cast<std::int64_t>(k * 4);
+        first.parts.push_back(
+            {{"long-p" + std::to_string(k)},
+             "とても長い部分式の名前で狭いパネルでも省略されるべきもの " + std::to_string(k),
+             {first.revision, at, at + 3, first.equation.source.substr(static_cast<std::size_t>(at), 3),
+              project::BindingStatus::Bound}});
+    }
+    check(project::addEquationSequence(initial, data, "long", "長い", {project::TrackKind::Video, 0}, 0)
+              .success,
+          "長い: fixture");
+    check(project::saveProjectJson(initial, path).success, "長い: 保存");
+    auto s = open(path, initial);
+    if (!s)
+        return 4;
+    check(s->controller->selectClip(0) && s->view().value("stateCount").toInt() == 10, "長い: 選ぶ");
+    // 長い理由: 重なる範囲の追加を拒否させる。
+    check(s->selectSource(1, 6), "長い: 重なる範囲を選ぶ");
+    s->click(QStringLiteral("equationAddPart"));
+    check(s->view().value("messageError").toBool(), "長い: 拒否の理由");
+    s->window->setProperty("leftPanelWidth", 300);
+    pump(200);
+    s->layout("long");
+    s->reachable("long", kControls);
+    if (auto* flick = s->scroll())
+        flick->setProperty("contentY", 0);
+    s->shot("18-long-content");
+    s->close();
+    return 0;
+}
+} // namespace
+
+int runEquationSequenceUi(const std::filesystem::path& directory, bool scratch) {
+    std::error_code ignored;
+    if (std::filesystem::exists(directory)) {
+        if (!scratch) {
+            std::fprintf(stderr, "証拠の directory が既にあります (上書きしません): %s\n",
+                         directory.string().c_str());
+            return 2;
+        }
+        std::filesystem::remove_all(directory, ignored);
+    }
+    std::filesystem::create_directories(directory);
+    evidence = directory;
+    int status = quadraticWorkflow(directory / L"quadratic.mvm");
+    if (status == 0)
+        status = repairAndLayouts(directory);
+    if (status == 0)
+        status = longContent(directory);
+    QJsonObject summary{{QStringLiteral("checks"), checks},
+                        {QStringLiteral("failures"), failures},
+                        {QStringLiteral("protocolInvalid"), status == 4},
+                        {QStringLiteral("screenshots"), shots},
+                        {QStringLiteral("results"), results}};
+    QFile out(QString::fromStdWString((directory / L"results.json").wstring()));
+    if (out.open(QIODevice::WriteOnly))
+        out.write(QJsonDocument(summary).toJson());
+    std::fprintf(stderr, "%d 検査中 %d 件失敗 (画像 %d 枚: %s)\n", checks, failures,
+                 static_cast<int>(shots.size()), directory.string().c_str());
+    if (status != 0)
+        return status;
+    return failures == 0 && checks > 0 ? 0 : 1;
+}

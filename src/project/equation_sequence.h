@@ -127,5 +127,35 @@ bool replaceEquationSource(EquationSequenceClipData&, StateId, std::string sourc
                            std::string revision, int outputHeight, std::string& error);
 bool deleteEquationPart(EquationSequenceClipData&, StateId, PartId, int outputHeight,
                         std::string& error);
+
+// ---- P3-5 の authoring 操作 (すべて候補を作って全体を検証してから確定する) ----
+
+// 状態の並べ替え。状態の ID・式・部分式・所有 action はそのまま移す。新しい順の隣接の組
+// (from,to) が旧い辺と同じ順の組なら、その辺 (ID・尺・対応) を保つ。それ以外の隣接は
+// newEdgeId で発行した新しい辺 (尺 freshFrames、対応なし) にする。式の文字から対応を推測しない。
+// newIndex は移動後の位置。同じ位置なら変更しない (成功)。
+bool moveEquationState(EquationSequenceClipData&, StateId, std::size_t newIndex,
+                       const std::function<std::string()>& newEdgeId, std::int64_t freshFrames,
+                       int outputHeight, std::string& error);
+// 新しい部分式を Bound で追加する。ID は sequence 内で未使用 (欠落参照の ID とも別) であること。
+bool addEquationPart(EquationSequenceClipData&, StateId, SemanticPart, int outputHeight,
+                     std::string& error);
+// 削除された部分式 (action が missing で参照する ID) を同じ PartId で作り直し、その ID を
+// 参照する action を present へ戻す。対応は作らない。binding は今の source の Bound であること。
+bool restoreMissingEquationPart(EquationSequenceClipData&, StateId, SemanticPart,
+                                int outputHeight, std::string& error);
+bool renameEquationPart(EquationSequenceClipData&, StateId, PartId, std::string label,
+                        int outputHeight, std::string& error);
+bool addEquationCorrespondence(EquationSequenceClipData&, TransitionId, PartPair, int outputHeight,
+                               std::string& error);
+bool removeEquationCorrespondence(EquationSequenceClipData&, TransitionId, PartPair,
+                                  int outputHeight, std::string& error);
+bool addEquationAction(EquationSequenceClipData&, EquationAction, int outputHeight,
+                       std::string& error);
+// action の ID と所有状態は変えない。対象・区間・operation だけを置き換える。
+bool updateEquationAction(EquationSequenceClipData&, const EquationAction&, int outputHeight,
+                          std::string& error);
+bool deleteEquationAction(EquationSequenceClipData&, ActionId, int outputHeight,
+                          std::string& error);
 } // namespace mvm::project
 #endif

@@ -400,4 +400,168 @@ bool deleteEquationPart(EquationSequenceClipData& data, StateId state, PartId id
         return true;
     });
 }
+
+namespace {
+// 実在の部分式と、action が保持する欠落参照の ID (同じ名前空間で衝突させない)。
+bool partIdReserved(const EquationSequenceClipData& data, const PartId& id) {
+    for (const auto& s : data.states)
+        if (part(s, id))
+            return true;
+    return std::any_of(data.actions.begin(), data.actions.end(),
+                       [&](const auto& a) { return a.target == id; });
+}
+} // namespace
+
+bool moveEquationState(EquationSequenceClipData& data, StateId id, std::size_t newIndex,
+                       const std::function<std::string()>& newEdgeId, std::int64_t freshFrames,
+                       int height, std::string& error) {
+    return edit(data, height, error, [&](auto& c) {
+        const auto from = stateIndex(c, id);
+        if (!from || newIndex >= c.states.size())
+            return fail(error, "移動する状態または移動先が不正です");
+        if (*from == newIndex)
+            return true;
+        auto moved = std::move(c.states[*from]);
+        c.states.erase(c.states.begin() + static_cast<std::ptrdiff_t>(*from));
+        c.states.insert(c.states.begin() + static_cast<std::ptrdiff_t>(newIndex), std::move(moved));
+        std::unordered_set<std::string> reserved;
+        for (const auto& t : c.transitions)
+            reserved.insert(t.id.value);
+        std::vector<EquationStepTransition> edges;
+        for (std::size_t i = 0; i + 1 < c.states.size(); ++i) {
+            const auto& a = c.states[i].id;
+            const auto& b = c.states[i + 1].id;
+            // 同じ順の組だけを保つ。逆向きの組や離れた組の対応は引き継がない。
+            const auto kept = std::find_if(c.transitions.begin(), c.transitions.end(),
+                                           [&](const auto& t) { return t.from == a && t.to == b; });
+            if (kept != c.transitions.end()) {
+                edges.push_back(*kept);
+                continue;
+            }
+            std::string fresh;
+            for (int attempt = 0; attempt < 128 && newEdgeId; ++attempt) {
+                auto candidate = newEdgeId();
+                if (!candidate.empty() && reserved.insert(candidate).second) {
+                    fresh = std::move(candidate);
+                    break;
+                }
+            }
+            if (fresh.empty())
+                return fail(error, "新しい辺の ID を発行できません");
+            edges.push_back({{fresh}, a, b, freshFrames, {}});
+        }
+        c.transitions = std::move(edges);
+        return true;
+    });
+}
+
+bool addEquationPart(EquationSequenceClipData& data, StateId stateId, SemanticPart added,
+                     int height, std::string& error) {
+    return edit(data, height, error, [&](auto& c) {
+        const auto i = stateIndex(c, stateId);
+        if (!i)
+            return fail(error, "部分式を追加する状態が存在しません");
+        if (added.id.value.empty() || partIdReserved(c, added.id))
+            return fail(error, "部分式の ID が空または使用中です");
+        if (!equationBindingMatchesSource(c.states[*i], added.binding))
+            return fail(error, "部分式の範囲・revision・証人が今の式と一致しません");
+        c.states[*i].parts.push_back(std::move(added));
+        return true;
+    });
+}
+
+bool restoreMissingEquationPart(EquationSequenceClipData& data, StateId stateId,
+                                SemanticPart restored, int height, std::string& error) {
+    return edit(data, height, error, [&](auto& c) {
+        const auto i = stateIndex(c, stateId);
+        if (!i)
+            return fail(error, "修復する状態が存在しません");
+        bool referenced = false;
+        for (const auto& a : c.actions)
+            referenced = referenced || (a.state == stateId && a.target == restored.id &&
+                                        a.targetStatus == EquationTargetStatus::Missing);
+        if (!referenced || std::any_of(c.states.begin(), c.states.end(), [&](const auto& s) {
+                return part(s, restored.id) != nullptr;
+            }))
+            return fail(error, "この状態の action が欠落として参照する PartId ではありません");
+        if (!equationBindingMatchesSource(c.states[*i], restored.binding))
+            return fail(error, "部分式の範囲・revision・証人が今の式と一致しません");
+        c.states[*i].parts.push_back(std::move(restored));
+        for (auto& a : c.actions)
+            if (a.state == stateId && a.target == c.states[*i].parts.back().id)
+                a.targetStatus = EquationTargetStatus::Present;
+        return true;
+    });
+}
+
+bool renameEquationPart(EquationSequenceClipData& data, StateId stateId, PartId id,
+                        std::string label, int height, std::string& error) {
+    return edit(data, height, error, [&](auto& c) {
+        const auto i = stateIndex(c, stateId);
+        if (!i)
+            return fail(error, "状態が存在しません");
+        for (auto& p : c.states[*i].parts)
+            if (p.id == id) {
+                p.label = std::move(label);
+                return true;
+            }
+        return fail(error, "部分式が存在しません");
+    });
+}
+
+bool addEquationCorrespondence(EquationSequenceClipData& data, TransitionId id, PartPair pair,
+                               int height, std::string& error) {
+    return edit(data, height, error, [&](auto& c) {
+        for (auto& t : c.transitions)
+            if (t.id == id) {
+                t.correspondence.push_back(std::move(pair));
+                return true;
+            }
+        return fail(error, "辺が存在しません");
+    });
+}
+
+bool removeEquationCorrespondence(EquationSequenceClipData& data, TransitionId id, PartPair pair,
+                                  int height, std::string& error) {
+    return edit(data, height, error, [&](auto& c) {
+        for (auto& t : c.transitions)
+            if (t.id == id) {
+                if (std::erase(t.correspondence, pair) == 0)
+                    return fail(error, "対応が存在しません");
+                return true;
+            }
+        return fail(error, "辺が存在しません");
+    });
+}
+
+bool addEquationAction(EquationSequenceClipData& data, EquationAction action, int height,
+                       std::string& error) {
+    return edit(data, height, error, [&](auto& c) {
+        c.actions.push_back(std::move(action));
+        return true;
+    });
+}
+
+bool updateEquationAction(EquationSequenceClipData& data, const EquationAction& updated,
+                          int height, std::string& error) {
+    return edit(data, height, error, [&](auto& c) {
+        for (auto& a : c.actions)
+            if (a.id == updated.id) {
+                if (a.state != updated.state)
+                    return fail(error, "action の所有状態は変更できません");
+                a = updated;
+                return true;
+            }
+        return fail(error, "action が存在しません");
+    });
+}
+
+bool deleteEquationAction(EquationSequenceClipData& data, ActionId id, int height,
+                          std::string& error) {
+    return edit(data, height, error, [&](auto& c) {
+        if (std::erase_if(c.actions, [&](const auto& a) { return a.id == id; }) == 0)
+            return fail(error, "action が存在しません");
+        return true;
+    });
+}
 } // namespace mvm::project

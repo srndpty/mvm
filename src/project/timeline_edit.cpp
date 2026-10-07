@@ -1546,7 +1546,9 @@ placeOnFirstFreeTrack(Project& project, TrackKind kind, int firstIndex,
 TimelineEditResult placeStillClipAt(Project& project, TimelineClip clip,
                                     std::int64_t timelineStartFrame) {
     TimelineEditResult result;
-    if (!isStillClipKind(clip.kind) || timelineStartFrame < 0) {
+    // 数式 sequence も素材を持たない映像 clip として同じ規則で置く (内部の尺は呼び出し側が決める)。
+    if ((!isStillClipKind(clip.kind) && clip.kind != TimelineClipKind::EquationSequence) ||
+        timelineStartFrame < 0) {
         result.error = "配置する text / image clip または開始位置が不正です";
         return result;
     }
@@ -2527,6 +2529,15 @@ bool resolvePointClips(const Project& prepared, const std::vector<EditPoint>& po
             return false;
         entry.outgoing = prepared.timelineClips[static_cast<std::size_t>(entry.clips.outgoing)];
         entry.incoming = prepared.timelineClips[static_cast<std::size_t>(entry.clips.incoming)];
+        // P3 の EquationSequence は内部の時間の正 (P3-1) の外へ素材範囲を延ばせない。Blend・数式の
+        // 変形のどちらも作らない (preview は P3-4 で拒否、書き出しは未実装)。
+        for (const auto* clip : {&entry.outgoing, &entry.incoming})
+            if (clip->kind == TimelineClipKind::EquationSequence) {
+                error = "数式 sequence には timeline のトランジションを置けません "
+                        "(内部の変形を使ってください): " +
+                        clip->name;
+                return false;
+            }
         if (kind == TransitionKind::MathTransform) {
             if (!mathTransformClipsEligible(prepared, entry.clips, entry.mathLook, error))
                 return false;
