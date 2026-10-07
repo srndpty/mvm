@@ -31,8 +31,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -98,6 +100,8 @@ struct EquationSequenceJob {
     std::uint64_t ticket = 0;
     // 各状態の今の静止 (同じ key の静止の artifact を decode したもの) と、その key。
     std::vector<math::MathCoverage> stateStatics;
+    // export の可視依存だけを、元の state index のまま保持する。描画 job は使わない。
+    std::optional<std::map<std::size_t, math::MathCoverage>> exportStateStatics;
     std::vector<std::string> stateStaticKeys;
     std::shared_ptr<std::mutex> publishGate;
     std::function<void(const std::filesystem::path& provenance)> beforePublish;

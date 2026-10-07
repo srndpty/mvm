@@ -87,7 +87,10 @@
   trim/split・破損・backend 不在の検証は
   [実装と受け入れ証拠](math-equation-sequence-p30.md#p3-6-video-only-export-and-final-vertical-slice) へ移した。
   通常 release は 1473/1473、BuildIndependent は 1080/1080、実 Manim の製品 UI 受け入れも通過。
-  P3-6 と初期 EquationSequence vertical slice は PASS/CLOSED。P4 は未着手。
+  この結果は P3-6 の履歴として保持する。P3-6.1 で画面外 static の依存を除去し、
+  旧条件の変異を新しい回帰で検出した。実 Manim の製品受け入れ、通常 release 1473/1473、
+  BuildIndependent 1080/1080 と lint が通過し、P3-6.1・P3-6・初期 vertical slice を再閉鎖した。
+  [依存範囲修正の証拠](math-equation-sequence-p30.md#p3-61-可視範囲の静止依存) を参照。P4 は未着手。
 
 未解決の判断・検証:
 

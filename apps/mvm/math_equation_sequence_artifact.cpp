@@ -147,10 +147,29 @@ struct IntervalRecord {
 };
 
 struct Provenance {
+    std::vector<std::pair<int, int>> stateSizes;
     std::vector<math::EquationSegmentOwnership> ownership;
     std::vector<IntervalRecord> transitions;
     std::vector<IntervalRecord> actions;
 };
+
+const math::MathCoverage* stateCoverage(const EquationSequenceJob& job, std::size_t state) {
+    if (job.exportStateStatics) {
+        const auto found = job.exportStateStatics->find(state);
+        return found == job.exportStateStatics->end() ? nullptr : &found->second;
+    }
+    return state < job.stateStatics.size() ? &job.stateStatics[state] : nullptr;
+}
+
+// 非依存の状態は provenance の寸法だけを使う。画素の存在・健全性を要求しない。
+math::MathCoverage stateGeometry(const EquationSequenceJob& job, const Provenance& p,
+                                 std::size_t state) {
+    if (const auto* coverage = stateCoverage(job, state))
+        return {coverage->width, coverage->height, {}};
+    if (job.exportStateStatics && state < p.stateSizes.size())
+        return {p.stateSizes[state].first, p.stateSizes[state].second, {}};
+    return {};
+}
 
 std::string rectText(const math::MathRect& rect) {
     return std::to_string(rect.x) + "," + std::to_string(rect.y) + "," +
@@ -194,7 +213,7 @@ std::string provenanceText(const EquationSequenceJob& job, const ExpectedColors&
     text += "accent=" + argbText(math::kEquationActionAccentArgb) + "\n";
     text += "states=" + std::to_string(spec.states.size()) + "\n";
     for (std::size_t s = 0; s < spec.states.size(); ++s) {
-        const auto& still = job.stateStatics[s];
+        const auto still = stateGeometry(job, p, s);
         text += "state index=" + std::to_string(s) + " static_key=" + job.stateStaticKeys[s] +
                 " static=" + pairText(still.width, 'x', still.height) +
                 " foreground=" + argbText(spec.states[s].foregroundArgb) + "\n";
@@ -317,6 +336,11 @@ bool parseProvenance(const std::string& text, Provenance& p) {
             section = Section::Transitions;
         } else if (line.rfind("actions=", 0) == 0) {
             section = Section::Actions;
+        } else if (kind == "state") {
+            int width = 0, height = 0;
+            if (!readIntsInto(map, "static", 'x', {&width, &height}) || width <= 0 || height <= 0)
+                return false;
+            p.stateSizes.emplace_back(width, height);
         } else if (kind == "ownership") {
             math::EquationSegmentOwnership o;
             int state = 0;
@@ -400,18 +424,18 @@ bool frameBytesMatch(const IntervalRecord& r) {
 // (mathTransformPlacement / mathEndpointPlacement) で決まる値を切り出した座標へ移したもの。
 bool geometryValid(const EquationSequenceJob& job, const Provenance& p) {
     const auto& spec = job.spec;
-    if (p.transitions.size() != spec.transitions.size() || p.actions.size() != spec.actions.size())
+    if ((job.exportStateStatics && p.stateSizes.size() != spec.states.size()) ||
+        p.transitions.size() != spec.transitions.size() || p.actions.size() != spec.actions.size())
         return false;
     for (std::size_t t = 0; t < spec.transitions.size(); ++t) {
         const auto& item = spec.transitions[t];
         const auto& r = p.transitions[t];
-        const auto& source = job.stateStatics[item.fromState];
-        const auto& target = job.stateStatics[item.toState];
+        const auto source = stateGeometry(job, p, item.fromState);
+        const auto target = stateGeometry(job, p, item.toState);
         math::MathTransformPlacement placement;
         if (static_cast<std::int64_t>(r.frames.size()) != item.frames ||
-            !math::mathTransformPlacement(source.width, source.height, target.width,
-                                          target.height, r.canvasWidth, r.canvasHeight,
-                                          placement) ||
+            !math::mathTransformPlacement(source.width, source.height, target.width, target.height,
+                                          r.canvasWidth, r.canvasHeight, placement) ||
             r.ax != placement.source.left - r.rect.x || r.ay != placement.source.top - r.rect.y ||
             r.bx != placement.target.left - r.rect.x || r.by != placement.target.top - r.rect.y ||
             !containsRect(r.canvasWidth, r.canvasHeight, r.rect.x, r.rect.y, r.rect.width,
@@ -424,13 +448,13 @@ bool geometryValid(const EquationSequenceJob& job, const Provenance& p) {
     for (std::size_t a = 0; a < spec.actions.size(); ++a) {
         const auto& item = spec.actions[a];
         const auto& r = p.actions[a];
-        const auto& still = job.stateStatics[item.state];
+        const auto still = stateGeometry(job, p, item.state);
         math::MathEndpointPlacement placement;
-        const auto bytes = static_cast<std::uintmax_t>(r.rect.width) *
-                           static_cast<std::uintmax_t>(r.rect.height);
+        const auto bytes =
+            static_cast<std::uintmax_t>(r.rect.width) * static_cast<std::uintmax_t>(r.rect.height);
         if (static_cast<std::int64_t>(r.frames.size()) != item.duration ||
-            !math::mathEndpointPlacement(still.width, still.height, r.canvasWidth,
-                                         r.canvasHeight, placement) ||
+            !math::mathEndpointPlacement(still.width, still.height, r.canvasWidth, r.canvasHeight,
+                                         placement) ||
             r.ax != placement.left - r.rect.x || r.ay != placement.top - r.rect.y ||
             !containsRect(r.canvasWidth, r.canvasHeight, r.rect.x, r.rect.y, r.rect.width,
                           r.rect.height) ||
@@ -525,9 +549,16 @@ bool underGate(const EquationSequenceJob& job, const std::atomic<bool>* cancel,
 
 bool jobShapeValid(const EquationSequenceJob& job) {
     std::string error;
-    return math::validateEquationSequenceRenderSpec(job.spec, error) &&
-           job.stateStatics.size() == job.spec.states.size() &&
-           job.stateStaticKeys.size() == job.spec.states.size() &&
+    if (!math::validateEquationSequenceRenderSpec(job.spec, error) ||
+        job.stateStaticKeys.size() != job.spec.states.size())
+        return false;
+    if (job.exportStateStatics)
+        return std::all_of(job.exportStateStatics->begin(), job.exportStateStatics->end(),
+                           [&](const auto& entry) {
+                               return entry.first < job.spec.states.size() &&
+                                      math::mathCoverageValid(entry.second);
+                           });
+    return job.stateStatics.size() == job.spec.states.size() &&
            std::all_of(job.stateStatics.begin(), job.stateStatics.end(),
                        [](const math::MathCoverage& c) { return math::mathCoverageValid(c); });
 }
@@ -642,10 +673,11 @@ EquationSequenceDiskLoad loadEquationSequenceArtifact(
                            "変形の frame が無いか壊れています: " + error);
                 // frame 0 は今の前の状態の静止と、記録した位置で全画素一致する。
                 if (valid && i == 0) {
-                    valid = math::mathEndpointDifference(
-                                {item.width, item.height, bytes},
-                                job.stateStatics[job.spec.transitions[t].fromState], item.sourceX,
-                                item.sourceY) == 0;
+                    const auto* source = stateCoverage(job, job.spec.transitions[t].fromState);
+                    const auto* target = stateCoverage(job, job.spec.transitions[t].toState);
+                    valid = source && target &&
+                            math::mathEndpointDifference({item.width, item.height, bytes}, *source,
+                                                         item.sourceX, item.sourceY) == 0;
                     if (!valid)
                         report(EquationExportFailure::StaticArtifactMissing,
                                "変形の端点が現在の静止描画と一致しません");
@@ -656,6 +688,13 @@ EquationSequenceDiskLoad loadEquationSequenceArtifact(
             const auto& item = artifact.actions[a];
             if (!needed(EquationPreviewLayerRole::ActionBase, a, 0))
                 continue;
+            const auto* still = stateCoverage(job, job.spec.actions[a].state);
+            if (!still) {
+                valid = false;
+                report(EquationExportFailure::StaticArtifactMissing,
+                       "強調の所有状態の静止描画がありません");
+                break;
+            }
             if (stopping()) {
                 report(EquationExportFailure::Cancelled, "数式の検証をキャンセルしました");
                 return EquationSequenceDiskLoad::Cancelled;
@@ -668,9 +707,9 @@ EquationSequenceDiskLoad loadEquationSequenceArtifact(
                        "強調の base が無いか壊れています: " + error);
             // outline の base は状態の静止そのもの。
             if (valid && item.operation == math::EquationRenderOperation::Outline) {
-                valid = math::mathEndpointDifference({item.width, item.height, bytes},
-                                                     job.stateStatics[job.spec.actions[a].state],
-                                                     item.staticX, item.staticY) == 0;
+                valid =
+                    math::mathEndpointDifference({item.width, item.height, bytes}, *still,
+                                                          item.staticX, item.staticY) == 0;
                 if (!valid)
                     report(EquationExportFailure::StaticArtifactMissing,
                            "強調の base が現在の静止描画と一致しません");

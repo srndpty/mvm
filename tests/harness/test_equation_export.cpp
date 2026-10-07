@@ -49,16 +49,16 @@ void write(const std::filesystem::path& path, const std::string& bytes) {
     file << bytes;
 }
 
-project::Project fixture() {
+project::Project fixture(int stateCount = 2) {
     auto p = project::createDefaultProject();
     p.outputWidth = 320;
     p.outputHeight = 240;
     project::EquationSequenceClipData data;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < stateCount; ++i) {
         project::EquationState state;
         state.id = {"state" + std::to_string(i)};
         state.revision = "revision" + std::to_string(i);
-        state.equation.source = i == 0 ? "x=b^2-4ac" : "y=b^2-4ac";
+        state.equation.source = std::string(1, static_cast<char>('x' + i)) + "=b^2-4ac";
         state.equation.color = i == 0 ? "#FF102030" : "#FF708090";
         state.equation.fontSize = 64;
         state.holdFrames = 12;
@@ -67,8 +67,13 @@ project::Project fixture() {
                                {state.revision, 2, 9, "b^2-4ac", project::BindingStatus::Bound}});
         data.states.push_back(state);
     }
-    data.transitions.push_back(
-        {{"transition"}, {"state0"}, {"state1"}, 4, {{{"part0"}, {"part1"}}}});
+    for (int i = 0; i + 1 < stateCount; ++i)
+        data.transitions.push_back(
+            {{i == 0 ? "transition" : "transition" + std::to_string(i)},
+             {"state" + std::to_string(i)},
+             {"state" + std::to_string(i + 1)},
+             4,
+             {{{"part" + std::to_string(i)}, {"part" + std::to_string(i + 1)}}}});
     project::EquationAction outline;
     outline.id = {"outline"};
     outline.state = {"state0"};
@@ -137,7 +142,130 @@ std::vector<std::uint8_t> oracle(const app::EquationExportSnapshot& snapshot,
     return rgba;
 }
 
+void dependencyScope(const std::filesystem::path& root) {
+    auto p = fixture(3);
+    auto later = p.timelineClips[0].equationSequence.actions[0];
+    later.id = {"later-outline"};
+    later.state = {"state2"};
+    later.target = {"part2"};
+    p.timelineClips[0].equationSequence.actions.push_back(later);
+    const auto clip = p.timelineClips[0];
+    const auto compiled = app::compileEquationSequence(clip.equationSequence);
+    std::string error;
+    const auto spec = *app::equationSequenceRenderSpecFor(*compiled.value, error);
+    test::FakeMathBackend backend;
+    app::MathRasterCache cache("p361", backend.preflight());
+    cache.setAuthority(root / "scope-cache", true);
+    check(
+        pump([&] { return cache.backendState() == app::MathRasterCache::BackendState::Available; }),
+        "依存範囲の描画環境を確認");
+    cache.requestEquationSequence(spec);
+    check(pump([&] {
+              return cache.requestEquationSequence(spec).state ==
+                     app::MathRasterCache::State::Ready;
+          }),
+          "三状態の依存範囲対照を準備");
+    const auto artifact = cache.readyEquationSequence(spec);
+    if (!artifact) {
+        check(false, "依存範囲の artifact が存在する");
+        return;
+    }
+    app::TimelineExportRequest request;
+    request.width = 320;
+    request.height = 240;
+    request.equationSequences[clip.id] = cache.equationSequenceExportSnapshot(clip);
+    const auto full = app::mapTimelineExportPlan(p, request);
+    check(full.success, "依存範囲の完全な対照は通る");
+    if (!full.success)
+        return;
+    const auto baseline = full.equationSequences.at(clip.id).snapshot;
+    std::vector<std::filesystem::path> paths;
+    std::vector<std::string> bytes;
+    for (const auto& key : artifact->stateStaticKeys) {
+        paths.push_back(root / "scope-cache" / (key + ".png"));
+        bytes.push_back(read(paths.back()));
+        write(root / ("scope-static-" + std::to_string(bytes.size() - 1) + ".original.png"),
+              bytes.back());
+    }
+    const auto range = [&](int first, int last) {
+        auto trimmed = p;
+        trimmed.timelineClips[0].sourceInFrame = first;
+        trimmed.timelineClips[0].sourceOutFrame = last;
+        return trimmed;
+    };
+    const auto exact = [&](const project::Project& trimmed, const std::string& label) {
+        const auto plan = app::mapTimelineExportPlan(trimmed, request);
+        check(plan.success, label + ": preflight が通る");
+        if (!plan.success)
+            return;
+        const auto& snapshot = plan.equationSequences.at(clip.id).snapshot;
+        std::int64_t output = trimmed.timelineClips[0].timelineStartFrame;
+        for (const auto& frame : plan.equationSequences.at(clip.id).frames) {
+            std::vector<std::uint8_t> rgba;
+            const auto source = frame.sourceFrame;
+            check(app::composeEquationExportFrame(snapshot, output, rgba).ready() &&
+                      rgba == oracle(baseline, *artifact, source),
+                  label + ": 完全な対照と画素一致");
+            ++output;
+        }
+    };
+    for (const bool corrupt : {false, true}) {
+        if (corrupt)
+            write(paths[2], "画面外の静止を壊した対照");
+        else
+            std::filesystem::rename(paths[2], root / "scope-late-missing.png");
+        exact(range(2, 5), "早い action は画面外の後半 static を要求しない");
+        exact(range(12, 16), "早い transition は画面外の後半 static を要求しない");
+        if (!corrupt) {
+            for (const auto& visible : {range(2, 5), range(12, 16)}) {
+                auto encoding = request;
+                encoding.outputPath =
+                    root / (visible.timelineClips[0].sourceInFrame == 2 ? "scope-action.mp4"
+                                                                        : "scope-transition.mp4");
+                const auto result = app::exportTimeline(visible, encoding);
+                check(result.success && std::filesystem::exists(encoding.outputPath),
+                      "画面外 static が欠落していても実 export は成功する: " + result.error);
+            }
+        }
+        if (!corrupt)
+            std::filesystem::rename(root / "scope-late-missing.png", paths[2]);
+        else
+            write(paths[2], bytes[2]);
+    }
+    for (const std::size_t endpoint : {std::size_t{0}, std::size_t{1}}) {
+        std::filesystem::rename(paths[endpoint], root / "scope-endpoint-missing.png");
+        check(app::mapTimelineExportPlan(range(12, 16), request).equationReadiness.failure ==
+                  app::EquationExportFailure::StaticArtifactMissing,
+              "可視 transition の source/target static の欠落は拒否");
+        if (endpoint == 0) {
+            check(app::mapTimelineExportPlan(range(2, 5), request).equationReadiness.failure ==
+                      app::EquationExportFailure::StaticArtifactMissing,
+                  "可視 action 所有状態の static の欠落は拒否");
+            check(app::mapTimelineExportPlan(range(0, 1), request).equationReadiness.failure ==
+                      app::EquationExportFailure::StaticArtifactMissing,
+                  "可視 hold の static の欠落は拒否");
+        }
+        std::filesystem::rename(root / "scope-endpoint-missing.png", paths[endpoint]);
+    }
+    std::filesystem::rename(paths[0], root / "scope-early-missing.png");
+    exact(range(34, 37), "state index の穴があっても後半 action は正しい所有状態を使う");
+    std::filesystem::rename(root / "scope-early-missing.png", paths[0]);
+    cache.setPreflight(test::FakeMathBackend::unavailable("依存範囲試験: backend が消失"));
+    cache.startPreflight();
+    check(pump([&] {
+              return cache.backendState() == app::MathRasterCache::BackendState::Unavailable;
+          }),
+          "依存範囲対照の backend 消失");
+    request.equationSequences[clip.id] = cache.equationSequenceExportSnapshot(clip);
+    std::filesystem::rename(paths[2], root / "scope-backend-late-missing.png");
+    exact(range(2, 5), "backend 不在でも可視 action の artifact が完全なら通る");
+    exact(range(12, 16), "backend 不在でも可視 transition の artifact が完全なら通る");
+    std::filesystem::rename(root / "scope-backend-late-missing.png", paths[2]);
+    cache.shutdown();
+}
+
 void run(const std::filesystem::path& root, const QString& ffprobe) {
+    dependencyScope(root);
     auto p = fixture();
     const auto clip = p.timelineClips.front();
     const auto compiled = app::compileEquationSequence(clip.equationSequence);

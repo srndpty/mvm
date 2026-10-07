@@ -2207,8 +2207,9 @@ MathRasterCache::equationSequenceExportSnapshot(const project::TimelineClip& cli
                 if (std::find(required.begin(), required.end(), layer) == required.end())
                     required.push_back(layer);
         }
+        job.exportStateStatics.emplace();
         for (std::size_t s = 0; s < spec.states.size(); ++s) {
-            if (required.empty() && !requiredStates.contains(s)) {
+            if (!requiredStates.contains(s)) {
                 snapshot.presentation.statics.push_back(std::nullopt);
                 continue;
             }
@@ -2230,7 +2231,7 @@ MathRasterCache::equationSequenceExportSnapshot(const project::TimelineClip& cli
                 coverage.width, coverage.height,
                 std::make_shared<const std::vector<std::uint8_t>>(coverage.alpha),
                 spec.states[s].foregroundArgb});
-            job.stateStatics.push_back(std::move(coverage));
+            job.exportStateStatics->emplace(s, std::move(coverage));
         }
         if (required.empty()) {
             snapshot.validate = [] { return EquationExportReadiness{}; };

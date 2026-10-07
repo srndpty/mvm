@@ -1765,3 +1765,109 @@ P3 EquationSequence vertical slice
     PASS/CLOSED
 ```
 
+## P3-6.1 可視範囲の静止依存
+
+P3-6 の上記結果は履歴として保存する。可視 animation があると画面外状態の静止まで
+要求する依存範囲の不具合が見つかったため、P3-6 と P3 の閉鎖を一時保留した。
+以下の修正・変異検査・最終 gate により再閉鎖した。schema 21 と時間・描画意味論は変更していない。
+
+### 静止依存の修正
+
+`MathRasterCache::equationSequenceExportSnapshot().prepare()` は、P3-1 が可視範囲で参照する
+`requiredStates` だけを読み込む。hold と action の所有状態、transition の source と target を
+含む。animation が一枚でもあれば全状態を読む、という条件を除去した。
+
+export job は `exportStateStatics` の optional map に元の state index で被覆を保持する。
+compact な vector を元の index で引く経路は作っていない。共通 compositor へ渡す
+`presentation.statics` も index を保持し、非依存の状態には null を入れる。
+
+既存 provenance から状態ごとの寸法を読み取り、非依存状態の幾何整合検査にだけ使う。
+依存状態の寸法は読み込んだ被覆から取り、正準 provenance 全文との比較で検証する。
+全状態の current static key・foreground・toolchain と、全 package の所有・幾何の検査は維持する。
+transition frame 0 と source static の全画素比較、target static を使う配置検査、outline base と
+所有状態 static の比較も維持する。pulse を含む可視 action の所有状態は必須。
+通常の描画 job は従来の全状態 vector を使う。保存形式・artifact の形式・render key は変更しない。
+
+### 回帰と旧条件の変異
+
+[事実] 三状態の独立 fixture を追加した。完全な artifact を持つ対照から CPU oracle を作り、
+可視範囲の静止依存だけを欠落・破損させる。
+
+- 早い outline / transition と完全に画面外の後半 static の欠落・破損: preflight と共通 RGBA の
+  完全一致が通過。欠落時は両方の実 MP4 export も通過。
+- 可視 action の所有状態、hold の状態、transition の source / target static の欠落:
+  `StaticArtifactMissing` で失敗。
+- 前の state static が欠落して index に穴がある後半 action: 完全な対照と画素一致。
+- backend 不在かつ画面外の後半 static 欠落: 必要な artifact が完全な早い action / transition は通過。
+
+集中試験の既存ケースも維持した。画面外 transition frame の省略、current-key/provenance/SHA、
+backend 不在、trim/split、逆順・並行取得、RAM 常駐ゼロ、完全一致、取消を同じ実行で検査する。
+
+変異は `tests/fixtures/math-equation-export-all-statics.patch`。map と検査は修正版のまま、
+読み込み条件だけを `required.empty() && !requiredStates.contains(s)` へ戻す。
+`git apply --check` で patch の適用対象を確認し、実際の一時変更と復元は `apply_patch` で行った。
+
+[事実] 修正版の集中試験は 295/295 通過。旧条件の変異は 271 検査中 9 件失敗して終了コード 1。
+早い action / transition の画面外 static 欠落・破損、実 export、index の穴、backend 不在の
+新しい正の対照が失敗した。端点欠落の負例だけで緑になる検査ではない。
+復元後は `rg` で修正条件を確認し、再ビルドした。失敗した証拠は保存している。
+
+| 実行 | 証拠 |
+| --- | --- |
+| 修正版の集中試験 | `build/math-p361-focused-01.log`、run `d6c4af34-ae71-4f6f-a4e0-90821f26a367` |
+| 旧条件の変異のビルド | `build/math-p361-mutation-build.log` |
+| 変異の失敗 | `build/math-p361-mutation-old-scope.log`、run `23000af3-a057-4654-aeb6-e192dd17c532` |
+| 修正版への復元ビルド | `build/math-p361-restored-build.log` |
+
+各 run の保存先は `build/ucrt64-release/tests/math-p36-export/<run>/`。
+P3-6 の全 PASS/FAIL/INVALID と出力は上書き・削除していない。
+
+### 修正版のゲート
+
+【操作可】GUI の試験は背面・入力透過。native と実 Manim の製品受け入れ、通常 release gate は
+既存 display-power lease の下で実行する。通常操作を止める性能計測は今回実施しない。
+
+| 種別 | 結果 | 証拠 |
+| --- | --- | --- |
+| 復元後の集中 EquationSequence / artifact / native / generic export | 14/14 | `build/math-p361-regressions.log` |
+| 同じ実行の EquationSequence export | 295/295 | run `0cc08d06-3405-4ac6-8b88-21b0be8bad65` の `result.txt` |
+| 実 Manim の製品 UI 作成・保存再読込・seek・export | 452/452、15 probe の RGBA 完全一致、全 frame 復号 | `build/math-p361-real-ui-01/results.json`、`quadratic.mvm`、`quadratic-reopened.mp4`、`cache/` |
+| BuildIndependent | 1080/1080 | `build/math-p361-independent.log` |
+| lint | PASS | `build/math-p361-lint.log` |
+| 通常 release (一回) | 1473/1473、FAIL 0、電源前提有効 | `build/math-p361-release.log` |
+
+実 Manim は共有 artifact 検証が変わったため、既存の製品受け入れを新しい保存先で実行した。
+P3-6 の既存 Project や output は再利用・変更していない。
+
+```powershell
+pwsh scripts/build.ps1 -Target mvm_test_equation_export
+pwsh build/p36-focused-run.ps1 -Pattern '^math_equation_sequence_export_focused$' -Log build/math-p361-focused-01.log
+git apply --check tests/fixtures/math-equation-export-all-statics.patch
+# apply_patch で patch の一行だけを一時適用し、変異を検査する。
+pwsh scripts/build.ps1 -Target mvm_test_equation_export
+pwsh build/p36-focused-run.ps1 -Pattern '^math_equation_sequence_export_focused$' -Log build/math-p361-mutation-old-scope.log
+# apply_patch で修正版へ戻し、次の条件を確認して再ビルドする。
+rg -n 'if \(!requiredStates.contains' apps/mvm/math_raster_cache.cpp
+pwsh scripts/build.ps1 -Target mvm_test_equation_export
+pwsh scripts/build.ps1 -ReuseConfigure
+pwsh build/p36-focused-run.ps1 -Pattern '^(math_equation_sequence_export_focused|manim_equation_sequence_focused|math_equation_sequence_native_preview|math_equation_sequence_preview_controller|math_equation_sequence_domain|math_equation_sequence_editor_controller|math_transform_export_focused|math_export_focused|m4_timeline_export_focused_.*|m7b_3_timeline_export_mapping_focused|m7b_4_controller_export_lifecycle|core_source_frame_mapping)$' -Log build/math-p361-regressions.log
+pwsh scripts/math-equation-sequence-export-acceptance.ps1 -EvidencePath build/math-p361-real-ui-01 -SkipBuild
+pwsh scripts/test.ps1 -Preset ucrt64-release -Group BuildIndependent 2>&1 | Tee-Object -FilePath build/math-p361-independent.log
+pwsh scripts/lint.ps1 2>&1 | Tee-Object -FilePath build/math-p361-lint.log
+pwsh scripts/test.ps1 -Preset ucrt64-release 2>&1 | Tee-Object -FilePath build/math-p361-release.log
+```
+
+上記は今回の実行名。再現時は全 evidence/log に新しい名前を使い、既存の証拠を上書きしない。
+[事実] 最終ソースの通常 `ucrt64-release` gate は一回の実行で 1473/1473 通過し、
+終了時の display-power lease も有効だった。通常群は `performance|stability` を除外した。
+性能・安定性の正式計測は実行していない。閉鎖保留を解除する。
+P3-0〜P3-5.2 の既存閉鎖と P3-6 の過去の証拠は維持し、P4 は開始していない。
+commit/push は行っていない。
+
+```text
+P3-6.1    PASS/CLOSED
+P3-6      PASS/CLOSED
+P3 EquationSequence vertical slice
+    PASS/CLOSED
+```
+

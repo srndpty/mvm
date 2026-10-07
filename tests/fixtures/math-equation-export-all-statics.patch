@@ -1,0 +1,12 @@
+diff --git a/apps/mvm/math_raster_cache.cpp b/apps/mvm/math_raster_cache.cpp
+--- a/apps/mvm/math_raster_cache.cpp
++++ b/apps/mvm/math_raster_cache.cpp
+@@ -2211,7 +2211,7 @@
+         job.exportStateStatics.emplace();
+         for (std::size_t s = 0; s < spec.states.size(); ++s) {
+-            if (!requiredStates.contains(s)) {
++            if (required.empty() && !requiredStates.contains(s)) {
+                 snapshot.presentation.statics.push_back(std::nullopt);
+                 continue;
+             }
+             if (cancelled && cancelled())
