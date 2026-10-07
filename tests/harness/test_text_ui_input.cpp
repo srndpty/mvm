@@ -1821,6 +1821,7 @@ int checkMathTransformAuthoring(const std::filesystem::path& projectPath) {
 
 // tests/harness/math_p28_acceptance.cpp
 int runMathP28Acceptance(const std::filesystem::path& manim, const std::filesystem::path& work);
+int runEquationSequenceUi(const std::filesystem::path& directory, bool scratch);
 
 int main(int argc, char** argv) {
     mvm::app::prepareTestFixedWindowEnvironment();
@@ -1842,6 +1843,21 @@ int main(int argc, char** argv) {
     application.setApplicationName(QStringLiteral("project-panel"));
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+
+    if (const auto at = application.arguments().indexOf(QStringLiteral("--equation-sequence-ui"));
+        at >= 0) {
+        const auto arguments = application.arguments();
+        const bool scratch = arguments.size() == 4 && arguments[3] == QStringLiteral("--scratch");
+        if (at != 1 || (arguments.size() != 3 && !scratch)) {
+            std::fprintf(stderr, "使い方: mvm_test_text_ui_input --equation-sequence-ui <証拠 "
+                                 "directory> [--scratch]\n");
+            mvm_mlt_runtime_shutdown();
+            return 2;
+        }
+        const int result = runEquationSequenceUi(arguments[at + 1].toStdWString(), scratch);
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
 
     // P2-8 の統合受け入れ (実 Manim、CTest に登録しない。tests/harness/math_p28_acceptance.cpp)。
     if (const auto at = application.arguments().indexOf(QStringLiteral("--math-p28-acceptance"));

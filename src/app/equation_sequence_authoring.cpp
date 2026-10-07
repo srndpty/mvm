@@ -14,8 +14,8 @@ using project::EquationTargetStatus;
 std::int64_t roundedFrames(std::int64_t num, std::int64_t den, std::int64_t divisor) {
     if (num <= 0 || den <= 0)
         return 1;
-    const auto frames = std::llround(static_cast<long double>(num) /
-                                     (static_cast<long double>(den) * divisor));
+    const auto frames =
+        std::llround(static_cast<long double>(num) / (static_cast<long double>(den) * divisor));
     return std::max<std::int64_t>(1, frames);
 }
 } // namespace
@@ -102,7 +102,8 @@ std::vector<EquationPartView> equationPartViews(const project::EquationSequenceC
             const auto& source = state->equation.source;
             const auto begin =
                 core::utf8ToUtf16Offset(source, static_cast<std::size_t>(p.binding.begin));
-            const auto end = core::utf8ToUtf16Offset(source, static_cast<std::size_t>(p.binding.end));
+            const auto end =
+                core::utf8ToUtf16Offset(source, static_cast<std::size_t>(p.binding.end));
             if (begin && end)
                 view.rangeUtf16 = std::make_pair(*begin, *end);
         }
@@ -118,7 +119,8 @@ std::vector<EquationPartView> equationPartViews(const project::EquationSequenceC
     for (const auto& a : data.actions) {
         if (a.state != stateId || a.targetStatus != EquationTargetStatus::Missing)
             continue;
-        if (std::any_of(views.begin(), views.end(), [&](const auto& v) { return v.id == a.target; }))
+        if (std::any_of(views.begin(), views.end(),
+                        [&](const auto& v) { return v.id == a.target; }))
             continue;
         EquationPartView view;
         view.id = a.target;
@@ -257,8 +259,8 @@ project::EquationSequenceClipData newEquationSequenceData(std::string source,
     return data;
 }
 
-project::EquationState newEquationState(const project::MathClipData& reference,
-                                        std::string source, std::int64_t holdFrames,
+project::EquationState newEquationState(const project::MathClipData& reference, std::string source,
+                                        std::int64_t holdFrames,
                                         const std::function<std::string()>& id) {
     project::EquationState state;
     state.id = {id ? id() : std::string{}};

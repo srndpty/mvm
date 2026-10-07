@@ -82,14 +82,18 @@ struct Fixture {
     FakeMathBackend backend;
     std::filesystem::path path;
     std::unique_ptr<MvmController> controller;
+
     EquationSequenceEditor& editor() { return controller->equationEditorRef(); }
+
     const project::Project& project() const { return controller->projectForTest(); }
+
     const project::TimelineClip* sequence() const {
         for (const auto& clip : project().timelineClips)
             if (clip.kind == project::TimelineClipKind::EquationSequence)
                 return &clip;
         return nullptr;
     }
+
     const project::EquationSequenceClipData& data() const { return sequence()->equationSequence; }
 };
 
@@ -240,10 +244,16 @@ void testStates() {
                       s->parts.push_back({{"part-" + s->id.value},
                                           "b",
                                           {s->revision, 2, 3, "b", project::BindingStatus::Bound}});
-                  d.transitions[0].correspondence = {{{"part-" + first.value}, {"part-" + middle.value}}};
-                  d.transitions[1].correspondence = {{{"part-" + middle.value}, {"part-" + last.value}}};
-                  d.actions.push_back({{"owned"}, middle, {"part-" + middle.value},
-                                       project::EquationTargetStatus::Present, 0, 3,
+                  d.transitions[0].correspondence = {
+                      {{"part-" + first.value}, {"part-" + middle.value}}};
+                  d.transitions[1].correspondence = {
+                      {{"part-" + middle.value}, {"part-" + last.value}}};
+                  d.actions.push_back({{"owned"},
+                                       middle,
+                                       {"part-" + middle.value},
+                                       project::EquationTargetStatus::Present,
+                                       0,
+                                       3,
                                        project::EquationOperation::Outline});
                   return project::validateEquationSequence(d, 1080, error);
               }),
@@ -276,14 +286,16 @@ void testStates() {
     check(f->controller->editEquationSequenceData(
               f->sequence()->id,
               [&](project::EquationSequenceClipData& data, std::string& error) {
-                  data.transitions[0].correspondence = {{{"part-" + first.value}, {"part-" + last.value}}};
+                  data.transitions[0].correspondence = {
+                      {{"part-" + first.value}, {"part-" + last.value}}};
                   return project::validateEquationSequence(data, 1080, error);
               }),
           "並べ替え: 対応の準備");
     editor.selectState(QString::fromStdString(last.value));
     expectOneUndo(*f, "状態を上へ移動", [&] { return editor.moveSelectedState(-1); });
     check(f->data().states[0].id == last && f->data().states[1].id == first &&
-              f->data().transitions[0].from == last && f->data().transitions[0].correspondence.empty(),
+              f->data().transitions[0].from == last &&
+              f->data().transitions[0].correspondence.empty(),
           "並べ替え: 隣接しなくなった組の対応を残さない");
     check(selectedStateId(editor) == QString::fromStdString(last.value),
           "並べ替え: 動かした状態を選んだまま");
@@ -340,7 +352,8 @@ void testSourceEditing() {
     auto& editor = f->editor();
     // 部分式 "bc" (UTF-16 [2,4)) を選択から作る。
     const auto source = QStringLiteral("a+bc+d");
-    expectOneUndo(*f, "部分式の追加", [&] { return editor.addPart(2, 4, source, QStringLiteral("bc")); });
+    expectOneUndo(*f, "部分式の追加",
+                  [&] { return editor.addPart(2, 4, source, QStringLiteral("bc")); });
     const auto partId = partIdByLabel(editor, "bc");
     check(!partId.isEmpty() && viewOf(editor).value("selectedPart").toMap().value("id") == partId,
           "部分式の追加: 追加した部分式を選ぶ");
@@ -352,7 +365,8 @@ void testSourceEditing() {
     editor.beginSourceEdit(&document);
     for (int i = 0; i < 5; ++i)
         type(document, 0, QStringLiteral("x"));
-    check(f->controller->undoDepthForTest() == depth && f->data().states[0].equation.source == "a+bc+d",
+    check(f->controller->undoDepthForTest() == depth &&
+              f->data().states[0].equation.source == "a+bc+d",
           "入力中は Project を変えない");
     auto result = editor.commitSourceEdit(document.toPlainText());
     const auto& part = f->data().states[0].parts[0];
@@ -368,8 +382,8 @@ void testSourceEditing() {
     type(document, 0, QStringLiteral("("));
     type(document, document.toPlainText().size(), QStringLiteral(")"));
     result = editor.commitSourceEdit(document.toPlainText());
-    check(result.value("ok").toBool() && f->data().states[0].parts[0].binding.status ==
-                                             project::BindingStatus::Bound,
+    check(result.value("ok").toBool() &&
+              f->data().states[0].parts[0].binding.status == project::BindingStatus::Bound,
           "部分式の両側の編集は部分式を無効にしない");
     // 部分式の中の編集 → Invalid、確定の結果に名前が出る。
     document.setPlainText(QString::fromStdString(f->data().states[0].equation.source));
@@ -494,8 +508,7 @@ void testPartsAndRepair() {
     expectRejected(*f, "重なる範囲", [&] { return editor.addPart(1, 3, source, QString()); });
     expectRejected(*f, "TeX の構造の途中",
                    [&] { return editor.addPart(4, 11, source, QString()); });
-    expectRejected(*f, "空白・括弧だけ",
-                   [&] { return editor.addPart(9, 10, source, QString()); });
+    expectRejected(*f, "空白・括弧だけ", [&] { return editor.addPart(9, 10, source, QString()); });
     expectRejected(*f, "未確定の入力がある",
                    [&] { return editor.addPart(0, 1, source + QStringLiteral("x"), QString()); });
     expectRejected(*f, "終端の外", [&] { return editor.addPart(0, 99, source, QString()); });
@@ -518,7 +531,8 @@ void testPartsAndRepair() {
     editor.selectState(QString::fromStdString(f->data().states[0].id.value));
     const auto bId = partIdByLabel(editor, "b");
     editor.selectPart(bId);
-    expectOneUndo(*f, "部分式の改名", [&] { return editor.renameSelectedPart(QStringLiteral("項 b")); });
+    expectOneUndo(*f, "部分式の改名",
+                  [&] { return editor.renameSelectedPart(QStringLiteral("項 b")); });
     check(f->data().states[0].parts[0].label == "項 b" &&
               f->data().states[0].parts[0].id.value == bId.toStdString(),
           "改名は ID を変えない");
@@ -543,7 +557,8 @@ void testPartsAndRepair() {
     check(f->data().actions[0].targetStatus == project::EquationTargetStatus::Present &&
               f->data().actions[0].target.value == bId.toStdString(),
           "作り直しで action が有効に戻る (同じ PartId)");
-    check(viewOf(editor).value("message").toString().contains(QStringLiteral("対応は自動では戻りません")),
+    check(viewOf(editor).value("message").toString().contains(
+              QStringLiteral("対応は自動では戻りません")),
           "修復の後、対応は戻っていないことを示す");
     // 消えた選択: 存在しない ID の選択は無視する。
     const auto before = viewOf(editor);
@@ -581,32 +596,27 @@ void testCorrespondenceAndActions() {
     expectOneUndo(*f, "outline の追加",
                   [&] { return editor.addAction(from, QStringLiteral("outline"), 0, 20); });
     const auto outlineId = viewOf(editor).value("selectedAction").toMap().value("id").toString();
-    expectRejected(*f, "hold を超える区間", [&] {
-        return editor.addAction(from, QStringLiteral("pulse"), hold - 5, 10);
-    });
-    expectRejected(*f, "同時の action", [&] {
-        return editor.addAction(from, QStringLiteral("pulse"), 10, 20);
-    });
-    expectRejected(*f, "未知の operation (set_color)", [&] {
-        return editor.addAction(from, QStringLiteral("set_color"), 30, 5);
-    });
-    expectRejected(*f, "別の状態の部分式", [&] {
-        return editor.addAction(to, QStringLiteral("pulse"), 30, 5);
-    });
+    expectRejected(*f, "hold を超える区間",
+                   [&] { return editor.addAction(from, QStringLiteral("pulse"), hold - 5, 10); });
+    expectRejected(*f, "同時の action",
+                   [&] { return editor.addAction(from, QStringLiteral("pulse"), 10, 20); });
+    expectRejected(*f, "未知の operation (set_color)",
+                   [&] { return editor.addAction(from, QStringLiteral("set_color"), 30, 5); });
+    expectRejected(*f, "別の状態の部分式",
+                   [&] { return editor.addAction(to, QStringLiteral("pulse"), 30, 5); });
     expectOneUndo(*f, "pulse の追加",
                   [&] { return editor.addAction(from, QStringLiteral("pulse"), 30, 10); });
     editor.selectAction(outlineId);
     const auto playhead = f->controller->playheadFrame();
-    expectOneUndo(*f, "action の変更", [&] {
-        return editor.updateSelectedAction(from, QStringLiteral("pulse"), 2, 8);
-    });
+    expectOneUndo(*f, "action の変更",
+                  [&] { return editor.updateSelectedAction(from, QStringLiteral("pulse"), 2, 8); });
     check(f->controller->playheadFrame() == playhead,
           "action の変更で再生位置を動かさない (利用者の操作だけが seek する)");
     expectRejected(*f, "変更で hold を超える", [&] {
         return editor.updateSelectedAction(from, QStringLiteral("pulse"), 2, hold);
     });
-    // 明示の seek: action の先頭の timeline frame (60fps・clip 先頭 = 再生位置 0、状態 0 の hold 先頭)。
-    // (preview engine の無い試験では seek の戻り値は失敗だが、再生位置は動く)
+    // 明示の seek: action の先頭の timeline frame (60fps・clip 先頭 = 再生位置 0、状態 0 の hold
+    // 先頭)。 (preview engine の無い試験では seek の戻り値は失敗だが、再生位置は動く)
     const auto start = f->sequence()->timelineStartFrame;
     editor.seekToSelectedAction();
     check(f->controller->playheadFrame() == start + 2,
@@ -660,8 +670,8 @@ void testStatusClassification() {
         check(f->controller->createEquationSequenceClip(QStringLiteral("x")), "環境: 作成");
         f->editor().refreshStatus();
         const auto status = f->editor().status();
-        check(status.value("renderer") == "unavailable" && status.value("category") == "environment" &&
-                  status.value("compile") == "ready",
+        check(status.value("renderer") == "unavailable" &&
+                  status.value("category") == "environment" && status.value("compile") == "ready",
               "backend 不在は環境の問題 (内容の修復ではない)");
         f->controller->shutdown();
     }
@@ -721,18 +731,20 @@ void testCurrentKeyAfterEdit() {
     QString error;
     const auto ready = [&] {
         f->controller->subtitleCompositionForTest(f->controller->playheadFrame(), error);
-        return f->controller->equationSequencePreviewStatus(
-                                QString::fromStdString(f->sequence()->id),
-                                f->controller->playheadFrame())
+        return f->controller
+                   ->equationSequencePreviewStatus(QString::fromStdString(f->sequence()->id),
+                                                   f->controller->playheadFrame())
                    .disk == MathRasterCache::State::Ready;
     };
     f->controller->seekTimelineFrame(15); // engine の無い試験でも再生位置は動く
-    check(f->controller->playheadFrame() == 15 && pump(ready), "今の key: 最初の artifact が Ready");
+    check(f->controller->playheadFrame() == 15 && pump(ready),
+          "今の key: 最初の artifact が Ready");
     const auto clipId = QString::fromStdString(f->sequence()->id);
     const auto oldKey = f->controller->equationSequencePreviewStatus(clipId, 15).sequenceKey;
     f->backend.equationGate->store(true); // 次の描画を止めて、描画中の提示を確かめる
     editor.selectAction(viewOf(editor).value("selectedAction").toMap().value("id").toString());
-    check(editor.updateSelectedAction(part, QStringLiteral("pulse"), 10, 20), "今の key: pulse へ変更");
+    check(editor.updateSelectedAction(part, QStringLiteral("pulse"), 10, 20),
+          "今の key: pulse へ変更");
     check(f->controller->playheadFrame() == 15, "今の key: 編集で再生位置を動かさない");
     f->controller->subtitleCompositionForTest(15, error);
     settle(100);
@@ -778,7 +790,8 @@ void testTimelineTransitionRejected() {
     const auto before = f->project();
     check(!f->controller->applyDefaultTransition() && f->project() == before &&
               f->controller->undoDepthForTest() == depth &&
-              f->controller->statusText().contains(QStringLiteral("数式 sequence には timeline のトランジションを置けません")),
+              f->controller->statusText().contains(
+                  QStringLiteral("数式 sequence には timeline のトランジションを置けません")),
           "トランジション: Blend を置かず理由を示す");
     f->controller->shutdown();
 }
@@ -788,14 +801,17 @@ void testSaveReopen() {
     auto f = created("保存");
     auto& editor = f->editor();
     check(editor.addPart(2, 4, QStringLiteral("a+bc+d"), QStringLiteral("p")), "保存: 部分式");
-    check(editor.insertState(true) && editor.addPart(2, 4, QStringLiteral("a+bc+d"), QStringLiteral("q")),
+    check(editor.insertState(true) &&
+              editor.addPart(2, 4, QStringLiteral("a+bc+d"), QStringLiteral("q")),
           "保存: 2 つ目");
     const auto t = listOf(editor, "transitions")[0].toMap();
-    check(editor.addCorrespondence(t.value("id").toString(),
-                                   t.value("fromCandidates").toList()[0].toMap().value("id").toString(),
-                                   t.value("toCandidates").toList()[0].toMap().value("id").toString()),
+    check(editor.addCorrespondence(
+              t.value("id").toString(),
+              t.value("fromCandidates").toList()[0].toMap().value("id").toString(),
+              t.value("toCandidates").toList()[0].toMap().value("id").toString()),
           "保存: 対応");
-    check(editor.addAction(partIdByLabel(editor, "q"), QStringLiteral("outline"), 5, 10), "保存: action");
+    check(editor.addAction(partIdByLabel(editor, "q"), QStringLiteral("outline"), 5, 10),
+          "保存: action");
     check(f->controller->saveProject(), "保存: 製品の保存");
     const auto saved = f->project();
     const auto loaded = project::loadProjectJson(f->path);

@@ -542,8 +542,8 @@ bool addEquationAction(EquationSequenceClipData& data, EquationAction action, in
     });
 }
 
-bool updateEquationAction(EquationSequenceClipData& data, const EquationAction& updated,
-                          int height, std::string& error) {
+bool updateEquationAction(EquationSequenceClipData& data, const EquationAction& updated, int height,
+                          std::string& error) {
     return edit(data, height, error, [&](auto& c) {
         for (auto& a : c.actions)
             if (a.id == updated.id) {

@@ -4074,6 +4074,12 @@ set_tests_properties(math_equation_sequence_inspector_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QUICK_CONTROLS_STYLE=Basic"
     TIMEOUT 30)
 add_test(NAME math_inspector_product_ui COMMAND mvm_test_text_ui_input --math-inspector)
+add_test(NAME math_equation_sequence_product_ui
+    COMMAND mvm_test_text_ui_input --equation-sequence-ui
+            "${CMAKE_SOURCE_DIR}/build/p351-ui" --scratch)
+set_tests_properties(math_equation_sequence_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
 set_tests_properties(math_inspector_product_ui PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)

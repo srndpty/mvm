@@ -142,8 +142,8 @@ bool addEquationPart(EquationSequenceClipData&, StateId, SemanticPart, int outpu
                      std::string& error);
 // 削除された部分式 (action が missing で参照する ID) を同じ PartId で作り直し、その ID を
 // 参照する action を present へ戻す。対応は作らない。binding は今の source の Bound であること。
-bool restoreMissingEquationPart(EquationSequenceClipData&, StateId, SemanticPart,
-                                int outputHeight, std::string& error);
+bool restoreMissingEquationPart(EquationSequenceClipData&, StateId, SemanticPart, int outputHeight,
+                                std::string& error);
 bool renameEquationPart(EquationSequenceClipData&, StateId, PartId, std::string label,
                         int outputHeight, std::string& error);
 bool addEquationCorrespondence(EquationSequenceClipData&, TransitionId, PartPair, int outputHeight,

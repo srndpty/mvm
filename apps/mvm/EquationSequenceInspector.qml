@@ -23,6 +23,7 @@ ColumnLayout {
     property string loadedKey: ""
     property string savedSource: ""
     property bool loading: false
+    property bool committingSource: false
     property bool sourceRejected: false
     property bool confirmDeleteState: false
     property bool confirmDeletePart: false
@@ -32,17 +33,21 @@ ColumnLayout {
 
     // ---- 式の編集欄と Project の同期 (MathClipInspector と同じ規則) ----
     // 入力中 (focus がある同じ状態) は Project の通知で上書きしない。別の状態へ移るときは
-    // 前の状態の入力を先に確定する。確定できなければ破棄し、理由は editor の message に残る。
+    // 前の状態の入力を先に確定する。拒否された入力は明示的な取消まで保持する。
     function synchronize() {
-        if (root.loading)
+        if (root.loading || root.committingSource)
+            return;
+        if (root.sourceRejected)
             return;
         if (sourceEditor.activeFocus && root.loadedKey === root.editKey)
             return;
         if (root.loadedKey !== root.editKey) {
             if (root.loadedKey !== "" && sourceEditor.text !== root.savedSource) {
                 const result = root.editor.commitSourceEdit(sourceEditor.text);
-                if (!result.ok)
-                    root.editor.cancelSourceEdit();
+                if (!result.ok) {
+                    root.sourceRejected = true;
+                    return;
+                }
             } else {
                 root.editor.cancelSourceEdit();
             }
@@ -72,7 +77,9 @@ ColumnLayout {
             root.sourceRejected = false;
             return true;
         }
+        root.committingSource = true;
         const result = root.editor.commitSourceEdit(sourceEditor.text);
+        root.committingSource = false;
         if (!result.ok) {
             if (result.discarded) {
                 root.loadedKey = "";
@@ -95,6 +102,15 @@ ColumnLayout {
         sourceEditor.text = root.savedSource;
         root.loading = false;
         root.sourceRejected = false;
+    }
+    // 状態を変更する操作は必ず同じ確定規則を通す。拒否なら操作自体を行わない。
+    function changeState(operation) {
+        if (!root.commitSource()) {
+            root.focusSource();
+            return false;
+        }
+        operation();
+        return true;
     }
     function releaseFocus() {
         if (root.Window.window)
@@ -298,9 +314,9 @@ ColumnLayout {
             const states = root.view.states || [];
             const index = root.current.index || 0;
             if (event.key === Qt.Key_Up && index > 0) {
-                root.editor.selectState(states[index - 1].id);
+                root.changeState(() => root.editor.selectState(states[index - 1].id));
             } else if (event.key === Qt.Key_Down && index + 1 < states.length) {
-                root.editor.selectState(states[index + 1].id);
+                root.changeState(() => root.editor.selectState(states[index + 1].id));
             }
             if (event.key === Qt.Key_Up || event.key === Qt.Key_Down || event.key === Qt.Key_Delete
                     || event.key === Qt.Key_Backspace)
@@ -351,8 +367,12 @@ ColumnLayout {
                 anchors.fill: parent
                 hoverEnabled: true
                 onClicked: {
-                    stateList.forceActiveFocus();
-                    root.editor.selectState(stateRow.modelData.id);
+                    // 確定通知で一覧の delegate が作り直されても、クリックした対象を保持する。
+                    const stateId = stateRow.modelData.id;
+                    root.changeState(() => {
+                        stateList.forceActiveFocus();
+                        root.editor.selectState(stateId);
+                    });
                 }
             }
         }
@@ -365,31 +385,31 @@ ColumnLayout {
         ModernDialogButton {
             objectName: "equationInsertBefore"
             text: "前に挿入"
-            onClicked: root.editor.insertState(false)
+            onClicked: root.changeState(() => root.editor.insertState(false))
         }
         ModernDialogButton {
             objectName: "equationInsertAfter"
             text: "後に挿入"
-            onClicked: root.editor.insertState(true)
+            onClicked: root.changeState(() => root.editor.insertState(true))
         }
         ModernDialogButton {
             objectName: "equationMoveUp"
             text: "上へ"
             enabled: root.current.canMoveUp === true
-            onClicked: root.editor.moveSelectedState(-1)
+            onClicked: root.changeState(() => root.editor.moveSelectedState(-1))
         }
         ModernDialogButton {
             objectName: "equationMoveDown"
             text: "下へ"
             enabled: root.current.canMoveDown === true
-            onClicked: root.editor.moveSelectedState(1)
+            onClicked: root.changeState(() => root.editor.moveSelectedState(1))
         }
         ModernDialogButton {
             objectName: "equationDeleteState"
             text: "削除…"
             destructive: true
             enabled: root.current.canDelete === true
-            onClicked: root.confirmDeleteState = true
+            onClicked: root.changeState(() => { root.confirmDeleteState = true; })
         }
     }
     Note {
@@ -431,8 +451,10 @@ ColumnLayout {
                     text: "削除する"
                     destructive: true
                     onClicked: {
-                        root.confirmDeleteState = false;
-                        root.editor.deleteSelectedState();
+                        root.changeState(() => {
+                            root.confirmDeleteState = false;
+                            root.editor.deleteSelectedState();
+                        });
                     }
                 }
                 ModernDialogButton {

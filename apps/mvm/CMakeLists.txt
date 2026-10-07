@@ -138,9 +138,10 @@ set_target_properties(mvm PROPERTIES WIN32_EXECUTABLE OFF)
 # D3D11 の window へ QTest で key / mouse event を送る。
 # test の登録は tests/CMakeLists.txt で行う (このファイルは include(CTest) より前に読まれる)。
 # IME の変換確定は扱わない (手動確認)。
-find_package(Qt6 REQUIRED COMPONENTS Test)
+find_package(Qt6 REQUIRED COMPONENTS Test QuickTest)
 qt_add_executable(mvm_test_text_ui_input
     ${CMAKE_SOURCE_DIR}/tests/harness/test_text_ui_input.cpp
+    ${CMAKE_SOURCE_DIR}/tests/harness/test_equation_sequence_ui.cpp
     ${CMAKE_SOURCE_DIR}/tests/harness/math_p28_acceptance.cpp
     image_raster_cache.cpp
     media_bin_model.cpp
@@ -228,7 +229,7 @@ target_link_libraries(mvm_test_text_ui_input PRIVATE
     mvm::warnings)
 # 試験の window を OS の前面にせずにフォーカスを持たせるため、QPA の
 # QWindowSystemInterface を使う (tests/harness/test_window_focus.h)。この試験だけ。
-target_link_libraries(mvm_test_text_ui_input PRIVATE Qt6::GuiPrivate)
+target_link_libraries(mvm_test_text_ui_input PRIVATE Qt6::GuiPrivate Qt6::QuickTest)
 target_include_directories(mvm_test_text_ui_input PRIVATE ${CMAKE_SOURCE_DIR}/tests/harness)
 target_compile_definitions(mvm_test_text_ui_input PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_TEXT_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")

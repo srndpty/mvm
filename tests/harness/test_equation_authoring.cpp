@@ -97,7 +97,8 @@ void testMoveState() {
         check(d.transitions.size() == 3, "辺は n-1");
         for (const auto& [a, b] : {std::pair{"s0", "s2"}, {"s2", "s1"}, {"s1", "s3"}}) {
             const auto* t = edge(d, a, b);
-            check(t && t->frames == 7 && t->correspondence.empty() && t->id.value.rfind("n", 0) == 0,
+            check(t && t->frames == 7 && t->correspondence.empty() &&
+                      t->id.value.rfind("n", 0) == 0,
                   std::string("新しい辺 (尺 7・対応なし) ") + a + "→" + b);
         }
         check(std::none_of(d.transitions.begin(), d.transitions.end(),
@@ -140,14 +141,16 @@ void testMoveState() {
     {
         auto d = four();
         int calls = 0;
-        auto colliding = [&]() -> std::string { return ++calls <= 2 ? "t0" : "fresh" + std::to_string(calls); };
+        auto colliding = [&]() -> std::string {
+            return ++calls <= 2 ? "t0" : "fresh" + std::to_string(calls);
+        };
         check(moveEquationState(d, {"s3"}, 0, colliding, 7, kHeight, error) &&
                   edge(d, "s3", "s0")->id.value != "t0",
               "既存 ID の衝突を避けて発行する");
         auto e = four();
         const auto before = e;
-        check(!moveEquationState(e, {"s1"}, 2, [] { return std::string("t2"); }, 7, kHeight,
-                                 error) &&
+        check(!moveEquationState(
+                  e, {"s1"}, 2, [] { return std::string("t2"); }, 7, kHeight, error) &&
                   e == before,
               "衝突し続ける発行器は有限回で失敗し data を変えない");
     }
@@ -162,7 +165,8 @@ void testParts() {
               d.states[0].parts.size() == 2,
           "部分式の追加: " + error);
     const auto afterAdd = d;
-    check(!addEquationPart(d, {"s0"}, part(d.states[0], "p1", 4, 5), kHeight, error) && d == afterAdd,
+    check(!addEquationPart(d, {"s0"}, part(d.states[0], "p1", 4, 5), kHeight, error) &&
+              d == afterAdd,
           "他の状態の PartId と同じ ID は拒否 (sequence 内で一意)");
     check(!addEquationPart(d, {"s0"}, part(d.states[0], "q2", 0, 3), kHeight, error) &&
               d == afterAdd,
@@ -204,8 +208,7 @@ void testParts() {
     badBinding.binding.revision = "old";
     check(!restoreMissingEquationPart(e, {"s1"}, badBinding, kHeight, error) && e == deleted,
           "今の式と合わない binding で作り直せない");
-    check(restoreMissingEquationPart(e, {"s1"}, part(e.states[1], "p1", 2, 3, "y"), kHeight,
-                                     error),
+    check(restoreMissingEquationPart(e, {"s1"}, part(e.states[1], "p1", 2, 3, "y"), kHeight, error),
           "同じ PartId で作り直す: " + error);
     check(e.actions[0].targetStatus == EquationTargetStatus::Present &&
               e.actions[0].target.value == "p1" && e.transitions[0].correspondence.empty() &&
@@ -276,8 +279,7 @@ void testCorrespondenceAndActions() {
     tooLong.duration = 5;
     check(!updateEquationAction(d, tooLong, kHeight, error) && d == beforeSteal,
           "変更でも hold を超える区間は拒否");
-    check(deleteEquationAction(d, {"b"}, kHeight, error) && d.actions.size() == 1,
-          "action の削除");
+    check(deleteEquationAction(d, {"b"}, kHeight, error) && d.actions.size() == 1, "action の削除");
     check(!deleteEquationAction(d, {"b"}, kHeight, error), "無い action の削除は拒否");
 }
 
@@ -288,8 +290,9 @@ void testPartStatusAndViews() {
     EquationSequenceClipData d;
     d.states.push_back(s);
     auto views = equationPartViews(d, {"s"});
-    check(views.size() == 1 && views[0].status == EquationPartStatus::Bound && views[0].rangeUtf16 &&
-              views[0].rangeUtf16->first == 2 && views[0].rangeUtf16->second == 3,
+    check(views.size() == 1 && views[0].status == EquationPartStatus::Bound &&
+              views[0].rangeUtf16 && views[0].rangeUtf16->first == 2 &&
+              views[0].rangeUtf16->second == 3,
           "非 ASCII の範囲を UTF-16 で表す");
 
     auto frac = state("f", "\\frac{a}{b}");
@@ -329,8 +332,9 @@ void testPartStatusAndViews() {
 }
 
 // 編集欄の順の記録を、P3-2 の信頼済み編集として順に適用する。
-std::vector<TrustedEquationEdit> replay(const std::string& base,
-                                        std::vector<std::tuple<std::size_t, std::size_t, std::string>> steps) {
+std::vector<TrustedEquationEdit>
+replay(const std::string& base,
+       std::vector<std::tuple<std::size_t, std::size_t, std::string>> steps) {
     std::vector<TrustedEquationEdit> edits;
     std::string current = base;
     for (const auto& [b, e, r] : steps) {
@@ -391,17 +395,16 @@ void testTrustedEdits() {
     }
     {
         auto d = make();
-        check(applyTrustedEquationEdits(d, {"s"}, replay("a+bc+d", {{1, 3, ""}}), revision,
-                                        kHeight, error) &&
+        check(applyTrustedEquationEdits(d, {"s"}, replay("a+bc+d", {{1, 3, ""}}), revision, kHeight,
+                                        error) &&
                   bound(d).status == BindingStatus::Invalid,
               "境界を横切る削除で Invalid");
     }
     // 両側の編集を順に記録すれば部分式は無傷 (両側を覆う一つの範囲にまとめると無効になる)。
     {
         auto d = make();
-        check(applyTrustedEquationEdits(d, {"s"},
-                                        replay("a+bc+d", {{0, 0, "("}, {7, 7, ")"}}), revision,
-                                        kHeight, error) &&
+        check(applyTrustedEquationEdits(d, {"s"}, replay("a+bc+d", {{0, 0, "("}, {7, 7, ")"}}),
+                                        revision, kHeight, error) &&
                   bound(d).status == BindingStatus::Bound && bound(d).begin == 3 &&
                   d.states[0].equation.source == "(a+bc+d)",
               "順に適用すれば両側の編集で部分式は無傷: " + error);
@@ -409,9 +412,8 @@ void testTrustedEdits() {
     // 無効になった後、同じ文字が式の別の場所にあっても付け直さない。
     {
         auto d = make();
-        check(applyTrustedEquationEdits(d, {"s"},
-                                        replay("a+bc+d", {{3, 3, "Q"}, {0, 0, "bc+"}}), revision,
-                                        kHeight, error) &&
+        check(applyTrustedEquationEdits(d, {"s"}, replay("a+bc+d", {{3, 3, "Q"}, {0, 0, "bc+"}}),
+                                        revision, kHeight, error) &&
                   bound(d).status == BindingStatus::Invalid && bound(d).begin == 2,
               "同じ文字 (bc) が先頭にできても自動で付け直さない");
     }

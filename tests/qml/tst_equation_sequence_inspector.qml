@@ -179,6 +179,45 @@ TestCase {
     }
 
     // 状態の一覧の Delete は状態も clip も消さない。上下は選択の移動で、並べ替えではない。
+    function test_rejected_draft_blocks_state_operations_data() {
+        const rows = [];
+        for (const explicitCommit of [true, false]) {
+            for (const operation of ["equationStateRow_1", "equationInsertBefore",
+                                     "equationInsertAfter", "equationDeleteState",
+                                     "equationDeleteStateConfirmButton"]) {
+                rows.push({tag: operation + (explicitCommit ? "_明示拒否" : "_focus拒否"),
+                           explicitCommit: explicitCommit, operation: operation});
+            }
+        }
+        return rows;
+    }
+    function test_rejected_draft_blocks_state_operations(data) {
+        const view = minimalView("x");
+        view.state.canDelete = true;
+        view.stateCount = 2;
+        view.states.push({id: "s1", index: 1, summary: "y", holdFrames: 10,
+                          problem: false, selected: false});
+        fakeEditor.view = view;
+        const panel = createTemporaryObject(panelComponent, test);
+        tryVerify(() => findChild(panel, "equationStateRow_1") !== null);
+        const source = findChild(panel, "equationSourceEditor");
+        if (data.operation === "equationDeleteStateConfirmButton")
+            mouseClick(findChild(panel, "equationDeleteState"));
+        fakeEditor.commitResult = false;
+        source.forceActiveFocus();
+        source.text = "拒否された下書き";
+        if (data.explicitCommit)
+            keyClick(Qt.Key_Return, Qt.ControlModifier);
+        const snapshot = JSON.stringify(fakeEditor.view);
+        mouseClick(findChild(panel, data.operation));
+        compare(source.text, "拒否された下書き", data.operation);
+        compare(JSON.stringify(fakeEditor.view), snapshot, data.operation);
+        compare(fakeEditor.count("selectState"), 0);
+        compare(fakeEditor.count("insertState"), 0);
+        compare(fakeEditor.count("deleteSelectedState"), 0);
+        verify(source.activeFocus);
+    }
+
     function test_state_list_keys() {
         const view = minimalView("x");
         view.stateCount = 2;

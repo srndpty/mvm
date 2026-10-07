@@ -1336,3 +1336,90 @@ lint は通過 (`build/math-p341-lint.log`)。
 
 P3-4.1 の実装・検証を完了した。P3-5 の UI・書き出し、commit、push は行っていない。
 
+## P3-5.1: 製品 UI の実行と拒否された下書きの保持
+
+P3-5 の閉鎖に必要な二点だけを扱う。schema 21、P3-1〜P3-4 の意味、書き出しの契約は変えていない。
+書き出しと P3-5 より後の機能は実装していない。commit・push は行っていない。
+
+### 実製品の受け入れの配線
+
+`test_equation_sequence_ui.cpp` を `mvm_test_text_ui_input` に組み込み、
+`--equation-sequence-ui <証拠ディレクトリ>` を実際に呼び出す。CTest の
+`math_equation_sequence_product_ui` は `--scratch` で毎回新しい UUID の子ディレクトリを作る。
+以前のディレクトリを削除しない。通常モードも既存の証拠ディレクトリへの上書きを拒否する。
+
+[事実] `ctest -N -R '^math_equation_sequence_product_ui$'` で登録は一件
+(Test #1464)。証拠: `build/math-p351-ctest-list-final.log`。
+
+[事実] 最終の実製品試験は **263 検査 / 0 失敗**、20 場面の window・panel の画像を生成した。
+Main.qml の二次方程式の八状態の導出、部分式と対応、outline/pulse、保存・再読込、直接 seek、
+キーボード・フォーカス、拒否された下書き、修復、backend 不在、予算超過、空一覧、狭幅・低い高さ・
+長文での配置と操作への到達を実行した。seek は P3-4 と同じ native preview observer で実際に提示された
+output frame と種別も照合する。状態の polling が描画要求や cache の record を増やさないことも検査した。
+数式 backend は既存の偽 backend、controller・Main.qml・D3D11 preview は実製品のものを使う。
+実 Manim の画素の同値をこの UI 試験の合否にはしていない。
+証拠: `build/math-p351-product-17.log`、
+`build/p351-ui/578b24de-248c-4f0e-9a87-99a327a7452d/results.json` と同ディレクトリの PNG。
+狭幅・低い高さ・長文の PNG を目視でも確認した。
+
+背面 window の手動 event loop でも DeferredDelete と QML の polish を処理し、
+生存している配置済みの item に合成入力を送る。復旧データの残る fixture を受け入れに使わない。
+その前提検査には、意図的に autosave と外部変更を作って拒否を確かめる negative 検査を添えた。
+
+### 拒否された下書きからの状態変更
+
+状態の選択・挿入・移動・削除の開始と確定は QML の共通 `changeState()` を通す。
+source の確定が拒否されたら操作を実行せず、同じ編集欄へフォーカスを戻す。
+同期も拒否された source を取消・上書きしない。確定中の同期通知で入力を戻さないようにし、
+通常の成功した focus-loss 確定は Project Undo 一件のままにした。
+
+[事実] QML 回帰は、明示確定で拒否した場合と最初の focus-loss で拒否した場合の各々について、
+別状態のクリック、前後への挿入、削除開始、削除確定を検査する。共通ガードを無効にした変異では
+これら **10 件すべてが失敗**、既存の 10 件は通過した。元のガードを復元して通過を確認した。
+証拠: `build/math-p351-qml-mutant-2.log` / `.txt`。
+実製品でも拒否後のクリック・前後挿入・削除要求で、下書きと選択 ID の完全一致、
+Project と Undo depth の不変、再編集可能なフォーカスを検査した。成功した focus-loss の Undo 一件も照合した。
+
+### 失敗の保存と検証
+
+[事実] 配線後に見つかった未実行ハーネスの問題を修正し、失敗した build・試験の log と生成済み artifact は
+すべて保存した。初期の失敗には Windows の `far` マクロとの衝突、長い証拠 path での renderer jobs 作成失敗、
+二重 seek の待機、古い item の配置・寿命、描画通知の待機、背面 window の timer が含まれる。
+`build/math-p351-build*.log`、`build/math-p351-product*.log` と `build/p351-ui/`、
+初期の `build/ucrt64-release/tests/equation-sequence-ui/` に残している。
+
+[事実] product-16 は数値上 253/253 通過したが、画像確認で復旧ダイアログが配置の画像を覆っていたため、
+十分な証拠として採用しなかった。修復と polling の fixture のファイルを分離し、上記の復旧前提の negative
+検査を追加した後の product-17 が最終検証である。成功するまで同じ試験を繰り返して選別したものではない。
+
+[事実] 集中試験は **8/8 通過**。domain・authoring・compile・history・editor controller・QML に加え、
+P3-4 の `math_equation_sequence_native_preview` と `audio_mixer_controls_qml` を含む。
+証拠: `build/math-p351-focused-final.log`。共通 UI primitive は変更していない。
+今回の音声 QML の通過を過去の失敗の原因解消とはみなさない。
+
+[事実] 単独の BuildIndependent は **1079/1079 通過** (`build/math-p351-independent-final.log`)。
+初回は QML 回帰の delegate 待機不足で一件失敗した。次の実行は生の CTest は全件通過したが、別 CTest との
+並行実行が集計ファイルへ干渉したため最終証拠には使わず、その後は CTest を直列に実行した。
+その log (`build/math-p351-independent-1.log` / `-2.log`) も保存する。
+
+[事実] 最終 lint は通過 (`build/math-p351-lint-final.log`)。未整形だった domain・authoring と二つの
+テストの既存ファイルも clang-format で整形したが、その判断や計算は変更していない。
+
+[事実] 通常 release gate は **一回で 1467/1471 通過、4 件失敗**。通常 gate は未通過。
+performance・stability は除外した。再試行していない。証拠: `build/math-p351-release.log`。
+
+- `math_equation_sequence_product_ui`: 再生位置外の QML polling が 10 秒内に四回に達せず一回。
+  244 検査中一件失敗、19 場面の画像を保存した。失敗後の長文シナリオは実行していない。
+  証拠: `build/p351-ui/4c1b8e93-4289-46c2-a11f-1ca508716053/results.json` と PNG。
+  単独実行の 263/263 通過でこの失敗を置き換えない。
+- `text_ui_direct_input`: 120.15 秒 timeout。Ctrl+K の前提 seek が受理されず、current clip と分割も検査失敗。
+- `audio_mixer_product_ui`: no-op 検査の二倍シャトルを開始できず、変更のない確定でのシャトル維持も失敗。
+  既存処理の最新提示待ち→seek→シャトル開始の連鎖が成立していない。
+- `transition_preview`: cut を通した再生継続と cut 前後の frame 提示が失敗。frame 127〜134 の送りは期待どおり。
+
+[事実] 通常 gate の `audio_mixer_controls_qml` は通過した (1.50 秒)。共通 UI primitive の変更はない。
+音声製品 UI と直接入力は今回配線したものと同じ `mvm_test_text_ui_input` を使用する。
+その共通実行ファイルには QuickTest の追加リンクがあるが、既存 CLI の処理と音声試験の判断は変更していない。
+[未検証] polling・seek・再生継続の失敗の根本原因、および追加リンクとの因果関係。
+失敗を無関係や一過性と断定しない。P3-5.1 の二点を実装し単独受け入れは実行したが、通常 gate の閉鎖は未成立。
+

@@ -17,8 +17,8 @@ namespace mvm::app {
 // 部分式の状態。表示の文はこの型から作り、backend のメッセージの文字列から分類しない。
 enum class EquationPartStatus {
     Bound,
-    InvalidBinding,         // 式の編集で範囲が壊れた (明示 rebind で修復)
-    MissingTarget,          // 部分式が削除され、action が欠落 ID を参照している (同じ ID で作り直す)
+    InvalidBinding, // 式の編集で範囲が壊れた (明示 rebind で修復)
+    MissingTarget,  // 部分式が削除され、action が欠落 ID を参照している (同じ ID で作り直す)
     UnsupportedTexBoundary, // TeX の構造の途中を切る範囲 (compiler が分離できない)
     UnsupportedEmptyTarget  // 空白・括弧だけで描く文字が無い
 };
@@ -42,6 +42,7 @@ struct EquationPartView {
     std::vector<project::ActionId> actions;
     std::vector<project::TransitionId> correspondences;
 };
+
 // 状態の部分式を source 順 (Bound) → 無効 → 欠落の順に並べる。欠落は action の参照から作る。
 std::vector<EquationPartView> equationPartViews(const project::EquationSequenceClipData&,
                                                 const project::StateId&);
@@ -65,8 +66,8 @@ project::EquationSequenceClipData newEquationSequenceData(std::string source,
                                                           std::int64_t holdFrames,
                                                           const std::function<std::string()>& id);
 // 挿入する状態。式の書式 (文字サイズ・色) は reference を引き継ぎ、背景は透明。
-project::EquationState newEquationState(const project::MathClipData& reference,
-                                        std::string source, std::int64_t holdFrames,
+project::EquationState newEquationState(const project::MathClipData& reference, std::string source,
+                                        std::int64_t holdFrames,
                                         const std::function<std::string()>& id);
 
 // 編集欄で記録した信頼済み編集を順に適用する。全体を一つの候補で検証して確定する
