@@ -4239,6 +4239,12 @@ add_dependencies(mvm_subtitle_validation mvm_test_subtitle_controller)
 set_tests_properties(subtitle_controller_contract PROPERTIES LABELS workstation)
 
 add_executable(mvm_test_math_export harness/test_math_export.cpp)
+add_executable(mvm_test_equation_export harness/test_equation_export.cpp)
+target_link_libraries(mvm_test_equation_export PRIVATE mvm::timeline_export mvm::math_raster_cache
+    mvm::math_clip_render mvm::mlt Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_test_equation_export PRIVATE ${MVM_MLT_PATH_DEFS})
+mvm_add_test(math_equation_sequence_export_focused COMMAND mvm_test_equation_export
+    "${MVM_UCRT64_ROOT}/bin/ffprobe.exe" PROPERTIES RUN_SERIAL TRUE TIMEOUT 180)
 add_executable(mvm_test_math_transform_export harness/test_math_transform_export.cpp)
 target_link_libraries(mvm_test_math_transform_export PRIVATE
     mvm::timeline_export mvm::math_raster_cache mvm::math_clip_render mvm::mlt Qt6::Gui mvm::warnings)

@@ -1,6 +1,7 @@
 #ifndef MVM_APP_TIMELINE_EXPORT_H
 #define MVM_APP_TIMELINE_EXPORT_H
 
+#include "app/equation_sequence_export.h"
 #include "media/math/math_transform.h"
 #include "project/project.h"
 
@@ -41,6 +42,10 @@ struct TimelineExportRequest {
     // 出力する数式 clip がここに無い・枚数が足りなければ失敗する。
     std::map<std::string, std::vector<std::filesystem::path>> mathWriteFrames;
     std::map<std::string, TimelineMathTransformArtifact> mathTransforms;
+    std::map<std::string, EquationExportSnapshot> equationSequences;
+    // 検証用: PNG へ保存する直前の内部合成の RGBA。外側 effects は既存 MLT 合成で掛ける。
+    std::function<void(const std::string&, std::int64_t, const std::vector<std::uint8_t>&)>
+        equationFrameObserver;
     int renderThreads = 4;
     int encoderThreads = 0;
     // trueを返すとキャンセルする。worker threadから呼ばれる。
@@ -54,6 +59,7 @@ struct TimelineExportResult {
     long long frameCount = 0;
     double durationSec = 0.0;
     std::string error;
+    EquationExportReadiness equationReadiness;
     enum class Backend { Sequential, Tractor } backend = Backend::Sequential;
     int playlistBlankCount = 0;
     int transitionCount = 0;
@@ -90,6 +96,7 @@ struct TimelineExportClipMapping {
     // qimage の連番で開く。Write の後は同じ clip の別の mapping (静止) が続く。
     bool mathWrite = false;
     std::string mathTransformId;
+    bool equationSequence = false;
     // MLT の映像 layer (下から 0, 1, ...)。track ごとに lane 0 と、トランジションがあれば
     // lane 1 (incoming を重ねる) を積む。トランジションが無ければ track の index と同じ。
     int videoTrackIndex = 0;
@@ -124,6 +131,8 @@ struct TimelineExportPlan {
     std::int64_t totalDurationFrames = 0;
     std::vector<TimelineExportClipMapping> clips;
     std::map<std::string, math::MathTransformRasterPlacement> mathTransformPlacements;
+    std::map<std::string, EquationSequenceExportPlan> equationSequences;
+    EquationExportReadiness equationReadiness;
     std::string error;
 };
 

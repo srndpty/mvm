@@ -73,7 +73,7 @@ add_library(mvm::math ALIAS mvm_math)
 # Project の binding と P2 の純粋な計算を結ぶ。描画 backend / Qt は参照しない。
 add_library(mvm_equation_sequence_compile STATIC app/equation_sequence_compile.cpp
     app/equation_sequence_render.cpp app/equation_sequence_preview.cpp
-    app/equation_sequence_authoring.cpp)
+    app/equation_sequence_authoring.cpp app/equation_sequence_export.cpp)
 target_include_directories(mvm_equation_sequence_compile PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_equation_sequence_compile PUBLIC mvm::project mvm::math PRIVATE mvm::warnings)
 add_library(mvm::equation_sequence_compile ALIAS mvm_equation_sequence_compile)
@@ -139,7 +139,7 @@ add_library(mvm_timeline_export STATIC
 )
 target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_timeline_export
-    PUBLIC mvm::project
+    PUBLIC mvm::project mvm::equation_sequence_compile
     PRIVATE mvm::core mvm::mlt mvm::text_raster mvm::math_clip_render mvm_still_image
         mvm::warnings)
 add_library(mvm::timeline_export ALIAS mvm_timeline_export)

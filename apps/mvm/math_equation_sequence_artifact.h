@@ -20,8 +20,9 @@
 //           公開の前に、base と通常の大きさ・位置の対象 (backend の作業 directory の照合用の層。
 //           保存しない) を composeEquationCoverage で重ねると状態の静止と全画素一致することを
 //           確かめる (PulseBaseMismatch)。読むときは SHA-256 で公開時の base と同じことを確かめる。
-// preview・書き出しへの組み込み (P3-4 / P3-5) はまだ行わない。
+// preview は常駐する層を使い、書き出しは現在 key の disk を独立に検査する。
 
+#include "app/equation_sequence_export.h"
 #include "media/math/equation_sequence_render.h"
 #include "media/math/math_backend.h"
 
@@ -112,10 +113,12 @@ enum class EquationSequenceDiskLoad { Ready, Missing, Cancelled };
 // disk の artifact を確かめる: provenance の正準形 (identity は job から組み直して byte 単位で
 // 比べる)・数値の整合・各 frame の大きさと SHA-256・端点の静止との一致。合わなければ
 // (removeInvalid なら gate の下で消して) Missing。
-EquationSequenceDiskLoad loadEquationSequenceArtifact(const EquationSequenceJob& job,
-                                                      const std::atomic<bool>* cancel,
-                                                      EquationSequenceArtifact& artifact,
-                                                      bool removeInvalid = true);
+EquationSequenceDiskLoad
+loadEquationSequenceArtifact(const EquationSequenceJob& job, const std::atomic<bool>* cancel,
+                             EquationSequenceArtifact& artifact, bool removeInvalid = true,
+                             EquationExportReadiness* readiness = nullptr,
+                             const std::function<bool()>& cancelled = {},
+                             const std::vector<EquationPreviewLayerId>* required = nullptr);
 
 struct EquationSequenceOutcome {
     bool cancelled = false;

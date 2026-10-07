@@ -83,19 +83,20 @@
   protocol 修正後の新しい通常 gate 一回は 1472/1472 通過。P3-5 は CLOSED、P3-6 は GO。
   旧 1467/1471 の失敗と全証拠はそのまま保存した。
   [P3-5.2 の帰属と閉鎖検証](math-equation-sequence-p30.md#管理者電源履歴と最終帰属) を参照。
-- P3-6: 実 D3D11 preview と映像のみ export。全区間が現在の入力で ready であることを要求し、
-  一つの clip の導出全段と判別式の強調を UI author→save/reopen→preview→export で検証する。
-  任意 seek、action 中の split、編集・失敗・backend 不在、画素をずらす負例を含める。
+- P3-6 の現在の入力に対する export authority、保存再読込後の製品 UI からの映像 export、
+  trim/split・破損・backend 不在の検証は
+  [実装と受け入れ証拠](math-equation-sequence-p30.md#p3-6-video-only-export-and-final-vertical-slice) へ移した。
+  通常 release は 1473/1473、BuildIndependent は 1080/1080、実 Manim の製品 UI 受け入れも通過。
+  P3-6 と初期 EquationSequence vertical slice は PASS/CLOSED。P4 は未着手。
 
 未解決の判断・検証:
 
 - 任意 TeX macro の支持は未検証。P3-3 は P3-2 の支持範囲の segment について、Manim 0.21 の
   点を持つ子孫の排他的所有を描画ごとに検査する (実装記録)。検査を通った範囲の成功を、
   任意範囲の renderer 分離保証へ一般化しない。
-- 動く pulse の 2 層の合成と Manim の 1 つの scene の差は P3-4 で測った
-  ([設計文書](math-equation-sequence-p30.md#p3-4-residency-と-product-preview))。alpha は全画素一致、
-  premultiplied の色は部分被覆の画素だけで最大 1 違う (同じ実数の丸め方の違い)。この差を製品の
-  品質として受け入れるか (書き出しの受け入れ基準に含めるか) は未判断。許容差を正の検査には入れていない。
+- backend の確認に一度も成功していない新規 session では、disk に描画結果があっても
+  toolchain identity を確定できず export を拒否する。確認済み identity を保持する session では、
+  backend が使えなくなっても必要な現在の描画結果が揃っていれば export できる。
 - P3-4 の先読みは今の区間の残りと次の区間だけ。再生中に先読みが間に合わない frame は代用 (静止) で
   見せる。広い lookahead・区間の先頭の事前読み込みは性能の課題として残す。
 - P3-4 の Equation Sequence の layer は出力の大きさの透明な静止画を下地にし、animation の instance

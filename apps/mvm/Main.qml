@@ -4303,6 +4303,7 @@ ApplicationWindow {
 
     ModernDialog {
         id: exportSettingsDialog
+        objectName: "exportSettingsDialog"
         property string inputSpecText: ""
         property string outputSpecText: ""
         property string comparisonWarningText: ""
@@ -4394,6 +4395,7 @@ ApplicationWindow {
             }
             ModernDialogButton {
                 text: "書き出す"
+                objectName: "exportAcceptButton"
                 prominent: true
                 onClicked: {
                     const option = exportSettingsDialog.qualityOptions[qualityCombo.currentIndex];
@@ -4432,6 +4434,7 @@ ApplicationWindow {
 
     FileDialog {
         id: exportDialog
+        objectName: "exportFileDialog"
         title: "書き出し先を指定"
         fileMode: FileDialog.SaveFile
         defaultSuffix: "mp4"

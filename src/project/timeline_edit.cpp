@@ -2530,7 +2530,7 @@ bool resolvePointClips(const Project& prepared, const std::vector<EditPoint>& po
         entry.outgoing = prepared.timelineClips[static_cast<std::size_t>(entry.clips.outgoing)];
         entry.incoming = prepared.timelineClips[static_cast<std::size_t>(entry.clips.incoming)];
         // P3 の EquationSequence は内部の時間の正 (P3-1) の外へ素材範囲を延ばせない。Blend・数式の
-        // 変形のどちらも作らない (preview は P3-4 で拒否、書き出しは未実装)。
+        // 変形のどちらも作らない (preview と書き出しは同じ構造上の理由で拒否する)。
         for (const auto* clip : {&entry.outgoing, &entry.incoming})
             if (clip->kind == TimelineClipKind::EquationSequence) {
                 error = "数式 sequence には timeline のトランジションを置けません "

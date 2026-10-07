@@ -1,6 +1,7 @@
 #ifndef MVM_APPS_MVM_MATH_RASTER_CACHE_H
 #define MVM_APPS_MVM_MATH_RASTER_CACHE_H
 
+#include "app/equation_sequence_export.h"
 #include "math_equation_sequence_artifact.h"
 #include "media/math/equation_sequence_render.h"
 #include "media/math/math_backend.h"
@@ -280,7 +281,11 @@ public:
     // Ready の artifact を、今の静止と disk の provenance・全 frame で検査し直して返す。
     std::optional<EquationSequenceArtifact>
     readyEquationSequence(const math::EquationSequenceRenderSpec& spec) const;
+    // export 専用の不変 snapshot。描画・RAM 常駐の要求・不正 artifact の削除は行わない。
+    EquationExportSnapshot equationSequenceExportSnapshot(const project::TimelineClip& clip) const;
+
     int equationSequenceRecordCount() const { return static_cast<int>(equationSequences_.size()); }
+
     // request せずに今の状態を返す (record が無ければ既定の Pending)。
     EquationSequenceEntry equationSequenceEntryOf(const math::EquationSequenceRenderSpec& spec) const;
     // Ready の record が持つ検証済みの artifact (P3-4 の preview の配置と色)。disk は読まない
@@ -545,6 +550,8 @@ private:
     BackendState backendState_ = BackendState::Unavailable;
     QString backendMessage_ = QStringLiteral("数式の cache が設定されていません");
     math::MathRenderBackend backend_;
+    // 検証済み toolchain の識別だけを export 用に保持する。古い描画結果の authority ではない。
+    std::optional<math::MathRenderBackend> exportIdentity_;
     std::chrono::milliseconds renderTimeout_{60000};
     std::chrono::milliseconds sequenceTimeoutPerFrame_{500};
     bool shutDown_ = false;

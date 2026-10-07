@@ -44,6 +44,16 @@ struct ExportGeometry {
     double shearDegrees = 0.0;
 };
 
+bool hasEquationOuterTransition(const project::Project& project,
+                                const project::TimelineClip& clip) {
+    return clip.kind == project::TimelineClipKind::EquationSequence &&
+           std::any_of(project.timelineTransitions.begin(), project.timelineTransitions.end(),
+                       [&](const auto& transition) {
+                           return transition.outgoingClipId == clip.id ||
+                                  transition.incomingClipId == clip.id;
+                       });
+}
+
 // evaluated は評価済みの effect (key を持たない)。モーションの全 frame で呼ぶので、
 // clip や key 列を複製しない。
 ExportGeometry mapExportGeometry(const project::ClipEffects& evaluated,
@@ -180,12 +190,6 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
 TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
                                          const TimelineExportRequest& request) {
     TimelineExportPlan plan;
-    for (const auto& clip : project.timelineClips) {
-        if (clip.enabled && clip.kind == project::TimelineClipKind::EquationSequence) {
-            plan.error = "EquationSequence の書き出しは未実装です (P3-1 は構造編集のみ)";
-            return plan;
-        }
-    }
     if (request.width <= 0 || request.height <= 0 || request.fpsNum <= 0 || request.fpsDen <= 0 ||
         request.videoCrf < 0 || request.videoCrf > 51 || request.fpsNum != project.timelineFpsNum ||
         request.fpsDen != project.timelineFpsDen) {
@@ -195,9 +199,48 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
     const auto valid = project::validateTimeline(project);
     if (!valid.success) {
         plan.error = valid.error;
+        plan.equationReadiness = {EquationExportFailure::InvalidProject,
+                                  EquationCompileFailure::None, valid.error};
+        for (const auto& clip : project.timelineClips)
+            if (clip.enabled && hasEquationOuterTransition(project, clip))
+                plan.equationReadiness.failure =
+                    EquationExportFailure::UnsupportedTimelineTransition;
         return plan;
     }
-    bool mathTransformBaseOverlay = false;
+    bool mathBaseOverlay = false;
+    for (const auto& clip : project.timelineClips) {
+        if (!clip.enabled || clip.kind != project::TimelineClipKind::EquationSequence ||
+            !project::isTrackOutputEnabled(project, clip.track))
+            continue;
+        const auto reject = [&](EquationExportReadiness reason) {
+            plan.equationReadiness = std::move(reason);
+            plan.error = clip.name + ": " + plan.equationReadiness.detail;
+            plan.cancelled = plan.equationReadiness.failure == EquationExportFailure::Cancelled;
+        };
+        if (hasEquationOuterTransition(project, clip)) {
+            reject({EquationExportFailure::UnsupportedTimelineTransition,
+                    EquationCompileFailure::None,
+                    "数式 sequence の外側トランジションは未対応です"});
+            return plan;
+        }
+        const auto found = request.equationSequences.find(clip.id);
+        EquationExportSnapshot snapshot;
+        if (found != request.equationSequences.end())
+            snapshot = found->second;
+        else
+            snapshot.readiness = {EquationExportFailure::ArtifactPending,
+                                  EquationCompileFailure::None,
+                                  "現在の数式の描画結果を準備できません"};
+        auto sequence = planEquationSequenceExport(
+            clip, request.fpsNum, request.fpsDen, request.width, request.height, snapshot,
+            [&] { return request.progress && request.progress(0, 0); });
+        if (!sequence.readiness.ready()) {
+            reject(sequence.readiness);
+            return plan;
+        }
+        plan.equationSequences.emplace(clip.id, std::move(sequence));
+        mathBaseOverlay = mathBaseOverlay || clip.track.index == 0;
+    }
     // 必要な変形をすべて出力開始前に検査する。常駐状態による代用や cut への縮退はしない。
     for (const auto& transition : project.timelineTransitions) {
         if (!mathTransformIsRendered(project, transition))
@@ -207,7 +250,7 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             project.timelineClips[static_cast<std::size_t>(index.find(transition.outgoingClipId))];
         const auto& target =
             project.timelineClips[static_cast<std::size_t>(index.find(transition.incomingClipId))];
-        mathTransformBaseOverlay = mathTransformBaseOverlay || source.track.index == 0;
+        mathBaseOverlay = mathBaseOverlay || source.track.index == 0;
         const auto spec = mathTransformSpecFor(transition, source, target);
         const auto window = mathTransformWindowFor(project, transition);
         const auto input = request.mathTransforms.find(transition.id);
@@ -280,9 +323,9 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             if (segment.lane > 0)
                 usesOverLane[static_cast<std::size_t>(segment.original.track.index)] = true;
         // MLT の最下層をそのまま映像へ変換すると alpha が捨てられる。V1 に変形がある場合は
-        // 黒の下地を一層残し、変形と両端の静止を既存の overlay 合成へ通す。
+        // 黒の下地を一層残し、変形・EquationSequence と静止を既存の overlay 合成へ通す。
         // ClipEffects はこの通常の合成で一度だけ掛ける。変形のない Project の経路は変えない。
-        int next = mathTransformBaseOverlay ? 1 : 0;
+        int next = mathBaseOverlay ? 1 : 0;
         for (std::size_t track = 0; track < layerBase.size(); ++track) {
             layerBase[track] = next;
             next += usesOverLane[track] ? 2 : 1;
@@ -344,6 +387,11 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         mapped.renderClip = clip;
         mapped.audio = clip.track.kind == project::TrackKind::Audio;
         mapped.still = project::isStillClipKind(clip.kind);
+        mapped.equationSequence = clip.kind == project::TimelineClipKind::EquationSequence;
+        if (mapped.equationSequence) {
+            mapped.still = true;
+            plan.backend = TimelineExportResult::Backend::Tractor;
+        }
         mapped.videoTrackIndex = mapped.audio ? clip.track.index : layerOf(*segment);
         mapped.timelineStartFrame = clip.timelineStartFrame;
         mapped.timelineDurationFrames = duration.frame;
@@ -396,6 +444,16 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         };
         const std::int64_t localOffset =
             clip.timelineStartFrame - segment->original.timelineStartFrame;
+        if (mapped.equationSequence) {
+            mapped.producerInFrame = 0;
+            mapped.producerOutFrame = duration.frame;
+            mapped.tailPaddingFrames = 0;
+            if (!mapExportEffects(segment->original, request, duration.frame, localOffset, overlay,
+                                  opacityAt, mapped, plan.error, plan.cancelled))
+                return plan;
+            plan.clips.push_back(std::move(mapped));
+            continue;
+        }
         // 数式の Write: 先頭の Write の区間 (連番) と、その後の静止の区間に分ける。
         // 区間の長さは preview と同じ mathIntroFrameAt で数える。
         std::int64_t writeFrames = 0;
@@ -523,6 +581,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
     if (!plan.success) {
         result.cancelled = plan.cancelled;
         result.error = plan.error;
+        result.equationReadiness = plan.equationReadiness;
         return result;
     }
 
@@ -577,6 +636,45 @@ TimelineExportResult exportTimeline(const project::Project& project,
         if (index >= project.timelineClips.size()) {
             result.error = "書き出し計画の clip 番号が範囲外です";
             return result;
+        }
+        if (planned.equationSequence) {
+            const auto mappingIndex = static_cast<std::size_t>(&planned - plan.clips.data());
+            const auto& snapshot = plan.equationSequences.at(planned.renderClip.id).snapshot;
+            std::vector<std::uint8_t> rgba;
+            for (std::int64_t frame = 0; frame < planned.timelineDurationFrames; ++frame) {
+                if (request.progress && request.progress(0, plan.totalDurationFrames)) {
+                    result.cancelled = true;
+                    result.equationReadiness = {EquationExportFailure::Cancelled,
+                                                EquationCompileFailure::None,
+                                                "数式の書き出し準備をキャンセルしました"};
+                    result.error = result.equationReadiness.detail;
+                    return result;
+                }
+                result.equationReadiness =
+                    composeEquationExportFrame(snapshot, planned.timelineStartFrame + frame, rgba);
+                if (!result.equationReadiness.ready()) {
+                    result.error = result.equationReadiness.detail;
+                    return result;
+                }
+                if (request.equationFrameObserver)
+                    request.equationFrameObserver(planned.renderClip.id,
+                                                  planned.timelineStartFrame + frame, rgba);
+                const QImage image(rgba.data(), request.width, request.height, request.width * 4,
+                                   QImage::Format_RGBA8888);
+                std::string staged;
+                if (!stagePng(image,
+                              QStringLiteral("%1-equation-%2.png")
+                                  .arg(mappingIndex)
+                                  .arg(frame, 5, 10, QLatin1Char('0')),
+                              staged))
+                    return result;
+            }
+            const auto pattern =
+                QString::number(mappingIndex) + QStringLiteral("-equation-%05d.png");
+            transformPaths.emplace(
+                mappingIndex,
+                pathToUtf8(std::filesystem::path(stillStaging->filePath(pattern).toStdWString())));
+            continue;
         }
         if (!planned.mathTransformId.empty()) {
             const auto mappingIndex = static_cast<std::size_t>(&planned - plan.clips.data());
@@ -801,11 +899,13 @@ TimelineExportResult exportTimeline(const project::Project& project,
         MvmExportClip mapped{};
         mapped.path =
             planned.subtitle ? subtitlePaths.at(planned.subtitle->id).c_str()
-            : !planned.mathTransformId.empty()
+            : !planned.mathTransformId.empty() || planned.equationSequence
                 ? transformPaths.at(static_cast<std::size_t>(&planned - plan.clips.data())).c_str()
             : planned.mathWrite ? writePaths.at(index).c_str()
                                 : clipPaths.at(index).c_str();
-        mapped.is_image_sequence = planned.mathWrite || !planned.mathTransformId.empty() ? 1 : 0;
+        mapped.is_image_sequence =
+            planned.mathWrite || !planned.mathTransformId.empty() || planned.equationSequence ? 1
+                                                                                              : 0;
         mapped.source_fps_num = clip.sourceFpsNum;
         mapped.source_fps_den = clip.sourceFpsDen;
         mapped.source_frame_count = clip.sourceFrameCount;

@@ -1592,3 +1592,176 @@ P3-6                      GO
 
 P3-6 の着手条件は満たした。この作業では export/P3-6 を実装せず、commit/push も行っていない。
 
+## P3-6 video-only export and final vertical slice
+
+### 書き出しの正と実装
+
+schema 21 の変更はない。P3-1〜P3-5.2 の時間・compile・artifact・preview の代用・authoring の
+意味を維持し、既存 `exportTimeline` の映像素材の境界へ EquationSequence を追加した。
+EquationSequence は映像だけを提供する。別の通常素材の音声は既存の timeline export が扱う。
+EquationSequence と外側 TimelineTransition の組み合わせは引き続き構造上の未対応として拒否する。
+
+```text
+開始時点の Project のコピー / compiled spec / render key / toolchain fingerprint / template
+  → current-key の静止と P3-3 provenance の検査
+  → P3-1 の output → source → 区間 → local frame
+  → 必要な disk の A8 と SHA-256 の検査
+  → P3-4 CPU の整数合成 / 配置
+  → 全可視 frame の PNG の準備
+  → 既存 MLT の外側 ClipEffects / timeline 合成 / encoder
+```
+
+`src/app/equation_sequence_export.{h,cpp}` の `EquationExportSnapshot` と
+`planEquationSequenceExport` は preview の常駐とは独立した読み取り専用の契約である。
+`EquationSequenceExportPlan::frames` は可視範囲全体の exact mapping を保持する。
+失敗の正は `EquationExportFailure` と `EquationCompileFailure` であり、日本語の説明文字列で
+分類しない。MissingPart・InvalidBinding・UnsupportedTexBoundary、現在 key の不一致、
+静止・変形・base・accent の破損、frame の欠落、provenance の欠落・不一致、backend 不在、
+未準備・描画失敗、取消、範囲不正、外側 transition を区別する。
+
+全 clip の preflight が終わり、全 PNG の準備が完了するまで encoder を開始しない。
+disk の読み取りと検査は export worker が行い、GUI/cache の可変 record を捕捉しない。
+検査は `removeInvalid=false` で行うため、壊れた成果物を削除しない。
+書き出しは artifact の生成を開始しない。不足していれば未準備・描画失敗・backend 不在として
+失敗し、preview の静止の代用や session の last-good を出力しない。
+したがって書き出しの encoder/render callback から Python/Manim を呼ぶ経路もない。
+
+### Snapshot・依存範囲・取得
+
+開始時点の compiled spec・key・toolchain/template をコピーし、Project も既存 controller が
+worker 起動時にコピーする。background の新 key の完了は、このコピーを変更しない。
+export の読み取りが live Project の authority を公開する経路もない。
+準備時に確定した静止の被覆は不変に保持し、animation は frame ごとに disk から読み、
+確定時の provenance 全文・寸法・SHA を照合する。取得は要求順と thread の履歴を持たない。
+
+Hold は現在 key の通常の静止。Transition は P3-1 が選んだ A8。Outline/Pulse は provenance の
+色で base の上に accent を重ねる。配置・丸めは `EquationPreviewModel` と中立な合成を共有し、
+exact な提示と一致しない場合は export の失敗にする。ClipEffects は内部合成へ焼き込まず、
+既存の外側合成で一度だけ掛ける。V1 にも黒の下地を残し、alpha を通常の overlay に通す。
+
+preview の OverBudget / 非常駐は export の不成立条件ではない。disk の層を必要な frame ごとに
+検査・取得し、全 sequence を preview RAM 上限へ常駐させない。
+hold のみの可視範囲はその状態の静止だけを要求する。animation が見える場合は全 package の
+正準 provenance・所有・幾何を検査するが、frame の実体の依存は可視 frame と配置の端点だけに
+限定する。可視 transition の frame 0 は source の静止との照合にも使う。
+可視範囲外の transition や同一区間の見えない frame の欠落は export を妨げない。
+
+trim と split は既存の P3-1 source 範囲と ID の規則を使う。内部 action/transition の時刻を
+範囲の先頭へ戻さない。所有 ID の異なる右片も同じ正準 key を使い、境界に重複・欠落を作らない。
+ID の Undo/Redo は既存 domain/controller の試験も通常 gate に含める。
+
+同じ cache について検証した toolchain の識別だけを保持し、backend の起動が使えなくなった後も
+current-key の必要な artifact が独立に検証できれば export を許可する。artifact が不足すれば
+BackendUnavailable で失敗する。toolchain を一度も確認できず current key を証明できない
+新規 session は拒否する。過去の任意 toolchain を探して使う処理は追加していない。
+
+### 取消・進行・画素の oracle
+
+preflight の依存列、静止の読み取り、各 A8 の検査、RGBA/PNG の準備は既存の取消 callback を
+確認する。encoder の取消と一時出力の破棄は既存 exporter の規則を維持する。
+export 自身は Manim を起動しないため、export が生成した child process は存在しない。
+製品は従来の準備中表示と通常の encoding progress を使う。Manim の秒を進捗に数えない。
+
+oracle は保存再読込した Project、P3-1、検証した P3-3 artifact、P3-4 CPU compositor から作る。
+exporter の frame 取得関数から期待値を作らない。common RGBA の比較点は内部合成後、PNG 化の
+直前である (外側 effects を持たない受け入れ clip)。全 15 probe を byte 単位で照合する。
+lossy H.264 の復号結果はこの完全一致の正に使わず、全 frame の復号と代表画像を別に確認する。
+Manim 単一 scene の既知の RGB 最大 1 LSB は renderer fidelity の指標のままであり、
+preview/export の完全一致に ±1 の許容差を入れていない。
+
+### 製品 UI と負例の証拠
+
+[事実] `test_equation_sequence_ui.cpp` は実 Main.qml のメニュー・キー入力・選択・ボタンで
+8 状態の導出、部分式、明示対応、最後の判別式の outline/pulse を作る。作成開始後に Project JSON を
+編集しない。保存・閉じる・再読込後に直接 seek し、製品の export 設定ダイアログのボタンから
+通常の H.264 profile を書き出す。file chooser のパス選択だけは合成 signal で渡し、設定画面の
+クリックと controller/worker/exporter は実経路を使う。Explorer の起動だけは試験で抑止する。
+
+| 検証 | 証拠 |
+| --- | --- |
+| 偽 backend の製品 UI、保存再読込、export、15 probe の完全一致 | `build/math-p36-product-ui-02.log`、`build/p351-ui/cd97f759-c84a-4124-92e5-dcd39b0fbe41/results.json` |
+| 実 Manim / LaTeX の同じ製品 UI と export、15 probe の完全一致 | `build/math-p36-real-ui-01/results.json`、`quadratic.mvm`、`quadratic-reopened.mp4`、`cache/` |
+| H.264 の独立した代表 frame 復号 | 同 directory の `decoded-probe-frames.json`、`decoded-*.png`。outline 中央 `decoded-679.png`、pulse 中央 `decoded-729.png` |
+| 集中 export、全 trim/split、逆順・並行取得、current-source と各破損、backend 不在、取消、新 key の遅延と snapshot | `build/math-p36-focused-05.log`、`build/ucrt64-release/tests/math-p36-export/` の各 run |
+| BuildIndependent | `build/math-p36-independent.log` |
+| native preview / domain / controller / generic export の集中回帰 | `build/math-p36-regressions.log` (12/12) |
+| 最終 lint | `build/math-p36-lint-final.log` |
+
+集中試験は frame の差し替え callback を負の対照にも使う。1 pixel のずれ、provenance 色の違い、
+transition の `(i+1)/N`、pulse accent の省略は独立 oracle と不一致になる。
+preview の transition/action 静止代用、旧 key、SHA の検査を省いた同 byte 数の破損、
+provenance の改変、範囲開始での action 再開、split での再開、effects の二重適用、
+旧 static の使用、backend 不在時の不足、preview RAM への依存を通す変異も検査で拒否する。
+
+失敗した run は変更・削除していない。
+
+- `build/math-p36-build-02.log`: lambda の捕捉名と local 名の衝突によるビルド失敗。
+- `build/math-p36-build-03.log`: 試験の LinkMode 名を既存 API と違えて使ったビルド失敗。
+- `build/math-p36-focused-01.log` と run `3bde6663-e398-489c-be7a-3e7a6630b0d1`: off-by-one の
+  負例が失敗。偽 renderer の中間 A8 が同じため、先頭の 0→1 の境界へ probe を修正した。
+- `build/math-p36-product-ui-01.log` と `build/p351-ui/9239713e-0828-4592-83c6-e3af082b3027/`:
+  6 件 FAIL。パネル用のスクロール helper を export modal に使い、ボタンに到達できなかった。
+  dialog へ直接合成クリックを送る修正後に新しい run で検査した。
+
+### 再現コマンド
+
+【操作可】通常の GUI 試験は背面・入力透過であり、PC 操作を続けられる。
+native/UI/通常 release は display-power lease の下で行い、電源前提を破った run は
+PROTOCOL_INVALID とする。既存 evidence の名前は再利用しない。
+
+```powershell
+pwsh scripts/build.ps1 -Target mvm_test_equation_export
+ctest --test-dir build/ucrt64-release -R '^math_equation_sequence_export_focused$' --output-on-failure --timeout 180
+pwsh scripts/math-equation-sequence-export-acceptance.ps1 -EvidencePath build/math-p36-real-ui-<新しい名前>
+pwsh scripts/test.ps1 -Preset ucrt64-release -Group BuildIndependent
+pwsh scripts/lint.ps1
+pwsh scripts/test.ps1 -Preset ucrt64-release
+```
+
+今回の実 Manim run は同じ環境・display-power lease を設定した
+`pwsh build/p36-real-run.ps1 -Directory build/math-p36-real-ui-01 -Log build/math-p36-real-ui-01.log`。
+代表 frame の復号は `pwsh build/p36-decode-probes.ps1 -Directory build/math-p36-real-ui-01`。
+集中回帰は `build/p36-focused-run.ps1` と `build/math-p36-regressions.log` に記録する。
+### 最終 gate と P3 の閉鎖
+
+[事実] 最終ソースを公式 script でビルドし、display-power lease の下で通常
+`ucrt64-release` gate を一回実行した。1473/1473 通過、FAIL 0、終了時も電源前提は有効。
+`performance|stability` は通常群から除外した。性能・安定性の正式計測は今回実行していない。
+記録は `build/math-p36-release.log`。実行コマンドは次のとおり。
+
+```powershell
+pwsh scripts/test.ps1 -Preset ucrt64-release 2>&1 | Tee-Object -FilePath build/math-p36-release.log
+```
+
+| 種別 | 結果 | 証拠 |
+| --- | --- | --- |
+| 集中 EquationSequence export の検査 | 253/253 | `build/math-p36-focused-05.log` と各 run の `result.txt` |
+| 製品 UI の集中検査 (偽 backend) | 545/545 | `build/math-p36-product-ui-02.log` と上記 `results.json` |
+| 実 Manim の保存再読込からの受け入れ | 452/452、15 probe 完全一致 | `build/math-p36-real-ui-01/results.json` |
+| native preview / 既存 export の集中回帰 | 12/12 | `build/math-p36-regressions.log` |
+| BuildIndependent | 1080/1080 | `build/math-p36-independent.log` |
+| 最終 lint | PASS | `build/math-p36-lint-final.log` |
+| 通常 release | 1473/1473 | `build/math-p36-release.log` |
+
+通常 gate には新しい export と製品 UI の回帰も含まれる。以前の失敗・無効 run と
+P3-0〜P3-5.2 の閉鎖証拠は維持した。P4 は開始しておらず、commit/push は行っていない。
+
+```text
+P3-0      PASS/CLOSED
+P3-0.1    PASS/CLOSED
+P3-1      PASS/CLOSED
+P3-1.1    PASS/CLOSED
+P3-2      PASS/CLOSED
+P3-2.1    PASS/CLOSED
+P3-3      PASS/CLOSED
+P3-3.1    PASS/CLOSED
+P3-4      PASS/CLOSED
+P3-4.1    PASS/CLOSED
+P3-5      PASS/CLOSED
+P3-5.1    PASS/CLOSED
+P3-5.2    PASS/CLOSED
+P3-6      PASS/CLOSED
+P3 EquationSequence vertical slice
+    PASS/CLOSED
+```
+

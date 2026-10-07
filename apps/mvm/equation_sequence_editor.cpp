@@ -1334,7 +1334,7 @@ void EquationSequenceEditor::refreshStatus() {
         detail.push_back(s.residencyMessage);
     status.insert(QStringLiteral("detail"), detail.join(u'\n'));
     status.insert(QStringLiteral("exportText"),
-                  QStringLiteral("書き出しは未対応です (数式 sequence を含む timeline は書き出せません)"));
+                  QStringLiteral("書き出しには現在の入力の描画結果が必要です"));
     if (status != status_) {
         status_ = std::move(status);
         Q_EMIT statusChanged();

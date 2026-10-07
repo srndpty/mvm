@@ -8812,6 +8812,18 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
     request.burnSubtitles = burnSubtitles_;
     request.renderThreads = 4;
     request.encoderThreads = 0;
+    for (const auto& clip : project_.timelineClips) {
+        if (clip.kind != project::TimelineClipKind::EquationSequence || !clip.enabled ||
+            !project::isTrackOutputEnabled(project_, clip.track))
+            continue;
+        EquationExportSnapshot snapshot;
+        if (mathRasters_)
+            snapshot = mathRasters_->equationSequenceExportSnapshot(clip);
+        else
+            snapshot.readiness = {EquationExportFailure::BackendUnavailable,
+                                  EquationCompileFailure::None, "数式の描画環境を利用できません"};
+        request.equationSequences.emplace(clip.id, std::move(snapshot));
+    }
     // 出力する数式 clip は、現在の式の描画が済んでいなければ書き出さない。描き直し中に
     // 見せている古い描画 (last-good) では書き出さない (fail-closed)。
     for (const auto& clip : project_.timelineClips) {

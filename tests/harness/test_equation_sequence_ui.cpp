@@ -17,6 +17,7 @@
 // 描かれないこと、文字が欄からはみ出さないこと、主な操作へ縦スクロールで到達できることを検査する。
 // 結果は <証拠>/results.json と標準エラー。
 
+#include "app/math_clip_render.h"
 #include "app/preview/preview_engine_rhi_item.h"
 #include "app/preview/test_window_mode.h"
 #include "equation_sequence_editor.h"
@@ -47,6 +48,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPointer>
+#include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickWindow>
@@ -116,6 +118,9 @@ struct Session {
     struct Observation {
         std::mutex mutex;
         std::vector<std::pair<std::int64_t, mvm::app::EquationPreviewShown>> frames;
+        std::map<std::int64_t, std::vector<std::uint8_t>> exportExpected;
+        int exportCompared = 0;
+        int exportMismatches = 0;
     };
 
     std::shared_ptr<Observation> observation = std::make_shared<Observation>();
@@ -511,7 +516,25 @@ const QStringList kControls = {
 std::unique_ptr<Session> open(const std::filesystem::path& path, const project::Project& initial,
                               bool backendAvailable = true, bool expectCleanFixture = true) {
     auto s = std::make_unique<Session>();
-    s->controller = std::make_unique<MvmController>(path, std::filesystem::path{}, initial);
+    const auto realManim = qEnvironmentVariable("MVM_P36_REAL_MANIM");
+    s->controller = std::make_unique<MvmController>(
+        path, std::filesystem::path(realManim.toStdWString()), initial, nullptr,
+        [observation = s->observation](const project::Project& project,
+                                       const mvm::app::TimelineExportRequest& request) {
+            auto observed = request;
+            observed.equationFrameObserver = [observation](const std::string&, std::int64_t frame,
+                                                           const std::vector<std::uint8_t>& rgba) {
+                std::lock_guard lock(observation->mutex);
+                const auto found = observation->exportExpected.find(frame);
+                if (found != observation->exportExpected.end()) {
+                    ++observation->exportCompared;
+                    observation->exportMismatches += found->second != rgba ? 1 : 0;
+                }
+            };
+            return mvm::app::exportTimeline(project, observed);
+        },
+        MvmController::ExportThreadFactory{},
+        [](const std::filesystem::path&, QString&) { return true; });
     const bool cleanFixture = !s->controller->recoveryAvailable() &&
                               !s->controller->recoveryCorrupt() &&
                               !s->controller->recoveryForeign();
@@ -561,9 +584,10 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
             std::lock_guard lock(observation->mutex);
             observation->frames.emplace_back(frame, shown);
         });
-    s->controller->setMathPreflightForTest(
-        backendAvailable ? s->backend.preflight()
-                         : FakeMathBackend::unavailable("試験: Manim が無い"));
+    if (realManim.isEmpty() || !backendAvailable)
+        s->controller->setMathPreflightForTest(
+            backendAvailable ? s->backend.preflight()
+                             : FakeMathBackend::unavailable("試験: Manim が無い"));
     return s;
 }
 
@@ -899,6 +923,19 @@ int quadraticWorkflow(const std::filesystem::path& path) {
 
     // ---- 直接 seek の提示 (P3-4 の経路) ----
     const auto& clip = *s->sequence();
+    if (!qEnvironmentVariable("MVM_P36_REAL_MANIM").isEmpty()) {
+        const auto compiled = mvm::app::compileEquationSequence(clip.equationSequence);
+        std::string detail;
+        const auto spec = mvm::app::equationSequenceRenderSpecFor(*compiled.value, detail);
+        check(pumpUntil(
+                  [&] {
+                      return s->controller->mathRastersForTest()
+                                 .equationSequenceEntryOf(*spec)
+                                 .state == MathRasterCache::State::Ready;
+                  },
+                  300000),
+              "P3-6: 再読込後の実 Manim artifact を待つ");
+    }
     std::vector<project::EquationInterval> intervals;
     std::int64_t length = 0;
     std::string error;
@@ -950,6 +987,128 @@ int quadraticWorkflow(const std::filesystem::path& path) {
         }
     }
     s->shot("07-reopened-seek-action");
+
+    // ---- P3-6: 再読込した Project から oracle を作り、製品の書き出し UI を実行 ----
+    {
+        namespace app = mvm::app;
+        const auto compiled = app::compileEquationSequence(clip.equationSequence);
+        const auto renderSpec = app::equationSequenceRenderSpecFor(*compiled.value, error);
+        auto& cache = s->controller->mathRastersForTest();
+        const auto artifact = cache.readyEquationSequence(*renderSpec);
+        check(artifact.has_value(), "P3-6: 再読込後の現在 artifact を検証");
+        if (!artifact)
+            return 1;
+        app::EquationPreviewInputs inputs;
+        inputs.clip = clip;
+        inputs.spec = *compiled.value;
+        inputs.timelineFpsNum = s->project().timelineFpsNum;
+        inputs.timelineFpsDen = s->project().timelineFpsDen;
+        inputs.outputWidth = s->project().outputWidth;
+        inputs.outputHeight = s->project().outputHeight;
+        inputs.artifactReady = true;
+        for (const auto& state : renderSpec->states) {
+            const auto png = cache.readyArtifact(state.still);
+            mvm::math::MathCoverage mask;
+            check(png && app::loadMathCoverage(*png, mask, error), "oracle: 現在の静止を取得");
+            inputs.statics.push_back(app::EquationPreviewStatic{
+                mask.width, mask.height,
+                std::make_shared<const std::vector<std::uint8_t>>(mask.alpha),
+                state.foregroundArgb});
+        }
+        for (std::size_t t = 0; t < artifact->transitions.size(); ++t) {
+            const auto& item = artifact->transitions[t];
+            app::EquationPreviewTransitionArtifact metadata{
+                item.width,   item.height, item.sourceX, item.sourceY, item.targetX,
+                item.targetY, {}};
+            for (std::size_t i = 0; i < item.frames.size(); ++i) {
+                std::vector<std::uint8_t> bytes;
+                check(app::loadEquationArtifactFrame(item.frames[i], item.width, item.height, bytes,
+                                                     error),
+                      "oracle: 変形の SHA を検証");
+                inputs.transitionFrames[{t, static_cast<std::int64_t>(i)}] =
+                    std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes));
+                metadata.colors.push_back(item.frames[i].colorArgb);
+            }
+            inputs.transitions.push_back(std::move(metadata));
+        }
+        for (std::size_t a = 0; a < artifact->actions.size(); ++a) {
+            const auto& item = artifact->actions[a];
+            app::EquationPreviewActionArtifact metadata{
+                item.width, item.height, item.staticX, item.staticY, item.base.colorArgb, {}};
+            std::vector<std::uint8_t> base;
+            check(app::loadEquationArtifactFrame(item.base, item.width, item.height, base, error),
+                  "oracle: base の SHA を検証");
+            inputs.actionBases[a] =
+                std::make_shared<const std::vector<std::uint8_t>>(std::move(base));
+            for (std::size_t i = 0; i < item.accent.size(); ++i) {
+                std::vector<std::uint8_t> bytes;
+                check(app::loadEquationArtifactFrame(item.accent[i], item.width, item.height, bytes,
+                                                     error),
+                      "oracle: accent の SHA を検証");
+                inputs.actionAccents[{a, static_cast<std::int64_t>(i)}] =
+                    std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes));
+                metadata.accentColors.push_back(item.accent[i].colorArgb);
+            }
+            inputs.actions.push_back(std::move(metadata));
+        }
+        app::EquationPreviewModel model(inputs);
+        const auto rect = model.patchRect();
+        const std::vector<std::int64_t> sources{0,
+                                                45,
+                                                transitionBegin(6),
+                                                transitionBegin(6) + 12,
+                                                transitionBegin(6) + 23,
+                                                holdBegin(7),
+                                                holdBegin(7) + 10,
+                                                holdBegin(7) + 25,
+                                                holdBegin(7) + 39,
+                                                holdBegin(7) + 40,
+                                                holdBegin(7) + 60,
+                                                holdBegin(7) + 75,
+                                                holdBegin(7) + 89,
+                                                holdBegin(7) + 90,
+                                                length - 1};
+        for (const auto source : sources) {
+            const auto frame = timelineFrameOfSource(clip, source);
+            std::vector<std::uint8_t> patch(static_cast<std::size_t>(rect.width * rect.height * 4));
+            model.fill(model.stateCode(model.shownAt(frame)), patch.data());
+            std::vector<std::uint8_t> rgba(
+                static_cast<std::size_t>(inputs.outputWidth * inputs.outputHeight * 4));
+            for (int y = 0; y < rect.height; ++y)
+                std::copy_n(patch.data() + y * rect.width * 4, rect.width * 4,
+                            rgba.data() + ((rect.y + y) * inputs.outputWidth + rect.x) * 4);
+            s->observation->exportExpected.emplace(frame, std::move(rgba));
+        }
+        const auto output = evidence / L"quadratic-reopened.mp4";
+        auto* fileDialog = s->window->findChild<QObject*>(QStringLiteral("exportFileDialog"));
+        check(fileDialog &&
+                  fileDialog->setProperty(
+                      "selectedFile",
+                      QUrl::fromLocalFile(QString::fromStdWString(output.wstring()))) &&
+                  QMetaObject::invokeMethod(fileDialog, "accepted"),
+              "P3-6: 書き出し先の UI signal から設定ダイアログを開く");
+        pump(100);
+        auto* exportButton = s->find(QStringLiteral("exportAcceptButton"));
+        if (exportButton)
+            QTest::mouseClick(s->window, Qt::LeftButton, {}, s->center(exportButton));
+        check(exportButton && s->controller->exporting(), "P3-6: 製品の書き出すボタンをクリック");
+        check(pumpUntil([&] { return !s->controller->exporting(); }, 120000) &&
+                  std::filesystem::exists(output),
+              "P3-6: 保存再読込後の timeline を製品の H.264 profile で出力: " +
+                  s->controller->statusText().toStdString());
+        {
+            std::lock_guard lock(s->observation->mutex);
+            check(s->observation->exportCompared == static_cast<int>(sources.size()) &&
+                      s->observation->exportMismatches == 0,
+                  "P3-6: 全 15 probe が CPU oracle と RGBA byte 単位で完全一致");
+        }
+        QProcess decoder;
+        decoder.start(
+            QStringLiteral("C:/msys64/ucrt64/bin/ffmpeg.exe"),
+            {"-v", "error", "-i", QString::fromStdWString(output.wstring()), "-f", "null", "-"});
+        check(decoder.waitForFinished(30000) && decoder.exitCode() == 0,
+              "P3-6: 製品出力を全 frame 復号できる");
+    }
 
     // ---- 破壊的な編集の Undo/Redo (UI) ----
     {
@@ -1265,9 +1424,9 @@ int runEquationSequenceUi(const std::filesystem::path& requestedDirectory, bool 
     int status = recoveryFixtureGuard(directory);
     if (status == 0)
         status = quadraticWorkflow(directory / L"quadratic.mvm");
-    if (status == 0 && failures == 0)
+    if (status == 0 && failures == 0 && qEnvironmentVariable("MVM_P36_REAL_MANIM").isEmpty())
         status = repairAndLayouts(directory);
-    if (status == 0 && failures == 0)
+    if (status == 0 && failures == 0 && qEnvironmentVariable("MVM_P36_REAL_MANIM").isEmpty())
         status = longContent(directory);
     QJsonObject summary{{QStringLiteral("checks"), checks},
                         {QStringLiteral("failures"), failures},

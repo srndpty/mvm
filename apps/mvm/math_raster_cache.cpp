@@ -2,23 +2,25 @@
 
 #include "app/math_clip_render.h"
 #include "media/still_image/static_image.h"
+#include "project/timeline_edit.h"
 #include "util/mvm_atomic_write.h"
 #include "util/mvm_long_path.h"
 #include "util/mvm_sha256.h"
-
-#include <QMetaObject>
-#include <QStringList>
-#include <QThread>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
-#include <initializer_list>
 #include <fstream>
+#include <initializer_list>
+#include <set>
 #include <sstream>
 #include <system_error>
 #include <utility>
+
+#include <QMetaObject>
+#include <QStringList>
+#include <QThread>
 
 namespace mvm::app {
 namespace {
@@ -1152,6 +1154,8 @@ void MathRasterCache::setAuthority(std::filesystem::path cacheDirectory, bool au
         return;
     // 置き場所や権限の変更は世代の変更として扱う。進行中の確認を捨てるだけにせず、
     // 許可があれば必ず次の確認を始める (Checking のまま止まらない)。
+    if (cacheDirectory_ != cacheDirectory || !authorized)
+        exportIdentity_.reset();
     cacheDirectory_ = std::move(cacheDirectory);
     authorized_ = authorized && !cacheDirectory_.empty();
     if (!authorized_) {
@@ -1211,6 +1215,11 @@ void MathRasterCache::finishPreflight(std::uint64_t generation, math::MathPrefli
     if (result.status == math::MathPreflightStatus::Available && result.backend.render) {
         backendState_ = BackendState::Available;
         backend_ = std::move(result.backend);
+        exportIdentity_ = backend_;
+        exportIdentity_->render = {};
+        exportIdentity_->renderSequence = {};
+        exportIdentity_->renderTransform = {};
+        exportIdentity_->renderEquationSequence = {};
         backendMessage_.clear();
     } else {
         backendState_ = BackendState::Unavailable;
@@ -2122,6 +2131,192 @@ MathRasterCache::readyEquationSequence(const math::EquationSequenceRenderSpec& s
         EquationSequenceDiskLoad::Ready)
         return std::nullopt;
     return artifact;
+}
+
+EquationExportSnapshot
+MathRasterCache::equationSequenceExportSnapshot(const project::TimelineClip& clip) const {
+    EquationExportSnapshot captured;
+    const auto rejectCapture = [&](EquationExportFailure reason, const std::string& detail) {
+        captured.readiness = {reason, EquationCompileFailure::None, detail};
+        return captured;
+    };
+    const auto compiled = compileEquationSequence(clip.equationSequence);
+    if (!compiled.value) {
+        captured.readiness = {EquationExportFailure::CompileFailed, compiled.failure,
+                              "数式の内容を修復してください"};
+        return captured;
+    }
+    std::string error;
+    const auto renderSpec = equationSequenceRenderSpecFor(*compiled.value, error);
+    if (!renderSpec)
+        return rejectCapture(EquationExportFailure::CompileFailed, error);
+    if (!exportIdentity_)
+        return rejectCapture(EquationExportFailure::BackendUnavailable,
+                             "数式の描画環境を利用できません");
+    EquationSequenceJob initialJob;
+    initialJob.directory = cacheDirectory_;
+    initialJob.spec = *renderSpec;
+    initialJob.backend = *exportIdentity_;
+    initialJob.key = math::equationSequenceRenderKey(*renderSpec, initialJob.backend.fingerprint,
+                                                     initialJob.backend.equationSequenceTemplate);
+    for (const auto& state : renderSpec->states)
+        initialJob.stateStaticKeys.push_back(
+            math::mathRenderKey(state.still, initialJob.backend.fingerprint));
+    captured.sequenceKey = initialJob.key;
+    captured.renderSpec = *renderSpec;
+    captured.toolchain = initialJob.backend.fingerprint;
+    captured.sequenceTemplate = initialJob.backend.equationSequenceTemplate;
+    captured.presentation.clip = clip;
+    captured.presentation.spec = *compiled.value;
+    const bool backendAvailable = backendState_ == BackendState::Available;
+    const auto entryState = equationSequenceEntryOf(*renderSpec).state;
+    captured.prepare = [capturedJob = std::move(initialJob), initial = captured, backendAvailable,
+                        entryState](const EquationPreviewInputs& requested,
+                                    const std::function<bool()>& cancelled) {
+        auto snapshot = initial;
+        snapshot.presentation = requested;
+        auto job = capturedJob;
+        const auto& spec = job.spec;
+        const auto reject = [&](EquationExportFailure reason, const std::string& detail) {
+            snapshot.readiness = {reason, EquationCompileFailure::None, detail};
+            return snapshot;
+        };
+        // 現在の key の disk を読む。session の last-good mask は使わない。
+        std::vector<EquationPreviewLayerId> required;
+        std::set<std::size_t> requiredStates;
+        project::Project timing;
+        timing.timelineFpsNum = requested.timelineFpsNum;
+        timing.timelineFpsDen = requested.timelineFpsDen;
+        const auto duration = project::timelineClipDuration(timing, requested.clip);
+        if (!duration.success)
+            return reject(EquationExportFailure::InvalidSourceRange, duration.error);
+        for (std::int64_t i = 0; i < duration.frame; ++i) {
+            if (cancelled && cancelled())
+                return reject(EquationExportFailure::Cancelled,
+                              "数式の書き出し準備をキャンセルしました");
+            std::string detail;
+            const auto time = equationPreviewTimeAt(requested.clip, requested.timelineFpsNum,
+                                                    requested.timelineFpsDen, &*requested.spec,
+                                                    requested.clip.timelineStartFrame + i, detail);
+            if (!time)
+                return reject(EquationExportFailure::InvalidSourceRange, detail);
+            requiredStates.insert(time->lookup.state);
+            if (time->lookup.kind == EquationFrameKind::Transition)
+                requiredStates.insert(requested.spec->transitions[time->lookup.transition].toState);
+            for (const auto& layer : equationPreviewCurrentLayers(time->lookup))
+                if (std::find(required.begin(), required.end(), layer) == required.end())
+                    required.push_back(layer);
+        }
+        for (std::size_t s = 0; s < spec.states.size(); ++s) {
+            if (required.empty() && !requiredStates.contains(s)) {
+                snapshot.presentation.statics.push_back(std::nullopt);
+                continue;
+            }
+            if (cancelled && cancelled())
+                return reject(EquationExportFailure::Cancelled,
+                              "数式の書き出し準備をキャンセルしました");
+            const auto still =
+                loadArtifact(job.directory, QString::fromStdString(job.stateStaticKeys[s]),
+                             job.backend.fingerprint, false);
+            if (!still)
+                return reject(std::filesystem::exists(artifactPath(
+                                    job.directory, QString::fromStdString(job.stateStaticKeys[s])))
+                                  ? EquationExportFailure::CorruptStatic
+                              : !backendAvailable ? EquationExportFailure::BackendUnavailable
+                                  : EquationExportFailure::StaticArtifactMissing,
+                              "現在の状態の静止描画を検証できません");
+            auto coverage = coverageOf(*still);
+            snapshot.presentation.statics.push_back(EquationPreviewStatic{
+                coverage.width, coverage.height,
+                std::make_shared<const std::vector<std::uint8_t>>(coverage.alpha),
+                spec.states[s].foregroundArgb});
+            job.stateStatics.push_back(std::move(coverage));
+        }
+        if (required.empty()) {
+            snapshot.validate = [] { return EquationExportReadiness{}; };
+            return snapshot;
+        }
+        // backend の関数は検証・取得に不要。encoder 側から外部 process を起動できない。
+        job.backend.render = {};
+        job.backend.renderEquationSequence = {};
+        EquationSequenceArtifact artifact;
+        const std::atomic<bool> cancel{false};
+        if (!std::filesystem::exists(equationSequenceProvenancePath(job.directory, job.key))) {
+            return reject(!backendAvailable             ? EquationExportFailure::BackendUnavailable
+                          : entryState == State::Ready  ? EquationExportFailure::ProvenanceMissing
+                          : entryState == State::Failed ? EquationExportFailure::ArtifactFailed
+                                                        : EquationExportFailure::ArtifactPending,
+                          "現在の数式の描画結果を準備できません");
+        }
+        if (loadEquationSequenceArtifact(job, &cancel, artifact, false, &snapshot.readiness,
+                                         cancelled, &required) != EquationSequenceDiskLoad::Ready)
+            return snapshot;
+        snapshot.presentation.artifactReady = true;
+        for (const auto& t : artifact.transitions) {
+            EquationPreviewTransitionArtifact item{t.width,   t.height,  t.sourceX, t.sourceY,
+                                                   t.targetX, t.targetY, {}};
+            for (const auto& frame : t.frames)
+                item.colors.push_back(frame.colorArgb);
+            snapshot.presentation.transitions.push_back(std::move(item));
+        }
+        for (const auto& a : artifact.actions) {
+            EquationPreviewActionArtifact item{a.width,   a.height,         a.staticX,
+                                               a.staticY, a.base.colorArgb, {}};
+            for (const auto& frame : a.accent)
+                item.accentColors.push_back(frame.colorArgb);
+            snapshot.presentation.actions.push_back(std::move(item));
+        }
+        snapshot.validate = [directory = job.directory, key = job.key,
+                             provenance = artifact.provenance] {
+            if (!std::filesystem::exists(equationSequenceProvenancePath(directory, key)))
+                return EquationExportReadiness{EquationExportFailure::ProvenanceMissing,
+                                               EquationCompileFailure::None,
+                                               "数式の provenance がありません"};
+            if (!equationSequenceProvenanceCurrent(directory, key, provenance))
+                return EquationExportReadiness{EquationExportFailure::ProvenanceMismatch,
+                                               EquationCompileFailure::None,
+                                               "数式の provenance が開始時点と一致しません"};
+            return EquationExportReadiness{};
+        };
+        snapshot.loadLayer = [artifact](const EquationPreviewLayerId& layer,
+                                        std::vector<std::uint8_t>& bytes) {
+            const EquationArtifactFrame* frame = nullptr;
+            int width = 0, height = 0;
+            auto reason = EquationExportFailure::FrameMissing;
+            if (layer.role == EquationPreviewLayerRole::TransitionFrame &&
+                layer.interval < artifact.transitions.size()) {
+                const auto& item = artifact.transitions[layer.interval];
+                width = item.width;
+                height = item.height;
+                if (layer.frame >= 0 && static_cast<std::size_t>(layer.frame) < item.frames.size())
+                    frame = &item.frames[static_cast<std::size_t>(layer.frame)];
+                reason = EquationExportFailure::CorruptTransition;
+            } else if (layer.interval < artifact.actions.size()) {
+                const auto& item = artifact.actions[layer.interval];
+                width = item.width;
+                height = item.height;
+                if (layer.role == EquationPreviewLayerRole::ActionBase) {
+                    frame = &item.base;
+                    reason = EquationExportFailure::CorruptActionBase;
+                } else if (layer.role == EquationPreviewLayerRole::ActionAccent &&
+                           layer.frame >= 0 &&
+                           static_cast<std::size_t>(layer.frame) < item.accent.size()) {
+                    frame = &item.accent[static_cast<std::size_t>(layer.frame)];
+                    reason = EquationExportFailure::CorruptActionAccent;
+                }
+            }
+            if (!frame || !std::filesystem::exists(frame->path))
+                return EquationExportReadiness{EquationExportFailure::FrameMissing,
+                                               EquationCompileFailure::None,
+                                               "必要な数式 frame がありません"};
+            std::string detail;
+            if (!loadEquationArtifactFrame(*frame, width, height, bytes, detail))
+                return EquationExportReadiness{reason, EquationCompileFailure::None, detail};
+            return EquationExportReadiness{};
+        };
+        return snapshot;
+    };
+    return captured;
 }
 
 MathRasterCache::EquationSequenceEntry

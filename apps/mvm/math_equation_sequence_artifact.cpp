@@ -581,19 +581,35 @@ bool loadEquationArtifactFrame(const EquationArtifactFrame& frame, int width, in
     return true;
 }
 
-EquationSequenceDiskLoad loadEquationSequenceArtifact(const EquationSequenceJob& job,
-                                                      const std::atomic<bool>* cancel,
-                                                      EquationSequenceArtifact& artifact,
-                                                      bool removeInvalid) {
+EquationSequenceDiskLoad loadEquationSequenceArtifact(
+    const EquationSequenceJob& job, const std::atomic<bool>* cancel,
+    EquationSequenceArtifact& artifact, bool removeInvalid, EquationExportReadiness* readiness,
+    const std::function<bool()>& cancelled, const std::vector<EquationPreviewLayerId>* required) {
+    const auto stopping = [&] { return cancel->load() || (cancelled && cancelled()); };
+    const auto needed = [&](EquationPreviewLayerRole role, std::size_t interval,
+                            std::int64_t frame) {
+        return !required ||
+               std::find(required->begin(), required->end(),
+                         EquationPreviewLayerId{role, interval, frame}) != required->end();
+    };
+    const auto report = [&](EquationExportFailure failure, const std::string& detail) {
+        if (readiness)
+            *readiness = {failure, EquationCompileFailure::None, detail};
+    };
     const std::string text = readFile(equationSequenceProvenancePath(job.directory, job.key));
-    if (text.empty())
+    if (text.empty()) {
+        report(EquationExportFailure::ProvenanceMissing, "数式の provenance がありません");
         return EquationSequenceDiskLoad::Missing; // 確定の印が無い
+    }
     ExpectedColors colors;
     Provenance parsed;
     bool valid = jobShapeValid(job) && expectedColors(job.spec, colors) &&
                  parseProvenance(text, parsed) && geometryValid(job, parsed) &&
                  ownershipValid(job.spec, parsed.ownership) &&
                  provenanceText(job, colors, parsed) == text;
+    if (!valid)
+        report(EquationExportFailure::ProvenanceMismatch,
+               "数式の provenance が現在の入力と一致しません");
     if (valid) {
         artifact = artifactFrom(job, colors, parsed);
         artifact.provenance = text;
@@ -601,36 +617,86 @@ EquationSequenceDiskLoad loadEquationSequenceArtifact(const EquationSequenceJob&
         std::string error;
         for (std::size_t t = 0; valid && t < artifact.transitions.size(); ++t) {
             const auto& item = artifact.transitions[t];
+            const bool visible =
+                !required ||
+                std::any_of(required->begin(), required->end(), [&](const auto& layer) {
+                    return layer.role == EquationPreviewLayerRole::TransitionFrame &&
+                           layer.interval == t;
+                });
+            if (!visible)
+                continue;
             for (std::size_t i = 0; valid && i < item.frames.size(); ++i) {
-                if (cancel->load())
+                if (i != 0 && !needed(EquationPreviewLayerRole::TransitionFrame, t,
+                                      static_cast<std::int64_t>(i)))
+                    continue;
+                if (stopping()) {
+                    report(EquationExportFailure::Cancelled, "数式の検証をキャンセルしました");
                     return EquationSequenceDiskLoad::Cancelled;
+                }
                 valid = loadEquationArtifactFrame(item.frames[i], item.width, item.height, bytes,
                                                   error);
+                if (!valid)
+                    report(std::filesystem::exists(item.frames[i].path)
+                               ? EquationExportFailure::CorruptTransition
+                               : EquationExportFailure::FrameMissing,
+                           "変形の frame が無いか壊れています: " + error);
                 // frame 0 は今の前の状態の静止と、記録した位置で全画素一致する。
-                if (valid && i == 0)
+                if (valid && i == 0) {
                     valid = math::mathEndpointDifference(
                                 {item.width, item.height, bytes},
                                 job.stateStatics[job.spec.transitions[t].fromState], item.sourceX,
                                 item.sourceY) == 0;
+                    if (!valid)
+                        report(EquationExportFailure::StaticArtifactMissing,
+                               "変形の端点が現在の静止描画と一致しません");
+                }
             }
         }
         for (std::size_t a = 0; valid && a < artifact.actions.size(); ++a) {
             const auto& item = artifact.actions[a];
-            if (cancel->load())
+            if (!needed(EquationPreviewLayerRole::ActionBase, a, 0))
+                continue;
+            if (stopping()) {
+                report(EquationExportFailure::Cancelled, "数式の検証をキャンセルしました");
                 return EquationSequenceDiskLoad::Cancelled;
+            }
             valid = loadEquationArtifactFrame(item.base, item.width, item.height, bytes, error);
+            if (!valid)
+                report(std::filesystem::exists(item.base.path)
+                           ? EquationExportFailure::CorruptActionBase
+                           : EquationExportFailure::FrameMissing,
+                       "強調の base が無いか壊れています: " + error);
             // outline の base は状態の静止そのもの。
-            if (valid && item.operation == math::EquationRenderOperation::Outline)
+            if (valid && item.operation == math::EquationRenderOperation::Outline) {
                 valid = math::mathEndpointDifference({item.width, item.height, bytes},
                                                      job.stateStatics[job.spec.actions[a].state],
                                                      item.staticX, item.staticY) == 0;
-            for (std::size_t i = 0; valid && i < item.accent.size(); ++i)
+                if (!valid)
+                    report(EquationExportFailure::StaticArtifactMissing,
+                           "強調の base が現在の静止描画と一致しません");
+            }
+            for (std::size_t i = 0; valid && i < item.accent.size(); ++i) {
+                if (!needed(EquationPreviewLayerRole::ActionAccent, a,
+                            static_cast<std::int64_t>(i)))
+                    continue;
+                if (stopping()) {
+                    report(EquationExportFailure::Cancelled, "数式の検証をキャンセルしました");
+                    return EquationSequenceDiskLoad::Cancelled;
+                }
                 valid = loadEquationArtifactFrame(item.accent[i], item.width, item.height, bytes,
                                                   error);
+                if (!valid)
+                    report(std::filesystem::exists(item.accent[i].path)
+                               ? EquationExportFailure::CorruptActionAccent
+                               : EquationExportFailure::FrameMissing,
+                           "強調の accent が無いか壊れています: " + error);
+            }
         }
     }
-    if (valid)
+    if (valid) {
+        report(EquationExportFailure::None, {});
         return EquationSequenceDiskLoad::Ready;
+    }
     if (removeInvalid && !underGate(job, cancel, [&] { removeArtifact(job.directory, job.key); }))
         return EquationSequenceDiskLoad::Cancelled;
     return EquationSequenceDiskLoad::Missing;
