@@ -78,21 +78,16 @@
 - P3-5 の製品 UI と P3-5.1 の受け入れ配線・拒否された下書きの保持は
   [実装と検証の記録](math-equation-sequence-p30.md#p3-51-製品-ui-の実行と拒否された下書きの保持) へ移した。
   実 Main.qml の導出・保存再読込・直接 seek・入力・配置を CTest から実行する。
+  P3-5.2 で旧通常 gate の四件を帰属した。polling は C（試験 protocol）、提示三件は
+  D（自動消灯の環境干渉）。電源履歴・過去の再現・四条件のリンク対照を記録し、
+  protocol 修正後の新しい通常 gate 一回は 1472/1472 通過。P3-5 は CLOSED、P3-6 は GO。
+  旧 1467/1471 の失敗と全証拠はそのまま保存した。
+  [P3-5.2 の帰属と閉鎖検証](math-equation-sequence-p30.md#管理者電源履歴と最終帰属) を参照。
 - P3-6: 実 D3D11 preview と映像のみ export。全区間が現在の入力で ready であることを要求し、
   一つの clip の導出全段と判別式の強調を UI author→save/reopen→preview→export で検証する。
   任意 seek、action 中の split、編集・失敗・backend 不在、画素をずらす負例を含める。
 
 未解決の判断・検証:
-
-- [事実] P3-5.1 の通常 release gate 一回は 1467/1471 通過で未通過。
-  製品 EquationSequence UI の polling (10 秒内に四回を期待して一回)、`text_ui_direct_input` の
-  Ctrl+K 前提 seek と 120 秒 timeout、`audio_mixer_product_ui` の二倍シャトル開始、
-  `transition_preview` の cut を通した再生継続が失敗した。再試行していない。
-  `audio_mixer_controls_qml` は通過。共有 UI primitive は変更していないが、音声製品 UI・直接入力は
-  今回追加リンクを行った同じハーネスを使うため、因果関係は未特定として調査を残す。
-  単独の製品受け入れは 263/263 通過したが、通常 gate の失敗を置き換えない。
-  再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。
-  証拠と全失敗の記録は [P3-5.1](math-equation-sequence-p30.md#p3-51-製品-ui-の実行と拒否された下書きの保持)。
 
 - 任意 TeX macro の支持は未検証。P3-3 は P3-2 の支持範囲の segment について、Manim 0.21 の
   点を持つ子孫の排他的所有を描画ごとに検査する (実装記録)。検査を通った範囲の成功を、

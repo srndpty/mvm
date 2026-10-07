@@ -14,6 +14,7 @@
 #include "preview_engine/preview_engine_internal.h"
 #include "test_event_wait.h"
 #include "test_media_fixture.h"
+#include "test_preview_trace.h"
 
 #include <algorithm>
 #include <chrono>
@@ -417,6 +418,7 @@ int main(int argc, char** argv) {
             surface->setHeight(360);
             controller.attachPreview(surface);
             window.show();
+            mvm::test::tracePreview(controller, &window, "transition");
             const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
             const bool sought =
                 ready &&

@@ -1141,13 +1141,23 @@ int repairAndLayouts(const std::filesystem::path& directory) {
         const auto polls = s->editor().statusRefreshCountForTest();
         const bool polled = pumpUntil(
             [&] {
-                // 背面 window の animation timer を描画の休止に依存させない。頻度は判定しない。
+                // 状態が実際に問い合わせられることを確認する。animation の頻度は契約ではない。
                 s->window->update();
-                return s->editor().statusRefreshCountForTest() >= polls + 4;
+                return s->editor().statusRefreshCountForTest() > polls;
             },
             10000);
         check(polled, "B: QML の polling が状態を問い合わせている (" +
                           std::to_string(s->editor().statusRefreshCountForTest() - polls) + " 回)");
+        auto* poller = s->inspector()->findChild<QObject*>(QStringLiteral("equationStatusPoll"));
+        check(poller && poller->property("running").toBool() && poller->property("repeat").toBool(),
+              "B: 状態の polling が繰り返し有効");
+        // 四回の handler 実行と読み取り専用性は、背面の animation cadence と独立に検査する。
+        const auto handlerPolls = s->editor().statusRefreshCountForTest();
+        bool invoked = poller != nullptr;
+        for (int i = 0; invoked && i < 4; ++i)
+            invoked = QMetaObject::invokeMethod(poller, "triggered", Qt::DirectConnection);
+        check(invoked && s->editor().statusRefreshCountForTest() >= handlerPolls + 4,
+              "B: 実 QML handler の四回の問い合わせを検査");
         check(c.recordCount() == records && c.equationSequenceRecordCount() == sequences &&
                   s->backend.renders->load() == renders &&
                   s->backend.equationRenders->load() == equationRenders,

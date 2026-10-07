@@ -97,6 +97,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'lib\ctest-selection.ps1')
+. (Join-Path $PSScriptRoot 'lib\test-display-lease.ps1')
 
 $shardIndex = 0
 $shardCount = 1
@@ -238,6 +239,11 @@ function Get-BuildIndependentTestNames {
 # 非依存テストは 1 回の呼び出しで 1 度だけ実行する。
 $independentDone = $false
 
+$displayLease = $null
+try {
+if ($Group -ne 'BuildIndependent') {
+    $displayLease = Start-MvmTestDisplayLease
+}
 foreach ($p in $presets) {
     Write-Host "`n=== $p ===" -ForegroundColor Cyan
     # 非依存テストだけなら実行ファイルは不要なので configure で止める。
@@ -253,6 +259,7 @@ foreach ($p in $presets) {
 
     Push-Location $buildDir
     try {
+        if ($displayLease) { $displayLease.AssertValid() }
         # 通常テスト: performance と stability の両方を除外する
         Write-Host "通常テストの除外ラベル: $normalExclude" -ForegroundColor Yellow
         $normalArgs = @('-LE', $normalExclude)
@@ -340,5 +347,13 @@ $summary | Format-Table Preset, Kind, Total, Ran, Passed, Failed, Exit, Note -Au
 if ($anyFailed) {
     Write-Host "`nテストに失敗があります。" -ForegroundColor Red
     exit 1
+}
+} finally {
+    if ($displayLease) {
+        try {
+            $displayLease.AssertValid()
+            Write-Host "描画試験の電源前提を終了: 観測=$($displayLease.Observations -join ', ')"
+        } finally { $displayLease.Dispose() }
+    }
 }
 Write-Host "`n全テスト通過" -ForegroundColor Green

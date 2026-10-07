@@ -32,6 +32,11 @@ add_test(NAME ctest_daily_selection_contract
         -Pwsh "${MVM_PWSH}")
 set_tests_properties(ctest_daily_selection_contract PROPERTIES TIMEOUT 60)
 
+add_test(NAME test_display_lease_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/harness/test-display-lease.ps1")
+set_tests_properties(test_display_lease_contract PROPERTIES TIMEOUT 30)
+
 # --- mvm_bench --------------------------------------------------------------
 # Qt に依存しない C++20 CLI。MLT のヘッダは include しない。
 add_executable(mvm_bench

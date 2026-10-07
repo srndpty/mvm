@@ -1423,3 +1423,172 @@ performance・stability は除外した。再試行していない。証拠: `bu
 [未検証] polling・seek・再生継続の失敗の根本原因、および追加リンクとの因果関係。
 失敗を無関係や一過性と断定しない。P3-5.1 の二点を実装し単独受け入れは実行したが、通常 gate の閉鎖は未成立。
 
+## P3-5.2: release gate の帰属と閉鎖の検証
+
+schema 21 と P3-1〜P3-5 の製品の意味は変えていない。変更は試験の契約・観測・電源前提に限る。
+P3-6 の書き出しを開始していない。commit・push は行っていない。
+P3-5.1 の通常 gate の **1467/1471、四件失敗**はそのまま保持し、今回の通過で置き換えない。
+
+### 同じビルドでの再現と対照
+
+[事実] 最初は `ef7f30d` のビルドを変更せず、四件をそれぞれ一回実行した。
+EquationSequence は 263 検査 / 0 失敗 (87.23 秒)、直接入力 71.13 秒、音声製品 UI 9.64 秒、
+transition 39.71 秒で、四件とも通過した。証拠は `build/math-p352-individual-*.log`。
+これは以前の通常 gate の失敗を否定するための結果ではない。
+
+[事実] 前回 gate の ownership soak の完了から transition までの起動順序を生 log から抽出し、
+ownership soak を含む **45 件を順番どおり一回ずつ実行して 45/45 通過**した。
+前回の全 CPU checker の並列実行までを再現したものではない。
+証拠: `build/p352-context.ps1`、`build/math-p352-context-summary.log` と各試験の同名 log。
+直接入力・音声・cut には、要求の受理、engine state、output frame、再生ヘッド、shuttle rate、
+desired/presented composition の ID/revision、window の visible/exposed/active、frameSwapped を観測する
+`MVM_TEST_PREVIEW_TRACE` を追加した。観測は要求・描画・フォーカスを操作しない。
+通常は無効で、要求の期待値や待機時間を変えていない。
+
+[事実] 同じ release build の target で二要因の四条件を作り、legacy の直接入力と音声製品 UI を
+各条件で一回ずつ実行した。全条件 **2/2 通過**。次の条件を一つの PASS に選別していない。
+
+| 条件 | EquationSequence の翻訳単位 | QuickTest DLL の import | 結果 |
+| --- | --- | --- | --- |
+| 00 | なし (未実行 CLI の stub) | なし | 2/2 |
+| 01 | なし (同じ stub) | あり | 2/2 |
+| 10 | あり (polish getter の参照だけを除く) | なし | 2/2 |
+| 11 | あり | あり | 2/2 |
+
+追加リンクは、使われない import library の指定だけで済ませず、実バイナリの DLL import を照合した。
+QuickTest の `quick_test_main` / `quick_test_main_with_setup` は呼ばない。
+全条件で同じ小さな起動試験も実行し、application attributes は 50335744、
+Qt 内の focus・visible・exposed はすべて 1、graphics API は D3D11 (4) だった。
+QTimer と QML Timer は手動 loop と通常 event loop の両方で進んだ。
+全条件とも `processEvents` だけでは DeferredDelete が未処理、`sendPostedEvents` 後は一件処理した。
+各条件の詳細な回数を含む結果は `build/math-p352-arm-*-runtime.log`、
+試験は `-tests.log`、hash は `-hash.log`、DLL は `-imports.log` に保存した。
+比較用の CMake・CLI・compile definition は最終 source から除去した。
+
+集計は `build/p352-evidence-summary.ps1` が log から再計算し、45 件の件数と四条件の import を照合する。
+出力は `build/math-p352-evidence-summary.json`。
+
+### polling の契約を時計の回数から分離
+
+[事実] P3-4/P3-5 の契約は、実際の状態問い合わせが読むだけであり、描画要求・cache record を作らないこと。
+四回を十秒以内に実行する支持 latency bound は定義していない。
+[Qt の Timer 仕様](https://doc.qt.io/qt-6/qml-qtqml-timer.html) でも QML Timer は animation timer と同期する。
+背面の animation cadence をこの問い合わせの合否に使った点は **C: TEST_PROTOCOL / TEST_ISOLATION DEFECT**。
+
+製品 acceptance は自然な polling が少なくとも一回進むこと、Timer が running/repeat であることを確認し、
+さらに同じ実 QML handler を四回実行して、問い合わせの実行数と描画・cache の不増を検査する。
+十秒の待機上限は増やさず、製品 Timer の interval・repeat・動作も変えていない。
+QML 回帰も自然な問い合わせと四回の handler の検査を分離した。
+
+[事実] handler を空にした変異では、polling の回帰だけが失敗した (Totals: 19 passed / 1 failed)。
+証拠: `build/math-p352-polling-mutant-basic.log` / `.txt`。
+最初の raw runner は Basic を指定し忘れて native style の警告が出たため、それも保存し、
+CTest と同じ Basic を指定した変異実行を別名で残した (`-polling-mutant.log` / `.txt`)。
+両方とも対象の回帰が失敗した。handler を復元した後の集中試験は通過している。
+
+### 電源前提と過去の提示失敗
+
+[事実] P3-5.1 より前の `build/math-p12-release-gate.log` と `build/math-p21-release-gate.log` に、
+Ctrl+K 前提 seek・current clip・split、二倍 shuttle の開始と no-op 維持、cut を通した再生と前後提示の
+同じ失敗が残る。P2-1 の記録には、無操作 15.6 分・自動消灯 15 分で同じ八件が二回失敗し、
+消灯を防いだ条件で八件が通過した記録がある (`build/math-p211-presentation-rerun.log`)。
+この履歴は三件の提示失敗が P3-5.1 を必要条件としない証拠である。
+ただし、その後の `abec9ea` で window の Z 順・Tool flag 等が変わっているので、
+この履歴だけを完全に同じ現在の protocol の対照とは扱わない。
+
+[事実] 現在の AC の自動消灯は 900 秒。以前の通常 runner は実行中の電源前提を取得・監視していなかった。
+Windows Kernel-Power 566 の生データを `build/math-p352-historical-power-events.xml` に保存した。
+2026-10-07 22:12:46 に session 3/type 0 → 4/type 1、22:19:11 に 4/type 1 → 6/type 0 がある。
+provider の表示理由はそれぞれ SessionUnlock / InputHid。生の session type を
+`GUID_SESSION_DISPLAY_STATUS` の値と同一視してはいけない。
+
+生 log の直列 workstation 時間の和は 913.44 秒、CTest 全体は 917.68 秒で、未配分時間は 4.24 秒。
+ファイル終了時刻を起点に、この誤差を残して区間を再構成した。
+直接入力は概ね 22:13:21〜22:15:21、音声は 22:15:39〜22:15:58、transition は 22:18:03〜22:18:57。
+polling の実画像の生成時刻は 22:13:08、結果 JSON は 22:13:21。
+計算は `build/p352-historical-timing.ps1`、生の計算結果は `build/math-p352-historical-timing.json`。
+絶対時刻の再構成を raw の試験 start/end の記録と称していない。
+
+現在の runner には `PowerCreateRequest` / `PowerSetRequest` による process 所有の lease を足し、
+ビルドから通常試験の終了まで自動消灯・スリープを防ぐ。
+電源 policy・OS focus・利用者の入力は変更しない。BuildIndependent だけの場合は取得しない。
+`GUID_SESSION_DISPLAY_STATUS` の実通知で初期状態を検証し、途中で off/未知になった記録は復帰しても保持して
+`PROTOCOL_INVALID` にする。取得・通知登録・解放の失敗も成功と扱わず、finally で要求を解放する。
+手動の電源操作を禁止する仕組みではない。
+
+[事実] `test_display_lease_contract` は、取得失敗、設定失敗、登録失敗、登録 handle 欠損、初期 off、
+途中 off→on、二重解放、解除失敗を検査する。途中 off の記録を消す変異は回帰で失敗した。
+証拠: `build/math-p352-display-lease-mutant.log`、`-final-contract.log`、`-native-session.log`。
+
+### 管理者電源履歴と最終帰属
+
+[事実] 新しい通常 gate の終了後、利用者の許可を受けて読み取り専用の
+`powercfg /systempowerreport /output C:\dev\soft\mvm\build\math-p352-system-power-admin.xml /xml /duration 2`
+を管理者として実行し、終了コード 0 で取得した。電源設定は変更していない。
+通常権限で拒否された実行の記録 `build/math-p352-system-power-command.log` も保存した。
+
+レポートの OsStateId 908.0 は **Screen Off**、開始理由は **Video Idle Timeout**、
+開始は 2026-10-07 22:12:46 JST、終了は 22:39:30 JST、終了理由は Input Mouse。
+前述の三件の実行区間と polling の画像生成時刻は、この消灯区間内にある。
+Kernel-Power の session type の推定ではなく、型を明示した電源レポートを authority とする。
+抽出は `build/p352-power-evidence.ps1` が一意性・型・理由を検査し、
+`build/math-p352-power-evidence.json` に生成した。
+22:19:11 の Kernel-Power session 境界を画面復帰と扱わない。
+
+| 前回の失敗 | 最終分類 | 根拠と対処 |
+|---|---|---|
+| `math_equation_sequence_product_ui` | **C: TEST_PROTOCOL / TEST_ISOLATION DEFECT** | 背面 QML Timer の時計回数を、読むだけの問い合わせの契約と混同した。自然な問い合わせの到達と、実 handler 四回による不変性を分離した。製品の polling 動作は変更していない。 |
+| `text_ui_direct_input` | **D: ENVIRONMENT / RESOURCE INTERFERENCE** | 前提 Ctrl+K seek の提示待ちが消灯区間に重なる。current clip / split はその前提失敗に続く。P3-5.1 前の同じ症状と消灯防止の対照記録、現行四条件のリンク比較がある。 |
+| `audio_mixer_product_ui` | **D: ENVIRONMENT / RESOURCE INTERFERENCE** | 消灯中の latest presentation → seek → shuttle の前提が成立せず、二倍開始・no-op 維持が失敗した。P3-5.1 前にも同じ症状があり、追加リンク・ソースを除いた条件も含む現行対照は通過した。 |
+| `transition_preview` | **D: ENVIRONMENT / RESOURCE INTERFERENCE** | frame 127〜134 の進行自体は正しく、cut 前後の提示と継続再生の待ちが消灯区間に重なる。P3-5.1 前にも同じ症状があり、消灯防止の対照記録がある。 |
+
+三件の機序は、通常 runner が自動消灯を許し、提示を要求する GUI 試験をそのまま有効な試験として
+判定したこと。再現履歴・今回の実消灯記録・現行リンク対照を合わせて D と判断する。
+前回には要求観測が無かったため、当時の内部 state の全遷移を後から観測したとは主張しない。
+今回の `MVM_TEST_PREVIEW_TRACE=1` は、要求の受理、engine state/frame、playhead、playing、
+shuttle、desired/presented identity、最新提示、window 状態、frameSwapped、status を読むだけで記録する。
+四件まとめの `build/math-p352-former-failures.log` に seek と shuttle の受理・提示・再生の連鎖を残した。
+sleep、retry、frame 期待値、seek の受理規則、shuttle/cut semantics、既存 timeout は変更していない。
+
+追加リンクや translation unit に起因する A の回帰は、今回の比較で認められない。
+旧症状が存在するだけで B と決めず、当該 gate の消灯記録に基づき D に分類した。
+QuickTest は初期化入口を呼んでおらず、観測した event loop・attributes・focus・提示・終了処理に
+条件による差は認められなかったため、共有 executable の配線を維持した。
+共有 QML primitive は変更せず、`audio_mixer_controls_qml` は今回も通過した。
+
+### 閉鎖検証
+
+件数は `build/p352-evidence-summary.ps1` が log から再計算する。
+
+| 検証 | 結果 | 証拠 |
+|---|---|---|
+| domain/editor/QML・P3-4 native preview・audio controls の集中試験 | 9/9 PASS | `build/math-p352-focused-final.log` |
+| 以前失敗した四件を同じ実行で検査 | 4/4 PASS | `build/math-p352-former-failures.log` |
+| 実 Main.qml 製品受け入れ | 265/265 検査 PASS、20 場面の証拠 | `build/p351-ui/2764f14b-02a8-4e55-9cfb-77687f7c8643/results.json` |
+| BuildIndependent | 1080/1080 PASS | `build/math-p352-independent.log` |
+| lint | PASS | `build/math-p352-lint-final.log` |
+| 新しい通常 `ucrt64-release` gate 一回 | **1472/1472 PASS** | `build/math-p352-release.log` |
+
+新しい通常 gate は `pwsh scripts/test.ps1 -Preset ucrt64-release` で実行し、
+performance/stability を除いた通常試験をすべて実行した。四件の抑制も再試行も行っていない。
+終了時の電源観測は開始時の ON 一件であり、途中 OFF/未知の通知は無かった。
+新規 `test_display_lease_contract` により通常件数は 1471 → 1472、独立件数は 1079 → 1080。
+狭い幅・低い高さ・長い本文の画像も確認した。製品 UI・schema 21・P3-1〜P3-5 の意味は変更していない。
+
+旧 `build/math-p351-release.log` の **1467/1471、四件 FAIL** は失敗のまま保存する。
+旧失敗画像・個別実行・周辺順序・リンク比較・変異の失敗・管理者権限拒否の記録を削除・上書きしない。
+新 gate の PASS は旧 gate の結果の置換ではなく、帰属と protocol 修正後の別の閉鎖検証である。
+
+**P3-5 / P3-5.1 / P3-5.2 の最終判定**:
+
+```text
+product authoring UI        PASS
+rejected-draft preservation PASS
+product acceptance wiring  PASS
+release-gate attribution   PASS
+P3-5 final closure         PASS/CLOSED
+P3-6                      GO
+```
+
+P3-6 の着手条件は満たした。この作業では export/P3-6 を実装せず、commit/push も行っていない。
+

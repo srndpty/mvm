@@ -247,9 +247,14 @@ TestCase {
     // 状態の問い合わせの polling は読むだけの refreshStatus しか呼ばない。
     function test_status_polling_is_read_only() {
         const panel = createTemporaryObject(panelComponent, test);
-        wait(900);
+        tryVerify(() => fakeEditor.count("refreshStatus") > 0);
         const refreshes = fakeEditor.count("refreshStatus");
-        verify(refreshes >= 3, "polling が実際に問い合わせる (" + refreshes + ")");
+        const poller = findChild(panel, "equationStatusPoll");
+        verify(poller.running && poller.repeat);
+        // handler の検査を animation timer の wall-clock 頻度と混ぜない。
+        for (let i = 0; i < 4; ++i)
+            poller.triggered();
+        compare(fakeEditor.count("refreshStatus"), refreshes + 4);
         for (let i = 0; i < fakeEditor.calls.length; ++i)
             verify(fakeEditor.calls[i] === "refreshStatus" || fakeEditor.calls[i] === "cancelSourceEdit",
                    "polling は Project・描画の操作を呼ばない: " + fakeEditor.calls[i]);
