@@ -97,6 +97,8 @@ const char* timelineClipKindName(TimelineClipKind kind) {
         return "image";
     case TimelineClipKind::Math:
         return "math";
+    case TimelineClipKind::EquationSequence:
+        return "equation_sequence";
     }
     return "";
 }
@@ -107,7 +109,8 @@ bool clipUsesMediaItem(TimelineClipKind kind) {
 }
 
 bool clipKindHasMediaPath(TimelineClipKind kind) {
-    return kind != TimelineClipKind::Text && kind != TimelineClipKind::Math;
+    return kind != TimelineClipKind::Text && kind != TimelineClipKind::Math &&
+           kind != TimelineClipKind::EquationSequence;
 }
 
 bool parseArgbColor(const std::string& text, std::uint32_t& argb) {
@@ -271,6 +274,29 @@ std::size_t approximateProjectBytes(const Project& project) {
                  heapBytes(clip.text.outlineColor) + heapBytes(clip.text.backgroundColor);
         bytes += heapBytes(clip.math.syntax) + heapBytes(clip.math.source) +
                  heapBytes(clip.math.color) + heapBytes(clip.math.backgroundColor);
+        const auto& sequence = clip.equationSequence;
+        bytes += sequence.states.size() * sizeof(EquationState) +
+                 sequence.transitions.size() * sizeof(EquationStepTransition) +
+                 sequence.actions.size() * sizeof(EquationAction);
+        for (const auto& state : sequence.states) {
+            bytes += heapBytes(state.id.value) + heapBytes(state.revision) +
+                     heapBytes(state.equation.syntax) + heapBytes(state.equation.source) +
+                     heapBytes(state.equation.color) + heapBytes(state.equation.backgroundColor) +
+                     state.parts.size() * sizeof(SemanticPart);
+            for (const auto& part : state.parts)
+                bytes += heapBytes(part.id.value) + heapBytes(part.label) +
+                         heapBytes(part.binding.revision) + heapBytes(part.binding.expectedText);
+        }
+        for (const auto& transition : sequence.transitions) {
+            bytes += heapBytes(transition.id.value) + heapBytes(transition.from.value) +
+                     heapBytes(transition.to.value) +
+                     transition.correspondence.size() * sizeof(PartPair);
+            for (const auto& pair : transition.correspondence)
+                bytes += heapBytes(pair.from.value) + heapBytes(pair.to.value);
+        }
+        for (const auto& action : sequence.actions)
+            bytes += heapBytes(action.id.value) + heapBytes(action.state.value) +
+                     heapBytes(action.target.value);
         bytes += heapBytes(clip.effects.audioAdjustmentSettings) +
                  heapBytes(clip.effects.audioAdjustmentFingerprint);
         for (const auto& channel : effectChannels())

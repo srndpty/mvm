@@ -335,6 +335,17 @@ ApplicationWindow {
                     }
                 }
             }
+            CompactMenuItem {
+                objectName: "addEquationSequenceMenuItem"
+                text: "数式 sequence を追加"
+                enabled: !root.mvmController.busy
+                onTriggered: {
+                    if (root.mvmController.createEquationSequenceClip("ax^2 + bx + c = 0")) {
+                        root.leftPanelTab = 0;
+                        Qt.callLater(() => equationSequenceInspector.focusSource());
+                    }
+                }
+            }
             CompactMenuSeparator {}
             CompactMenuItem {
                 action: exportMediaAction
@@ -971,6 +982,7 @@ ApplicationWindow {
                             // 縦にスクロールさせ、はみ出した分は切り取る。端では跳ね返らずにそのまま止める。
                             BoundedFlickable {
                                 id: effectControlsScroll
+                                objectName: "effectControlsScroll"
                                 anchors.fill: parent
                                 visible: root.mvmController.selectedTransitionId === ""
                                 clip: true
@@ -1061,6 +1073,14 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         visible: root.mvmController.selectedMathClip.clipId !== undefined
                                         mvmController: root.mvmController
+                                    }
+
+                                    EquationSequenceInspector {
+                                        id: equationSequenceInspector
+                                        Layout.fillWidth: true
+                                        visible: root.mvmController.equationEditor.view.clipId !== undefined
+                                        mvmController: root.mvmController
+                                        editor: root.mvmController.equationEditor
                                     }
 
                                     KeyframeInspector {
@@ -3079,7 +3099,8 @@ ApplicationWindow {
                                         width: parent.width
                                         // audio clip は波形を優先し、尺の表示を重ねない。
                                             visible: clipItem.clipKind !== "audio"
-                                            text: (clipItem.frameHold ? "保持  |  " : "")
+                                            text: (clipItem.clipKind === "equation_sequence" ? "数式 sequence  |  " : "")
+                                                + (clipItem.frameHold ? "保持  |  " : "")
                                                 + (clipItem.shownSpeed !== 1
                                                    ? (Math.round(clipItem.shownSpeed * 10000) / 100) + "%  |  " : "")
                                                 + (clipItem.clipKind === "audio"
@@ -4282,6 +4303,7 @@ ApplicationWindow {
 
     ModernDialog {
         id: exportSettingsDialog
+        objectName: "exportSettingsDialog"
         property string inputSpecText: ""
         property string outputSpecText: ""
         property string comparisonWarningText: ""
@@ -4373,6 +4395,7 @@ ApplicationWindow {
             }
             ModernDialogButton {
                 text: "書き出す"
+                objectName: "exportAcceptButton"
                 prominent: true
                 onClicked: {
                     const option = exportSettingsDialog.qualityOptions[qualityCombo.currentIndex];
@@ -4411,6 +4434,7 @@ ApplicationWindow {
 
     FileDialog {
         id: exportDialog
+        objectName: "exportFileDialog"
         title: "書き出し先を指定"
         fileMode: FileDialog.SaveFile
         defaultSuffix: "mp4"

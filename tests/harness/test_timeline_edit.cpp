@@ -1558,7 +1558,8 @@ void testTimelineTransitions(const std::filesystem::path& root) {
                 return at == std::string::npos ? std::string{} : text.replace(at, from.size(), to);
             };
             const auto schema19 = [&](std::string text) {
-                const std::string version = "\"schema_version\": 20";
+                const std::string version =
+                    "\"schema_version\": " + std::to_string(mvm::project::kProjectSchemaVersion);
                 const auto at = text.find(version);
                 return at == std::string::npos
                            ? std::string{}
@@ -3159,11 +3160,15 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
             }
         }
         auto oldSchema = serialized.json;
-        const auto schema = oldSchema.find("\"schema_version\": 20");
+        const auto schema = oldSchema.find("\"schema_version\": " +
+                                           std::to_string(mvm::project::kProjectSchemaVersion));
         check(schema != std::string::npos, "schema 20 が出力されません");
         if (schema != std::string::npos) {
-            oldSchema.replace(schema, std::string("\"schema_version\": 20").size(),
-                              "\"schema_version\": 13");
+            oldSchema.replace(
+                schema,
+                ("\"schema_version\": " + std::to_string(mvm::project::kProjectSchemaVersion))
+                    .size(),
+                "\"schema_version\": 13");
             check(!mvm::project::parseProjectJsonText(oldSchema, projectFile).success,
                   "schema 13 を受理しました");
         }

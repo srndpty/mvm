@@ -2,22 +2,25 @@
 
 #include "app/math_clip_render.h"
 #include "media/still_image/static_image.h"
+#include "project/timeline_edit.h"
 #include "util/mvm_atomic_write.h"
 #include "util/mvm_long_path.h"
 #include "util/mvm_sha256.h"
-
-#include <QMetaObject>
-#include <QStringList>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
-#include <initializer_list>
 #include <fstream>
+#include <initializer_list>
+#include <set>
 #include <sstream>
 #include <system_error>
 #include <utility>
+
+#include <QMetaObject>
+#include <QStringList>
+#include <QThread>
 
 namespace mvm::app {
 namespace {
@@ -1078,6 +1081,13 @@ void MathRasterCache::shutdown() {
     shutDown_ = true;
     cancelAll();
     pool_.clear();
+    // 止めている試験の drain も抜けさせ、待ち行列の予約を返す。
+    equationLoads_->stopped.store(true);
+    {
+        std::lock_guard lock(equationLoads_->mutex);
+        equationLoads_->current.clear();
+        equationLoads_->prefetch.clear();
+    }
     residentPool_.clear();
     pool_.waitForDone();
     residentPool_.waitForDone();
@@ -1087,6 +1097,10 @@ void MathRasterCache::cancelAll() {
     // 変形の provenance を書いている worker と排他にする (取り消した後に確定させない)。
     std::lock_guard gate(*publishGate_);
     for (const auto& record : std::as_const(transforms_)) {
+        if (record.cancel)
+            record.cancel->store(true);
+    }
+    for (const auto& record : std::as_const(equationSequences_)) {
         if (record.cancel)
             record.cancel->store(true);
     }
@@ -1108,6 +1122,7 @@ void MathRasterCache::clearRecords() {
     records_.clear();
     sequences_.clear();
     transforms_.clear();
+    equationSequences_.clear();
     resident_.clear();
     loading_.clear();
     overBudget_.clear();
@@ -1139,6 +1154,8 @@ void MathRasterCache::setAuthority(std::filesystem::path cacheDirectory, bool au
         return;
     // 置き場所や権限の変更は世代の変更として扱う。進行中の確認を捨てるだけにせず、
     // 許可があれば必ず次の確認を始める (Checking のまま止まらない)。
+    if (cacheDirectory_ != cacheDirectory || !authorized)
+        exportIdentity_.reset();
     cacheDirectory_ = std::move(cacheDirectory);
     authorized_ = authorized && !cacheDirectory_.empty();
     if (!authorized_) {
@@ -1198,6 +1215,11 @@ void MathRasterCache::finishPreflight(std::uint64_t generation, math::MathPrefli
     if (result.status == math::MathPreflightStatus::Available && result.backend.render) {
         backendState_ = BackendState::Available;
         backend_ = std::move(result.backend);
+        exportIdentity_ = backend_;
+        exportIdentity_->render = {};
+        exportIdentity_->renderSequence = {};
+        exportIdentity_->renderTransform = {};
+        exportIdentity_->renderEquationSequence = {};
         backendMessage_.clear();
     } else {
         backendState_ = BackendState::Unavailable;
@@ -1280,6 +1302,20 @@ void MathRasterCache::finishRender(const QString& key, std::uint64_t ticket, Ent
     found->cancel.reset();
     Q_EMIT entryChanged(key);
     advanceTransformsWaitingOn(key);
+    // この静止を待つ Equation Sequence を進める。
+    QStringList waiting;
+    for (auto it = equationSequences_.cbegin(); it != equationSequences_.cend(); ++it) {
+        if (it->launched || it->entry.state != State::Pending)
+            continue;
+        for (const auto& state : it->spec.states)
+            if (keyFor(state.still) == key) {
+                waiting.push_back(it.key());
+                break;
+            }
+    }
+    for (const auto& sequence : waiting)
+        if (advanceEquationSequence(sequence))
+            Q_EMIT entryChanged(sequence);
 }
 
 std::optional<std::filesystem::path>
@@ -1319,19 +1355,27 @@ void MathRasterCache::retainOnly(const QSet<QString>& keys) {
     {
         std::lock_guard gate(*publishGate_);
         retainKeys(transforms_, keys);
+        retainKeys(equationSequences_, keys);
     }
     retainKeys(records_, keys);
     retainKeys(sequences_, keys);
     // 連番・変形が要求されなくなれば、preview 用の mask も手放す (読んでいる途中なら止める)。
+    // Equation Sequence の層は owner の sequence の key が残る間だけ残す。
     for (const auto& key : resident_.keys() + loading_.keys() + overBudget_.keys())
-        if (!keys.contains(key))
+        if (!keys.contains(residentOwner(key)))
             dropResident(key);
+}
+
+QString MathRasterCache::residentOwner(const QString& key) {
+    const auto slash = key.indexOf(QLatin1Char('/'));
+    return slash < 0 ? key : key.left(slash);
 }
 
 void MathRasterCache::forgetFailures() {
     forgetFailedRecords(records_);
     forgetFailedRecords(sequences_);
     forgetFailedRecords(transforms_);
+    forgetFailedRecords(equationSequences_);
     overBudget_.clear();
 }
 
@@ -1482,6 +1526,7 @@ MathRasterCache::ResidentSequence MathRasterCache::acquireResident(const QString
         reserved = residency_->tryReserve(bytes);
     }
     if (!reserved) {
+        // Equation Sequence の層は residentEquationLayers が束で予約する (ここへは来ない)。
         const auto message =
             (kind == ResidentKind::Write
                  ? QStringLiteral(
@@ -1548,6 +1593,17 @@ void MathRasterCache::finishResident(const QString& key, std::uint64_t ticket,
     }
     const ResidentKind kind = found->kind;
     loading_.erase(found);
+    if (kind == ResidentKind::EquationLayer) {
+        if (!frames) {
+            // 壊れた・provenance の変わった層: sequence ごと使わない (Failed、artifact を消す)。
+            failEquationSequence(residentOwner(key), error);
+            Q_EMIT entryChanged(residentOwner(key));
+            return;
+        }
+        resident_.insert(key, {std::move(frames), ++useTick_});
+        Q_EMIT entryChanged(residentOwner(key));
+        return;
+    }
     if (!frames) {
         // disk の連番・変形が壊れている。消して Failed にする (forgetFailures・再試行で描き直す)。
         // cache directory の変更は権限がある間だけ行う。
@@ -1692,6 +1748,7 @@ void MathRasterCache::cancelPendingAnimations() {
     // 変形の worker は取消を見てから書くので、取り消した後に確定しない。
     std::lock_guard gate(*publishGate_);
     cancelPendingRecords(transforms_);
+    cancelPendingRecords(equationSequences_);
 }
 
 QString MathRasterCache::transformKeyFor(const math::MathTransformSpec& spec) const {
@@ -1880,6 +1937,748 @@ MathRasterCache::readyTransformForExport(const math::MathTransformSpec& spec) co
     if (loadTransformArtifact(job, &cancel, artifact, false) != DiskLoad::Ready)
         return std::nullopt;
     return artifact;
+}
+
+// ---- Equation Sequence (P3-3) ----
+
+QString MathRasterCache::equationSequenceKeyFor(const math::EquationSequenceRenderSpec& spec) const {
+    if (backendState_ != BackendState::Available)
+        return {};
+    return QString::fromStdString(math::equationSequenceRenderKey(
+        spec, backend_.fingerprint, backend_.equationSequenceTemplate));
+}
+
+MathRasterCache::EquationSequenceEntry
+MathRasterCache::requestEquationSequence(const math::EquationSequenceRenderSpec& spec) {
+    if (backendState_ == BackendState::Checking)
+        return {};
+    if (backendState_ == BackendState::Unavailable) {
+        EquationSequenceEntry entry;
+        entry.state = State::Unavailable;
+        entry.status = math::MathRenderStatus::BackendUnavailable;
+        entry.message = backendMessage_;
+        return entry;
+    }
+    std::string specError;
+    if (!math::validateEquationSequenceRenderSpec(spec, specError)) {
+        EquationSequenceEntry entry;
+        entry.state = State::Failed;
+        entry.backendFailure = math::EquationBackendFailure::InvalidRequest;
+        entry.message = QStringLiteral("Equation Sequence の描画要求が不正です: %1")
+                            .arg(QString::fromStdString(specError));
+        return entry;
+    }
+    const QString key = equationSequenceKeyFor(spec);
+    if (key.isEmpty()) {
+        EquationSequenceEntry entry;
+        entry.state = State::Failed;
+        entry.message = QStringLiteral("Equation Sequence の cache key を計算できません");
+        return entry;
+    }
+    if (shutDown_)
+        return {};
+    if (!equationSequences_.contains(key)) {
+        EquationSequenceRecord record;
+        record.spec = spec;
+        std::int64_t longest = 0;
+        for (const auto& item : spec.transitions)
+            longest = std::max(longest, item.frames);
+        for (const auto& item : spec.actions)
+            longest = std::max(longest, item.duration);
+        // backend が描けない枚数は描かずに未対応として失敗させる (Project の値は正しいまま)。
+        if (!backend_.renderEquationSequence || longest > backend_.maximumEquationSequenceFrames) {
+            record.entry.state = State::Failed;
+            record.entry.status = math::MathRenderStatus::Failed;
+            record.entry.backendFailure = math::EquationBackendFailure::InvalidRequest;
+            record.entry.message =
+                backend_.renderEquationSequence
+                    ? QStringLiteral("この描画環境の Equation Sequence の区間は %1 frame までです "
+                                     "(要求 %2 frame)")
+                          .arg(backend_.maximumEquationSequenceFrames)
+                          .arg(longest)
+                    : QStringLiteral("数式の描画 backend は Equation Sequence を描けません");
+        }
+        equationSequences_.insert(key, record);
+    }
+    advanceEquationSequence(key);
+    return equationSequences_.value(key).entry;
+}
+
+EquationSequenceJob
+MathRasterCache::equationSequenceJob(const QString& key,
+                                     const math::EquationSequenceRenderSpec& spec) const {
+    EquationSequenceJob job;
+    job.directory = cacheDirectory_;
+    job.jobs = jobsDirectory();
+    job.key = key.toStdString();
+    job.spec = spec;
+    job.backend = backend_;
+    std::int64_t frames = 0;
+    for (const auto& item : spec.transitions)
+        frames += item.frames + 1;
+    for (const auto& item : spec.actions)
+        frames += item.duration + 2;
+    // 構造の段階と描画の段階の 2 回 Manim を起動する。
+    job.timeout = renderTimeout_ * 2 +
+                  sequenceTimeoutPerFrame_ *
+                      (frames + static_cast<std::int64_t>(spec.states.size()));
+    for (const auto& state : spec.states)
+        job.stateStaticKeys.push_back(keyFor(state.still).toStdString());
+    job.publishGate = publishGate_;
+    job.beforePublish = beforeEquationSequencePublish_;
+    return job;
+}
+
+bool MathRasterCache::advanceEquationSequence(const QString& key) {
+    const auto found = equationSequences_.constFind(key);
+    if (found == equationSequences_.constEnd() || found->launched ||
+        found->entry.state != State::Pending || shutDown_ || !authorized_ ||
+        backendState_ != BackendState::Available)
+        return false;
+    const math::EquationSequenceRenderSpec spec = found->spec;
+    // 全状態の今の静止 (この spec の key の静止そのもの)。前に描けた別の式の静止で代用しない。
+    std::vector<Entry> statics;
+    for (const auto& state : spec.states)
+        statics.push_back(request(state.still));
+    auto record = equationSequences_.find(key);
+    if (record == equationSequences_.end())
+        return false;
+    for (std::size_t s = 0; s < statics.size(); ++s) {
+        const auto& still = statics[s];
+        if (still.state != State::Failed && still.state != State::Unavailable)
+            continue;
+        record->entry = {};
+        record->entry.state = still.state;
+        record->entry.status = still.status;
+        record->entry.message =
+            QStringLiteral("状態 %1 の式の静止を描けないため、Equation Sequence を描けません: %2")
+                .arg(s)
+                .arg(still.message);
+        return true;
+    }
+    for (const auto& still : statics)
+        if (still.state != State::Ready || !still.mask)
+            return false; // 静止がまだ描けていない: 待つ (古い静止では描かない)
+
+    EquationSequenceJob job = equationSequenceJob(key, spec);
+    for (const auto& still : statics)
+        job.stateStatics.push_back(coverageOf(*still.mask));
+    record->launched = true;
+    record->ticket = nextTicket_++;
+    record->cancel = std::make_shared<std::atomic<bool>>(false);
+    job.ticket = record->ticket;
+    pool_.start([this, job = std::move(job), cancel = record->cancel, key] {
+        if (cancel->load())
+            return;
+        EquationSequenceOutcome outcome = renderEquationSequenceJob(job, cancel.get());
+        if (outcome.cancelled)
+            return;
+        EquationSequenceEntry entry;
+        entry.state = outcome.ready ? State::Ready
+                      : outcome.status == math::MathRenderStatus::BackendUnavailable
+                          ? State::Unavailable
+                          : State::Failed;
+        entry.status = outcome.status;
+        entry.backendFailure = outcome.backendFailure;
+        entry.message = QString::fromStdString(outcome.message);
+        entry.log = QString::fromStdString(outcome.log);
+        QMetaObject::invokeMethod(
+            this,
+            [this, key, ticket = job.ticket, entry = std::move(entry),
+             artifact = std::move(outcome.artifact)]() mutable {
+                finishEquationSequence(key, ticket, std::move(entry), std::move(artifact));
+            },
+            Qt::QueuedConnection);
+    });
+    return false;
+}
+
+void MathRasterCache::finishEquationSequence(const QString& key, std::uint64_t ticket,
+                                             EquationSequenceEntry entry,
+                                             EquationSequenceArtifact artifact) {
+    auto found = equationSequences_.find(key);
+    // 要求されなくなった (retainOnly で捨てた・世代が変わった) key の結果は残さない。
+    if (found == equationSequences_.end() || found->ticket != ticket || shutDown_)
+        return;
+    if (entry.state != State::Ready)
+        qWarning("Equation Sequence を描けません: %s", qUtf8Printable(entry.message));
+    found->entry = std::move(entry);
+    found->artifact = std::move(artifact);
+    found->cancel.reset();
+    Q_EMIT entryChanged(key);
+}
+
+std::optional<EquationSequenceArtifact>
+MathRasterCache::readyEquationSequence(const math::EquationSequenceRenderSpec& spec) const {
+    const QString key = equationSequenceKeyFor(spec);
+    const auto found = equationSequences_.constFind(key);
+    if (found == equationSequences_.constEnd() || found->entry.state != State::Ready)
+        return std::nullopt;
+    EquationSequenceJob job = equationSequenceJob(key, spec);
+    for (const auto& state : spec.states) {
+        // 静止の内容も現在の Ready の mask と disk の provenance で照合し、差し替えを拒否する。
+        const auto staticKey = keyFor(state.still);
+        const auto record = records_.constFind(staticKey);
+        const auto disk = loadArtifact(cacheDirectory_, staticKey, backend_.fingerprint, false);
+        if (record == records_.constEnd() || record->entry.state != State::Ready ||
+            !record->entry.mask || !disk || coverageOf(*disk) != coverageOf(*record->entry.mask))
+            return std::nullopt;
+        job.stateStatics.push_back(coverageOf(*record->entry.mask));
+    }
+    EquationSequenceArtifact artifact;
+    const std::atomic<bool> cancel{false};
+    if (loadEquationSequenceArtifact(job, &cancel, artifact, false) !=
+        EquationSequenceDiskLoad::Ready)
+        return std::nullopt;
+    return artifact;
+}
+
+EquationExportSnapshot
+MathRasterCache::equationSequenceExportSnapshot(const project::TimelineClip& clip) const {
+    EquationExportSnapshot captured;
+    const auto rejectCapture = [&](EquationExportFailure reason, const std::string& detail) {
+        captured.readiness = {reason, EquationCompileFailure::None, detail};
+        return captured;
+    };
+    const auto compiled = compileEquationSequence(clip.equationSequence);
+    if (!compiled.value) {
+        captured.readiness = {EquationExportFailure::CompileFailed, compiled.failure,
+                              "数式の内容を修復してください"};
+        return captured;
+    }
+    std::string error;
+    const auto renderSpec = equationSequenceRenderSpecFor(*compiled.value, error);
+    if (!renderSpec)
+        return rejectCapture(EquationExportFailure::CompileFailed, error);
+    if (!exportIdentity_)
+        return rejectCapture(EquationExportFailure::BackendUnavailable,
+                             "数式の描画環境を利用できません");
+    EquationSequenceJob initialJob;
+    initialJob.directory = cacheDirectory_;
+    initialJob.spec = *renderSpec;
+    initialJob.backend = *exportIdentity_;
+    initialJob.key = math::equationSequenceRenderKey(*renderSpec, initialJob.backend.fingerprint,
+                                                     initialJob.backend.equationSequenceTemplate);
+    for (const auto& state : renderSpec->states)
+        initialJob.stateStaticKeys.push_back(
+            math::mathRenderKey(state.still, initialJob.backend.fingerprint));
+    captured.sequenceKey = initialJob.key;
+    captured.renderSpec = *renderSpec;
+    captured.toolchain = initialJob.backend.fingerprint;
+    captured.sequenceTemplate = initialJob.backend.equationSequenceTemplate;
+    captured.presentation.clip = clip;
+    captured.presentation.spec = *compiled.value;
+    const bool backendAvailable = backendState_ == BackendState::Available;
+    const auto entryState = equationSequenceEntryOf(*renderSpec).state;
+    captured.prepare = [capturedJob = std::move(initialJob), initial = captured, backendAvailable,
+                        entryState](const EquationPreviewInputs& requested,
+                                    const std::function<bool()>& cancelled) {
+        auto snapshot = initial;
+        snapshot.presentation = requested;
+        auto job = capturedJob;
+        const auto& spec = job.spec;
+        const auto reject = [&](EquationExportFailure reason, const std::string& detail) {
+            snapshot.readiness = {reason, EquationCompileFailure::None, detail};
+            return snapshot;
+        };
+        // 現在の key の disk を読む。session の last-good mask は使わない。
+        std::vector<EquationPreviewLayerId> required;
+        std::set<std::size_t> requiredStates;
+        project::Project timing;
+        timing.timelineFpsNum = requested.timelineFpsNum;
+        timing.timelineFpsDen = requested.timelineFpsDen;
+        const auto duration = project::timelineClipDuration(timing, requested.clip);
+        if (!duration.success)
+            return reject(EquationExportFailure::InvalidSourceRange, duration.error);
+        for (std::int64_t i = 0; i < duration.frame; ++i) {
+            if (cancelled && cancelled())
+                return reject(EquationExportFailure::Cancelled,
+                              "数式の書き出し準備をキャンセルしました");
+            std::string detail;
+            const auto time = equationPreviewTimeAt(requested.clip, requested.timelineFpsNum,
+                                                    requested.timelineFpsDen, &*requested.spec,
+                                                    requested.clip.timelineStartFrame + i, detail);
+            if (!time)
+                return reject(EquationExportFailure::InvalidSourceRange, detail);
+            requiredStates.insert(time->lookup.state);
+            if (time->lookup.kind == EquationFrameKind::Transition)
+                requiredStates.insert(requested.spec->transitions[time->lookup.transition].toState);
+            for (const auto& layer : equationPreviewCurrentLayers(time->lookup))
+                if (std::find(required.begin(), required.end(), layer) == required.end())
+                    required.push_back(layer);
+        }
+        job.exportStateStatics.emplace();
+        for (std::size_t s = 0; s < spec.states.size(); ++s) {
+            if (!requiredStates.contains(s)) {
+                snapshot.presentation.statics.push_back(std::nullopt);
+                continue;
+            }
+            if (cancelled && cancelled())
+                return reject(EquationExportFailure::Cancelled,
+                              "数式の書き出し準備をキャンセルしました");
+            const auto still =
+                loadArtifact(job.directory, QString::fromStdString(job.stateStaticKeys[s]),
+                             job.backend.fingerprint, false);
+            if (!still)
+                return reject(std::filesystem::exists(artifactPath(
+                                    job.directory, QString::fromStdString(job.stateStaticKeys[s])))
+                                  ? EquationExportFailure::CorruptStatic
+                              : !backendAvailable ? EquationExportFailure::BackendUnavailable
+                                  : EquationExportFailure::StaticArtifactMissing,
+                              "現在の状態の静止描画を検証できません");
+            auto coverage = coverageOf(*still);
+            snapshot.presentation.statics.push_back(EquationPreviewStatic{
+                coverage.width, coverage.height,
+                std::make_shared<const std::vector<std::uint8_t>>(coverage.alpha),
+                spec.states[s].foregroundArgb});
+            job.exportStateStatics->emplace(s, std::move(coverage));
+        }
+        if (required.empty()) {
+            snapshot.validate = [] { return EquationExportReadiness{}; };
+            return snapshot;
+        }
+        // backend の関数は検証・取得に不要。encoder 側から外部 process を起動できない。
+        job.backend.render = {};
+        job.backend.renderEquationSequence = {};
+        EquationSequenceArtifact artifact;
+        const std::atomic<bool> cancel{false};
+        if (!std::filesystem::exists(equationSequenceProvenancePath(job.directory, job.key))) {
+            return reject(!backendAvailable             ? EquationExportFailure::BackendUnavailable
+                          : entryState == State::Ready  ? EquationExportFailure::ProvenanceMissing
+                          : entryState == State::Failed ? EquationExportFailure::ArtifactFailed
+                                                        : EquationExportFailure::ArtifactPending,
+                          "現在の数式の描画結果を準備できません");
+        }
+        if (loadEquationSequenceArtifact(job, &cancel, artifact, false, &snapshot.readiness,
+                                         cancelled, &required) != EquationSequenceDiskLoad::Ready)
+            return snapshot;
+        snapshot.presentation.artifactReady = true;
+        for (const auto& t : artifact.transitions) {
+            EquationPreviewTransitionArtifact item{t.width,   t.height,  t.sourceX, t.sourceY,
+                                                   t.targetX, t.targetY, {}};
+            for (const auto& frame : t.frames)
+                item.colors.push_back(frame.colorArgb);
+            snapshot.presentation.transitions.push_back(std::move(item));
+        }
+        for (const auto& a : artifact.actions) {
+            EquationPreviewActionArtifact item{a.width,   a.height,         a.staticX,
+                                               a.staticY, a.base.colorArgb, {}};
+            for (const auto& frame : a.accent)
+                item.accentColors.push_back(frame.colorArgb);
+            snapshot.presentation.actions.push_back(std::move(item));
+        }
+        snapshot.validate = [directory = job.directory, key = job.key,
+                             provenance = artifact.provenance] {
+            if (!std::filesystem::exists(equationSequenceProvenancePath(directory, key)))
+                return EquationExportReadiness{EquationExportFailure::ProvenanceMissing,
+                                               EquationCompileFailure::None,
+                                               "数式の provenance がありません"};
+            if (!equationSequenceProvenanceCurrent(directory, key, provenance))
+                return EquationExportReadiness{EquationExportFailure::ProvenanceMismatch,
+                                               EquationCompileFailure::None,
+                                               "数式の provenance が開始時点と一致しません"};
+            return EquationExportReadiness{};
+        };
+        snapshot.loadLayer = [artifact](const EquationPreviewLayerId& layer,
+                                        std::vector<std::uint8_t>& bytes) {
+            const EquationArtifactFrame* frame = nullptr;
+            int width = 0, height = 0;
+            auto reason = EquationExportFailure::FrameMissing;
+            if (layer.role == EquationPreviewLayerRole::TransitionFrame &&
+                layer.interval < artifact.transitions.size()) {
+                const auto& item = artifact.transitions[layer.interval];
+                width = item.width;
+                height = item.height;
+                if (layer.frame >= 0 && static_cast<std::size_t>(layer.frame) < item.frames.size())
+                    frame = &item.frames[static_cast<std::size_t>(layer.frame)];
+                reason = EquationExportFailure::CorruptTransition;
+            } else if (layer.interval < artifact.actions.size()) {
+                const auto& item = artifact.actions[layer.interval];
+                width = item.width;
+                height = item.height;
+                if (layer.role == EquationPreviewLayerRole::ActionBase) {
+                    frame = &item.base;
+                    reason = EquationExportFailure::CorruptActionBase;
+                } else if (layer.role == EquationPreviewLayerRole::ActionAccent &&
+                           layer.frame >= 0 &&
+                           static_cast<std::size_t>(layer.frame) < item.accent.size()) {
+                    frame = &item.accent[static_cast<std::size_t>(layer.frame)];
+                    reason = EquationExportFailure::CorruptActionAccent;
+                }
+            }
+            if (!frame || !std::filesystem::exists(frame->path))
+                return EquationExportReadiness{EquationExportFailure::FrameMissing,
+                                               EquationCompileFailure::None,
+                                               "必要な数式 frame がありません"};
+            std::string detail;
+            if (!loadEquationArtifactFrame(*frame, width, height, bytes, detail))
+                return EquationExportReadiness{reason, EquationCompileFailure::None, detail};
+            return EquationExportReadiness{};
+        };
+        return snapshot;
+    };
+    return captured;
+}
+
+MathRasterCache::EquationSequenceEntry
+MathRasterCache::equationSequenceEntryOf(const math::EquationSequenceRenderSpec& spec) const {
+    if (backendState_ == BackendState::Unavailable) {
+        EquationSequenceEntry entry;
+        entry.state = State::Unavailable;
+        entry.status = math::MathRenderStatus::BackendUnavailable;
+        entry.message = backendMessage_;
+        return entry;
+    }
+    const auto found = equationSequences_.constFind(equationSequenceKeyFor(spec));
+    return found == equationSequences_.constEnd() ? EquationSequenceEntry{} : found->entry;
+}
+
+std::optional<EquationSequenceArtifact>
+MathRasterCache::equationSequenceArtifactOf(const math::EquationSequenceRenderSpec& spec) const {
+    const auto found = equationSequences_.constFind(equationSequenceKeyFor(spec));
+    if (found == equationSequences_.constEnd() || found->entry.state != State::Ready)
+        return std::nullopt;
+    return found->artifact;
+}
+
+// ---- Equation Sequence の preview 用の層 (P3-4) ----
+
+QString MathRasterCache::equationLayerKey(const QString& sequenceKey,
+                                          const EquationLayerRef& layer) {
+    switch (layer.role) {
+    case EquationLayerRole::TransitionFrame:
+        return QStringLiteral("%1/t%2/%3").arg(sequenceKey).arg(layer.interval).arg(layer.frame);
+    case EquationLayerRole::ActionBase:
+        return QStringLiteral("%1/a%2/base").arg(sequenceKey).arg(layer.interval);
+    case EquationLayerRole::ActionAccent:
+        return QStringLiteral("%1/a%2/%3").arg(sequenceKey).arg(layer.interval).arg(layer.frame);
+    }
+    return {};
+}
+
+namespace {
+
+// artifact の中の層 1 枚 (無ければ false)。
+bool equationLayerFrame(const EquationSequenceArtifact& artifact,
+                        const MathRasterCache::EquationLayerRef& layer, EquationArtifactFrame& frame,
+                        int& width, int& height) {
+    using Role = MathRasterCache::EquationLayerRole;
+    if (layer.role == Role::TransitionFrame) {
+        if (layer.interval >= artifact.transitions.size())
+            return false;
+        const auto& item = artifact.transitions[layer.interval];
+        if (layer.frame < 0 || layer.frame >= static_cast<std::int64_t>(item.frames.size()))
+            return false;
+        frame = item.frames[static_cast<std::size_t>(layer.frame)];
+        width = item.width;
+        height = item.height;
+        return true;
+    }
+    if (layer.interval >= artifact.actions.size())
+        return false;
+    const auto& item = artifact.actions[layer.interval];
+    width = item.width;
+    height = item.height;
+    if (layer.role == Role::ActionBase) {
+        frame = item.base;
+        return true;
+    }
+    if (layer.frame < 0 || layer.frame >= static_cast<std::int64_t>(item.accent.size()))
+        return false;
+    frame = item.accent[static_cast<std::size_t>(layer.frame)];
+    return true;
+}
+
+} // namespace
+
+MathRasterCache::ResidentEquationLayers
+MathRasterCache::equationLayersResidencyOf(const math::EquationSequenceRenderSpec& spec,
+                                           const std::vector<EquationLayerRef>& refs) const {
+    ResidentEquationLayers result;
+    const QString sequenceKey = equationSequenceKeyFor(spec);
+    const auto record = equationSequences_.constFind(sequenceKey);
+    if (sequenceKey.isEmpty() || record == equationSequences_.constEnd() ||
+        record->entry.state != State::Ready || refs.empty())
+        return result;
+    bool loading = false;
+    for (const auto& layer : refs) {
+        const auto one = residencyFor(equationLayerKey(sequenceKey, layer));
+        switch (one.state) {
+        case Residency::Resident:
+            result.layers.push_back(one.frames);
+            break;
+        case Residency::OverBudget:
+            result.state = Residency::OverBudget;
+            result.message = one.message;
+            result.layers.clear();
+            return result;
+        case Residency::Loading:
+            loading = true;
+            break;
+        case Residency::NotReady:
+        case Residency::Failed:
+            result.layers.clear();
+            return result;
+        }
+    }
+    if (loading) {
+        result.layers.clear();
+        result.state = Residency::Loading;
+        return result;
+    }
+    result.state = Residency::Resident;
+    return result;
+}
+
+MathRasterCache::ResidentEquationLayers
+MathRasterCache::residentEquationLayers(const math::EquationSequenceRenderSpec& spec,
+                                        const std::vector<EquationLayerRef>& refs, bool current) {
+    ResidentEquationLayers result;
+    const QString sequenceKey = equationSequenceKeyFor(spec);
+    const auto record = equationSequences_.constFind(sequenceKey);
+    if (sequenceKey.isEmpty() || record == equationSequences_.constEnd() ||
+        record->entry.state != State::Ready || refs.empty() || shutDown_)
+        return result;
+    const EquationSequenceArtifact& artifact = record->artifact;
+
+    struct Missing {
+        QString key;
+        EquationArtifactFrame frame;
+        int width = 0;
+        int height = 0;
+        std::size_t bytes = 0;
+    };
+    std::vector<Missing> missing;
+    std::vector<std::shared_ptr<const MathCoverageSequence>> layers;
+    QSet<QString> bundle;
+    bool loading = false;
+    for (const auto& layer : refs) {
+        const QString key = equationLayerKey(sequenceKey, layer);
+        bundle.insert(key);
+        if (const auto found = resident_.find(key); found != resident_.end()) {
+            found->lastUse = ++useTick_;
+            layers.push_back(found->frames);
+            continue;
+        }
+        if (loading_.contains(key)) {
+            // 先読みで待っている層が今の frame になった: 残りの先読みより先に読ませる
+            // (同じ仕事を移すので、予約・ticket・取消はそのまま)。
+            if (current && promoteEquationLayerLoad(key))
+                startEquationLoadDrain(1);
+            loading = true;
+            continue;
+        }
+        Missing item;
+        item.key = key;
+        if (!equationLayerFrame(artifact, layer, item.frame, item.width, item.height) ||
+            item.width <= 0 || item.height <= 0)
+            return result; // artifact に無い層 (要求の誤り)
+        item.bytes = static_cast<std::size_t>(item.width) * static_cast<std::size_t>(item.height);
+        missing.push_back(std::move(item));
+    }
+    if (missing.empty()) {
+        if (loading) {
+            result.state = Residency::Loading;
+            return result;
+        }
+        result.state = Residency::Resident;
+        result.layers = std::move(layers);
+        return result;
+    }
+    std::size_t bytes = 0;
+    for (const auto& item : missing)
+        bytes += item.bytes;
+    // 足りない層をまとめて予約する。今の frame の束だけが、cache だけが持つ mask を LRU で外す
+    // (束の中の層と、preview が使っている mask は外さない)。先読みは何も外さない。
+    auto reserved = residency_->tryReserve(bytes);
+    while (!reserved && current && bytes <= residency_->limit()) {
+        auto oldest = resident_.end();
+        for (auto it = resident_.begin(); it != resident_.end(); ++it)
+            if (it->frames.use_count() == 1 && !bundle.contains(it.key()) &&
+                (oldest == resident_.end() || it->lastUse < oldest->lastUse))
+                oldest = it;
+        if (oldest == resident_.end())
+            break;
+        resident_.erase(oldest);
+        reserved = residency_->tryReserve(bytes);
+    }
+    if (!reserved) {
+        result.state = Residency::OverBudget;
+        result.message =
+            QStringLiteral("Equation Sequence の preview 用の層が memory の上限 (Write・変形と共通の"
+                           "合計 %1 KB) に収まらないため、静止で表示します (disk の artifact は"
+                           "使えます。書き出しには影響しません)。必要 %2 KB、使用中 %3 KB")
+                .arg(residency_->limit() >> 10)
+                .arg(bytes >> 10)
+                .arg(residency_->live() >> 10);
+        if (current)
+            for (const auto& item : missing)
+                overBudget_.insert(item.key, result.message);
+        return result;
+    }
+    // 束の byte をまとめて予約したので、層ごとの予約はその内訳 (破棄ごとに自分の分を返す)。
+    for (const auto& item : missing) {
+        overBudget_.remove(item.key);
+        auto reservation = std::make_shared<const MathResidencyReservation>(residency_, item.bytes);
+        startEquationLayerLoad(item.key, item.width, item.height, std::move(reservation), item.frame,
+                               sequenceKey.toStdString(), artifact.provenance, current);
+    }
+    result.state = Residency::Loading;
+    return result;
+}
+
+void MathRasterCache::startEquationLayerLoad(
+    const QString& key, int width, int height,
+    std::shared_ptr<const MathResidencyReservation> reservation, EquationArtifactFrame frame,
+    std::string sequenceKey, std::string provenance, bool current) {
+    LoadingRecord loading;
+    loading.ticket = nextTicket_++;
+    loading.cancel = std::make_shared<std::atomic<bool>>(false);
+    loading.kind = ResidentKind::EquationLayer;
+    loading_.insert(key, loading);
+    ++residentLoads_;
+    EquationLoadJob job;
+    job.key = key;
+    job.ticket = loading.ticket;
+    job.cancel = loading.cancel;
+    job.reservation = std::move(reservation);
+    job.frame = std::move(frame);
+    job.width = width;
+    job.height = height;
+    job.sequenceKey = std::move(sequenceKey);
+    job.provenance = std::move(provenance);
+    job.directory = cacheDirectory_;
+    {
+        std::lock_guard lock(equationLoads_->mutex);
+        (current ? equationLoads_->current : equationLoads_->prefetch).push_back(std::move(job));
+    }
+    // 今の frame の層は先読みより先に読む (worker は 1 本で、各仕事は取り出す時点で今の frame の
+    // 列を先に取る。Write・変形の読み込みより先に走らせるため優先度も上げる)。
+    startEquationLoadDrain(current ? 1 : 0);
+}
+
+bool MathRasterCache::promoteEquationLayerLoad(const QString& key) {
+    const auto loading = loading_.constFind(key);
+    if (loading == loading_.constEnd() || loading->kind != ResidentKind::EquationLayer)
+        return false;
+    std::lock_guard lock(equationLoads_->mutex);
+    auto& prefetch = equationLoads_->prefetch;
+    const auto found = std::find_if(prefetch.begin(), prefetch.end(), [&](const auto& job) {
+        return job.key == key && job.ticket == loading->ticket;
+    });
+    if (found == prefetch.end())
+        return false; // 既に今の frame の列にあるか、読み始めた
+    equationLoads_->current.push_back(std::move(*found));
+    prefetch.erase(found);
+    return true;
+}
+
+void MathRasterCache::startEquationLoadDrain(int priority) {
+    residentPool_.start(
+        [this, queue = equationLoads_] {
+            // 試験が worker を止めている間は取り出さない (取り出す順を試験が決める)。
+            while (queue->paused.load() && !queue->stopped.load())
+                QThread::msleep(1);
+            EquationLoadJob job;
+            {
+                std::lock_guard lock(queue->mutex);
+                auto& list = !queue->current.empty() ? queue->current : queue->prefetch;
+                if (list.empty() || queue->stopped.load())
+                    return; // 移した仕事の分の余りの drain
+                job = std::move(list.front());
+                list.pop_front();
+                queue->taken.push_back(job.key);
+            }
+            if (job.cancel->load())
+                return;
+            QString error;
+            std::shared_ptr<MathCoverageSequence> decoded;
+            std::vector<std::uint8_t> coverage;
+            std::string loadError;
+            // provenance (確定の印) が検証した時のままか。消された・書き換えられた artifact の
+            // 層は、frame の SHA-256 が合っていても使わない。
+            if (!equationSequenceProvenanceCurrent(job.directory, job.sequenceKey,
+                                                   job.provenance)) {
+                error = QStringLiteral("Equation Sequence の provenance が無いか、検証した時と"
+                                       "違います。静止で表示します");
+            } else if (!loadEquationArtifactFrame(job.frame, job.width, job.height, coverage,
+                                                  loadError)) {
+                error = QStringLiteral("Equation Sequence の層を読めないか、大きさ・中身が "
+                                       "provenance と違います。静止で表示します: %1")
+                            .arg(QString::fromStdString(loadError));
+            } else {
+                decoded = std::make_shared<MathCoverageSequence>();
+                decoded->width = job.width;
+                decoded->height = job.height;
+                decoded->frames.push_back(std::move(coverage));
+                decoded->reservation = std::move(job.reservation);
+            }
+            if (job.cancel->load())
+                return;
+            QMetaObject::invokeMethod(
+                this,
+                [this, key = job.key, ticket = job.ticket,
+                 frames = std::shared_ptr<const MathCoverageSequence>(decoded),
+                 error]() mutable { finishResident(key, ticket, std::move(frames), error); },
+                Qt::QueuedConnection);
+        },
+        priority);
+}
+
+void MathRasterCache::pauseEquationLayerLoadsForTest(bool paused) {
+    equationLoads_->paused.store(paused);
+}
+
+std::vector<QString> MathRasterCache::equationLayerLoadOrderForTest() const {
+    std::lock_guard lock(equationLoads_->mutex);
+    return equationLoads_->taken;
+}
+
+MathRasterCache::Entry MathRasterCache::entryOf(const math::MathRenderSpec& spec) const {
+    if (backendState_ == BackendState::Unavailable) {
+        Entry entry;
+        entry.state = State::Unavailable;
+        entry.status = math::MathRenderStatus::BackendUnavailable;
+        entry.message = backendMessage_;
+        return entry;
+    }
+    const auto found = records_.constFind(keyFor(spec));
+    return found == records_.constEnd() ? Entry{} : found->entry;
+}
+
+void MathRasterCache::failEquationSequence(const QString& sequenceKey, const QString& error) {
+    qWarning("%s", qUtf8Printable(error));
+    {
+        std::lock_guard gate(*publishGate_);
+        if (auto record = equationSequences_.find(sequenceKey);
+            record != equationSequences_.end()) {
+            // cache directory の変更は権限がある間だけ行う。消した artifact は forgetFailures
+            // (再試行) で描き直す。
+            if (authorized_ && record->entry.state == State::Ready) {
+                std::error_code ignored;
+                std::filesystem::remove(
+                    equationSequenceProvenancePath(cacheDirectory_, sequenceKey.toStdString()),
+                    ignored);
+                util::removeTree(
+                    equationSequenceDirectory(cacheDirectory_, sequenceKey.toStdString()), ignored);
+            }
+            record->entry = {};
+            record->entry.state = State::Failed;
+            record->entry.backendFailure = math::EquationBackendFailure::CorruptFrame;
+            record->entry.message = error;
+            record->artifact = {};
+        }
+    }
+    for (const auto& key : resident_.keys() + loading_.keys() + overBudget_.keys())
+        if (residentOwner(key) == sequenceKey && key != sequenceKey)
+            dropResident(key);
+}
+
+int MathRasterCache::residentEquationLayerCount() const {
+    int count = 0;
+    for (auto it = resident_.cbegin(); it != resident_.cend(); ++it)
+        count += it.key().contains(QLatin1Char('/'));
+    return count;
 }
 
 } // namespace mvm::app

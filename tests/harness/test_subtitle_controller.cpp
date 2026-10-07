@@ -1,4 +1,5 @@
 #include "app/preview/preview_engine_rhi_item.h"
+#include "app/preview/test_window_mode.h"
 #include "app/text_raster.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
@@ -58,6 +59,7 @@ int main(int argc, char** argv) {
         require(mvm::project::saveProjectJson(project, path).success, "字幕だけのProject保存");
         MvmController controller(path, {}, project);
         QQuickWindow window;
+        window.setFlags(mvm::app::testBackgroundWindowFlags());
         window.resize(640, 360);
         auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
         surface->setWidth(640);
@@ -312,6 +314,7 @@ int main(int argc, char** argv) {
             "同じパスのProject切替でも古い結果を拒否");
     // 実際のQMLをロードし、一覧と書式のUIが生成されることを確認する。
     QQuickView view;
+    view.setFlags(mvm::app::testBackgroundWindowFlags());
     view.setInitialProperties({{"mvmController", QVariant::fromValue(&controller)}});
     view.setSource(QUrl::fromLocalFile(MVM_SUBTITLE_PANEL_QML));
     for (const auto& error : view.errors())

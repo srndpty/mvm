@@ -19,6 +19,7 @@
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "test_media_fixture.h"
+#include "test_preview_trace.h"
 #include "test_window_focus.h"
 #include "timeline_wheel_filter.h"
 #include "trim_cursor.h"
@@ -786,6 +787,7 @@ int checkAudioMixerPanel(const std::filesystem::path& projectPath) {
     auto* surface =
         window->findChild<mvm::app::PreviewEngineRhiItem*>(QStringLiteral("previewSurface"));
     controller.attachPreview(surface);
+    mvm::test::tracePreview(controller, window, "audio-mixer");
     check(QTest::qWaitForWindowExposed(window), "window が表示されません");
     check(pumpUntil([&] { return controller.previewReady(); }, 30000),
           "ミキサー試験のプレビューを準備できません");
@@ -918,16 +920,21 @@ int checkAudioMixerPanel(const std::filesystem::path& projectPath) {
           "ミキサー音量をRedoできません");
     // 状態名だけでは直前の seek の ReadyPaused を拾う。最新の提示を待ってから操作する。
     check(pumpUntil([&] { return controller.previewPresentedLatest(); }) &&
-              controller.seekTimelineFrame(0) && pumpUntil([&] {
+              mvm::test::traceRequest(controller, "mixer-seek",
+                                      [&] { return controller.seekTimelineFrame(0); }) &&
+              pumpUntil([&] {
                   return controller.previewPresentedLatest() &&
                          controller.previewEngineForTest()->status().position.outputFrame == 0;
               }) &&
-              controller.shuttleRight() && pumpUntil([&] {
+              mvm::test::traceRequest(controller, "mixer-shuttle-1",
+                                      [&] { return controller.shuttleRight(); }) &&
+              pumpUntil([&] {
                   return controller.playing() &&
                          controller.previewEngineForTest()->status().state ==
                              mvm::preview::PreviewEngineState::Playing;
               }) &&
-              controller.shuttleRight(),
+              mvm::test::traceRequest(controller, "mixer-shuttle-2",
+                                      [&] { return controller.shuttleRight(); }),
           "no-op検査の2倍シャトルを開始できません");
     if (controller.shuttleRate() != 2)
         std::fprintf(stderr, "シャトル開始時の状態: %s\n",
@@ -1821,6 +1828,7 @@ int checkMathTransformAuthoring(const std::filesystem::path& projectPath) {
 
 // tests/harness/math_p28_acceptance.cpp
 int runMathP28Acceptance(const std::filesystem::path& manim, const std::filesystem::path& work);
+int runEquationSequenceUi(const std::filesystem::path& directory, bool scratch);
 
 int main(int argc, char** argv) {
     mvm::app::prepareTestFixedWindowEnvironment();
@@ -1842,6 +1850,21 @@ int main(int argc, char** argv) {
     application.setApplicationName(QStringLiteral("project-panel"));
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+
+    if (const auto at = application.arguments().indexOf(QStringLiteral("--equation-sequence-ui"));
+        at >= 0) {
+        const auto arguments = application.arguments();
+        const bool scratch = arguments.size() == 4 && arguments[3] == QStringLiteral("--scratch");
+        if (at != 1 || (arguments.size() != 3 && !scratch)) {
+            std::fprintf(stderr, "使い方: mvm_test_text_ui_input --equation-sequence-ui <証拠 "
+                                 "directory> [--scratch]\n");
+            mvm_mlt_runtime_shutdown();
+            return 2;
+        }
+        const int result = runEquationSequenceUi(arguments[at + 1].toStdWString(), scratch);
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
 
     // P2-8 の統合受け入れ (実 Manim、CTest に登録しない。tests/harness/math_p28_acceptance.cpp)。
     if (const auto at = application.arguments().indexOf(QStringLiteral("--math-p28-acceptance"));
@@ -1950,6 +1973,7 @@ int main(int argc, char** argv) {
         }
         window->installEventFilter(new mvm::app::FocusReleaseFilter(window));
         controller.attachPreview(surface);
+        mvm::test::tracePreview(controller, window, "text-input");
         // どの経路で抜けても controller.shutdown() を通す。通さずに破棄すると
         // preview engine の teardown が QML engine の破棄と競合する。
         // key / mouse event は active な window にしか届かない (非 active になると Qt Quick は
@@ -2007,7 +2031,8 @@ int main(int argc, char** argv) {
             // seek の要求は毎回 stateChanged を出すので、間隔を空けて再試行する。
             const auto seekAccepted = [&] {
                 for (int attempt = 0; attempt < 60; ++attempt) {
-                    if (controller.seekTimelineFrame(10))
+                    if (mvm::test::traceRequest(controller, "text-seek",
+                                                [&] { return controller.seekTimelineFrame(10); }))
                         return true;
                     pump(500);
                 }

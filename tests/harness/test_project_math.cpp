@@ -95,7 +95,9 @@ void testRoundTrip() {
     check(json.find("\"math\": {") != std::string::npos, "math object を保存する");
     check(json.find("renderer") == std::string::npos,
           "数式 clip は描画方針 (renderer) を保存しない");
-    check(json.find("\"schema_version\": 20") != std::string::npos, "schema 20 で保存する");
+    check(json.find("\"schema_version\": " + std::to_string(kProjectSchemaVersion)) !=
+              std::string::npos,
+          "現行 schema で保存する");
     check(json.find("\"math_animation\": { \"intro\": \"write\", \"intro_frames\": 90 }") !=
               std::string::npos,
           "Write の intro を math_animation として保存する");
@@ -281,7 +283,7 @@ void testStrictJson() {
 }
 
 std::string withSchema(const std::string& json, int version) {
-    return replaced(json, "\"schema_version\": 20",
+    return replaced(json, "\"schema_version\": " + std::to_string(kProjectSchemaVersion),
                     "\"schema_version\": " + std::to_string(version), "schema_version");
 }
 
@@ -316,14 +318,14 @@ void testSchemaVersions() {
     check(withStaticMath.find("math_animation") == std::string::npos,
           "負例の準備: Write の無い数式の file は math_animation を持たない");
 
-    for (const int version : {19, 18, 17, 16}) {
+    for (const int version : {20, 19, 18, 17, 16}) {
         std::string old = withSchema(current, version);
         if (version == 16)
             old = withoutAudioAdjustmentFields(old);
         const auto parsed = parseProjectJsonText(old, kProjectPath);
         check(parsed.success, "schema " + std::to_string(version) + " を読める: " + parsed.error);
         check(parsed.success && parsed.project.schemaVersion == kProjectSchemaVersion,
-              "schema " + std::to_string(version) + " は読み込み後に現行版 (20) になる");
+              "schema " + std::to_string(version) + " は読み込み後に現行版になる");
         if (version < 19)
             check(!loads(withSchema(withMath, version)),
                   "schema " + std::to_string(version) + " の file の math_animation を拒否する");
@@ -337,7 +339,7 @@ void testSchemaVersions() {
     const auto staticMath18 = parseProjectJsonText(withSchema(withStaticMath, 18), kProjectPath);
     check(staticMath18.success && staticMath18.project == staticMath,
           "schema 18 の静止の数式 clip は値を変えずに読める (P0 の Project)");
-    for (const int version : {15, 21}) {
+    for (const int version : {15, kProjectSchemaVersion + 1}) {
         check(!loads(withSchema(current, version)),
               "schema " + std::to_string(version) + " を拒否する");
     }

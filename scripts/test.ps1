@@ -5,6 +5,8 @@
 .DESCRIPTION
     既定では release と debug の両方をビルドし、通常テストを実行する。
     通常テストは Smoke 素材を使い短時間で終わる。
+    【操作可】通常の GUI テストは作業中のアプリより背面で描画し、フォーカス・マウス入力を
+    受けず、タスクバーにも表示しない。実描画と合成入力の検証は継続する。
 
     性能計測 (LABELS performance) と安定性・診断 (LABELS stability) は
     既定では実行しない。両方を除外しないと、通常テストの所要時間に
@@ -12,6 +14,7 @@
 
     -Portable は、特定の開発機環境 (Meiryo / D3D11VA hardware device) が必要な
     workstation ラベルも除外する。CI と日常の短縮検査で使用する。
+    この指定では描画試験の電源前提 (自動消灯・スリープ防止) を取得しない。
 
     debug ビルドの性能値を判定に使わないため、-Performance は
     release でのみ意味を持つ。-Stability は診断が目的なので preset を問わない。
@@ -95,6 +98,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'lib\ctest-selection.ps1')
+. (Join-Path $PSScriptRoot 'lib\test-display-lease.ps1')
 
 $shardIndex = 0
 $shardCount = 1
@@ -236,6 +240,13 @@ function Get-BuildIndependentTestNames {
 # 非依存テストは 1 回の呼び出しで 1 度だけ実行する。
 $independentDone = $false
 
+$displayLease = $null
+try {
+# 画面を使う workstation 試験を除く -Portable (CI など表示の無い環境) と、ビルドしない
+# BuildIndependent では取得しない。取得には描画先の電源状態の通知が要る。
+if ($Group -ne 'BuildIndependent' -and -not $Portable) {
+    $displayLease = Start-MvmTestDisplayLease
+}
 foreach ($p in $presets) {
     Write-Host "`n=== $p ===" -ForegroundColor Cyan
     # 非依存テストだけなら実行ファイルは不要なので configure で止める。
@@ -251,6 +262,7 @@ foreach ($p in $presets) {
 
     Push-Location $buildDir
     try {
+        if ($displayLease) { $displayLease.AssertValid() }
         # 通常テスト: performance と stability の両方を除外する
         Write-Host "通常テストの除外ラベル: $normalExclude" -ForegroundColor Yellow
         $normalArgs = @('-LE', $normalExclude)
@@ -338,5 +350,13 @@ $summary | Format-Table Preset, Kind, Total, Ran, Passed, Failed, Exit, Note -Au
 if ($anyFailed) {
     Write-Host "`nテストに失敗があります。" -ForegroundColor Red
     exit 1
+}
+} finally {
+    if ($displayLease) {
+        try {
+            $displayLease.AssertValid()
+            Write-Host "描画試験の電源前提を終了: 観測=$($displayLease.Observations -join ', ')"
+        } finally { $displayLease.Dispose() }
+    }
 }
 Write-Host "`n全テスト通過" -ForegroundColor Green

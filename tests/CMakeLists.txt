@@ -32,6 +32,11 @@ add_test(NAME ctest_daily_selection_contract
         -Pwsh "${MVM_PWSH}")
 set_tests_properties(ctest_daily_selection_contract PROPERTIES TIMEOUT 60)
 
+add_test(NAME test_display_lease_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/harness/test-display-lease.ps1")
+set_tests_properties(test_display_lease_contract PROPERTIES TIMEOUT 30)
+
 # --- mvm_bench --------------------------------------------------------------
 # Qt に依存しない C++20 CLI。MLT のヘッダは include しない。
 add_executable(mvm_bench
@@ -328,6 +333,7 @@ qt_add_executable(mvm_test_controller_export
     ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/subtitle_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/equation_sequence_editor.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp
@@ -339,6 +345,7 @@ target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR
 target_link_libraries(mvm_test_controller_export PRIVATE
     mvm::audio_adjustment
     mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
+    mvm::equation_sequence_compile
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
@@ -352,6 +359,7 @@ qt_add_executable(mvm_test_sourceless_timeline_playback
     ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/subtitle_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/equation_sequence_editor.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp
@@ -364,6 +372,7 @@ target_include_directories(mvm_test_sourceless_timeline_playback PRIVATE
 target_link_libraries(mvm_test_sourceless_timeline_playback PRIVATE
     mvm::audio_adjustment
     mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
+    mvm::equation_sequence_compile
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
@@ -386,6 +395,7 @@ qt_add_executable(mvm_test_transition_preview
     ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/subtitle_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/equation_sequence_editor.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp
@@ -398,6 +408,7 @@ target_include_directories(mvm_test_transition_preview PRIVATE
 target_link_libraries(mvm_test_transition_preview PRIVATE
     mvm::audio_adjustment
     mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
+    mvm::equation_sequence_compile
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
@@ -783,6 +794,21 @@ mvm_add_test(long_path_focused
 
 # --- 数式 clip: renderer の中立な契約と manim-mathtex backend ---------------
 add_executable(mvm_test_project_math harness/test_project_math.cpp)
+add_executable(mvm_test_equation_sequence harness/test_equation_sequence.cpp)
+target_link_libraries(mvm_test_equation_sequence PRIVATE mvm::project mvm::util mvm::warnings)
+mvm_add_test(math_equation_sequence_domain COMMAND mvm_test_equation_sequence
+    PROPERTIES TIMEOUT 30)
+
+# P3-5: authoring の domain 操作と Qt に依存しない表示の判断。
+add_executable(mvm_test_equation_authoring harness/test_equation_authoring.cpp)
+target_link_libraries(mvm_test_equation_authoring PRIVATE mvm::equation_sequence_compile
+    mvm::warnings)
+mvm_add_test(math_equation_sequence_authoring COMMAND mvm_test_equation_authoring
+    PROPERTIES TIMEOUT 30)
+add_executable(mvm_test_equation_compile harness/test_equation_compile.cpp)
+target_link_libraries(mvm_test_equation_compile PRIVATE mvm::equation_sequence_compile mvm::warnings)
+mvm_add_test(math_equation_sequence_compile COMMAND mvm_test_equation_compile
+    "${CMAKE_CURRENT_BINARY_DIR}/equation-p32" PROPERTIES TIMEOUT 30)
 target_link_libraries(mvm_test_project_math PRIVATE mvm::project mvm::util mvm::warnings)
 mvm_add_test(math_project_json_focused COMMAND mvm_test_project_math PROPERTIES TIMEOUT 30)
 
@@ -802,6 +828,22 @@ target_link_libraries(mvm_test_math_raster_cache PRIVATE
 mvm_add_test(math_raster_cache_focused
     COMMAND mvm_test_math_raster_cache "${CMAKE_CURRENT_BINARY_DIR}/math-raster-cache"
     PROPERTIES TIMEOUT 120)
+
+add_executable(mvm_test_equation_sequence_render core/test_equation_sequence_render.cpp)
+target_link_libraries(mvm_test_equation_sequence_render PRIVATE mvm::math mvm::warnings)
+mvm_add_test(math_equation_sequence_render_contract COMMAND mvm_test_equation_sequence_render
+    PROPERTIES TIMEOUT 30)
+add_executable(mvm_test_equation_render_bridge harness/test_equation_render_bridge.cpp)
+target_link_libraries(mvm_test_equation_render_bridge PRIVATE mvm::equation_sequence_compile
+    mvm::warnings)
+mvm_add_test(math_equation_sequence_render_bridge COMMAND mvm_test_equation_render_bridge
+    PROPERTIES TIMEOUT 30)
+# P3-4: output frame → 区間・代用の規則・配置・provenance の色での合成 (Qt・cache なし)。
+add_executable(mvm_test_equation_preview harness/test_equation_preview.cpp)
+target_link_libraries(mvm_test_equation_preview PRIVATE mvm::equation_sequence_compile
+    mvm::warnings)
+mvm_add_test(math_equation_sequence_preview_model COMMAND mvm_test_equation_preview
+    PROPERTIES TIMEOUT 30)
 
 add_executable(mvm_test_math_render core/test_math_render.cpp)
 target_link_libraries(mvm_test_math_render PRIVATE mvm::math mvm::warnings)
@@ -823,6 +865,16 @@ mvm_add_test(manim_math_tex_focused
         "${CMAKE_CURRENT_BINARY_DIR}/manim-math-tex" "${MVM_UCRT64_ROOT}/bin"
     PROPERTIES TIMEOUT 120)
 
+# Equation Sequence (P3-3) の Manim backend を偽の Manim で検査する (実 Manim の証拠ではない)。
+add_executable(mvm_test_manim_equation_sequence core/test_manim_equation_sequence.cpp)
+target_link_libraries(mvm_test_manim_equation_sequence PRIVATE mvm::manim mvm::util mvm::warnings)
+target_include_directories(mvm_test_manim_equation_sequence PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+add_dependencies(mvm_test_manim_equation_sequence mvm_fake_math_tex_cli)
+mvm_add_test(manim_equation_sequence_focused
+    COMMAND mvm_test_manim_equation_sequence "$<TARGET_FILE:mvm_fake_math_tex_cli>"
+        "${CMAKE_CURRENT_BINARY_DIR}/manim-equation-sequence" "${MVM_UCRT64_ROOT}/bin"
+    PROPERTIES TIMEOUT 120)
+
 # 実 Manim + MiKTeX の smoke。mvm_manim_smoke と同じく CTest には登録しない
 # (Manim と LaTeX の導入を build・通常試験の必須条件にしない)。手順は docs/math-clips.md。
 add_executable(mvm_math_manim_smoke harness/mvm_math_manim_smoke.cpp)
@@ -835,6 +887,16 @@ target_compile_definitions(mvm_math_manim_smoke PRIVATE ${MVM_MLT_PATH_DEFS}
 add_executable(mvm_math_transform_smoke harness/mvm_math_transform_smoke.cpp)
 target_link_libraries(mvm_math_transform_smoke PRIVATE
     mvm::manim mvm::math_clip_render mvm::util mvm::warnings)
+# Equation Sequence (P3-3) の実 Manim の受け入れ。同じ理由で CTest に登録しない。
+# P3-4: 実 Manim の animated pulse の 2 層の合成と 1 つの scene の比較 (手動の計測。CTest に入れない)。
+add_executable(mvm_equation_pulse_equivalence harness/mvm_equation_pulse_equivalence.cpp)
+target_link_libraries(mvm_equation_pulse_equivalence PRIVATE
+    mvm::manim mvm::equation_sequence_compile mvm::math_clip_render mvm::math_raster_cache
+    mvm::util Qt6::Core Qt6::Gui mvm::warnings)
+add_executable(mvm_equation_sequence_smoke harness/mvm_equation_sequence_smoke.cpp)
+target_link_libraries(mvm_equation_sequence_smoke PRIVATE
+    mvm::manim mvm::equation_sequence_compile mvm::math_clip_render mvm::math_raster_cache
+    mvm::util Qt6::Core mvm::warnings)
 # directory の拒否は実 Manim を使わないので通常試験へ入れる。
 mvm_add_test(math_smoke_existing_workspace_rejected
     COMMAND ${MVM_PWSH} -NoProfile -File
@@ -4008,7 +4070,21 @@ add_test(NAME math_inspector_qml
 set_tests_properties(math_inspector_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QUICK_CONTROLS_STYLE=Basic"
     TIMEOUT 30)
+add_test(NAME math_equation_sequence_inspector_qml
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_equation_sequence_inspector.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/equation-sequence-inspector-qml.txt)
+set_tests_properties(math_equation_sequence_inspector_qml PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QUICK_CONTROLS_STYLE=Basic"
+    TIMEOUT 30)
 add_test(NAME math_inspector_product_ui COMMAND mvm_test_text_ui_input --math-inspector)
+add_test(NAME math_equation_sequence_product_ui
+    COMMAND mvm_test_text_ui_input --equation-sequence-ui
+            "${CMAKE_SOURCE_DIR}/build/p351-ui" --scratch)
+set_tests_properties(math_equation_sequence_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
 set_tests_properties(math_inspector_product_ui PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)
@@ -4111,6 +4187,8 @@ target_link_libraries(mvm_test_math_controller PRIVATE ${_subtitle_controller_li
 target_compile_definitions(mvm_test_math_controller PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_math_controller PROPERTIES WIN32_EXECUTABLE OFF)
 mvm_add_test(math_controller_focused COMMAND mvm_test_math_controller PROPERTIES TIMEOUT 120)
+mvm_add_test(math_equation_sequence_history COMMAND mvm_test_math_controller --equation-domain
+    PROPERTIES TIMEOUT 30)
 # 実 D3D11 の preview で再生し、Write の mask が再生中に届いたときの表示を確かめる。
 add_test(NAME math_write_native_playback COMMAND mvm_test_math_controller --native-write)
 set_tests_properties(math_write_native_playback PROPERTIES
@@ -4120,6 +4198,34 @@ set_tests_properties(math_write_native_playback PROPERTIES
 add_test(NAME math_transform_native_playback COMMAND mvm_test_math_controller --native-transform)
 set_tests_properties(math_transform_native_playback PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+# P3-4: Equation Sequence の product preview (偽の backend)。既定は GPU なしの controller の契約、
+# --native は実 D3D11 の preview と product compositor の readback。
+qt_add_executable(mvm_test_equation_preview_controller
+    harness/test_equation_preview_controller.cpp ${_subtitle_controller_sources})
+target_include_directories(mvm_test_equation_preview_controller PRIVATE
+    ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_equation_preview_controller PRIVATE
+    ${_subtitle_controller_libraries} mvm::gpu_preview)
+target_compile_definitions(mvm_test_equation_preview_controller PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_test_equation_preview_controller PROPERTIES WIN32_EXECUTABLE OFF)
+mvm_add_test(math_equation_sequence_preview_controller
+    COMMAND mvm_test_equation_preview_controller PROPERTIES TIMEOUT 180)
+# P3-5: EquationSequence の authoring controller (偽の backend、GPU なし)。
+qt_add_executable(mvm_test_equation_sequence_editor
+    harness/test_equation_sequence_editor.cpp ${_subtitle_controller_sources})
+target_include_directories(mvm_test_equation_sequence_editor PRIVATE
+    ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_equation_sequence_editor PRIVATE ${_subtitle_controller_libraries})
+target_compile_definitions(mvm_test_equation_sequence_editor PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_test_equation_sequence_editor PROPERTIES WIN32_EXECUTABLE OFF)
+mvm_add_test(math_equation_sequence_editor_controller
+    COMMAND mvm_test_equation_sequence_editor PROPERTIES TIMEOUT 180)
+add_test(NAME math_equation_sequence_native_preview
+    COMMAND mvm_test_equation_preview_controller --native
+        "${CMAKE_SOURCE_DIR}/tests/fixtures/equation-sequence/p34-preview.mvm")
+set_tests_properties(math_equation_sequence_native_preview PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
 target_link_libraries(mvm_test_subtitle_controller PRIVATE ${_subtitle_controller_libraries})
 target_compile_definitions(mvm_test_subtitle_controller PRIVATE ${MVM_MLT_PATH_DEFS}
@@ -4133,6 +4239,12 @@ add_dependencies(mvm_subtitle_validation mvm_test_subtitle_controller)
 set_tests_properties(subtitle_controller_contract PROPERTIES LABELS workstation)
 
 add_executable(mvm_test_math_export harness/test_math_export.cpp)
+add_executable(mvm_test_equation_export harness/test_equation_export.cpp)
+target_link_libraries(mvm_test_equation_export PRIVATE mvm::timeline_export mvm::math_raster_cache
+    mvm::math_clip_render mvm::mlt Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_test_equation_export PRIVATE ${MVM_MLT_PATH_DEFS})
+mvm_add_test(math_equation_sequence_export_focused COMMAND mvm_test_equation_export
+    "${MVM_UCRT64_ROOT}/bin/ffprobe.exe" PROPERTIES RUN_SERIAL TRUE TIMEOUT 180)
 add_executable(mvm_test_math_transform_export harness/test_math_transform_export.cpp)
 target_link_libraries(mvm_test_math_transform_export PRIVATE
     mvm::timeline_export mvm::math_raster_cache mvm::math_clip_render mvm::mlt Qt6::Gui mvm::warnings)

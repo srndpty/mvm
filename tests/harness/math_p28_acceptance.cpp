@@ -755,7 +755,8 @@ std::vector<std::string> savedJsonFindings(const std::string& bytes, const Autho
     };
     const auto document = QJsonDocument::fromJson(QByteArray::fromStdString(bytes));
     const auto root = document.object();
-    expect(root.value("schema_version").toInt() == 20, "B: 保存した file の schema は 20");
+    expect(root.value("schema_version").toInt() == project::kProjectSchemaVersion,
+           "B: 保存した file は現行 schema");
     const QSet<QString> transitionKeys = {
         "id",  "outgoing_clip_id", "incoming_clip_id", "frames_before_cut", "frames_after_cut",
         "kind"};
@@ -885,7 +886,8 @@ int runMathP28Acceptance(const std::filesystem::path& manim, const std::filesyst
     check(loaded.success, "B: 保存した Project を読める: " + loaded.error);
     if (!loaded.success)
         return 1;
-    check(loaded.project.schemaVersion == 20, "B: 読んだ Project の schema は 20");
+    check(loaded.project.schemaVersion == project::kProjectSchemaVersion,
+          "B: 読んだ Project は現行 schema");
     check(loaded.project == authored.project,
           "B: 読んだ Project は保存前の Project と等しい (式・Write・変形の ID・前後)");
     {

@@ -2,7 +2,22 @@
 
 「このアプリの今後の改善策は何か」に答えるための一覧。着手したら該当の文書 (例: `docs/subtitles.md`) へ移し、ここからは消す。記述の印は `docs/phase0-findings.md` と同じ (`[事実]` `[推測]` `[未検証]`)。
 
+## 一般の preview
+
+- [事実] 2026-10-07、P3-2.1 の通常 release gate 一回で `transition_preview` が
+  「23.976fps の preview が準備できません」と「区間の始まりのフレーム送りで mapping と違う frame を提示しました」で失敗した。
+  原因と今回の compiler 分類変更との因果関係は未特定。再試行はしていない。
+  再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。
+  通常試験は 1460/1461 通過、通常 gate は未通過。
+  証拠: `build/math-p321-release.log`、`build/math-p321-release-lasttest.log`。
+
 ## 一般の音声・書き出し
+
+- [事実] 2026-10-07、P3-1.1 の通常 release gate 一回は 1459/1460 通過。
+  `m4_timeline_export_focused_tractor` が「crop + 回転の clip を書き出せません」で失敗した。
+  通常動画の対照で `editEquationSequence` を呼ばない。原因は未特定。再試行はしていない。
+  再現: `pwsh scripts/test.ps1 -Preset ucrt64-release`。
+  証拠: `build/math-p311-release.log`、`build/math-p311-release-lasttest.log`。
 
 - [事実] P2-6 の通常 release gate で `ownership_soak_100` が音声 consumer の
   60000 ms timeout により 100/130 回で終了した。通常試験は 1456 件中 1455 件通過。
@@ -28,6 +43,110 @@
   数式とは無関係。[未検証] 実アプリの書き出しの dialog でも毎回起きるか。直すなら区切りを "\" にしてから渡す。
 
 ## 数式 clip
+
+### P3: native Equation Sequence と部分式の強調
+
+- P3-0 は設計と製品外 renderer spike のみ。判断と再現手順は
+  [設計文書](math-equation-sequence-p30.md)。新しい `EquationSequence` kind を推奨し、
+  clip 内の整数 frame の hold/transform、永続 part ID と revision 付き source annotation、
+  中立な区間 action を Project の正とする。P2 PASS/CLOSED と schema 20 は維持する。
+- P3-0.1 は文書のみの明確化を完了。内部 ID は種別ごとに sequence 内で一意とし、
+  copy/paste/duplicate は全 ID を新規発行して remap、split は左片に元 ID を残し右片を新規発行する。
+  両片は完全な sequence と異なる可視 source 範囲を持つ。cache key は所有 ID に依存しない。
+  state 削除時は所有 action も原子的に削除し、missing StateId と orphan-action store は認めない。
+  修復可能な missing PartId は既存 state 内だけ。全状態の Math 背景は透明、初期 operation は outline/pulse のみ。
+- (実装・検証済み: P3-1) 記録は [設計文書の P3-1 実装](math-equation-sequence-p30.md#p3-1-実装) へ移した。
+- P3-1.1 の外側 source 範囲修正は [設計文書](math-equation-sequence-p30.md#p3-11-外側-source-範囲の修正) に記録。
+  schema 21 の domain、素材原点の frame 始点標本化、構造編集、参照 remap、通常 Undo を扱う。
+  renderer・cache・製品 UI は後続段階のまま。
+- P3-2 の binding と renderer 中立 plan の実装は
+  [設計文書の P3-2](math-equation-sequence-p30.md#p3-2-semantic-binding-と-renderer-中立-plan) に移した。
+  UTF-8/UTF-16 境界、信頼編集、明示 rebind、semantic partition、explicit 優先と所有の排他性、
+  ID 非依存の正準入力を扱う。非空の実 glyph の証明は `BackendValidationRequired` として P3-3 に残す。
+- P3-3 の実 Manim renderer・backend の構造検証・disk の artifact の契約は
+  [設計文書の P3-3](math-equation-sequence-p30.md#p3-3-sequenceaction-renderer) に移した。
+  key namespace `mvm-equation-sequence/1`、2 段階の Manim 起動 (構造検証の後だけ描く)、
+  点を持つ子孫による非空・排他的所有、静止の artifact で hold を出す同値、outline/pulse の 2 層 A8、
+  P2 と同じ publication の規則を扱う。set_color/reveal/conceal と styled endpoint、同時 action は含めない。
+- P3-4 の residency と product preview は
+  [設計文書の P3-4](math-equation-sequence-p30.md#p3-4-residency-と-product-preview) に移した。
+  output frame だけから決まる提示、代用の契約 (変形は区間の全 frame で前の静止)、Write・変形と
+  共有の上限での 1 層ごとの residency と action の 2 層の束、provenance の色での合成、前の key の
+  結果を使わない世代の扱いを扱う。書き出し・authoring UI は含めない。
+  P3-4.1 (先読みで待っている層の昇格、読むだけの状態の問い合わせ) も
+  [設計文書](math-equation-sequence-p30.md#p3-41-先読みの昇格と読むだけの状態の問い合わせ) に記録した。
+- P3-5 の製品 UI と P3-5.1 の受け入れ配線・拒否された下書きの保持は
+  [実装と検証の記録](math-equation-sequence-p30.md#p3-51-製品-ui-の実行と拒否された下書きの保持) へ移した。
+  実 Main.qml の導出・保存再読込・直接 seek・入力・配置を CTest から実行する。
+  P3-5.2 で旧通常 gate の四件を帰属した。polling は C（試験 protocol）、提示三件は
+  D（自動消灯の環境干渉）。電源履歴・過去の再現・四条件のリンク対照を記録し、
+  protocol 修正後の新しい通常 gate 一回は 1472/1472 通過。P3-5 は CLOSED、P3-6 は GO。
+  旧 1467/1471 の失敗と全証拠はそのまま保存した。
+  [P3-5.2 の帰属と閉鎖検証](math-equation-sequence-p30.md#管理者電源履歴と最終帰属) を参照。
+- P3-6 の現在の入力に対する export authority、保存再読込後の製品 UI からの映像 export、
+  trim/split・破損・backend 不在の検証は
+  [実装と受け入れ証拠](math-equation-sequence-p30.md#p3-6-video-only-export-and-final-vertical-slice) へ移した。
+  通常 release は 1473/1473、BuildIndependent は 1080/1080、実 Manim の製品 UI 受け入れも通過。
+  この結果は P3-6 の履歴として保持する。P3-6.1 で画面外 static の依存を除去し、
+  旧条件の変異を新しい回帰で検出した。実 Manim の製品受け入れ、通常 release 1473/1473、
+  BuildIndependent 1080/1080 と lint が通過し、P3-6.1・P3-6・初期 vertical slice を再閉鎖した。
+  [依存範囲修正の証拠](math-equation-sequence-p30.md#p3-61-可視範囲の静止依存) を参照。P4 は未着手。
+
+未解決の判断・検証:
+
+- 任意 TeX macro の支持は未検証。P3-3 は P3-2 の支持範囲の segment について、Manim 0.21 の
+  点を持つ子孫の排他的所有を描画ごとに検査する (実装記録)。検査を通った範囲の成功を、
+  任意範囲の renderer 分離保証へ一般化しない。
+- backend の確認に一度も成功していない新規 session では、disk に描画結果があっても
+  toolchain identity を確定できず export を拒否する。確認済み identity を保持する session では、
+  backend が使えなくなっても必要な現在の描画結果が揃っていれば export できる。
+- P3-4 の先読みは今の区間の残りと次の区間だけ。再生中に先読みが間に合わない frame は代用 (静止) で
+  見せる。広い lookahead・区間の先頭の事前読み込みは性能の課題として残す。
+- P3-4 の Equation Sequence の layer は出力の大きさの透明な静止画を下地にし、animation の instance
+  ごとに GPU texture を作る (数式の Write・変形と同じ方式)。層が届くたびに instance を作り直すので、
+  再生中の texture の作り直しの回数と時間は未測定。
+- timeline のトランジション (Blend など) と EquationSequence clip の重なりは preview でも未対応として
+  拒否する。sequence の可視範囲の外へ素材範囲を延ばす意味を決めてから扱う。
+- [事実] P3-3.1 の変異試験で、長い名前の作業 directory の下で cache の作業 path
+  (`jobs/<session>/<64 桁 key>-equation-sequence-<n>`) が 260 文字を超え、job directory を作れなかった。
+  P2 の変形の作業 path も同じ形。cache directory が深い Project で同じことが起きうる [推測]。
+  extended-length path で作るかは未判断。
+- P3-3 の key は色・hold・action の start も含むので、それらだけの編集でも sequence 全体を描き直す。
+  区間ごとの小さな artifact (P3-0 の依存 DAG) への分割と、合成だけの値を key から外す条件は未判断。
+  P3-4 は正しさに必要ないので sequence 全体の key と artifact の構造をそのまま使った (性能の課題)。
+- [未検証] Equation Sequence の描画時間と disk 量。1 件ごとに Manim を 2 回起動する
+  (実測は受け入れの results.json の ms のみで、性能計測ではない)。
+- [事実] P3-3 の集中 CTest で `math_write_native_playback` が 22 検査中 3 件失敗し、単独の診断 3 回は
+  通過した。BuildIndependent で `audio_mixer_controls_qml` が ScrollBar の binding loop で失敗した。
+  通常 release gate 一回は 1463/1464 で、同じ `audio_mixer_controls_qml` だけが失敗した
+  (`build/math-p33-release.log`。`math_write_native_playback` は通過)。
+  どちらも原因と P3-3 の変更との因果関係は未特定。再試行による選別はしていない。
+  証拠: `build/math-p33-focused.log`、`build/math-p33-diag-native-write-1..3.log`、
+  `build/math-p33-independent.log`。
+- [事実] `audio_mixer_controls_qml` は P3-3 の BuildIndependent・gate、P3-3.1 の BuildIndependent・gate の
+  4 回続けて同じ警告 (QML ScrollBar の binding loop) で失敗した。P3-2 の gate では通過していた。
+  失敗する log には `OpenThemeData() failed ... ハンドルが無効` が多数出る。QML とそれが読む file は
+  変更していない。原因は未特定 (環境の theme の状態か、別の変更か) で、再試行による選別はしていない。
+  証拠: `build/math-p331-independent.log`、`build/math-p331-release.log`。
+  P3-4 の BuildIndependent と通常 gate でも同じ警告で失敗した (6 回続けて。QML は変更していない)。
+  証拠: `build/math-p34-independent.log`、`build/math-p34-release.log`。
+  P3-4.1 の BuildIndependent と通常 gate でも同じ (8 回続けて)。証拠: `build/math-p341-independent.log`、
+  `build/math-p341-release.log`。
+- [事実] P3-4 の集中 CTest で `math_write_native_playback` が P3-3 と同じ 3 件で失敗した
+  (`build/math-p34-focused.log`)。単独の診断 3 回は通過・失敗・通過 (`build/math-p34-diag-native-write-1..3.log`)、
+  通常 gate では通過。Write の経路と試験は変更していない。原因と因果関係は未特定。
+- retime を後段で許す条件は将来の判断とする。P3-1 の標本位相と短い action の消失の契約は
+  [実装記録](math-equation-sequence-p30.md#時間と-fps-の確定契約) にある。
+- 既存 state 内の invalid/missing PartId の診断・修復 UI と書き出し拒否の境界を検証する。
+  state 削除時の action の原子的削除は確定事項であり、missing StateId を保持する選択肢は設けない。
+- set_color/reveal/conceal は将来の設計候補。styled endpoint の保存と変形を仕様化し renderer で
+  検証してから別段階として導入する。概念説明を理由に初期 schema に値や振る舞いを予約しない。
+  同時 action と入れ子/非連続 part も初期に拒否し、必要なものだけ gate を増やす。
+- outline/pulse の拡張 bbox と layer 数に対する予算、RGBA と複数 A8 の実測比較。
+  renderer spike は性能・cache publication・製品 decoder の証明ではない。
+- 既存の複数 Math clip を一 clip に明示変換する際の hold/transform の消費時間の対応。
+  自動 migration は行わず、受け入れ対象に必要なら別操作として検証する。
+
 
 - 数式間のクロスディゾルブは P1+ へ延期する。静止数式 P0 の範囲は既存の fade と
   ClipEffects。既存の generic still-layer 契約も dissolve を許可しておらず、

@@ -326,9 +326,16 @@ void testJson() {
           "照合・分け方・Manim の値を保存しない");
     const auto loaded = parseProjectJsonText(saved.json, kProjectPath);
     check(loaded.success && loaded.project == project, "変形が往復する: " + loaded.error);
+    const auto schema20 =
+        replacedOnce(saved.json, "\"schema_version\": " + std::to_string(kProjectSchemaVersion),
+                     "\"schema_version\": 20");
+    const auto legacy = parseProjectJsonText(schema20, kProjectPath);
+    check(legacy.success && legacy.project == project,
+          "schema 20 の MathTransform は意味を変えず現行版へ読み込む");
 
     const auto schema19 =
-        replacedOnce(saved.json, "\"schema_version\": 20", "\"schema_version\": 19");
+        replacedOnce(saved.json, "\"schema_version\": " + std::to_string(kProjectSchemaVersion),
+                     "\"schema_version\": 19");
     check(!parseProjectJsonText(schema19, kProjectPath).success,
           "schema 19 の file の math_transform を拒否する");
     // kind を消した 19 の file は Blend として読むので、数式 clip の編集点では検証が拒否する

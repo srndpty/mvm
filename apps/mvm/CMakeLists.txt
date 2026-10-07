@@ -8,11 +8,11 @@ target_link_libraries(mvm_audio_adjustment PUBLIC mvm::audio_analysis mvm::proje
 add_library(mvm::audio_adjustment ALIAS mvm_audio_adjustment)
 
 # 数式 clip の描画結果の cache。backend は preflight 関数で注入する (試験は偽の backend)。
-add_library(mvm_math_raster_cache STATIC math_raster_cache.cpp)
+add_library(mvm_math_raster_cache STATIC math_raster_cache.cpp math_equation_sequence_artifact.cpp)
 set_target_properties(mvm_math_raster_cache PROPERTIES AUTOMOC ON)
 target_include_directories(mvm_math_raster_cache PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_math_raster_cache
-    PUBLIC mvm::math mvm::still_image Qt6::Core
+    PUBLIC mvm::math mvm::still_image mvm::equation_sequence_compile Qt6::Core
     # 変形の backend の PNG は静止の mask と同じ decoder (loadMathCoverage) で読む。
     PRIVATE mvm::math_clip_render mvm::util mvm::warnings)
 add_library(mvm::math_raster_cache ALIAS mvm_math_raster_cache)
@@ -25,6 +25,7 @@ qt_add_executable(mvm
     press_focus.cpp
     subtitle_controller.cpp
     mvm_controller.cpp
+    equation_sequence_editor.cpp
     shuttle_audio_mix.cpp
     shuttle_audio_playback.cpp
     clip_sample_reader.cpp
@@ -90,6 +91,7 @@ qt_add_qml_module(mvm
         TranscribeDialog.qml
         TextClipInspector.qml
         MathClipInspector.qml
+        EquationSequenceInspector.qml
         MathDependencyGuidance.qml
         KeyframeInspector.qml
         TransitionInspector.qml
@@ -107,6 +109,7 @@ target_link_libraries(mvm PRIVATE
     mvm::project
     mvm::util
     mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
+    mvm::equation_sequence_compile
     mvm::timeline_playback
     mvm::timeline_preview_mapping
     mvm::timeline_export
@@ -135,9 +138,10 @@ set_target_properties(mvm PROPERTIES WIN32_EXECUTABLE OFF)
 # D3D11 の window へ QTest で key / mouse event を送る。
 # test の登録は tests/CMakeLists.txt で行う (このファイルは include(CTest) より前に読まれる)。
 # IME の変換確定は扱わない (手動確認)。
-find_package(Qt6 REQUIRED COMPONENTS Test)
+find_package(Qt6 REQUIRED COMPONENTS Test QuickTest)
 qt_add_executable(mvm_test_text_ui_input
     ${CMAKE_SOURCE_DIR}/tests/harness/test_text_ui_input.cpp
+    ${CMAKE_SOURCE_DIR}/tests/harness/test_equation_sequence_ui.cpp
     ${CMAKE_SOURCE_DIR}/tests/harness/math_p28_acceptance.cpp
     image_raster_cache.cpp
     media_bin_model.cpp
@@ -145,6 +149,7 @@ qt_add_executable(mvm_test_text_ui_input
     press_focus.cpp
     subtitle_controller.cpp
     mvm_controller.cpp
+    equation_sequence_editor.cpp
     shuttle_audio_mix.cpp
     shuttle_audio_playback.cpp
     clip_sample_reader.cpp
@@ -202,6 +207,7 @@ qt_add_qml_module(mvm_test_text_ui_input
         TranscribeDialog.qml
         TextClipInspector.qml
         MathClipInspector.qml
+        EquationSequenceInspector.qml
         MathDependencyGuidance.qml
         KeyframeInspector.qml
         TransitionInspector.qml
@@ -215,6 +221,7 @@ target_include_directories(mvm_test_text_ui_input PRIVATE ${CMAKE_CURRENT_SOURCE
 target_link_libraries(mvm_test_text_ui_input PRIVATE
     mvm::audio_adjustment
     mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
+    mvm::equation_sequence_compile
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::text_raster mvm::audio_waveform mvm::still_image mvm::mlt mvm::preview_engine
     mvm::audio_preview
@@ -222,7 +229,7 @@ target_link_libraries(mvm_test_text_ui_input PRIVATE
     mvm::warnings)
 # 試験の window を OS の前面にせずにフォーカスを持たせるため、QPA の
 # QWindowSystemInterface を使う (tests/harness/test_window_focus.h)。この試験だけ。
-target_link_libraries(mvm_test_text_ui_input PRIVATE Qt6::GuiPrivate)
+target_link_libraries(mvm_test_text_ui_input PRIVATE Qt6::GuiPrivate Qt6::QuickTest)
 target_include_directories(mvm_test_text_ui_input PRIVATE ${CMAKE_SOURCE_DIR}/tests/harness)
 target_compile_definitions(mvm_test_text_ui_input PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_TEXT_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")

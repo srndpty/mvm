@@ -1,6 +1,9 @@
 #ifndef MVM_APPS_MVM_MATH_RASTER_CACHE_H
 #define MVM_APPS_MVM_MATH_RASTER_CACHE_H
 
+#include "app/equation_sequence_export.h"
+#include "math_equation_sequence_artifact.h"
+#include "media/math/equation_sequence_render.h"
 #include "media/math/math_backend.h"
 #include "media/math/math_render.h"
 #include "media/math/math_transform.h"
@@ -15,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -164,6 +168,17 @@ public:
         QString log;
     };
 
+    // Equation Sequence (P3-3) の disk の artifact。Ready は検証済みの artifact が disk にある
+    // ことだけを表す (preview・書き出しへの組み込みはまだ無い)。失敗は backend の構造検証の
+    // 理由 (backendFailure) を持つ。
+    struct EquationSequenceEntry {
+        State state = State::Pending;
+        math::MathRenderStatus status = math::MathRenderStatus::Failed;
+        math::EquationBackendFailure backendFailure = math::EquationBackendFailure::NotValidated;
+        QString message;
+        QString log;
+    };
+
     // Write の連番の preview 用の mask が memory にあるか。
     //   NotReady   disk の連番が Ready でない (描画中・失敗など。SequenceEntry を見る)
     //   Loading    disk から読んでいる
@@ -253,7 +268,84 @@ public:
         beforeTransformPublish_ = std::move(hook);
     }
 
-    // keys に無い record (静止・連番・変形) を捨てる (描画中なら止める)。
+    // Equation Sequence (P3-3)。静止・Write・変形と同じ worker・権限・世代・publish の gate で
+    // 扱い、key は math::equationSequenceRenderKey (mvm-equation-sequence/1)。disk は
+    // cacheDirectory/equation-sequence/ (math_equation_sequence_artifact.h)。
+    //
+    // - 描く前に、全状態の今の静止 (request と同じ key) が Ready であることを待ち、その mask を
+    //   backend へ渡す。どれかの静止が Failed / Unavailable なら sequence も同じ状態にする
+    // - backend の構造検証 (部分・所有・空の対象) を通らなければ描かずに Failed
+    // - 変形・action の枚数が backend の能力を超えれば、この描画環境の未対応として Failed
+    QString equationSequenceKeyFor(const math::EquationSequenceRenderSpec& spec) const;
+    EquationSequenceEntry requestEquationSequence(const math::EquationSequenceRenderSpec& spec);
+    // Ready の artifact を、今の静止と disk の provenance・全 frame で検査し直して返す。
+    std::optional<EquationSequenceArtifact>
+    readyEquationSequence(const math::EquationSequenceRenderSpec& spec) const;
+    // export 専用の不変 snapshot。描画・RAM 常駐の要求・不正 artifact の削除は行わない。
+    EquationExportSnapshot equationSequenceExportSnapshot(const project::TimelineClip& clip) const;
+
+    int equationSequenceRecordCount() const { return static_cast<int>(equationSequences_.size()); }
+
+    // request せずに今の状態を返す (record が無ければ既定の Pending)。
+    EquationSequenceEntry equationSequenceEntryOf(const math::EquationSequenceRenderSpec& spec) const;
+    // Ready の record が持つ検証済みの artifact (P3-4 の preview の配置と色)。disk は読まない
+    // (provenance と各層は memory へ読むときに 1 枚ずつ照合する)。
+    std::optional<EquationSequenceArtifact>
+    equationSequenceArtifactOf(const math::EquationSequenceRenderSpec& spec) const;
+
+    // ---- Equation Sequence の preview 用の層 (P3-4) ----
+    //
+    // 1 枚の A8 の層を、Write・変形と同じ上限 (MathResidencyBudget)・同じ LRU で memory に置く。
+    // 別の上限・別の cache を持たない。disk の Ready (書き出しが使える) と memory の Resident は
+    // 別の状態で、上限に収まらなくても disk の artifact は Ready のまま。
+    enum class EquationLayerRole { TransitionFrame, ActionBase, ActionAccent };
+    struct EquationLayerRef {
+        EquationLayerRole role = EquationLayerRole::TransitionFrame;
+        std::size_t interval = 0; // 変形・action の番号 (spec の順)
+        std::int64_t frame = 0;   // TransitionFrame / ActionAccent の区間内の frame
+        bool operator==(const EquationLayerRef&) const = default;
+    };
+    // residency の key (派生の cache の識別で、Project の正ではない):
+    //   <sequence の key>/t<変形>/<frame>、/a<action>/base、/a<action>/<frame>
+    static QString equationLayerKey(const QString& sequenceKey, const EquationLayerRef& layer);
+    struct ResidentEquationLayers {
+        Residency state = Residency::NotReady;
+        // Resident のとき refs の順の層 (各 1 枚)。
+        std::vector<std::shared_ptr<const MathCoverageSequence>> layers;
+        QString message;
+    };
+    // refs の層を 1 つの束として memory に置く。disk の artifact が今の key で Ready でなければ
+    // NotReady。束の全層が揃ったときだけ Resident (action の base と accent の片方だけを見せない)。
+    // 足りない層の byte をまとめて予約し、収まらなければ束全体を OverBudget にする (1 層だけ
+    // 読んで上限を使わない)。
+    //   current  今の frame の束。先に読み (優先度)、上限に足りなければ cache だけが持つ mask を
+    //            外す (preview が使っている mask は外さない)
+    //   先読み   何も外さない (今の frame に要る層を追い出さない)。OverBudget を記録しない
+    // 読むときに disk の provenance が検証した時と同じことと、frame の大きさ・SHA-256 を確かめる。
+    // 合わなければ artifact を消して sequence を Failed (CorruptFrame) にする。
+    ResidentEquationLayers residentEquationLayers(const math::EquationSequenceRenderSpec& spec,
+                                                  const std::vector<EquationLayerRef>& refs,
+                                                  bool current);
+    // 同じ状態を、読み始めずに返す (状態の表示・試験用)。
+    ResidentEquationLayers equationLayersResidencyOf(const math::EquationSequenceRenderSpec& spec,
+                                                     const std::vector<EquationLayerRef>& refs) const;
+    // memory にある (読み終えた) 層の数 (試験用)。
+    int residentEquationLayerCount() const;
+    // 試験用: true の間、Equation Sequence の層の読み込みの worker は待ち行列から取り出さずに待つ
+    // (1 本の worker を止め、待ち行列の順を試験が決めるため)。
+    void pauseEquationLayerLoadsForTest(bool paused);
+    // 試験用: 層の読み込みを待ち行列から取り出した順の key (取消で読まなかったものも含む)。
+    std::vector<QString> equationLayerLoadOrderForTest() const;
+    // 今の Ready の静止の状態を、要求せずに返す (record が無ければ既定の Pending。backend が
+    // 使えなければ Unavailable)。状態の問い合わせ用で、描画を始めない。
+    Entry entryOf(const math::MathRenderSpec& spec) const;
+    // 試験用: provenance を書く直前に (worker の thread で) 呼ぶ。
+    void setBeforeEquationSequencePublishForTest(
+        std::function<void(const std::filesystem::path& provenance)> hook) {
+        beforeEquationSequencePublish_ = std::move(hook);
+    }
+
+    // keys に無い record (静止・連番・変形・Equation Sequence) を捨てる (描画中なら止める)。
     void retainOnly(const QSet<QString>& keys);
     void forgetFailures();
     void shutdown();
@@ -288,6 +380,8 @@ public:
     static constexpr char kArtifactFormat[] = "mvm-math-artifact/1";
     static constexpr char kSequenceArtifactFormat[] = "mvm-math-sequence-artifact/1";
     static constexpr char kTransformArtifactFormat[] = "mvm-math-transform-artifact/1";
+    static constexpr const char* kEquationSequenceArtifactFormat =
+        app::kEquationSequenceArtifactFormat;
 
 Q_SIGNALS:
     // key の結果が出た。空なら全体 (backend の状態が変わった)。
@@ -318,6 +412,15 @@ private:
         std::shared_ptr<std::atomic<bool>> cancel;
     };
 
+    struct EquationSequenceRecord {
+        EquationSequenceEntry entry;
+        math::EquationSequenceRenderSpec spec;
+        bool launched = false; // 全状態の静止が揃って描画を始めたか
+        EquationSequenceArtifact artifact;
+        std::uint64_t ticket = 0;
+        std::shared_ptr<std::atomic<bool>> cancel;
+    };
+
     void finishPreflight(std::uint64_t generation, math::MathPreflightResult result);
     void finishRender(const QString& key, std::uint64_t ticket, Entry entry,
                       std::filesystem::path artifact);
@@ -329,9 +432,17 @@ private:
     void advanceTransformsWaitingOn(const QString& staticKey);
     void finishTransform(const QString& key, std::uint64_t ticket, TransformEntry entry,
                          MathTransformArtifact artifact);
+    // 全状態の静止が揃っていれば sequence の描画を始める。状態が変わったら true。
+    bool advanceEquationSequence(const QString& key);
+    void finishEquationSequence(const QString& key, std::uint64_t ticket,
+                                EquationSequenceEntry entry, EquationSequenceArtifact artifact);
+    // sequence の job を組む (静止の mask は呼び出し側が渡す)。
+    EquationSequenceJob equationSequenceJob(const QString& key,
+                                            const math::EquationSequenceRenderSpec& spec) const;
     // memory に置いた mask と、読んでいる途中の要求。Write と変形は key の名前空間が別なので
     // 同じ表に置き、同じ上限・LRU で扱う。
-    enum class ResidentKind { Write, Transform };
+    // Equation Sequence の層は 1 枚ごとの key (owner の sequence の key の下) で同じ表に置く。
+    enum class ResidentKind { Write, Transform, EquationLayer };
     struct ResidentRecord {
         std::shared_ptr<const MathCoverageSequence> frames;
         std::uint64_t lastUse = 0;
@@ -341,6 +452,43 @@ private:
         std::shared_ptr<std::atomic<bool>> cancel;
         ResidentKind kind = ResidentKind::Write;
     };
+    // EquationLayer の key の owner (sequence の key)。それ以外は key そのもの。
+    static QString residentOwner(const QString& key);
+    // 予約済みの層を読み始める (読めたら finishResident)。
+    void startEquationLayerLoad(const QString& key, int width, int height,
+                                std::shared_ptr<const MathResidencyReservation> reservation,
+                                EquationArtifactFrame frame, std::string sequenceKey,
+                                std::string provenance, bool current);
+    // Equation Sequence の層の読み込みの待ち行列 (P3-4.1)。worker は 1 本。待ち行列の仕事は
+    // 取り出す時点で今の frame の列を先に取る。先読みで待っている層が今の frame になったら、
+    // 同じ仕事 (ticket・取消・予約をそのまま) を今の frame の列の末尾へ移す。
+    struct EquationLoadJob {
+        QString key;
+        std::uint64_t ticket = 0;
+        std::shared_ptr<std::atomic<bool>> cancel;
+        std::shared_ptr<const MathResidencyReservation> reservation;
+        EquationArtifactFrame frame;
+        int width = 0;
+        int height = 0;
+        std::string sequenceKey;
+        std::string provenance;
+        std::filesystem::path directory;
+    };
+    struct EquationLoadQueue {
+        std::mutex mutex;
+        std::deque<EquationLoadJob> current;
+        std::deque<EquationLoadJob> prefetch;
+        std::vector<QString> taken; // 取り出した順 (試験用)
+        std::atomic<bool> paused{false};
+        std::atomic<bool> stopped{false};
+    };
+    std::shared_ptr<EquationLoadQueue> equationLoads_ = std::make_shared<EquationLoadQueue>();
+    // 待ち行列から 1 件取り出して読む仕事を worker へ出す。
+    void startEquationLoadDrain(int priority);
+    // 先読みで待っている key の仕事を今の frame の列へ移す。移したら true。
+    bool promoteEquationLayerLoad(const QString& key);
+    // 壊れた・古い層を見つけた: sequence を Failed にし、その層をすべて手放す。
+    void failEquationSequence(const QString& sequenceKey, const QString& error);
     // 読み込み (取消を見て、読めなければ nullptr。取消なら cancelled を立てる)。
     using ResidentDecoder = std::function<std::shared_ptr<MathCoverageSequence>(
         const std::atomic<bool>* cancel, bool& cancelled)>;
@@ -368,6 +516,8 @@ private:
     // 古い世代の結果が確定することはない。
     std::shared_ptr<std::mutex> publishGate_ = std::make_shared<std::mutex>();
     std::function<void(const std::filesystem::path&)> beforeTransformPublish_;
+    QHash<QString, EquationSequenceRecord> equationSequences_;
+    std::function<void(const std::filesystem::path&)> beforeEquationSequencePublish_;
     // preview 用の mask の読み込みは描画 (Manim) と別の worker で行う (長い描画を待たない)。
     QThreadPool residentPool_;
     QHash<QString, ResidentRecord> resident_;
@@ -400,6 +550,8 @@ private:
     BackendState backendState_ = BackendState::Unavailable;
     QString backendMessage_ = QStringLiteral("数式の cache が設定されていません");
     math::MathRenderBackend backend_;
+    // 検証済み toolchain の識別だけを export 用に保持する。古い描画結果の authority ではない。
+    std::optional<math::MathRenderBackend> exportIdentity_;
     std::chrono::milliseconds renderTimeout_{60000};
     std::chrono::milliseconds sequenceTimeoutPerFrame_{500};
     bool shutDown_ = false;

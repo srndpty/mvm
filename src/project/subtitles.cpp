@@ -516,9 +516,10 @@ std::pair<std::string, std::string> splitSubtitleText(const std::string& content
     if (textBreak && *textBreak > 0 && *textBreak < count) {
         at = *textBreak;
     } else {
-        const auto target = std::clamp<std::size_t>(
-            static_cast<std::size_t>(std::llround(std::clamp(ratio, 0.0, 1.0) * count)), 1,
-            count - 1);
+        const auto target =
+            std::clamp<std::size_t>(static_cast<std::size_t>(std::llround(
+                                        std::clamp(ratio, 0.0, 1.0) * static_cast<double>(count))),
+                                    1, count - 1);
         // 句読点・空白・改行の直後を候補にし、比率の位置に最も近いものを選ぶ。
         static constexpr std::string_view kBreaks[] = {"、", "。", "，", "．", "！", "？", "!",
                                                        "?",  "…",  " ",  "　", "\n", ",",  "."};

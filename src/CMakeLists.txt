@@ -10,6 +10,7 @@ add_library(mvm_core STATIC
     core/presentation_opportunity_mapper.cpp
     core/source_frame_mapping.cpp
     core/timecode.cpp
+    core/text_offsets.cpp
     core/waveform_peaks.cpp
 )
 target_include_directories(mvm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -22,6 +23,9 @@ add_library(mvm_project STATIC
     project/audio_adjustment.cpp
     project/clip_effects.cpp
     project/math_clip.cpp
+    project/equation_sequence.cpp
+    project/equation_sequence_edit.cpp
+    project/equation_binding_edit.cpp
     project/media_bin.cpp
     project/path_identity.cpp
     project/subtitles.cpp
@@ -56,6 +60,7 @@ target_link_libraries(mvm_project PRIVATE mvm::util)
 # --- 数式 renderer の中立な契約 ---------------------------------------------
 # backend (Manim など) の型も Project の型も含めない。cache key と出力 raster への配置。
 add_library(mvm_math STATIC
+    media/math/equation_sequence_render.cpp
     media/math/math_render.cpp
     media/math/math_raster_layout.cpp
     media/math/math_tex_segments.cpp
@@ -65,11 +70,20 @@ target_include_directories(mvm_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_math PUBLIC mvm::util PRIVATE mvm::warnings)
 add_library(mvm::math ALIAS mvm_math)
 
+# Project の binding と P2 の純粋な計算を結ぶ。描画 backend / Qt は参照しない。
+add_library(mvm_equation_sequence_compile STATIC app/equation_sequence_compile.cpp
+    app/equation_sequence_render.cpp app/equation_sequence_preview.cpp
+    app/equation_sequence_authoring.cpp app/equation_sequence_export.cpp)
+target_include_directories(mvm_equation_sequence_compile PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_equation_sequence_compile PUBLIC mvm::project mvm::math PRIVATE mvm::warnings)
+add_library(mvm::equation_sequence_compile ALIAS mvm_equation_sequence_compile)
+
 # --- Manim external renderer ------------------------------------------------
 # Python を埋め込まず、明示された Manim CLI を外部プロセスとして実行する。
 # 依存の向きは manim -> math (中立な契約は manim を知らない)。
 add_library(mvm_manim STATIC
     media/manim/manim_fingerprint.cpp
+    media/manim/manim_equation_sequence.cpp
     media/manim/manim_math_tex.cpp
     media/manim/manim_renderer.cpp
 )
@@ -125,7 +139,7 @@ add_library(mvm_timeline_export STATIC
 )
 target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_timeline_export
-    PUBLIC mvm::project
+    PUBLIC mvm::project mvm::equation_sequence_compile
     PRIVATE mvm::core mvm::mlt mvm::text_raster mvm::math_clip_render mvm_still_image
         mvm::warnings)
 add_library(mvm::timeline_export ALIAS mvm_timeline_export)

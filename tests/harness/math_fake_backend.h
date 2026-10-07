@@ -28,6 +28,7 @@
 
 #include "math_raster_cache.h"
 #include "math_test_png.h"
+#include "media/math/equation_sequence_render.h"
 #include "media/math/math_transform.h"
 
 #include <algorithm>
@@ -197,6 +198,172 @@ fakeRenderTransform(const math::MathTransformRenderRequest& request,
     return result;
 }
 
+// 偽の Equation Sequence (P3-3)。canvas は大きい方の静止 + 各辺 kFakeTransformPadding、端点は
+// 中立な配置の規則の位置。変形の frame 0 は前の状態の静止、frame 1 以降は後の状態の静止と
+// (2, 3) の 1 画素。action の base は状態の静止、accent の frame i は (2 + i % 3, 3) の 1 画素。
+// 構造検証は各 segment が 1 個の glyph を排他的に所有する結果を返す。最初の状態の式の印:
+//   "EQFAIL"   構造検証の失敗 (EmptyActionTarget) を返す (Manim の終了コード 0 でも失敗)
+//   "EQSHORT"  変形 0 の frame を 1 枚少なく返す (status は Ok)
+//   "EQBADPNG" 変形 0 の frame 1 を読めない内容にする (status は Ok)
+// pulse の base は状態の静止の左半分の列を除いたもの、通常の対象の層は左半分。pulse の状態の
+// 式の印 (status は Ok のまま、cache の公開前の照合だけが見つける):
+//   "EQPULSEFULL" base が対象を含んだまま  "EQPULSEOMIT" base が右端の列を欠く
+//   "EQPULSESHIFT" 通常の対象を右へ 1 画素  "EQPULSENOTARGET" 通常の対象の層を返さない
+//   gate が true の間は終えない (cancel を見ずに待つ。取り消された後に結果を返す renderer)
+//   cancellableGate が true の間は cancel か gate が下りるまで待つ (取消を見たら Cancelled)
+struct FakeEquationLog {
+    std::mutex mutex;
+    std::vector<std::string> events; // "equation:<最初の状態の式>" / "equation-cancelled:..."
+
+    void record(std::string event) {
+        std::lock_guard lock(mutex);
+        events.push_back(std::move(event));
+    }
+};
+
+inline math::EquationSequenceRenderResult fakeRenderEquationSequence(
+    const math::EquationSequenceRenderRequest& request, const math::MathCoverageLoader& loader,
+    const std::atomic<bool>* cancel, const std::shared_ptr<std::atomic<bool>>& gate,
+    const std::shared_ptr<std::atomic<bool>>& cancellableGate,
+    const std::shared_ptr<std::atomic<bool>>& held, const std::shared_ptr<FakeEquationLog>& log) {
+    math::EquationSequenceRenderResult result;
+    const auto& spec = request.spec;
+    const std::string first = spec.states.empty() ? std::string() : spec.states[0].still.source;
+    if (gate->load()) {
+        held->store(true);
+        for (int i = 0; i < 3000 && gate->load(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (cancellableGate->load()) {
+        held->store(true);
+        for (int i = 0; i < 3000 && cancellableGate->load() && !cancel->load(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (cancel->load()) {
+            log->record("equation-cancelled:" + first);
+            result.status = math::MathRenderStatus::Cancelled;
+            return result;
+        }
+    }
+    if (!loader || request.stateStatics.size() != spec.states.size()) {
+        result.message = "要求が不正です";
+        return result;
+    }
+    if (first.find("EQFAIL") != std::string::npos) {
+        result.validation.failure = math::EquationBackendFailure::EmptyActionTarget;
+        result.validation.detail = "fake: 空の対象";
+        result.message = "fake: 空の対象";
+        return result;
+    }
+    for (std::size_t s = 0; s < spec.states.size(); ++s)
+        for (std::size_t k = 0; k < spec.states[s].segments.size(); ++k)
+            result.validation.segments.push_back(
+                {s, k, "MathTexPart", 1, 1, 1, true, {static_cast<std::int64_t>(k)}});
+    result.validation.failure = math::EquationBackendFailure::None;
+    const auto blank = [](int width, int height) {
+        return math::MathCoverage{width, height,
+                                  std::vector<std::uint8_t>(coverageIndex(width, 0, height), 0)};
+    };
+    for (std::size_t t = 0; t < spec.transitions.size(); ++t) {
+        const auto& item = spec.transitions[t];
+        const auto& from = request.stateStatics[item.fromState];
+        const auto& to = request.stateStatics[item.toState];
+        math::EquationTransitionRaster raster;
+        auto& interval = raster.interval;
+        interval.canvasWidth = std::max(from.width, to.width) + 2 * kFakeTransformPadding;
+        interval.canvasHeight = std::max(from.height, to.height) + 2 * kFakeTransformPadding;
+        math::mathTransformPlacement(from.width, from.height, to.width, to.height,
+                                     interval.canvasWidth, interval.canvasHeight, raster.placement);
+        const auto& p = raster.placement;
+        interval.artifact =
+            math::mathRectUnion({p.source.left, p.source.top, from.width, from.height},
+                                {p.target.left, p.target.top, to.width, to.height});
+        std::int64_t frames = item.frames;
+        if (t == 0 && first.find("EQSHORT") != std::string::npos)
+            --frames;
+        for (std::int64_t i = 0; i < frames; ++i) {
+            auto canvas = blank(interval.canvasWidth, interval.canvasHeight);
+            if (i == 0) {
+                stampCoverage(canvas, from, p.source.left, p.source.top);
+            } else {
+                stampCoverage(canvas, to, p.target.left, p.target.top);
+                canvas.alpha[coverageIndex(canvas.width, kFakeTransformExtraX,
+                                           kFakeTransformExtraY)] = kFakeTransformExtraAlpha;
+                interval.artifact = math::mathRectUnion(
+                    interval.artifact, {kFakeTransformExtraX, kFakeTransformExtraY, 1, 1});
+            }
+            const auto png = request.jobDirectory /
+                             (L"t" + std::to_wstring(t) + L"-" + std::to_wstring(i) + L".png");
+            if (t == 0 && i == 1 && first.find("EQBADPNG") != std::string::npos)
+                std::ofstream(png, std::ios::binary) << "not a png";
+            else
+                writeCoveragePng(png, canvas);
+            interval.frames.push_back(png);
+        }
+        result.transitions.push_back(std::move(raster));
+    }
+    for (std::size_t a = 0; a < spec.actions.size(); ++a) {
+        const auto& item = spec.actions[a];
+        const auto& still = request.stateStatics[item.state];
+        math::EquationActionRaster raster;
+        auto& interval = raster.interval;
+        interval.canvasWidth = still.width + 2 * kFakeTransformPadding;
+        interval.canvasHeight = still.height + 2 * kFakeTransformPadding;
+        math::mathEndpointPlacement(still.width, still.height, interval.canvasWidth,
+                                    interval.canvasHeight, raster.placement);
+        interval.artifact = {raster.placement.left, raster.placement.top, still.width,
+                             still.height};
+        auto base = blank(interval.canvasWidth, interval.canvasHeight);
+        stampCoverage(base, still, raster.placement.left, raster.placement.top);
+        if (item.operation == math::EquationRenderOperation::Pulse) {
+            // pulse: 静止の左半分の列を通常の対象、残りを base にする (重ねると静止に戻る)。
+            const auto& source = spec.states[item.state].still.source;
+            const int split = raster.placement.left + still.width / 2;
+            auto target = blank(interval.canvasWidth, interval.canvasHeight);
+            for (int y = 0; y < base.height; ++y)
+                for (int x = 0; x < split; ++x) {
+                    const auto index = coverageIndex(base.width, x, y);
+                    target.alpha[index] = base.alpha[index];
+                    if (source.find("EQPULSEFULL") == std::string::npos)
+                        base.alpha[index] = 0; // EQPULSEFULL: base が対象を含んだまま
+                }
+            if (source.find("EQPULSEOMIT") != std::string::npos) // base が右端の列を欠く
+                for (int y = 0; y < base.height; ++y)
+                    base.alpha[coverageIndex(base.width, raster.placement.left + still.width - 1,
+                                             y)] = 0;
+            if (source.find("EQPULSESHIFT") != std::string::npos) { // 対象を右へ 1 画素
+                auto shifted = blank(target.width, target.height);
+                for (int y = 0; y < target.height; ++y)
+                    for (int x = 0; x + 1 < target.width; ++x)
+                        shifted.alpha[coverageIndex(target.width, x + 1, y)] =
+                            target.alpha[coverageIndex(target.width, x, y)];
+                target = shifted;
+            }
+            raster.normalTarget =
+                request.jobDirectory / (L"a" + std::to_wstring(a) + L"-target.png");
+            if (source.find("EQPULSENOTARGET") != std::string::npos)
+                raster.normalTarget.clear();
+            else
+                writeCoveragePng(raster.normalTarget, target);
+        }
+        raster.base = request.jobDirectory / (L"a" + std::to_wstring(a) + L"-base.png");
+        writeCoveragePng(raster.base, base);
+        for (std::int64_t i = 0; i < item.duration; ++i) {
+            auto canvas = blank(interval.canvasWidth, interval.canvasHeight);
+            const int x = 2 + static_cast<int>(i % 3);
+            canvas.alpha[coverageIndex(canvas.width, x, 3)] = 255;
+            interval.artifact = math::mathRectUnion(interval.artifact, {x, 3, 1, 1});
+            const auto png = request.jobDirectory /
+                             (L"a" + std::to_wstring(a) + L"-" + std::to_wstring(i) + L".png");
+            writeCoveragePng(png, canvas);
+            interval.frames.push_back(png);
+        }
+        result.actions.push_back(std::move(raster));
+    }
+    log->record("equation:" + first);
+    result.status = math::MathRenderStatus::Ok;
+    return result;
+}
+
 struct FakeMathBackend {
     std::shared_ptr<std::atomic<int>> renders = std::make_shared<std::atomic<int>>(0);
     std::shared_ptr<std::atomic<int>> transformRenders = std::make_shared<std::atomic<int>>(0);
@@ -208,6 +375,14 @@ struct FakeMathBackend {
     std::shared_ptr<std::atomic<bool>> transformSawCancel =
         std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<FakeTransformLog> transformLog = std::make_shared<FakeTransformLog>();
+    std::shared_ptr<std::atomic<int>> equationRenders = std::make_shared<std::atomic<int>>(0);
+    std::shared_ptr<std::atomic<bool>> equationGate = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> equationCancellableGate =
+        std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> equationHeld = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<FakeEquationLog> equationLog = std::make_shared<FakeEquationLog>();
+    std::string equationTemplate = "fake-equation-sequence/1";
+    bool withEquationSequence = true;
     std::string transformTemplate = "fake-transform/1";
     bool withTransform = true;
     std::int64_t maximumTransformFrames = 9998;
@@ -229,11 +404,29 @@ struct FakeMathBackend {
                 transformGate = transformGate, transformHeld = transformHeld,
                 cancellableGate = transformCancellableGate, sawCancel = transformSawCancel,
                 transformLog = transformLog, transformTemplate = transformTemplate,
-                withTransform = withTransform, maximumTransformFrames = maximumTransformFrames](
-                   const std::filesystem::path&, const std::atomic<bool>*) {
+                withTransform = withTransform, maximumTransformFrames = maximumTransformFrames,
+                equationRenders = equationRenders, equationGate = equationGate,
+                equationCancellableGate = equationCancellableGate, equationHeld = equationHeld,
+                equationLog = equationLog, equationTemplate = equationTemplate,
+                withEquationSequence = withEquationSequence](const std::filesystem::path&,
+                                                             const std::atomic<bool>*) {
             math::MathPreflightResult result;
             result.status = math::MathPreflightStatus::Available;
             result.backend.fingerprint = {"fake", canonical};
+            if (withEquationSequence) {
+                result.backend.equationSequenceTemplate = equationTemplate;
+                result.backend.maximumEquationSequenceFrames = 9998;
+                result.backend.renderEquationSequence =
+                    [equationRenders, equationGate, equationCancellableGate, equationHeld,
+                     equationLog](const math::EquationSequenceRenderRequest& request,
+                                  const math::MathCoverageLoader& loader,
+                                  const std::atomic<bool>* cancel) {
+                        ++*equationRenders;
+                        return fakeRenderEquationSequence(request, loader, cancel, equationGate,
+                                                          equationCancellableGate, equationHeld,
+                                                          equationLog);
+                    };
+            }
             if (withTransform) {
                 result.backend.transformTemplate = transformTemplate;
                 result.backend.maximumTransformFrames = maximumTransformFrames;

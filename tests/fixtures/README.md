@@ -27,3 +27,11 @@ manifest からの相対で解決されるため、実素材が必要（未生�
 `good-minimal.json` は「negative test が構造ではなく壊した箇所で落ちている」ことを
 示すための対照群である。これが失敗するなら、negative test の失敗理由は
 意図した箇所ではない。
+
+## equation-sequence/
+
+`p34-preview.mvm` は schema 21 の EquationSequence を 1 本持つ Project (P3-4 の product preview の
+受け入れ、`math_equation_sequence_native_preview`)。区間は hold・outline・pulse・変形 (10 枚と 1 枚)・
+N=1 の pulse。式は偽の backend の `SIZE<w>x<h>` の印で、実 Manim では描かない。
+`mvm_test_equation_preview_controller --write-fixture <path>` が試験の中の定義から書き、試験は読み込んだ
+data がその定義と同じことを確かめる (取り違え防止)。

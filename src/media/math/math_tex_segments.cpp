@@ -72,6 +72,10 @@ struct Range {
 
 } // namespace
 
+std::string mathTexSegmentKey(const std::string& text) {
+    return trimmed(text);
+}
+
 std::vector<MathTexSegment> segmentMathTex(const std::string& source) {
     const std::size_t size = source.size();
     std::vector<Range> cuts; // 演算子の字句
@@ -122,7 +126,7 @@ std::vector<MathTexSegment> segmentMathTex(const std::string& source) {
     auto push = [&](std::size_t from, std::size_t to) {
         if (from < to) {
             auto text = source.substr(from, to - from);
-            auto key = trimmed(text);
+            auto key = mathTexSegmentKey(text);
             segments.push_back({std::move(text), std::move(key)});
         }
     };

@@ -1,6 +1,7 @@
 #ifndef MVM_APPS_MVM_MVM_CONTROLLER_H
 #define MVM_APPS_MVM_MVM_CONTROLLER_H
 
+#include "app/equation_sequence_preview.h"
 #include "app/math_clip_render.h"
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
@@ -59,6 +60,7 @@ struct MediaImportResult;
 class TrackModel;
 class ScrubAudioPlayback;
 class ShuttleAudioPlayback;
+class EquationSequenceEditor;
 
 class MvmController : public QObject {
     Q_OBJECT
@@ -196,6 +198,8 @@ class MvmController : public QObject {
     Q_PROPERTY(double masterVolume READ masterVolume WRITE setMasterVolume NOTIFY stateChanged)
     Q_PROPERTY(int outputWidth READ outputWidth NOTIFY stateChanged)
     Q_PROPERTY(int outputHeight READ outputHeight NOTIFY stateChanged)
+    // P3-5: 選択中の EquationSequence clip の authoring (equation_sequence_editor.h)。
+    Q_PROPERTY(QObject* equationEditor READ equationEditor CONSTANT)
     Q_PROPERTY(double effectPositionX READ effectPositionX NOTIFY stateChanged)
     Q_PROPERTY(double effectPositionY READ effectPositionY NOTIFY stateChanged)
     Q_PROPERTY(double effectScaleX READ effectScaleX NOTIFY stateChanged)
@@ -650,6 +654,13 @@ public:
     // unavailableReason: backend / authority / 空、canRetry: この instance で再試行できるか。
     Q_INVOKABLE QVariantMap mathClipData(const QString& clipId) const;
     QVariantMap selectedMathClip() const;
+    // P3-5: 一つの状態 (透明背景・今の Project の FPS・既定の hold) だけを持つ数式 sequence を
+    // 再生位置に置いて選ぶ。Undo 1 回分。
+    Q_INVOKABLE bool createEquationSequenceClip(const QString& source);
+    QObject* equationEditor() const;
+    EquationSequenceEditor& equationEditorRef() const { return *equationEditor_; }
+    // 読むだけの今の Project (authoring の controller が表示の値を作るのに使う)。
+    const project::Project& currentProject() const { return project_; }
     // 試験用: 数式の backend の確認を差し替えて確かめ直す (偽の backend を注入する)。
     void setMathPreflightForTest(MathRasterCache::PreflightFunction preflight);
     MathRasterCache& mathRastersForTest() { return *mathRasters_; }
@@ -678,6 +689,42 @@ public:
         mathTransformObserverForTest_ = std::move(observer);
         mathPreviewAnimations_.clear();
     }
+    // 試験用: Equation Sequence の preview の評価 (engine の render thread が出力 frame ごとに呼ぶ)
+    // を観測する。引数は clip ID・出力 frame・P3-1 の区間 (clip の外は nullopt)・見せたもの
+    // (代用を解決した結果)。設定後に作る animation に効く。thread 安全にすること。
+    using EquationPreviewObserver =
+        std::function<void(const std::string& clipId, std::int64_t outputFrame,
+                           const std::optional<EquationPreviewTime>& time,
+                           const EquationPreviewShown& shown)>;
+    void setEquationPreviewObserverForTest(EquationPreviewObserver observer) {
+        equationPreviewObserverForTest_ = std::move(observer);
+        equationPreviewAnimations_.clear();
+    }
+    // Equation Sequence clip の preview の状態 (P3-4)。見た目の代用が同じでも、内部の状態は
+    // 区別したまま保つ (編集・修復の UI は P3-5)。outputFrame の区間について調べる。
+    // 読むだけで、静止・sequence の描画を要求せず cache の record も作らない (P3-4.1)。
+    //   compile      今の Project の P3-2 compile (None 以外は spec が無く、静止だけを見せる)
+    //   backend      数式の backend (Checking / Available / Unavailable)
+    //   disk         disk の artifact (Pending / Ready / Failed / Unavailable)。Failed の
+    //                CorruptFrame は memory へ読むときに壊れていた・provenance が変わった artifact
+    //   residency    今の frame の層の束 (NotReady / Loading / Resident / OverBudget / Failed)
+    //   shown        今の frame で見せるもの
+    struct EquationSequencePreviewStatus {
+        bool found = false;
+        EquationCompileFailure compile = EquationCompileFailure::None;
+        MathRasterCache::BackendState backend = MathRasterCache::BackendState::Unavailable;
+        MathRasterCache::State disk = MathRasterCache::State::Pending;
+        math::EquationBackendFailure diskFailure = math::EquationBackendFailure::NotValidated;
+        QString diskMessage;
+        MathRasterCache::Residency residency = MathRasterCache::Residency::NotReady;
+        QString residencyMessage;
+        std::optional<EquationPreviewTime> time;
+        EquationPreviewShown shown;
+        std::vector<bool> staticsReady;
+        QString sequenceKey;
+    };
+    EquationSequencePreviewStatus equationSequencePreviewStatus(const QString& clipId,
+                                                               qint64 outputFrame) const;
     // 試験用: 最後に engine へ出した composition (再生中の引き継ぎも含む)。
     std::shared_ptr<const preview::CompositionSnapshot> submittedCompositionForTest() const {
         return submittedComposition_;
@@ -865,6 +912,11 @@ public:
     Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);
     Q_INVOKABLE bool unlinkTimelineClip(const QString& clipId);
     Q_INVOKABLE bool undoLastEdit();
+    // P3-1 の domain 編集入口。通常の Project 履歴へ一回だけ確定する。確定したら数式の描画を
+    // 要求し直し、preview を今の Project で組み直す (P3-4 の経路。再生位置は動かさない)。
+    bool editEquationSequenceData(
+        const std::string& clipId,
+        const std::function<bool(project::EquationSequenceClipData&, std::string&)>& edit);
     Q_INVOKABLE bool redoLastEdit();
     Q_INVOKABLE QVariantMap exportSettingsSummary() const;
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
@@ -1258,6 +1310,20 @@ private:
                                QString* placementError = nullptr) const;
     // 選択中のトランジションが変形なら、描画と preview の状態 (computeSelectedTransition が足す)。
     QVariantMap mathTransformStatus(const project::TimelineTransition& transition) const;
+    // ---- Equation Sequence (P3-4) ----
+    // 今の Project の data を compile した結果 (data が同じ間だけ使い回す。前に成功した spec を
+    // 正にしない)。
+    EquationCompileResult<EquationSequenceSpec>
+    compiledEquationSequence(const project::TimelineClip& clip) const;
+    // 状態 s の通常の静止の描画要求 (通常の Math と同じ key)。
+    static math::MathRenderSpec equationStateStaticSpec(const project::EquationState& state);
+    // 出力 frame の preview の animation。全区間を 1 つの instance にまとめ、見せるものは
+    // render thread が output frame から決める (再生の履歴を持たない)。今の frame の層を最優先で
+    // memory に読み、先読みは今の区間の残りと次の区間だけ。何も見せられなければ nullptr。
+    std::shared_ptr<const preview::PreviewStillAnimation>
+    equationSequencePreviewAnimation(int clipIndex, std::int64_t outputFrame) const;
+    // Equation Sequence の layer の下地 (出力の大きさの透明な 1 枚、clip の間で共有)。
+    std::shared_ptr<const preview::PreviewStillImage> equationTransparentOutput() const;
     // 数式 clip の Write の状態 (mathClipData の writeState / writeMessage)。
     std::pair<QString, QString> mathWriteState(const project::TimelineClip& clip) const;
     // preview 中の値を反映した数式 clip の値。
@@ -1501,6 +1567,8 @@ private:
     std::unique_ptr<ImageRasterCache> imageRasters_;
     // 数式 clip の描画結果 (key 単位、<project>/cache/math)。
     std::unique_ptr<MathRasterCache> mathRasters_;
+    // P3-5 の authoring。controller の stateChanged を購読するので controller より先に壊す。
+    std::unique_ptr<EquationSequenceEditor> equationEditor_;
     // clip ごとの最後に描けた mask。式を直して描き直している間・失敗した間はこれを出す。
     // 派生物なので Project には入れず、session の間だけ持つ。
     struct MathLastGood {
@@ -1524,6 +1592,17 @@ private:
     MathWriteObserver mathWriteObserverForTest_;
     MathTransformObserver mathTransformObserverForTest_;
     MathTransformExportFrameLoader mathTransformExportFrameLoaderForTest_;
+    // Equation Sequence (P3-4)。clip ごとの compile の結果 (data が変われば作り直す)・preview の
+    // animation・静止の被覆 (静止の key ごと)・透明な下地。
+    struct EquationCompileMemo {
+        project::EquationSequenceClipData data;
+        EquationCompileResult<EquationSequenceSpec> result;
+    };
+    mutable QHash<QString, EquationCompileMemo> equationCompiles_;
+    mutable QHash<QString, MathPreviewAnimationMemo> equationPreviewAnimations_;
+    mutable QHash<QString, EquationPreviewCoverage> equationStaticCoverage_;
+    mutable std::shared_ptr<const preview::PreviewStillImage> equationTransparent_;
+    EquationPreviewObserver equationPreviewObserverForTest_;
     // 入力中の数式 (clip ID と、Project へまだ保存していない値)。
     std::optional<std::pair<std::string, project::MathClipData>> mathPreviewOverride_;
     mutable QHash<QString, QRect> textRasterBounds_;

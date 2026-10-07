@@ -13,12 +13,15 @@
 #include "core/checked_output_timebase.h"
 #include "core/export_eta.h"
 #include "core/timecode.h"
+#include "app/equation_sequence_authoring.h"
+#include "equation_sequence_editor.h"
 #include "image_raster_cache.h"
 #include "media_file_filters.h"
 #include "media/manim/manim_math_tex.h"
 #include "media_import.h"
 #include "preview_engine/preview_engine_internal.h"
 #include "project/clip_effects.h"
+#include "project/equation_sequence_edit.h"
 #include "project/path_identity.h"
 #include "project/project_json.h"
 #include "project/subtitles.h"
@@ -48,6 +51,7 @@
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QPointer>
+#include <QQmlEngine>
 #include <QTemporaryDir>
 #include <QUuid>
 #include <QVariantMap>
@@ -443,7 +447,8 @@ MvmController::MvmController(std::filesystem::path projectPath,
         // 利用者の操作と無関係な時刻に preview を組み直さない (フレーム送りの途中に割り込む)。
         if (std::none_of(project_.timelineClips.begin(), project_.timelineClips.end(),
                          [](const auto& clip) {
-                             return clip.kind == project::TimelineClipKind::Math;
+                             return clip.kind == project::TimelineClipKind::Math ||
+                                    clip.kind == project::TimelineClipKind::EquationSequence;
                          }))
             return;
         // backend の状態が変わった (key が計算できるようになった) ら、すべての数式を要求し直す。
@@ -456,6 +461,8 @@ MvmController::MvmController(std::filesystem::path projectPath,
         Q_EMIT stateChanged();
     });
     syncMathCacheAuthority();
+    equationEditor_ = std::make_unique<EquationSequenceEditor>(*this);
+    QQmlEngine::setObjectOwnership(equationEditor_.get(), QQmlEngine::CppOwnership);
 
     recoveryDebounceTimer_.setSingleShot(true);
     recoveryDebounceTimer_.setInterval(2000);
@@ -979,6 +986,17 @@ void MvmController::refreshTimelineModel(PlaybackInvalidation invalidation) {
             [&](const auto& item) { return !mathClipIds.contains(item.key()); });
         mathPreviewAnimations_.removeIf(
             [&](const auto& item) { return !mathClipIds.contains(item.key()); });
+        // Equation Sequence: 消えた clip の compile と animation を捨てる。静止の被覆は今の
+        // Project で要る分を次の合成で作り直す。
+        QSet<QString> sequenceIds;
+        for (const auto& clip : project_.timelineClips)
+            if (clip.kind == project::TimelineClipKind::EquationSequence)
+                sequenceIds.insert(QString::fromStdString(clip.id));
+        equationCompiles_.removeIf(
+            [&](const auto& item) { return !sequenceIds.contains(item.key()); });
+        equationPreviewAnimations_.removeIf(
+            [&](const auto& item) { return !sequenceIds.contains(item.key()); });
+        equationStaticCoverage_.clear();
     }
     requestMathRenders();
     textRasterBounds_.clear();
@@ -2276,6 +2294,40 @@ private:
     MvmController::MathTransformObserver transformObserver_;
 };
 
+// Equation Sequence (P3-4) の preview の animation。見せるもの・配置・色・合成は
+// EquationPreviewModel (Qt・cache に依存しない) が output frame だけから決める。sequence の全区間を
+// 1 つの instance にまとめ、再生中の合成の切り替えの遅れで区間の境の frame が古い instance で
+// 提示されても、同じ output frame は同じ画素になる。ClipEffects は layer が 1 回だけ掛ける。
+class EquationSequencePreviewAnimation final : public preview::PreviewStillAnimation {
+public:
+    EquationSequencePreviewAnimation(std::shared_ptr<const EquationPreviewModel> model,
+                                     MvmController::EquationPreviewObserver observer)
+        : model_(std::move(model)), observer_(std::move(observer)) {
+        const auto rect = model_->patchRect();
+        rect_ = {rect.x, rect.y, rect.width, rect.height};
+    }
+
+    preview::PreviewPixelRect patchRect() const override { return rect_; }
+
+    std::int64_t stateAt(std::int64_t outputFrame) const override {
+        const auto shown = model_->shownAt(outputFrame);
+        if (observer_)
+            observer_(model_->inputs().clip.id, outputFrame, model_->timeAt(outputFrame), shown);
+        return model_->stateCode(shown);
+    }
+
+    void fillPatch(std::int64_t state, std::uint8_t* out) const override {
+        model_->fill(state, out);
+    }
+
+    const EquationPreviewModel& model() const { return *model_; }
+
+private:
+    std::shared_ptr<const EquationPreviewModel> model_;
+    MvmController::EquationPreviewObserver observer_;
+    preview::PreviewPixelRect rect_;
+};
+
 void attachClipMotion(preview::PreviewCompositionLayer& layer, const project::ClipEffects& effects,
                       const project::TimelineClip& clip, const project::Project& project,
                       double transitionOpacity = 1) {
@@ -2306,11 +2358,18 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
     // (MathRasterCache の residency) に新しい mask が入らなくなる。
     {
         QSet<QString> visibleMath;
-        for (const auto& still : mappedFrame.stillLayers)
+        QSet<QString> visibleSequences;
+        for (const auto& still : mappedFrame.stillLayers) {
             if (still.kind == project::TimelineClipKind::Math)
                 visibleMath.insert(QString::fromStdString(still.clipId));
+            if (still.kind == project::TimelineClipKind::EquationSequence)
+                visibleSequences.insert(QString::fromStdString(still.clipId));
+        }
         mathPreviewAnimations_.removeIf(
             [&](const auto& item) { return !visibleMath.contains(item.key()); });
+        // Equation Sequence も同じ: 見えない clip の層を参照し続けない。
+        equationPreviewAnimations_.removeIf(
+            [&](const auto& item) { return !visibleSequences.contains(item.key()); });
     }
     // previewLayerStack が video と文字を track 順 (背面 -> 前面) に並べる。
     // この挿入順が engine の z 順の authority になる。
@@ -2319,6 +2378,30 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
             const auto& stillMapping = mappedFrame.stillLayers[entry.index];
             const double opacity = std::clamp(stillMapping.opacity, 0.0, 1.0);
             preview::PreviewCompositionLayer layer;
+            if (stillMapping.kind == project::TimelineClipKind::EquationSequence) {
+                // 内部の合成 (静止・変形・action の 2 層) は animation の中で済ませ、外側の
+                // ClipEffects は数式と同じく layer に 1 回だけ掛ける。何も見せられない間
+                // (どの状態の静止も描けていない) は合成に入れず、揃ったら entryChanged で組み直す。
+                layer.stillAnimation = equationSequencePreviewAnimation(
+                    stillMapping.clipIndex, mappedFrame.outputFrameNumber);
+                if (!layer.stillAnimation)
+                    continue;
+                layer.stillImage = equationTransparentOutput();
+                const auto& clip =
+                    project_.timelineClips[static_cast<std::size_t>(stillMapping.clipIndex)];
+                const project::ClipEffects effects = effectsForPreview(stillMapping.clipIndex);
+                if (!project::clipEffectsAreDefault(effects))
+                    applyPreviewLayerEffects(
+                        layer,
+                        project::evaluateClipEffects(effects, mappedFrame.outputFrameNumber -
+                                                                  clip.timelineStartFrame),
+                        opacity, 0, clip.sourceOutFrame - clip.sourceInFrame);
+                else
+                    layer.opacity = static_cast<float>(opacity);
+                attachClipMotion(layer, effects, clip, project_);
+                composition->layers.push_back(std::move(layer));
+                continue;
+            }
             if (stillMapping.kind == project::TimelineClipKind::Image ||
                 stillMapping.kind == project::TimelineClipKind::Math) {
                 bool pending = false;
@@ -3674,11 +3757,36 @@ void MvmController::requestMathRenders() {
         }
         (current ? transforms : laterTransforms).push_back(*spec);
     }
+    // Equation Sequence (P3-4): 再生位置に掛かる (preview に見える) clip だけを要求する。Project に
+    // あるだけの sequence を先回りして描かない。残すのは今の sequence の key と、その全状態の今の
+    // 静止 (代用と描画の入力)。preview 用の層の key は sequence の key の下なので一緒に残る。
+    // compile できない sequence も静止は要求する (代用に使う)。無効にした clip と出力しない track の
+    // clip は preview にも書き出しにも出ないので描かない (mapTimelinePreviewFrame と同じ条件)。
+    std::vector<math::EquationSequenceRenderSpec> sequences;
+    for (const auto& clip : project_.timelineClips) {
+        if (clip.kind != project::TimelineClipKind::EquationSequence || !clip.enabled ||
+            !project::isTrackOutputEnabled(project_, clip.track))
+            continue;
+        const auto duration = project::timelineClipDuration(project_, clip);
+        if (!duration.success || playheadFrame_ < clip.timelineStartFrame ||
+            playheadFrame_ >= clip.timelineStartFrame + duration.frame)
+            continue;
+        for (const auto& state : clip.equationSequence.states)
+            statics.push_back(equationStateStaticSpec(state));
+        const auto compiled = compiledEquationSequence(clip);
+        std::string error;
+        if (compiled.value)
+            if (auto spec = equationSequenceRenderSpecFor(*compiled.value, error))
+                sequences.push_back(std::move(*spec));
+    }
     QSet<QString> keys;
     for (const auto* list : {&statics, &laterStatics})
         for (const auto& spec : *list)
             if (const QString key = mathRasters_->keyFor(spec); !key.isEmpty())
                 keys.insert(key);
+    for (const auto& spec : sequences)
+        if (const QString key = mathRasters_->equationSequenceKeyFor(spec); !key.isEmpty())
+            keys.insert(key);
     for (const auto* list : {&writes, &laterWrites})
         for (const auto& spec : *list)
             if (const QString key = mathRasters_->sequenceKeyFor(spec); !key.isEmpty())
@@ -3698,6 +3806,8 @@ void MvmController::requestMathRenders() {
         mathRasters_->cancelPendingAnimations();
     for (const auto& spec : statics)
         mathRasters_->request(spec);
+    for (const auto& spec : sequences)
+        mathRasters_->requestEquationSequence(spec);
     for (const auto& spec : writes)
         mathRasters_->requestSequence(spec);
     for (const auto& spec : transforms)
@@ -3854,6 +3964,278 @@ std::shared_ptr<const preview::PreviewStillAnimation> MvmController::mathPreview
         std::move(transforms), mathWriteObserverForTest_, mathTransformObserverForTest_);
     mathPreviewAnimations_.insert(clipId, {memo, animation});
     return animation;
+}
+
+// ---- Equation Sequence (P3-4) ----
+
+namespace {
+
+MathRasterCache::EquationLayerRef equationLayerRef(const EquationPreviewLayerId& id) {
+    MathRasterCache::EquationLayerRef ref;
+    ref.role = id.role == EquationPreviewLayerRole::TransitionFrame
+                   ? MathRasterCache::EquationLayerRole::TransitionFrame
+               : id.role == EquationPreviewLayerRole::ActionBase
+                   ? MathRasterCache::EquationLayerRole::ActionBase
+                   : MathRasterCache::EquationLayerRole::ActionAccent;
+    ref.interval = id.interval;
+    ref.frame = id.frame;
+    return ref;
+}
+
+std::vector<MathRasterCache::EquationLayerRef>
+equationLayerRefs(const std::vector<EquationPreviewLayerId>& ids) {
+    std::vector<MathRasterCache::EquationLayerRef> refs;
+    for (const auto& id : ids)
+        refs.push_back(equationLayerRef(id));
+    return refs;
+}
+
+// 束の層を model の入力へ置く (層の被覆は常駐の mask の参照)。
+void placeEquationLayers(EquationPreviewInputs& in, const std::vector<EquationPreviewLayerId>& ids,
+                         const MathRasterCache::ResidentEquationLayers& resident, QString& memo) {
+    for (std::size_t k = 0; k < ids.size() && k < resident.layers.size(); ++k) {
+        const auto& layer = resident.layers[k];
+        if (!layer || layer->frames.size() != 1)
+            continue;
+        const EquationPreviewCoverage coverage(layer, &layer->frames.front());
+        const auto& id = ids[k];
+        switch (id.role) {
+        case EquationPreviewLayerRole::TransitionFrame:
+            in.transitionFrames[{id.interval, id.frame}] = coverage;
+            break;
+        case EquationPreviewLayerRole::ActionBase:
+            in.actionBases[id.interval] = coverage;
+            break;
+        case EquationPreviewLayerRole::ActionAccent:
+            in.actionAccents[{id.interval, id.frame}] = coverage;
+            break;
+        }
+        memo += QStringLiteral("|%1:%2:%3@%4")
+                    .arg(static_cast<int>(id.role))
+                    .arg(id.interval)
+                    .arg(id.frame)
+                    .arg(reinterpret_cast<quintptr>(layer.get()));
+    }
+}
+
+// 先読みの束の数の上限 (広い先読みはしない。今の区間の残りと次の区間だけ)。
+constexpr std::size_t kEquationPrefetchBundles = 240;
+
+} // namespace
+
+EquationCompileResult<EquationSequenceSpec>
+MvmController::compiledEquationSequence(const project::TimelineClip& clip) const {
+    const QString id = QString::fromStdString(clip.id);
+    // 今の data の compile だけを使う (data が変わったら前の成功を正にしない)。
+    if (const auto found = equationCompiles_.constFind(id);
+        found != equationCompiles_.constEnd() && found->data == clip.equationSequence)
+        return found->result;
+    auto result = compileEquationSequence(clip.equationSequence);
+    equationCompiles_.insert(id, {clip.equationSequence, result});
+    return result;
+}
+
+math::MathRenderSpec MvmController::equationStateStaticSpec(const project::EquationState& state) {
+    return mathRenderSpecFor(state.equation);
+}
+
+std::shared_ptr<const preview::PreviewStillImage> MvmController::equationTransparentOutput() const {
+    if (!equationTransparent_ || equationTransparent_->width != project_.outputWidth ||
+        equationTransparent_->height != project_.outputHeight) {
+        auto image = std::make_shared<preview::PreviewStillImage>();
+        image->width = project_.outputWidth;
+        image->height = project_.outputHeight;
+        image->rgba.assign(static_cast<std::size_t>(project_.outputWidth) *
+                               static_cast<std::size_t>(project_.outputHeight) * 4U,
+                           0);
+        equationTransparent_ = std::move(image);
+    }
+    return equationTransparent_;
+}
+
+std::shared_ptr<const preview::PreviewStillAnimation>
+MvmController::equationSequencePreviewAnimation(int clipIndex, std::int64_t outputFrame) const {
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    const QString clipId = QString::fromStdString(clip.id);
+    const auto none = [&] {
+        equationPreviewAnimations_.remove(clipId);
+        return nullptr;
+    };
+    if (!mathRasters_ || clip.kind != project::TimelineClipKind::EquationSequence)
+        return none();
+    EquationPreviewInputs in;
+    in.clip = clip;
+    in.timelineFpsNum = project_.timelineFpsNum;
+    in.timelineFpsDen = project_.timelineFpsDen;
+    in.outputWidth = project_.outputWidth;
+    in.outputHeight = project_.outputHeight;
+    const auto compiled = compiledEquationSequence(clip);
+    in.spec = compiled.value;
+    QString memo = QStringLiteral("%1/%2|%3x%4|%5|%6-%7|c%8")
+                       .arg(project_.timelineFpsNum)
+                       .arg(project_.timelineFpsDen)
+                       .arg(project_.outputWidth)
+                       .arg(project_.outputHeight)
+                       .arg(clip.timelineStartFrame)
+                       .arg(clip.sourceInFrame)
+                       .arg(clip.sourceOutFrame)
+                       .arg(static_cast<int>(compiled.failure));
+
+    // 各状態の今の静止 (通常の Math と同じ key・色)。描けていない状態は代用もしない (別の式の
+    // 静止や前に描けた静止で埋めない)。
+    std::vector<std::string> staticKeys;
+    for (const auto& state : clip.equationSequence.states) {
+        const auto spec = equationStateStaticSpec(state);
+        const auto entry = mathRasters_->request(spec);
+        const QString key = mathRasters_->keyFor(spec);
+        staticKeys.push_back(key.toStdString());
+        math::MathComposeStyle style;
+        if (entry.state != MathRasterCache::State::Ready || !entry.mask || key.isEmpty() ||
+            !mathComposeStyleFor(state.equation, style)) {
+            in.statics.emplace_back();
+            memo += QStringLiteral("|S-");
+            continue;
+        }
+        auto coverage = equationStaticCoverage_.value(key);
+        if (!coverage) {
+            std::vector<std::uint8_t> alpha(static_cast<std::size_t>(entry.mask->width) *
+                                            static_cast<std::size_t>(entry.mask->height));
+            for (std::size_t at = 0; at < alpha.size() && at * 4U + 3U < entry.mask->rgba.size();
+                 ++at)
+                alpha[at] = entry.mask->rgba[at * 4U + 3U];
+            coverage = std::make_shared<const std::vector<std::uint8_t>>(std::move(alpha));
+            equationStaticCoverage_.insert(key, coverage);
+        }
+        in.statics.push_back(
+            EquationPreviewStatic{entry.mask->width, entry.mask->height, coverage, style.colorArgb});
+        memo += QStringLiteral("|S%1#%2").arg(key).arg(style.colorArgb);
+    }
+
+    // 今の spec の disk の artifact (Ready で、今の静止の key で検証したもの) と層。
+    std::string renderError;
+    const auto renderSpec =
+        in.spec ? equationSequenceRenderSpecFor(*in.spec, renderError) : std::nullopt;
+    if (renderSpec &&
+        mathRasters_->requestEquationSequence(*renderSpec).state == MathRasterCache::State::Ready) {
+        const auto artifact = mathRasters_->equationSequenceArtifactOf(*renderSpec);
+        // 静止が変わった (key が違う) artifact は使わない。
+        if (artifact && artifact->stateStaticKeys == staticKeys) {
+            in.artifactReady = true;
+            for (const auto& item : artifact->transitions) {
+                EquationPreviewTransitionArtifact out{item.width,   item.height,  item.sourceX,
+                                                      item.sourceY, item.targetX, item.targetY,
+                                                      {}};
+                for (const auto& frame : item.frames)
+                    out.colors.push_back(frame.colorArgb); // provenance の色
+                in.transitions.push_back(std::move(out));
+            }
+            for (const auto& item : artifact->actions) {
+                EquationPreviewActionArtifact out{item.width,   item.height,
+                                                  item.staticX, item.staticY,
+                                                  item.base.colorArgb, {}};
+                for (const auto& frame : item.accent)
+                    out.accentColors.push_back(frame.colorArgb);
+                in.actions.push_back(std::move(out));
+            }
+            memo += QStringLiteral("|Q") + mathRasters_->equationSequenceKeyFor(*renderSpec);
+            std::string timeError;
+            const auto time = equationPreviewTimeAt(clip, project_.timelineFpsNum,
+                                                    project_.timelineFpsDen, &*in.spec,
+                                                    outputFrame, timeError);
+            if (time) {
+                // 今の frame の束を最優先で読む。揃ったときだけ先読みする (先読みは何も追い出さず、
+                // 今の frame の読み込みを待たせない)。
+                const auto current = equationPreviewCurrentLayers(time->lookup);
+                bool currentReady = current.empty();
+                if (!current.empty()) {
+                    const auto resident = mathRasters_->residentEquationLayers(
+                        *renderSpec, equationLayerRefs(current), true);
+                    if (resident.state == MathRasterCache::Residency::Resident) {
+                        placeEquationLayers(in, current, resident, memo);
+                        currentReady = true;
+                    }
+                }
+                if (currentReady)
+                    for (const auto& bundle : equationPreviewUpcomingLayers(
+                             *in.spec, *time, kEquationPrefetchBundles)) {
+                        const auto resident = mathRasters_->residentEquationLayers(
+                            *renderSpec, equationLayerRefs(bundle), false);
+                        if (resident.state == MathRasterCache::Residency::Resident)
+                            placeEquationLayers(in, bundle, resident, memo);
+                    }
+            }
+        }
+    }
+
+    if (const auto found = equationPreviewAnimations_.constFind(clipId);
+        found != equationPreviewAnimations_.constEnd() && found->memo == memo)
+        return found->animation;
+    auto model = std::make_shared<const EquationPreviewModel>(std::move(in));
+    for (const auto& diagnostic : model->diagnostics())
+        qWarning("Equation Sequence の preview: %s", diagnostic.c_str());
+    if (!model->hasContent())
+        return none();
+    auto animation = std::make_shared<EquationSequencePreviewAnimation>(
+        std::move(model), equationPreviewObserverForTest_);
+    equationPreviewAnimations_.insert(clipId, {memo, animation});
+    return animation;
+}
+
+MvmController::EquationSequencePreviewStatus
+MvmController::equationSequencePreviewStatus(const QString& clipId, qint64 outputFrame) const {
+    EquationSequencePreviewStatus status;
+    const auto found = std::find_if(
+        project_.timelineClips.begin(), project_.timelineClips.end(), [&](const auto& clip) {
+            return clip.kind == project::TimelineClipKind::EquationSequence &&
+                   QString::fromStdString(clip.id) == clipId;
+        });
+    if (found == project_.timelineClips.end() || !mathRasters_)
+        return status;
+    // 問い合わせは読むだけ: 静止・sequence の描画を要求せず、cache の record も作らない
+    // (再生位置に無い選択中の clip を UI が問い合わせても描画を始めない)。描画の要求は見えている
+    // clip の合成 (equationSequencePreviewAnimation) と requestMathRenders だけが行う。
+    status.found = true;
+    status.backend = mathRasters_->backendState();
+    // compile も memo を書き換えない (data が同じ memo があれば使い、無ければその場で compile)。
+    const auto memo = equationCompiles_.constFind(clipId);
+    const auto compiled = memo != equationCompiles_.constEnd() && memo->data == found->equationSequence
+                              ? memo->result
+                              : compileEquationSequence(found->equationSequence);
+    status.compile = compiled.failure;
+    std::string error;
+    status.time = equationPreviewTimeAt(*found, project_.timelineFpsNum, project_.timelineFpsDen,
+                                        compiled.value ? &*compiled.value : nullptr, outputFrame,
+                                        error);
+    for (const auto& state : found->equationSequence.states) {
+        const auto entry = mathRasters_->entryOf(equationStateStaticSpec(state));
+        status.staticsReady.push_back(entry.state == MathRasterCache::State::Ready && entry.mask);
+    }
+    // 見せるものは今の合成の animation の model が決める (animation が無ければ None)。
+    if (const auto animation = equationPreviewAnimations_.constFind(clipId);
+        animation != equationPreviewAnimations_.constEnd())
+        if (const auto* sequence =
+                dynamic_cast<const EquationSequencePreviewAnimation*>(animation->animation.get()))
+            status.shown = sequence->model().shownAt(outputFrame);
+    if (!compiled.value)
+        return status;
+    const auto renderSpec = equationSequenceRenderSpecFor(*compiled.value, error);
+    if (!renderSpec)
+        return status;
+    status.sequenceKey = mathRasters_->equationSequenceKeyFor(*renderSpec);
+    const auto entry = mathRasters_->equationSequenceEntryOf(*renderSpec);
+    status.disk = entry.state;
+    status.diskFailure = entry.backendFailure;
+    status.diskMessage = entry.message;
+    if (entry.state == MathRasterCache::State::Ready && status.time) {
+        const auto current = equationPreviewCurrentLayers(status.time->lookup);
+        if (!current.empty()) {
+            const auto residency =
+                mathRasters_->equationLayersResidencyOf(*renderSpec, equationLayerRefs(current));
+            status.residency = residency.state;
+            status.residencyMessage = residency.message;
+        }
+    }
+    return status;
 }
 
 QVariantMap MvmController::mathTransformStatus(const project::TimelineTransition& transition) const {
@@ -4209,6 +4591,50 @@ bool MvmController::createMathClip(const QString& source) {
     }
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("数式 clip を作成できません: ")))
         return false;
+    Q_EMIT stateChanged();
+    refreshTextPreview();
+    return selectClip(placed.selectedIndex);
+}
+
+QObject* MvmController::equationEditor() const {
+    return equationEditor_.get();
+}
+
+bool MvmController::createEquationSequenceClip(const QString& source) {
+    if (busy_ || source.trimmed().isEmpty() || !pauseTimeline())
+        return false;
+    project::Project candidate = project_;
+    project::TimelineClip clip;
+    clip.kind = project::TimelineClipKind::EquationSequence;
+    clip.id = newClipId();
+    clip.name = "数式 sequence";
+    // 内部の時間は作成時の Project の FPS (P3-1)。最初の状態は数式 clip と同じ既定の尺。
+    clip.sourceFpsNum = candidate.timelineFpsNum;
+    clip.sourceFpsDen = candidate.timelineFpsDen;
+    clip.equationSequence = newEquationSequenceData(
+        source.trimmed().toStdString(),
+        project::defaultStillClipFrames(candidate.timelineFpsNum, candidate.timelineFpsDen),
+        newClipId);
+    auto& equation = clip.equationSequence.states.front().equation;
+    equation.fontSize = std::min(equation.fontSize, candidate.outputHeight);
+    std::string error;
+    std::vector<project::EquationInterval> intervals;
+    if (!project::validateEquationSequence(clip.equationSequence, candidate.outputHeight, error) ||
+        !project::equationIntervals(clip.equationSequence, intervals, clip.sourceFrameCount,
+                                    error)) {
+        setStatus(QString::fromStdString(error));
+        return false;
+    }
+    clip.sourceOutFrame = clip.sourceFrameCount;
+    const auto placed = project::placeStillClipAt(candidate, std::move(clip), playheadFrame_);
+    if (!placed.success) {
+        setStatus(QString::fromStdString(placed.error));
+        return false;
+    }
+    if (!commitProjectEdit(std::move(candidate),
+                           QStringLiteral("数式 sequence を作成できません: ")))
+        return false;
+    requestMathRenders();
     Q_EMIT stateChanged();
     refreshTextPreview();
     return selectClip(placed.selectedIndex);
@@ -6148,6 +6574,14 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
         for (auto& copy : laneClips) {
             copy.track = {kind, chosen};
             copy.id = newClipId();
+            if (copy.kind == project::TimelineClipKind::EquationSequence) {
+                std::string error;
+                if (!project::remapEquationSequenceIds(
+                        copy.equationSequence, [this] { return newClipId(); }, error)) {
+                    setStatus(QString::fromStdString(error));
+                    return false;
+                }
+            }
             if (!copy.linkGroupId.empty()) {
                 if (linkCounts[copy.linkGroupId] == 2) {
                     auto& newId = newLinkIds[copy.linkGroupId];
@@ -7440,6 +7874,26 @@ bool MvmController::unlinkTimelineClip(const QString& clipId) {
                                         QStringLiteral("clipのリンクを解除しました"));
 }
 
+bool MvmController::editEquationSequenceData(const std::string& clipId,
+    const std::function<bool(project::EquationSequenceClipData&, std::string&)>& edit) {
+    if (busy_ || !pauseTimeline()) return false;
+    auto candidate = project_;
+    const auto result = project::editEquationSequence(candidate, clipId, edit);
+    if (!result.success) {
+        setStatus(QString::fromStdString(result.error));
+        return false;
+    }
+    if (!commitProjectEdit(std::move(candidate),
+                           QStringLiteral("数式 sequence を更新できません: ")))
+        return false;
+    // 数式 clip の確定と同じく、今の Project の key で描画を要求し直し preview を組み直す。
+    // 前の key の animation は P3-4 の retainOnly / memo が捨てる。再生位置は動かさない。
+    requestMathRenders();
+    Q_EMIT stateChanged();
+    refreshTextPreview();
+    return true;
+}
+
 bool MvmController::undoLastEdit() {
     return stepEditHistory(undoHistory_, redoHistory_, false);
 }
@@ -8360,6 +8814,18 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
     request.burnSubtitles = burnSubtitles_;
     request.renderThreads = 4;
     request.encoderThreads = 0;
+    for (const auto& clip : project_.timelineClips) {
+        if (clip.kind != project::TimelineClipKind::EquationSequence || !clip.enabled ||
+            !project::isTrackOutputEnabled(project_, clip.track))
+            continue;
+        EquationExportSnapshot snapshot;
+        if (mathRasters_)
+            snapshot = mathRasters_->equationSequenceExportSnapshot(clip);
+        else
+            snapshot.readiness = {EquationExportFailure::BackendUnavailable,
+                                  EquationCompileFailure::None, "数式の描画環境を利用できません"};
+        request.equationSequences.emplace(clip.id, std::move(snapshot));
+    }
     // 出力する数式 clip は、現在の式の描画が済んでいなければ書き出さない。描き直し中に
     // 見せている古い描画 (last-good) では書き出さない (fail-closed)。
     for (const auto& clip : project_.timelineClips) {

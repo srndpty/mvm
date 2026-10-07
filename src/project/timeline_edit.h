@@ -84,6 +84,8 @@ TimelineFrameResult clipTimelineBoundaryToSource(const TimelineClip& clip,
                                                  std::int64_t timelineFpsDen);
 TimelineFrameResult timelineClipDuration(const Project& project, const TimelineClip& clip);
 // clip 先頭から clipLocalFrame 番目の timeline frame が表示する素材 frame (素材の絶対 frame)。
+// EquationSequence だけは frame 始点を切り捨てで標本化する。可視範囲外の標本を出さず、
+// trim/split 後も素材原点の位相を保つ。既存素材の四捨五入とは区別する。
 // core::sourceFrameAtOutputPosition の四捨五入で、書き出し (MLT) と同じ frame を返す。
 // 丸めで sourceOutFrame (trim で外した次の frame) を返すことがあるのも MLT と同じである。
 // 素材の末尾を越える分だけは最終 frame に止める。

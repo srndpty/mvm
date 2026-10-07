@@ -1,5 +1,10 @@
 # 数式 clip (Math Clip)
 
+P2 MathTransform は PASS/CLOSED。P3-0 の製品外 renderer 検証と native Equation Sequence / 部分式の強調の
+設計提案は [math-equation-sequence-p30.md](math-equation-sequence-p30.md) を参照。
+P3-0.1 の参照・ID・透明背景・初期 action の明確化も同文書に含む。
+P3-0 / P3-0.1 は schema 20 と製品の挙動を変更しない。
+
 数式を mvm の Project の構造化データとして持ち、timeline 上で直接編集する clip。既存の Manim script clip
 (`File > Manim clip`、任意の Python scene) は escape hatch として残し、置き換えない。
 

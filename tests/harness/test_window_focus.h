@@ -13,6 +13,9 @@
 // QWindowSystemInterface は Qt の QPA (platform の内部 interface) である。
 // 製品のコードからは使わず、この試験の補助だけが使う。
 
+#include "app/preview/test_window_mode.h"
+#include "test_window_isolation.h"
+
 #include <windows.h>
 
 #include <QCoreApplication>
@@ -32,8 +35,7 @@ namespace mvm::test {
 // OS が描画の対象にしない (expose されない) ので、画面の上に置いたまま透過させる。
 // QML の window は読み込みと同時に表示されるので、読み込み前の初期 property で渡す。
 inline QVariant backgroundWindowFlags() {
-    return QVariant::fromValue(
-        Qt::WindowFlags(Qt::Window | Qt::WindowDoesNotAcceptFocus | Qt::WindowTransparentForInput));
+    return QVariant::fromValue(mvm::app::testBackgroundWindowFlags());
 }
 
 // Qt の中でだけ window にフォーカスを持たせる。OS の前面は変えない。
@@ -48,11 +50,9 @@ inline bool focusWithoutForeground(QWindow* window) {
 // マウス入力を受けない (その位置の実際のマウスは背後の window へ行く) ことを確かめる。
 // 切り離せていなければ、試験の結果が利用者の操作に左右される。
 inline bool isolatedFromUserInput(QWindow* window, QString& reason) {
-    const auto hwnd = reinterpret_cast<HWND>(window->winId());
-    if (GetForegroundWindow() == hwnd) {
-        reason = QStringLiteral("試験の window が OS の前面になっています");
+    if (!backgroundWindowIsolated(*window, reason))
         return false;
-    }
+    const auto hwnd = reinterpret_cast<HWND>(window->winId());
     const auto center = window->mapToGlobal(QPoint(window->width() / 2, window->height() / 2)) *
                         window->devicePixelRatio();
     const HWND hit = WindowFromPoint(POINT{center.x(), center.y()});

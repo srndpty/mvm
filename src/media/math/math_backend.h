@@ -4,6 +4,7 @@
 // 数式 renderer の backend の束 (backend 中立な契約)。preflight が使える backend の描画関数と
 // 能力をまとめて返す。Manim を含め特定の backend の型・設定は出さない。
 
+#include "media/math/equation_sequence_render.h"
 #include "media/math/math_render.h"
 #include "media/math/math_transform.h"
 
@@ -39,6 +40,13 @@ struct MathRenderBackend {
     // renderTransform が描ける最大の枚数 (backend の能力)。超える要求は Project の誤りではなく、
     // この描画環境の未対応として失敗させる。
     std::int64_t maximumTransformFrames = 0;
+    // Equation Sequence (P3-3) の描画 script の識別 (例 "manim-equation-sequence/1")。
+    // equationSequenceRenderKey だけに入る (静止・Write・P2 変形の key は変えない)。
+    std::string equationSequenceTemplate;
+    // Equation Sequence を描けない backend では空。
+    EquationSequenceRenderFunction renderEquationSequence;
+    // 1 区間 (変形・action) の最大の枚数 (backend の能力)。
+    std::int64_t maximumEquationSequenceFrames = 0;
 };
 
 enum class MathPreflightStatus { Available, Unavailable, Cancelled };
