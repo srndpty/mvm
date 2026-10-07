@@ -3760,10 +3760,12 @@ void MvmController::requestMathRenders() {
     // Equation Sequence (P3-4): 再生位置に掛かる (preview に見える) clip だけを要求する。Project に
     // あるだけの sequence を先回りして描かない。残すのは今の sequence の key と、その全状態の今の
     // 静止 (代用と描画の入力)。preview 用の層の key は sequence の key の下なので一緒に残る。
-    // compile できない sequence も静止は要求する (代用に使う)。
+    // compile できない sequence も静止は要求する (代用に使う)。無効にした clip と出力しない track の
+    // clip は preview にも書き出しにも出ないので描かない (mapTimelinePreviewFrame と同じ条件)。
     std::vector<math::EquationSequenceRenderSpec> sequences;
     for (const auto& clip : project_.timelineClips) {
-        if (clip.kind != project::TimelineClipKind::EquationSequence)
+        if (clip.kind != project::TimelineClipKind::EquationSequence || !clip.enabled ||
+            !project::isTrackOutputEnabled(project_, clip.track))
             continue;
         const auto duration = project::timelineClipDuration(project_, clip);
         if (!duration.success || playheadFrame_ < clip.timelineStartFrame ||

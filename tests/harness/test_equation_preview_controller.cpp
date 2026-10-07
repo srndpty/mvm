@@ -966,6 +966,29 @@ void testVisibleSetAndStatus() {
     controller.shutdown();
 }
 
+// 無効にした clip と非表示の track の clip は preview にも書き出しにも出ないので、再生位置に
+// 掛かっていても静止・sequence を描かない (Manim の process と cache を作らない)。
+void testHiddenSequenceNotRequested() {
+    const auto run = [](const std::string& name, project::Project initial) {
+        auto f = openFixture(name, std::move(initial));
+        auto& controller = *f->controller;
+        sequenceLayer(controller, 0);
+        settle(300);
+        check(controller.mathRastersForTest().equationSequenceRecordCount() == 0 &&
+                  f->backend.equationRenders->load() == 0 && f->backend.renders->load() == 0,
+              name + ": 見えない sequence は描かない");
+        controller.shutdown();
+    };
+    auto disabled = fixtureProject();
+    for (auto& clip : disabled.timelineClips)
+        if (clip.id == kClip.toStdString())
+            clip.enabled = false;
+    run("無効", std::move(disabled));
+    auto hidden = fixtureProject();
+    hidden.videoTracks[0].muted = true;
+    run("非表示", std::move(hidden));
+}
+
 // P3-4.1: 先読みで待っている層へ直接 seek すると、その層を残りの先読みより先に読む。
 // worker (1 本) を止めて待ち行列を作り、取り出した順を見る。
 void testPrefetchPromotion() {
@@ -1476,6 +1499,7 @@ int main(int argc, char** argv) {
     testStaleAndCorrupt();
     testCompileFailureBackendAndEffects();
     testVisibleSetAndStatus();
+    testHiddenSequenceNotRequested();
     testPrefetchPromotion();
     testStatusIsReadOnly();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);

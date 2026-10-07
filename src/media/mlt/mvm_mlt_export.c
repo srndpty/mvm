@@ -212,10 +212,11 @@ static int file_exists_utf8(const char* path) {
 }
 
 /* 連番の path ("...%05d.png") の index 番の file 名。"%" が "%05d" の 1 か所以外にもあれば
- * (qimage が別の書式として読むので) 0 を返す。 */
+ * (qimage が別の書式として読むので) 0 を返す。100000 番以降は 6 桁以上になる (qimage と
+ * QString::arg の幅指定も同じ名前を作る)。 */
 static int sequence_frame_path(const char* pattern, long long index, char* out, size_t size) {
     const char* at = strstr(pattern, "%05d");
-    if (!at || strchr(pattern, '%') != at || strchr(at + 1, '%') || index < 0 || index > 99999)
+    if (!at || strchr(pattern, '%') != at || strchr(at + 1, '%') || index < 0)
         return 0;
     const int written =
         snprintf(out, size, "%.*s%05lld%s", (int)(at - pattern), pattern, index, at + 4);

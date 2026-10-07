@@ -14,6 +14,7 @@
 
     -Portable は、特定の開発機環境 (Meiryo / D3D11VA hardware device) が必要な
     workstation ラベルも除外する。CI と日常の短縮検査で使用する。
+    この指定では描画試験の電源前提 (自動消灯・スリープ防止) を取得しない。
 
     debug ビルドの性能値を判定に使わないため、-Performance は
     release でのみ意味を持つ。-Stability は診断が目的なので preset を問わない。
@@ -241,7 +242,9 @@ $independentDone = $false
 
 $displayLease = $null
 try {
-if ($Group -ne 'BuildIndependent') {
+# 画面を使う workstation 試験を除く -Portable (CI など表示の無い環境) と、ビルドしない
+# BuildIndependent では取得しない。取得には描画先の電源状態の通知が要る。
+if ($Group -ne 'BuildIndependent' -and -not $Portable) {
     $displayLease = Start-MvmTestDisplayLease
 }
 foreach ($p in $presets) {
