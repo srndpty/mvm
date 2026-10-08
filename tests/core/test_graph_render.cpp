@@ -126,7 +126,7 @@ void pure() {
             }
 }
 
-void artifacts(const std::filesystem::path& root) {
+void artifacts(const std::filesystem::path& root, bool responsivenessOnly = false) {
     using namespace mvm::graph;
     auto data = line();
     data.intro = {mvm::project::GraphIntroKind::Draw, 3};
@@ -186,6 +186,25 @@ void artifacts(const std::filesystem::path& root) {
                                return Error{Failure::RendererFailure, 0, "呼ばれないはずです"};
                            });
     check(std::holds_alternative<Artifact>(reused) && !invoked, "検証済み cache を再利用");
+    auto differentN = request;
+    differentN.spec.drawFrames = 1;
+    differentN.job = root / "different-n-job";
+    int staticRenders = 0;
+    const auto differentResult =
+        authority.generate(differentN, root / "cache", generation,
+                           [&](const RenderRequest& r, const std::atomic<bool>* flag) {
+                               ++staticRenders;
+                               return fake(r, flag);
+                           });
+    check(std::holds_alternative<Artifact>(differentResult) && staticRenders == 1 &&
+              staticKey(differentN.spec, request.toolchain) == artifact.staticIdentity &&
+              std::filesystem::exists(differentN.job / "static.png"),
+          "異なる Draw N は静止 identity を保つが static を再描画する契約 B");
+    const auto completePending = root / ".pending-complete";
+    std::filesystem::copy(artifact.directory, completePending,
+                          std::filesystem::copy_options::recursive);
+    check(std::holds_alternative<Error>(validateArtifact(completePending, s, request.toolchain)),
+          "全 PNG と正常 manifest があっても pending は非 authority");
     check(std::holds_alternative<Artifact>(
               validateArtifact(artifact.directory, s, request.toolchain)),
           "独立再読込");
@@ -333,8 +352,16 @@ void artifacts(const std::filesystem::path& root) {
     const auto concurrentGeneration = authority.supersede();
     GraphRenderer concurrent = [&](const RenderRequest& r, const std::atomic<bool>* flag) {
         auto result = fake(r, flag);
-        rendezvous.arrive_and_wait();
+        if (r.job.filename() == "concurrent-b") {
+            auto raster = std::get<Raster>(readRgba(r.job / "static.png", s.width, s.height));
+            raster.rgba[0] = 128;
+            writeRgba(r.job / "static.png", raster);
+        }
         return result;
+    };
+    PublicationObserver concurrentStaging = [&](PublicationStage stage) {
+        if (stage == PublicationStage::Validate && !responsivenessOnly)
+            rendezvous.arrive_and_wait();
     };
     auto first = request;
     first.job = root / "concurrent-a";
@@ -342,14 +369,87 @@ void artifacts(const std::filesystem::path& root) {
     second.job = root / "concurrent-b";
     auto a = std::async(std::launch::async, [&] {
         return authority.generate(first, root / "concurrent-cache", concurrentGeneration,
-                                  concurrent);
+                                  concurrent, nullptr, concurrentStaging);
     });
     auto b = std::async(std::launch::async, [&] {
         return authority.generate(second, root / "concurrent-cache", concurrentGeneration,
-                                  concurrent);
+                                  concurrent, nullptr, concurrentStaging);
     });
-    check(std::holds_alternative<Artifact>(a.get()) && std::holds_alternative<Artifact>(b.get()),
-          "同じ key の重複同時要求");
+    const auto resultA = a.get(), resultB = b.get();
+    check(std::holds_alternative<Artifact>(resultA) && std::holds_alternative<Artifact>(resultB),
+          "同じ key の staging 重複同時要求");
+    if (std::holds_alternative<Artifact>(resultA) && std::holds_alternative<Artifact>(resultB))
+        check(std::get<Artifact>(resultA).pixelHashes == std::get<Artifact>(resultB).pixelHashes,
+              "異なる描画結果の同じ key は勝者を置換せず同じ artifact を返す");
+    // I/O 境界を明示的に止め、無効化の完了を待ってから解放する。
+    // timeout は旧 mutex の deadlock を安全に解放するためだけに使う。
+    for (const auto stage : {PublicationStage::Copy, PublicationStage::Validate}) {
+        for (int action = 0; action < 3; ++action) {
+            PublicationAuthority stagedAuthority;
+            const auto oldGeneration = stagedAuthority.supersede();
+            const auto name =
+                std::to_string(static_cast<int>(stage)) + "-" + std::to_string(action);
+            const auto stagedCache = root / ("staging-cache-" + name);
+            auto stagedRequest = request;
+            stagedRequest.job = root / ("staging-job-" + name);
+            std::promise<void> enteredStage, releaseStage;
+            auto enteredFuture = enteredStage.get_future();
+            auto releaseFuture = releaseStage.get_future().share();
+            bool observed = false;
+            std::atomic<bool> stagedCancel{false};
+            auto oldJob = std::async(std::launch::async, [&] {
+                return stagedAuthority.generate(stagedRequest, stagedCache, oldGeneration, fake,
+                                                &stagedCancel, [&](PublicationStage current) {
+                                                    if (current == stage && !observed) {
+                                                        observed = true;
+                                                        enteredStage.set_value();
+                                                        releaseFuture.wait();
+                                                    }
+                                                });
+            });
+            enteredFuture.wait();
+            std::uint64_t nextGeneration = 0;
+            auto invalidate = std::async(std::launch::async, [&] {
+                if (action == 0)
+                    nextGeneration = stagedAuthority.supersede();
+                else if (action == 1)
+                    stagedAuthority.shutdown();
+                else
+                    stagedCancel.store(true);
+            });
+            const bool responsive =
+                invalidate.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+            check(responsive, "staging を解放せずに authority 無効化が完了する");
+            const auto target =
+                stagedCache / drawKey(staticKey(s, request.toolchain), s.drawFrames);
+            check(!std::filesystem::exists(target), "staging 中は Ready が存在しない");
+            for (const auto& entry : std::filesystem::directory_iterator(stagedCache))
+                check(std::holds_alternative<Error>(
+                          validateArtifact(entry.path(), s, request.toolchain)),
+                      "pending は公開 authority ではない");
+            // supersede が完了した場合、新世代は古い staging を待たずに公開できる。
+            if (responsive && action == 0) {
+                auto newRequest = request;
+                newRequest.job = root / ("new-staging-job-" + name);
+                check(std::holds_alternative<Artifact>(
+                          stagedAuthority.generate(newRequest, stagedCache, nextGeneration, fake)),
+                      "古い staging が停止中でも新世代を公開できる");
+            }
+            releaseStage.set_value();
+            invalidate.get();
+            const auto oldResult = oldJob.get();
+            check(failedAs(oldResult, action == 0 ? Failure::Superseded : Failure::Cancelled),
+                  "staging 中の取消・旧世代は typed failure");
+            if (responsive && action == 0)
+                check(std::holds_alternative<Artifact>(
+                          validateArtifact(target, s, request.toolchain)),
+                      "旧世代の失敗でも新しい正常 cache は保存する");
+            else
+                check(!std::filesystem::exists(target), "取消後の staging は公開されない");
+            // shutdown 後も job の join を済ませてから authority を破棄する。
+            stagedAuthority.shutdown();
+        }
+    }
     auto next = request;
     next.job = root / "failed-new-job";
     next.spec.curves[0].argb ^= 1;
@@ -773,7 +873,7 @@ int main(int argc, char** argv) {
             return 2;
         }
         std::filesystem::create_directories(root);
-        artifacts(root);
+        artifacts(root, argc == 3 && std::string(argv[2]) == "responsiveness");
         if (argc >= 4)
             real(root, argv[2], argv[3], argc == 5 ? argv[4] : "");
     }

@@ -133,14 +133,18 @@ using ArtifactResult = std::variant<Artifact, Error>;
 ArtifactResult validateArtifact(const std::filesystem::path&, const GraphRenderSpec&,
                                 const std::string& toolchain, const std::atomic<bool>* = nullptr);
 
-// 同じ authority の世代変更と公開を同一 mutex で直列化する。
+enum class PublicationStage { Copy, Validate };
+using PublicationObserver = std::function<void(PublicationStage)>;
+
+// 世代変更と rename だけを直列化する。shutdown は無効化のみで待機しない。
+// 所有者は shutdown 後に全 generate 呼出しを join してから破棄する。
 class PublicationAuthority {
 public:
     std::uint64_t supersede();
     void shutdown();
     ArtifactResult generate(const RenderRequest&, const std::filesystem::path& cache,
                             std::uint64_t generation, const GraphRenderer&,
-                            const std::atomic<bool>* = nullptr);
+                            const std::atomic<bool>* = nullptr, const PublicationObserver& = {});
 
 private:
     std::mutex mutex_;

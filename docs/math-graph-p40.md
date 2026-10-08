@@ -106,7 +106,9 @@ cacheにはPNGとmanifestだけを置く。壊れた同keyを黙って旧keyへ�
 同keyの重複要求は独立jobで生成し、公開を直列化する。後着は先着artifactを再検証する。
 新しいkeyの失敗で以前の正常artifactを削除しない。
 
-`PublicationAuthority`の世代変更と公開は同じmutexをlinearization pointとする。
+`PublicationAuthority`の世代変更と公開は同じmutexで直列化し、非置換renameを公開のlinearization pointとする。
+P4-2.1では重い staging I/O と全画素検証をmutex外へ移した。応答性と静止cacheの契約は
+[math-graph-p421.md](math-graph-p421.md)を参照する。static identityの安定性は異なるDraw N間の物理共有を意味しない。
 supersede/shutdownは実行中のbackendへ取消を伝える。取消・旧世代をrenderer失敗と区別し、
 検証・コピー・最終公開でも再検査する。既存Win32 Job Objectのprocess-tree取消を再利用する。
 同期generateを使う呼び出し側はshutdown後に実行中呼び出しをjoinしてからauthorityを破棄する。

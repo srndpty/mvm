@@ -500,6 +500,9 @@ bool writeRgba(const std::filesystem::path& path, const Raster& raster) {
 
 ArtifactResult validateArtifact(const std::filesystem::path& directory, const GraphRenderSpec& spec,
                                 const std::string& toolchain, const std::atomic<bool>* cancel) {
+    for (const auto& component : std::filesystem::absolute(directory).lexically_normal())
+        if (component.string().starts_with(".pending-"))
+            return corrupt("pending artifact は公開 authority ではありません");
     if (std::holds_alternative<Error>(validateSpec(spec)) || !withinRenderBudget(spec) ||
         toolchain.empty())
         return corrupt("検証 authority が不正です");
@@ -530,7 +533,8 @@ ArtifactResult PublicationAuthority::generate(const RenderRequest& request,
                                               const std::filesystem::path& cache,
                                               std::uint64_t generation,
                                               const GraphRenderer& renderer,
-                                              const std::atomic<bool>* cancel) {
+                                              const std::atomic<bool>* cancel,
+                                              const PublicationObserver& observer) {
     if (auto checked = validateSpec(request.spec); std::holds_alternative<Error>(checked))
         return std::get<Error>(checked);
     if (!withinRenderBudget(request.spec))
@@ -554,10 +558,20 @@ ArtifactResult PublicationAuthority::generate(const RenderRequest& request,
         std::lock_guard lock(mutex_);
         if (auto error = guard())
             return *error;
-        if (std::filesystem::exists(target))
-            return validateArtifact(target, request.spec, request.toolchain, cancel);
         generationCancel = generationCancel_;
     }
+    auto checkAuthority = [&]() -> std::optional<Error> {
+        std::lock_guard lock(mutex_);
+        return guard();
+    };
+    auto readPublished = [&]() -> ArtifactResult {
+        auto result = validateArtifact(target, request.spec, request.toolchain, cancel);
+        if (auto error = checkAuthority())
+            return *error;
+        return result;
+    };
+    if (std::filesystem::exists(target))
+        return readPublished();
     std::atomic<bool> stop{false};
     std::jthread watcher([&](std::stop_token token) {
         while (!token.stop_requested()) {
@@ -583,14 +597,13 @@ ArtifactResult PublicationAuthority::generate(const RenderRequest& request,
     if (auto* error = std::get_if<Error>(&checked))
         return *error;
     const auto& validated = std::get<Validation>(checked);
-    std::lock_guard lock(mutex_);
-    if (auto error = guard())
+    if (auto error = checkAuthority())
         return *error;
     std::filesystem::create_directories(cache, ec);
     if (ec)
         return Error{Failure::PublicationFailure, 0, "cache を作成できません"};
     if (std::filesystem::exists(target))
-        return validateArtifact(target, request.spec, request.toolchain, cancel);
+        return readPublished();
     // 診断・TeX・request は job に保存する。再利用 cache は検証対象の PNG と manifest だけ。
     static std::atomic<std::uint64_t> sequence{0};
     const auto staging =
@@ -600,13 +613,19 @@ ArtifactResult PublicationAuthority::generate(const RenderRequest& request,
     if (!std::filesystem::create_directory(staging, ec) || ec)
         return Error{Failure::PublicationFailure, 0, "公開用 directory を作成できません"};
     for (std::int64_t i = -1; i < request.spec.drawFrames; ++i) {
-        if (auto error = guard())
+        if (observer)
+            observer(PublicationStage::Copy);
+        if (auto error = checkAuthority())
             return *error;
         std::filesystem::copy_file(request.job / frameName(i), staging / frameName(i), ec);
         if (ec)
             return Error{Failure::PublicationFailure, 0, "公開用 PNG をコピーできません"};
     }
-    auto copied = inspectFrames(staging, request.spec, request.toolchain, cancel);
+    if (observer)
+        observer(PublicationStage::Validate);
+    if (auto error = checkAuthority())
+        return *error;
+    auto copied = inspectFrames(staging, request.spec, request.toolchain, &stop);
     if (auto* error = std::get_if<Error>(&copied))
         return *error;
     if (std::get<Validation>(copied).manifest != validated.manifest)
@@ -617,14 +636,18 @@ ArtifactResult PublicationAuthority::generate(const RenderRequest& request,
     if (mvm_atomic_write_file(manifestPath.c_str(), validated.manifest.data(),
                               validated.manifest.size(), writeError, sizeof(writeError)) != 0)
         return Error{Failure::PublicationFailure, 0, "manifest を確定できません"};
-    if (auto error = guard())
-        return *error;
-    std::filesystem::rename(staging, target, ec);
+    {
+        std::lock_guard lock(mutex_);
+        if (auto error = guard())
+            return *error;
+        // この非置換 rename が公開の線形化点。重い検証は mutex の外で行う。
+        std::filesystem::rename(staging, target, ec);
+    }
     if (ec) {
         if (std::filesystem::exists(target))
-            return validateArtifact(target, request.spec, request.toolchain, cancel);
+            return readPublished();
         return Error{Failure::PublicationFailure, 0, "artifact を公開できません"};
     }
-    return validateArtifact(target, request.spec, request.toolchain, cancel);
+    return readPublished();
 }
 } // namespace mvm::graph

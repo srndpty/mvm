@@ -114,6 +114,13 @@
   [math-graph-p42-results.md](math-graph-p42-results.md)。
 - P4-3 は GO・未着手: residency と native preview。製品の現在frame RAM・先読み・cache量は未測定。
   任意 seek、generation/ticket、動画上の合成を検証する。
+- [事実] 2026-10-09、P4-2.1 は PASS/CLOSED。publication の重い I/O を authority mutex の外へ移し、
+  同期バリアで supersede/shutdown の応答性と旧世代の公開拒否を検証した。
+  契約と source provenance は [math-graph-p421.md](math-graph-p421.md)、
+  全 gate と初回 runner 失敗を含む機械集計は [math-graph-p421-results.md](math-graph-p421-results.md)。
+- 静止 artifact の物理共有は未実装。static identity は Draw N に依存しないが、
+  異なる N は static.png も再描画する（P4-2.1 は契約 B）。共有依存を持つ manifest と
+  独立検証の形式設計は後続の最適化判断とする。
 - P4-4: 既存暗色パネルからの authoring。低い/狭いpanel、無効 source の修復と最後の関数削除の拒否。
 - P4-5: source 範囲と現在specを正にしたvideo export、保存再読込、Draw途中trim/splitの製品UI閉鎖。
 - sampling/1 は有限密度と midpoint の保守的切断であり、任意高周波・標本間だけの特異点の完全検出は

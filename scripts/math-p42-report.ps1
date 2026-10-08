@@ -3,18 +3,19 @@
     P4-2 の保存済み証拠から gate・変異・pixel 線幅を機械集計する。
 #>
 [CmdletBinding()]
-param([string]$OutputPath = 'docs/math-graph-p42-results.md')
+param([string]$OutputPath = 'docs/math-graph-p42-results.md',
+      [string]$RootFilter = 'math-p42-*', [string]$Title = 'P4-2')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $lines = [System.Collections.Generic.List[string]]::new()
-$lines.Add('# P4-2 検証の機械集計')
+$lines.Add("# $Title 検証の機械集計")
 $lines.Add('')
 $lines.Add('`scripts/math-p42-report.ps1` が保存済み JSON・TSV・ログから生成する。失敗を含めて保存する。')
 $lines.Add('')
 $lines.Add('|証拠|gate|終了コード|結果|')
 $lines.Add('|---|---|---:|---|')
-$roots = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'build') -Directory -Filter 'math-p42-*' | Sort-Object Name)
+$roots = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'build') -Directory -Filter $RootFilter | Sort-Object Name)
 foreach ($root in $roots) {
     $commandsPath = Join-Path $root.FullName 'commands.json'
     if (-not (Test-Path -LiteralPath $commandsPath)) { continue }
@@ -24,6 +25,14 @@ foreach ($root in $roots) {
     }
 }
 foreach ($root in $roots) {
+    $publicationMutation = Join-Path $root.FullName 'controls/mutation.json'
+    if (Test-Path -LiteralPath $publicationMutation) {
+        $entry = Get-Content -LiteralPath $publicationMutation -Raw | ConvertFrom-Json
+        $lines.Add('')
+        $lines.Add("## $($root.Name) の応答性変異")
+        $lines.Add('')
+        $lines.Add("build=$($entry.build_exit)、test=$($entry.test_exit)、応答性 assertion による検出=$($entry.killed)。")
+    }
     $mutationsPath = Join-Path $root.FullName 'controls/mutations.json'
     if (Test-Path -LiteralPath $mutationsPath) {
         $entries = @(Get-Content -LiteralPath $mutationsPath -Raw | ConvertFrom-Json)

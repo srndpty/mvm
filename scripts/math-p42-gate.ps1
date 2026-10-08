@@ -4,7 +4,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Focused', 'Real', 'Regressions', 'BuildIndependent', 'Lint', 'Release', 'Mutations')]
+    [ValidateSet('Focused', 'Real', 'Regressions', 'BuildIndependent', 'Lint', 'Release', 'Mutations', 'PublicationMutation')]
     [string]$Stage = 'Focused',
     [string]$EvidenceDirectory,
     [string]$Python = "$env:APPDATA/uv/tools/manim/Scripts/python.exe"
@@ -56,6 +56,7 @@ try {
             Invoke-Recorded 'real-render' 'build/ucrt64-release/bin/mvm_test_graph_render.exe' @((Join-Path $evidenceRoot 'artifacts'), $Python, (Join-Path $repoRoot 'src/media/manim/graph_backend.py'))
         }
         'Mutations' { Invoke-Recorded 'mutations' $pwshExe @('scripts/math-p42-mutations.ps1', '-EvidenceDirectory', (Join-Path $evidenceRoot 'controls'), '-Python', $Python) }
+        'PublicationMutation' { Invoke-Recorded 'publication-mutation' $pwshExe @('scripts/math-p421-mutation.ps1', '-EvidenceDirectory', (Join-Path $evidenceRoot 'controls')) }
         'Regressions' {
             Invoke-Recorded 'regressions' $pwshExe @('scripts/math-p41-gate.ps1', '-Stage', 'Regressions', '-EvidenceDirectory', (Join-Path $evidenceRoot 'p41'))
             foreach ($target in @('mvm_test_graph_numeric', 'mvm_test_graph_domain', 'mvm_test_manim_math_tex', 'mvm_test_manim_equation_sequence', 'mvm_test_math_render', 'mvm_test_math_raster_cache', 'mvm_test_process')) {
