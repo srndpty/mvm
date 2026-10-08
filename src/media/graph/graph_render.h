@@ -133,7 +133,7 @@ using ArtifactResult = std::variant<Artifact, Error>;
 ArtifactResult validateArtifact(const std::filesystem::path&, const GraphRenderSpec&,
                                 const std::string& toolchain, const std::atomic<bool>* = nullptr);
 
-enum class PublicationStage { Copy, Validate };
+enum class PublicationStage { Copy, Validate, RenameRetry };
 using PublicationObserver = std::function<void(PublicationStage)>;
 
 // 世代変更と rename だけを直列化する。shutdown は無効化のみで待機しない。

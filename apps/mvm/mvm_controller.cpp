@@ -471,13 +471,29 @@ MvmController::MvmController(std::filesystem::path projectPath,
         if (shutdownStarted_)
             return;
         requestMathRenders();
-        // Graph が無い Project の cache 通知で preview を組み直すと、初期 seek の後に
-        // もう一度提示する。字幕だけの native preview はその増加を失敗にする。
-        if (std::none_of(project_.timelineClips.begin(), project_.timelineClips.end(),
-                         [](const auto& clip) {
-                             return clip.kind == project::TimelineClipKind::Graph;
-                         }))
+        // 可視性は既存 mapping だけに従う。無関係な Graph の通知で初期 seek を増やさない。
+        const auto mapped = mapTimelinePreviewFrame(project_, previewPlan(), playheadFrame_);
+        if (!mapped.success || std::none_of(mapped.stillLayers.begin(), mapped.stillLayers.end(),
+                                            [](const auto& layer) {
+                                                return layer.kind ==
+                                                       project::TimelineClipKind::Graph;
+                                            }))
             return;
+        bool contributes = false;
+        for (const auto& still : mapped.stillLayers) {
+            if (still.kind != project::TimelineClipKind::Graph)
+                continue;
+            const auto record = graphAnimations_.constFind(QString::fromStdString(still.clipId));
+            if (record == graphAnimations_.constEnd() || !submittedComposition_ ||
+                std::none_of(
+                    submittedComposition_->layers.begin(), submittedComposition_->layers.end(),
+                    [&](const auto& layer) { return layer.stillAnimation == record->animation; }))
+                continue;
+            contributes = true;
+        }
+        if (!contributes)
+            return;
+        // 再生中の resident 更新は slot だけで届く。停止中は一度提示を要求する。
         if (!playing_)
             refreshTextPreview();
         Q_EMIT stateChanged();
@@ -2321,46 +2337,6 @@ private:
 // EquationPreviewModel (Qt・cache に依存しない) が output frame だけから決める。sequence の全区間を
 // 1 つの instance にまとめ、再生中の合成の切り替えの遅れで区間の境の frame が古い instance で
 // 提示されても、同じ output frame は同じ画素になる。ClipEffects は layer が 1 回だけ掛ける。
-class GraphPreviewAnimation final : public preview::PreviewStillAnimation {
-public:
-    GraphPreviewAnimation(project::TimelineClip clip, core::FrameRate fps, std::int64_t index,
-                          std::shared_ptr<const preview::PreviewStillImage> image,
-                          std::int64_t visibleFrames)
-        : clip_(std::move(clip)), fps_(fps), index_(index), image_(std::move(image)),
-          visibleFrames_(visibleFrames) {}
-
-    preview::PreviewPixelRect patchRect() const override {
-        return {0, 0, image_->width, image_->height};
-    }
-
-    std::int64_t stateAt(std::int64_t output) const override {
-        if (output < clip_.timelineStartFrame ||
-            output - clip_.timelineStartFrame >= visibleFrames_)
-            return 0;
-        std::string error;
-        const auto frame =
-            project::evaluateGraphClip(clip_, fps_, output - clip_.timelineStartFrame, error);
-        if (!frame)
-            return 0;
-        const auto index = frame->sourceFrame < clip_.graph.intro.frames ? frame->sourceFrame : -1;
-        return index == index_ ? 1 : 0;
-    }
-
-    void fillPatch(std::int64_t state, std::uint8_t* out) const override {
-        if (state == 1)
-            std::copy(image_->rgba.begin(), image_->rgba.end(), out);
-        else
-            std::fill_n(out, image_->rgba.size(), std::uint8_t{0});
-    }
-
-private:
-    project::TimelineClip clip_;
-    core::FrameRate fps_;
-    std::int64_t index_;
-    std::shared_ptr<const preview::PreviewStillImage> image_;
-    std::int64_t visibleFrames_ = 0;
-};
-
 class EquationSequencePreviewAnimation final : public preview::PreviewStillAnimation {
 public:
     EquationSequencePreviewAnimation(std::shared_ptr<const EquationPreviewModel> model,
@@ -2412,10 +2388,55 @@ std::shared_ptr<preview::CompositionSnapshot>
 MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFrame,
                                      const std::map<int, TrackPreviewSource>& sources,
                                      preview::PreviewFrameRequest& request, QString& error) const {
-    auto composition = std::make_shared<preview::CompositionSnapshot>();
     request = preview::PreviewFrameRequest{};
     request.outputFrameNumber = mappedFrame.outputFrameNumber;
     error.clear();
+    // 安定した Graph/video の層集合は clock が進んでも同じ composition を使う。
+    // source-frame は既存 evaluator、出入りと順序は既存 mapping を引き続き正にする。
+    QString graphMemo;
+    bool stableGraph = !mappedFrame.stillLayers.empty() && !previewEffectsOverride_ &&
+                       !project::activeSubtitleAt(project_, mappedFrame.outputFrameNumber);
+    if (stableGraph) {
+        graphMemo = QString::number(currentRevision_) + QLatin1Char('/');
+        for (const auto& still : mappedFrame.stillLayers) {
+            const auto& clip = project_.timelineClips[static_cast<std::size_t>(still.clipIndex)];
+            const auto existing = graphAnimations_.constFind(QString::fromStdString(clip.id));
+            if (still.kind != project::TimelineClipKind::Graph ||
+                existing == graphAnimations_.constEnd() || existing->clip != clip ||
+                graphRasters_->presentation(existing->spec) != existing->presentation) {
+                stableGraph = false;
+                break;
+            }
+            std::string mappingError;
+            const auto frame = project::evaluateGraphClip(
+                clip, {project_.timelineFpsNum, project_.timelineFpsDen},
+                mappedFrame.outputFrameNumber - clip.timelineStartFrame, mappingError);
+            if (!frame) {
+                stableGraph = false;
+                break;
+            }
+            graphRasters_->requestFrame(existing->spec, frame->sourceFrame);
+            graphMemo += QString::fromStdString(clip.id) + QLatin1Char(':') +
+                         QString::number(still.slot) + QLatin1Char(':') +
+                         QString::number(still.opacity, 'g', 17) + QLatin1Char('/');
+        }
+        for (const auto& video : mappedFrame.layers) {
+            const auto source = sources.find(video.slot);
+            if (source == sources.end() || video.transitionOpacity != 1 || video.dissolveIncoming) {
+                stableGraph = false;
+                break;
+            }
+            graphMemo += QString::fromStdString(video.clipId) + QLatin1Char(':') +
+                         QString::number(video.slot) + QLatin1Char(':') +
+                         QString::number(source->second.source.value) + QLatin1Char('/');
+        }
+    }
+    if (stableGraph && graphComposition_ && graphMemo == graphCompositionMemo_) {
+        for (const auto& video : mappedFrame.layers)
+            request.sources.push_back({sources.at(video.slot).source, video.sourceFrameNumber});
+        return graphComposition_;
+    }
+    auto composition = std::make_shared<preview::CompositionSnapshot>();
     // Write・変形の preview の mask は、この frame に見える数式 clip の分だけを参照する。見えない
     // clip の animation を残すと、cache が追い出した mask が memory に残り、全体の上限
     // (MathRasterCache の residency) に新しい mask が入らなくなる。
@@ -2461,20 +2482,18 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
                 if (!spec || !frame)
                     continue;
                 graphRasters_->requestFrame(*spec, frame->sourceFrame);
-                const auto frames = graphRasters_->frames(*spec);
-                const auto index = frame->sourceFrame < spec->drawFrames ? frame->sourceFrame : -1;
-                const auto found = frames.find(index);
-                if (found == frames.end())
-                    continue;
+                const auto presentation = graphRasters_->presentation(*spec);
                 layer.stillImage = equationTransparentOutput();
                 const auto clipId = QString::fromStdString(clip.id);
                 auto existing = graphAnimations_.find(clipId);
                 if (existing == graphAnimations_.end() || existing->clip != clip ||
-                    existing->image != found->second) {
+                    existing->presentation != presentation) {
                     auto animation = std::make_shared<GraphPreviewAnimation>(
                         clip, core::FrameRate{project_.timelineFpsNum, project_.timelineFpsDen},
-                        index, found->second, project::timelineClipDuration(project_, clip).frame);
-                    graphAnimations_.insert(clipId, {clip, found->second, std::move(animation)});
+                        presentation, project::timelineClipDuration(project_, clip).frame,
+                        project_.outputWidth, project_.outputHeight);
+                    graphAnimations_.insert(clipId,
+                                            {clip, presentation, std::move(animation), *spec});
                 }
                 layer.stillAnimation = graphAnimations_[clipId].animation;
                 const auto effects = effectsForPreview(stillMapping.clipIndex);
@@ -2629,6 +2648,13 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
         // GUIの次の通知を待たず、実際の描画フレームで終了境界を閉じる。
         layer.motion = subtitleMotion_;
         composition->layers.push_back(std::move(layer));
+    }
+    if (stableGraph) {
+        graphCompositionMemo_ = graphMemo;
+        graphComposition_ = composition;
+    } else {
+        graphCompositionMemo_.clear();
+        graphComposition_.reset();
     }
     return composition;
 }

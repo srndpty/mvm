@@ -1605,11 +1605,14 @@ private:
 
     struct GraphAnimationRecord {
         project::TimelineClip clip;
-        std::shared_ptr<const preview::PreviewStillImage> image;
+        std::shared_ptr<const GraphPresentation> presentation;
         std::shared_ptr<const preview::PreviewStillAnimation> animation;
+        graph::GraphRenderSpec spec;
     };
 
     mutable QHash<QString, GraphAnimationRecord> graphAnimations_;
+    mutable QString graphCompositionMemo_;
+    mutable std::shared_ptr<preview::CompositionSnapshot> graphComposition_;
     // P3-5 の authoring。controller の stateChanged を購読するので controller より先に壊す。
     std::unique_ptr<EquationSequenceEditor> equationEditor_;
 

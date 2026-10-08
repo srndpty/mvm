@@ -9,6 +9,7 @@
 #include "project/project_json.h"
 #include "test_window_isolation.h"
 
+#include <array>
 #include <fstream>
 #include <iostream>
 
@@ -67,6 +68,136 @@ std::vector<std::uint8_t> pixels(const QImage& input) {
                       image.constScanLine(y) + image.width() * 4);
     return result;
 }
+
+class Dispatcher final : public preview::PreviewEventDispatcher {
+public:
+    bool post(std::function<void()> callback) override {
+        return QMetaObject::invokeMethod(QGuiApplication::instance(), std::move(callback),
+                                         Qt::QueuedConnection);
+    }
+};
+
+void continuousNative(const std::filesystem::path& root) {
+    auto project = project::createDefaultProject();
+    check(project::addGraph(project, "clock", {"f"}, "連続 Draw", {project::TrackKind::Video, 0}, 0)
+              .success,
+          "native clock の Graph");
+    auto clip = project.timelineClips.back();
+    clip.sourceFrameCount = clip.sourceOutFrame = 10;
+    clip.sourceFpsNum = 30;
+    clip.sourceFpsDen = 1;
+    clip.graph.intro = {project::GraphIntroKind::Draw, 3};
+    auto slot = std::make_shared<app::GraphPresentation>();
+    auto frames = std::make_shared<app::GraphPresentation::Frames>();
+    std::vector<std::shared_ptr<const preview::PreviewStillImage>> owners;
+    for (int index : {-1, 0, 1, 2}) {
+        auto image = std::make_shared<preview::PreviewStillImage>();
+        image->width = 320;
+        image->height = 180;
+        image->rgba.resize(320 * 180 * 4);
+        const auto red = static_cast<std::uint8_t>(index < 0 ? 90 : 10 + 20 * index);
+        for (std::size_t at = 0; at < image->rgba.size(); at += 4) {
+            image->rgba[at] = red;
+            image->rgba[at + 3] = 255;
+        }
+        frames->emplace(index, image);
+        owners.push_back(image);
+    }
+    slot->frames.store(frames);
+    QQuickWindow window;
+    window.setFlags(app::testBackgroundWindowFlags());
+    app::applyTestFixedWindow(window);
+    window.resize(320, 180);
+    auto* surface = new app::PreviewEngineRhiItem(window.contentItem());
+    surface->setWidth(320);
+    surface->setHeight(180);
+    auto engine = std::make_shared<preview::PreviewEngine>();
+    check(bool(engine->initialize({{{30, 1}}}, std::make_shared<Dispatcher>())),
+          "native clock engine の初期化");
+    surface->setEngine(engine);
+    window.show();
+    if (!check(pump([&] {
+                   return engine->status().state == preview::PreviewEngineState::ReadyPaused;
+               }),
+               "native clock の D3D11 device"))
+        return;
+    QString isolationReason;
+    check(test::backgroundWindowIsolated(window, isolationReason), "native clock は操作を奪わない");
+    std::ofstream evidence(root / "continuous-native.tsv");
+    evidence << "case\tclock\texpected_red\tmismatch_pixels\tcomposition_epoch\n";
+    const auto exercise = [&](const char* name, const project::TimelineClip& input,
+                              const std::vector<std::pair<int, int>>& expected,
+                              const std::function<void(int)>& beforeFrame = {}) {
+        auto composition = std::make_shared<preview::CompositionSnapshot>();
+        preview::PreviewCompositionLayer layer;
+        auto transparent = std::make_shared<preview::PreviewStillImage>();
+        transparent->width = 320;
+        transparent->height = 180;
+        transparent->rgba.resize(320 * 180 * 4);
+        layer.stillImage = transparent;
+        layer.stillAnimation = std::make_shared<app::GraphPreviewAnimation>(
+            input, core::FrameRate{30, 1}, slot, 10, 320, 180);
+        composition->layers.push_back(layer);
+        check(bool(engine->submitComposition(composition)), "case の composition を一度だけ公開");
+        check(bool(preview::internal::PreviewRenderPort::setSourcelessRenderClockForTest(
+                  *engine, expected.front().first)),
+              "seek を使わず clock を設定");
+        check(bool(engine->play()), "source 無しの native 連続再生");
+        for (const auto [clock, red] : expected) {
+            if (beforeFrame)
+                beforeFrame(clock);
+            const auto before = engine->telemetry().presentedFrameCount;
+            check(bool(preview::internal::PreviewRenderPort::setSourcelessRenderClockForTest(
+                      *engine, clock)),
+                  "render clock のみ変更");
+            surface->update();
+            if (!check(pump([&] {
+                           return engine->telemetry().presentedFrameCount > before &&
+                                  engine->status().position.outputFrame == clock;
+                       }),
+                       "clock に対応する native frame の提示"))
+                continue;
+            const auto actual = pixels(window.grabWindow());
+            std::size_t mismatch = 0;
+            for (std::size_t at = 0; at < actual.size(); at += 4)
+                mismatch += actual[at] != red || actual[at + 1] != 0 || actual[at + 2] != 0 ||
+                            actual[at + 3] != 255;
+            check(actual.size() == 320 * 180 * 4 && mismatch == 0,
+                  "独立の色 oracle と native 全画素が一致");
+            const auto epoch = engine->status().lastPresentedComposition->revision;
+            evidence << name << '\t' << clock << '\t' << red << '\t' << mismatch << '\t' << epoch
+                     << '\n';
+        }
+        check(bool(engine->pause()), "case の再生を停止");
+    };
+    exercise("draw", clip, {{0, 10}, {1, 30}, {2, 50}, {3, 90}});
+    exercise("non-monotonic", clip, {{2, 50}, {0, 10}, {3, 90}, {1, 30}});
+    clip.sourceInFrame = 1;
+    exercise("trim", clip, {{0, 30}, {1, 50}, {2, 90}});
+    clip.sourceInFrame = 2;
+    clip.timelineStartFrame = 2;
+    exercise("split", clip, {{2, 50}, {3, 90}});
+    clip.sourceInFrame = clip.timelineStartFrame = 0;
+    auto late = std::make_shared<app::GraphPresentation::Frames>();
+    late->emplace(0, owners[1]);
+    slot->frames.store(late);
+    exercise("late-residency", clip, {{0, 10}, {1, 0}, {2, 50}, {3, 90}}, [&](int clock) {
+        if (clock == 2)
+            slot->frames.store(frames);
+    });
+    clip.sourceFpsNum = 15;
+    exercise("fps", clip, {{0, 10}, {1, 10}, {2, 30}, {3, 30}, {4, 50}, {5, 50}, {6, 90}});
+    const auto diagnostics = preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+    std::ofstream clockState(root / "continuous-native.json");
+    clockState << "{\"seek_requests\":" << diagnostics.seekRequestCount
+               << ",\"presented_frames\":" << engine->telemetry().presentedFrameCount
+               << ",\"composition_revision\":"
+               << engine->status().lastPresentedComposition->revision << "}\n";
+    check(diagnostics.seekRequestCount == 0, "native 連続試験は seek を一度も発行しない");
+    check(bool(engine->requestShutdown()) &&
+              pump([&] { return engine->status().state == preview::PreviewEngineState::Shutdown; }),
+          "native clock engine を安全に解放");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -97,6 +228,7 @@ int main(int argc, char** argv) {
     std::error_code ec;
     if (!std::filesystem::create_directories(root, ec) || ec)
         return 2;
+    continuousNative(root);
     auto initial = project::createDefaultProject();
     initial.timelineFpsNum = 30;
     initial.outputWidth = 320;
@@ -242,6 +374,21 @@ int main(int argc, char** argv) {
                      << controller.graphRastersForTest().residentBytes() << '\t'
                      << controller.graphRastersForTest().peakBytes() << '\t' << mismatch << '\n';
     }
+    check(controller.seekTimelineFrame(0) &&
+              pump([&] { return controller.previewPresentedLatest(); }),
+          "製品の連続再生を先頭に準備");
+    const auto beforePlayback = controller.submittedCompositionForTest();
+    const auto acceptedBefore =
+        controller.previewEngineForTest()->status().latestAcceptedDesiredComposition;
+    const auto rebuildsBefore = controller.playbackRebuildCount();
+    check(controller.playTimeline() && pump([&] { return controller.playheadFrame() >= 6; }),
+          "製品 controller も毎 frame seek せず Draw から端点まで進む");
+    check(controller.previewEngineForTest()->status().latestAcceptedDesiredComposition ==
+                  acceptedBefore &&
+              controller.submittedCompositionForTest() == beforePlayback &&
+              controller.playbackRebuildCount() == rebuildsBefore,
+          "製品の安定した Graph/video 再生は composition を交換せず組み直しもしない");
+    check(controller.pauseTimeline(), "製品の連続再生を停止");
     const auto rendersBeforeEffect = controller.graphRastersForTest().renderCount();
     check(controller.setClipEffectValues(QStringLiteral("graph"),
                                          {{QStringLiteral("positionX"), 10.0}}, true),

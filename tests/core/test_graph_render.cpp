@@ -523,6 +523,117 @@ void artifacts(const std::filesystem::path& root, bool responsivenessOnly = fals
           "共有ロック中の directory rename は待って公開する");
     if (const auto* error = std::get_if<Error>(&retryResult))
         std::cerr << error->message << '\n';
+    if (const auto* published = std::get_if<Artifact>(&retryResult)) {
+        const auto manifestBytes = [](const auto& directory) {
+            std::ifstream stream(directory / "manifest.txt", std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(stream), {});
+        };
+        const auto publishedManifest = manifestBytes(published->directory);
+        const auto publishedHashes = published->pixelHashes;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            retryRequest.job = root / ("repeat-share-job-" + std::to_string(attempt));
+            const auto repeated =
+                retryAuthority.generate(retryRequest, retryCache, retryGeneration,
+                                        [](const auto&, const auto*) -> RenderResult {
+                                            return Error{Failure::RendererFailure, 0,
+                                                         "公開済みなら renderer は呼ばれません"};
+                                        });
+            const auto* existing = std::get_if<Artifact>(&repeated);
+            check(existing && !publishedManifest.empty() &&
+                      manifestBytes(existing->directory) == publishedManifest &&
+                      existing->pixelHashes == publishedHashes,
+                  "共有ロック後の繰り返し公開も既存の有効 artifact を置換しない");
+        }
+    }
+    // 実際の lock error の後、mutex の外にある retry 境界で操作を同期する。
+    for (int mode = 0; mode < 4; ++mode) {
+        PublicationAuthority retrying;
+        const auto current = retrying.supersede();
+        const auto prefix = "retry-control-" + std::to_string(mode);
+        const auto cachePath = root / (prefix + "-cache");
+        RenderRequest first{s, "test-authority", root / (prefix + "-first")};
+        std::atomic<bool> stop{false}, observed{false};
+        std::promise<void> entered, releaseRetry;
+        auto enteredFuture = entered.get_future();
+        auto barrier = releaseRetry.get_future().share();
+        std::unique_ptr<std::ifstream> lockFile;
+        auto task = std::async(std::launch::async, [&] {
+            return retrying.generate(
+                first, cachePath, current, fake, &stop, [&](PublicationStage stage) {
+                    if (stage == PublicationStage::Validate)
+                        for (const auto& entry : std::filesystem::directory_iterator(cachePath))
+                            if (entry.path().filename().string().starts_with(".pending-")) {
+                                lockFile = std::make_unique<std::ifstream>(
+                                    entry.path() / "static.png", std::ios::binary);
+                                break;
+                            }
+                    if (stage == PublicationStage::RenameRetry && !observed.exchange(true)) {
+                        entered.set_value();
+                        barrier.wait();
+                    }
+                });
+        });
+        const bool retryEntered =
+            enteredFuture.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+        check(retryEntered, "共有 lock が実際の rename retry を起こす");
+        std::optional<Artifact> winner;
+        if (retryEntered) {
+            auto operation = std::async(std::launch::async, [&] {
+                if (mode == 0)
+                    stop.store(true);
+                else if (mode == 1)
+                    retrying.supersede();
+                else if (mode == 2)
+                    retrying.shutdown();
+                else {
+                    RenderRequest competing{s, "test-authority", root / (prefix + "-winner")};
+                    const auto result = retrying.generate(
+                        competing, cachePath, current,
+                        [&](const auto& candidate, const auto* flag) -> RenderResult {
+                            auto result = fake(candidate, flag);
+                            if (std::holds_alternative<Error>(result))
+                                return result;
+                            auto pixels = readRgba(candidate.job / "static.png", 64, 36);
+                            auto* raster = std::get_if<Raster>(&pixels);
+                            if (!raster)
+                                return std::get<Error>(pixels);
+                            raster->rgba[0] ^= 255;
+                            if (!writeRgba(candidate.job / "static.png", *raster))
+                                return Error{Failure::RendererFailure, 0,
+                                             "競合する試験画像を保存できません"};
+                            return std::monostate{};
+                        });
+                    if (const auto* artifactValue = std::get_if<Artifact>(&result))
+                        winner = *artifactValue;
+                }
+            });
+            const bool responsive =
+                operation.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+            check(responsive, "retry を止めたまま cancellation・supersession・別の公開が完了");
+            if (!responsive) {
+                releaseRetry.set_value();
+                operation.wait();
+            } else {
+                operation.get();
+                releaseRetry.set_value();
+            }
+        } else {
+            stop.store(true);
+            releaseRetry.set_value();
+        }
+        const auto completed = task.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+        check(completed, "共有 lock を解放しなくても retry は変更された authority に応答する");
+        lockFile.reset();
+        const auto result = task.get();
+        if (mode < 3)
+            check(failedAs(result, mode == 1 ? Failure::Superseded : Failure::Cancelled),
+                  "rename retry 中の取消は型付き失敗として返る");
+        else {
+            const auto* retained = std::get_if<Artifact>(&result);
+            check(winner && retained && retained->pixelHashes == winner->pixelHashes,
+                  "rename を繰り返しても先に公開された異なる有効画素を置換しない");
+        }
+    }
 }
 
 void real(const std::filesystem::path& root, const std::filesystem::path& python,

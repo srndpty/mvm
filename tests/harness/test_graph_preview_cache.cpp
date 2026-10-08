@@ -2,6 +2,7 @@
 #include "graph_preview_cache.h"
 #include "project/graph_edit.h"
 
+#include <array>
 #include <fstream>
 #include <future>
 #include <iostream>
@@ -22,6 +23,67 @@ void check(bool value, const char* message) {
         ++failures;
         std::cerr << "失敗: " << message << '\n';
     }
+}
+
+// 一つの animation の render clock だけを進める。期待値は evaluator を呼ばず列挙する。
+void continuousPresentation() {
+    auto project = project::createDefaultProject();
+    check(project::addGraph(project, "continuous", {"f"}, "連続", {project::TrackKind::Video, 0}, 0)
+              .success,
+          "連続 Draw の clip");
+    auto clip = project.timelineClips.back();
+    clip.sourceFrameCount = clip.sourceOutFrame = 10;
+    clip.sourceFpsNum = 30;
+    clip.sourceFpsDen = 1;
+    clip.graph.intro = {project::GraphIntroKind::Draw, 3};
+    auto slot = std::make_shared<app::GraphPresentation>();
+    std::map<std::int64_t, std::shared_ptr<const preview::PreviewStillImage>> owners;
+    auto snapshot = std::make_shared<app::GraphPresentation::Frames>();
+    for (std::int64_t index : {-1, 0, 1, 2}) {
+        auto image = std::make_shared<preview::PreviewStillImage>();
+        image->width = image->height = 1;
+        image->rgba = {static_cast<std::uint8_t>(index < 0 ? 90 : 10 + index * 20), 0, 0, 255};
+        owners[index] = image;
+        snapshot->emplace(index, image);
+    }
+    slot->frames.store(snapshot);
+    const auto exercise = [&](const project::TimelineClip& input, core::FrameRate fps,
+                              const std::vector<std::pair<int, int>>& expected) {
+        app::GraphPreviewAnimation animation(input, fps, slot, 10, 1, 1);
+        for (const auto [clock, red] : expected) {
+            std::array<std::uint8_t, 4> actual{};
+            animation.fillPatch(animation.stateAt(clock), actual.data());
+            check(actual == std::array<std::uint8_t, 4>{static_cast<std::uint8_t>(red), 0, 0, 255},
+                  "composition を交換せず render clock の exact Draw と端点を提示");
+        }
+    };
+    exercise(clip, {30, 1}, {{0, 10}, {1, 30}, {2, 50}, {3, 90}});
+    exercise(clip, {30, 1}, {{2, 50}, {0, 10}, {3, 90}, {1, 30}});
+    clip.sourceInFrame = 1;
+    exercise(clip, {30, 1}, {{0, 30}, {1, 50}, {2, 90}});
+    // Draw 内の split の右 clip は元の source 範囲と timelineStart を持つ。
+    clip.sourceInFrame = 2;
+    clip.timelineStartFrame = 2;
+    exercise(clip, {30, 1}, {{2, 50}, {3, 90}});
+    clip.timelineStartFrame = clip.sourceInFrame = 0;
+    clip.sourceFpsNum = 15;
+    exercise(clip, {30, 1}, {{0, 10}, {1, 10}, {2, 30}, {3, 30}, {4, 50}, {5, 50}, {6, 90}});
+    app::GraphPreviewAnimation late(clip, {30, 1}, slot, 10, 1, 1);
+    auto onlyFirst = std::make_shared<app::GraphPresentation::Frames>();
+    onlyFirst->emplace(0, owners[0]);
+    slot->frames.store(onlyFirst);
+    check(late.evaluate(4).diagnostic == app::GraphPreviewAnimation::Diagnostic::FrameMissing &&
+              late.stateAt(4) == 0,
+          "遅い snapshot は違う Draw を代用せず型付き透明");
+    slot->frames.store(snapshot);
+    const auto submitted = late.evaluate(4);
+    owners.erase(2);
+    check(submitted.image && submitted.image->rgba[0] == 50,
+          "退避中も GPU submission の shared owner は不変");
+    slot->frames.store(std::make_shared<const app::GraphPresentation::Frames>());
+    std::array<std::uint8_t, 4> transparent{1, 1, 1, 1};
+    late.fillPatch(4, transparent.data());
+    check(transparent == std::array<std::uint8_t, 4>{}, "取得と fill の間の失効も透明");
 }
 
 bool wait(const std::function<bool()>& predicate) {
@@ -101,12 +163,38 @@ void residency(const std::filesystem::path& root) {
         check(cache.renderCount() == count && calls == before, "状態照会は描画しない");
     }
     const auto s = spec(3);
+    auto graphProject = project::createDefaultProject();
+    check(project::addGraph(graphProject, "resident-clock", {"f"}, "連続",
+                            {project::TrackKind::Video, 0}, 0)
+              .success,
+          "resident clock の clip");
+    auto clockClip = graphProject.timelineClips.back();
+    clockClip.sourceFrameCount = clockClip.sourceOutFrame = 100;
+    clockClip.sourceFpsNum = 30;
+    clockClip.sourceFpsDen = 1;
+    clockClip.graph.intro = {project::GraphIntroKind::Draw, 3};
+    app::GraphPreviewAnimation clockAnimation(clockClip, {30, 1}, cache.presentation(s), 100, 64,
+                                              36);
+    for (int source : {0, 1, 2, 3}) {
+        cache.requestFrame(s, source);
+        check(wait([&] { return cache.status(s, source).frameAvailable; }),
+              "clock 試験の exact frame を事前に常駐");
+    }
+    for (int output : {0, 1, 2, 3, 2, 0, 3, 1}) {
+        std::array<std::uint8_t, 64 * 36 * 4> actual{};
+        clockAnimation.fillPatch(clockAnimation.stateAt(output), actual.data());
+        check(actual[0] == 200 && actual[1] == (output < 3 ? output + 1 : 0) && actual[3] == 128,
+              "GUI cache を参照せず同じ animation の clock だけで resident RGBA を選択");
+    }
     cache.requestFrame(s, 1);
     check(wait([&] { return cache.status(s, 1).residency == Cache::Residency::Resident; }),
           "寿命試験の frame");
     auto held = cache.frames(s).at(1);
     const auto bytes = cache.residentBytes();
     cache.retainOnly({});
+    check(clockAnimation.evaluate(1).diagnostic ==
+              app::GraphPreviewAnimation::Diagnostic::FrameMissing,
+          "旧 key の共有所有者が残っても presentation authority は透明");
     check(held->rgba[1] == 2 && cache.residentBytes() == held->rgba.size() &&
               bytes >= held->rgba.size(),
           "退避後も GPU snapshot の共有所有と byte 計上を維持");
@@ -342,6 +430,9 @@ void pixelMismatch(const std::filesystem::path& root) {
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    continuousPresentation();
+    if (argc == 2 && std::string_view(argv[1]) == "--continuous")
+        return failures ? 1 : 0;
     QTemporaryDir temp(QString::fromLocal8Bit(argc > 1 ? argv[1] : "build") +
                        QStringLiteral("/graph-preview-XXXXXX"));
     temp.setAutoRemove(false);

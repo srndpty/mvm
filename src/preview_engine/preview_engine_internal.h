@@ -282,6 +282,9 @@ public:
     static Result<RenderFrameResult> renderFrame(PreviewEngine& engine, void* renderTargetView,
                                                  int width, int height);
     static bool renderFrameDue(PreviewEngine& engine);
+    // source の無い描画試験専用。seek/composition 交換をせず render clock を進める。
+    static Result<void> setSourcelessRenderClockForTest(PreviewEngine& engine,
+                                                        std::int64_t outputFrame);
     static Result<bool> completeRuntimeTeardown(PreviewEngine& engine);
     static Result<void> completeRendererDetach(PreviewEngine& engine);
     static Result<void> completeTeardown(PreviewEngine& engine);

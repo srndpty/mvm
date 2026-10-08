@@ -105,3 +105,10 @@ pwsh scripts/math-p43-report.ps1
 
 P4-3 は検証中であり PASS/CLOSED ではない。BuildIndependent と Release が上記の失敗を含む。
 全閉鎖条件と通常 gate の確認が終わるまで P4-4 へ進まない。
+
+## P4-3.1 による後続の閉鎖
+
+2026-10-09、[P4-3.1](math-graph-p431.md) の修正と全 gate が通過し、P4-3.1 と P4-3 を
+PASS/CLOSED、P4-4 を GO とした。P4-4 は未着手、コミット・push は行っていない。
+上記の failed gate の記録と分類は保持する。現在の契約・因果比較は P4-3.1 の文書、
+新規 gate の結果は [P4-3.1 の機械集計](math-graph-p431-results.md) を参照する。

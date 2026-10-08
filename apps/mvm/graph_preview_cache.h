@@ -1,6 +1,7 @@
 #ifndef MVM_APPS_GRAPH_PREVIEW_CACHE_H
 #define MVM_APPS_GRAPH_PREVIEW_CACHE_H
 
+#include "graph_preview_animation.h"
 #include "media/manim/manim_graph.h"
 #include "preview_engine/preview_types.h"
 
@@ -79,6 +80,7 @@ public:
     Status status(const graph::GraphRenderSpec&, std::int64_t sourceFrame) const;
     std::map<std::int64_t, std::shared_ptr<const preview::PreviewStillImage>>
     frames(const graph::GraphRenderSpec&) const;
+    std::shared_ptr<const GraphPresentation> presentation(const graph::GraphRenderSpec&);
     void shutdown();
     void resetSession();
     void refreshBackend();
@@ -124,6 +126,7 @@ private:
     void startPreflight();
     void pump();
     void invalidate();
+    void publishPresentations();
     void requestDecoded(const graph::GraphRenderSpec&, std::int64_t, bool prefetch);
     Preflight preflight_;
     std::optional<manim::GraphBackend> backend_;
@@ -137,6 +140,7 @@ private:
     QHash<QString, Record> records_;
     QHash<QString, graph::GraphRenderSpec> waitingIdentity_;
     QHash<QString, Frame> frames_;
+    QHash<QString, std::shared_ptr<GraphPresentation>> presentations_;
     std::shared_ptr<Budget> budget_ = std::make_shared<Budget>();
     std::uint64_t generation_ = 0, ticket_ = 0, tick_ = 0;
     std::uint64_t publicationGeneration_ = 0;

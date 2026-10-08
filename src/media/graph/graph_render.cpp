@@ -682,6 +682,8 @@ ArtifactResult PublicationAuthority::generate(const RenderRequest& request,
         }
         if (!retry)
             break;
+        if (observer)
+            observer(PublicationStage::RenameRetry);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     if (blocked)

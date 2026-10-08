@@ -112,10 +112,11 @@
   toolchain/key authority を追加し、必要な全 gate が通過した。
   契約は [math-graph-p40.md](math-graph-p40.md)、失敗を含む機械集計は
   [math-graph-p42-results.md](math-graph-p42-results.md)。
-- P4-3 は実装・検証中。非同期 request、現在 key の disk 検証、専用64 MiBの RGBA residency、
-  製品 native preview の接続と読むだけの状態を追加した。契約と未閉鎖の判定は
-  [math-graph-p43.md](math-graph-p43.md)、失敗を含む機械集計は
-  [math-graph-p43-results.md](math-graph-p43-results.md)。全閉鎖条件の通過前に P4-4 へ進まない。
+- [事実] 2026-10-09、P4-3.1 と P4-3 は PASS/CLOSED。Graph の不変 presentation で
+  連続 Draw の exact frame を選択し、ミキサーの寸法循環と字幕の無関係な cache 通知を修正した。
+  全 gate の閉鎖と A/B・変異の根拠は [math-graph-p431.md](math-graph-p431.md)、
+  新規証拠の機械集計は [math-graph-p431-results.md](math-graph-p431-results.md)。
+  P4-3 の historical FAIL は [元の結果](math-graph-p43-results.md) と元 directory に保持する。
 - [事実] 2026-10-09、P4-2.1 は PASS/CLOSED。publication の重い I/O を authority mutex の外へ移し、
   同期バリアで supersede/shutdown の応答性と旧世代の公開拒否を検証した。
   契約と source provenance は [math-graph-p421.md](math-graph-p421.md)、
@@ -123,7 +124,7 @@
 - 静止 artifact の物理共有は未実装。static identity は Draw N に依存しないが、
   異なる N は static.png も再描画する（P4-2.1 は契約 B）。共有依存を持つ manifest と
   独立検証の形式設計は後続の最適化判断とする。
-- P4-4: 既存暗色パネルからの authoring。低い/狭いpanel、無効 source の修復と最後の関数削除の拒否。
+- P4-4: GO、未着手。既存暗色パネルからの authoring。低い/狭いpanel、無効 source の修復と最後の関数削除の拒否。
 - P4-5: source 範囲と現在specを正にしたvideo export、保存再読込、Draw途中trim/splitの製品UI閉鎖。
 - sampling/1 は有限密度と midpoint の保守的切断であり、任意高周波・標本間だけの特異点の完全検出は
   保証しない。必要時は独立fixtureと新sampling/key versionで精度改善を検証する。

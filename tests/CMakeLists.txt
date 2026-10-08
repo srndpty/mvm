@@ -4123,6 +4123,16 @@ add_test(NAME audio_mixer_controls_qml
             -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/audio-mixer-qml.txt)
 set_tests_properties(audio_mixer_controls_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QUICK_CONTROLS_STYLE=Basic"
+    ENVIRONMENT_MODIFICATION "QT_QUICK_CONTROLS_STYLE=set:Basic"
+    TIMEOUT 30)
+add_test(NAME audio_mixer_controls_qml_windows
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_audio_mixer.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/audio-mixer-windows-qml.txt)
+set_tests_properties(audio_mixer_controls_qml_windows PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    ENVIRONMENT_MODIFICATION "QT_QUICK_CONTROLS_STYLE=set:Windows"
     TIMEOUT 30)
 
 add_test(NAME audio_mixer_product_ui COMMAND mvm_test_text_ui_input --audio-mixer)
@@ -4259,6 +4269,13 @@ target_compile_definitions(mvm_test_subtitle_controller PRIVATE ${MVM_MLT_PATH_D
 add_test(NAME subtitle_controller_contract COMMAND mvm_test_subtitle_controller)
 add_test(NAME subtitle_native_preview COMMAND mvm_test_subtitle_controller --native)
 set_tests_properties(subtitle_native_preview PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+foreach(graph_case disabled hidden outside absent)
+    add_test(NAME subtitle_native_preview_graph_${graph_case}
+        COMMAND mvm_test_subtitle_controller --native-${graph_case})
+    set_tests_properties(subtitle_native_preview_graph_${graph_case} PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+endforeach()
 set_tests_properties(subtitle_controller_contract PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120 WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 add_dependencies(mvm_subtitle_validation mvm_test_subtitle_controller)
 set_tests_properties(subtitle_controller_contract PROPERTIES LABELS workstation)

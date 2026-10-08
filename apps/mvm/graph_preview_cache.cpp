@@ -12,6 +12,7 @@ GraphPreviewCache::GraphPreviewCache(Preflight preflight, QObject* parent)
       authority_(std::make_shared<graph::PublicationAuthority>()) {
     renderPool_.setMaxThreadCount(2);
     decodePool_.setMaxThreadCount(1);
+    connect(this, &GraphPreviewCache::changed, this, &GraphPreviewCache::publishPresentations);
 }
 
 GraphPreviewCache::~GraphPreviewCache() {
@@ -63,6 +64,8 @@ void GraphPreviewCache::invalidate() {
     records_.clear();
     waitingIdentity_.clear();
     frames_.clear();
+    publishPresentations();
+    presentations_.clear();
 }
 
 void GraphPreviewCache::setAuthority(std::filesystem::path directory, bool authorized) {
@@ -137,6 +140,8 @@ void GraphPreviewCache::retainOnly(const QSet<QString>& keys) {
             it->cancel->store(true);
         it = frames_.erase(it);
     }
+    publishPresentations();
+    presentations_.removeIf([&](const auto& item) { return !keys.contains(item.key()); });
 }
 
 void GraphPreviewCache::request(const graph::GraphRenderSpec& spec) {
@@ -301,6 +306,7 @@ void GraphPreviewCache::requestDecoded(const graph::GraphRenderSpec& spec, std::
         if (oldest == frames_.end())
             break;
         frames_.erase(oldest);
+        publishPresentations();
     }
     Frame frame;
     frame.reason = Reason::Loading;
@@ -434,6 +440,29 @@ GraphPreviewCache::frames(const graph::GraphRenderSpec& spec) const {
     return result;
 }
 
+void GraphPreviewCache::publishPresentations() {
+    for (auto it = presentations_.begin(); it != presentations_.end(); ++it) {
+        auto snapshot = std::make_shared<GraphPresentation::Frames>();
+        const auto record = records_.constFind(it.key());
+        if (record != records_.constEnd() && record->artifact)
+            for (const auto& frame : frames_)
+                if (frame.owner == it.key() && frame.image)
+                    snapshot->emplace(frame.index, frame.image);
+        it.value()->frames.store(std::move(snapshot));
+    }
+}
+
+std::shared_ptr<const GraphPresentation>
+GraphPreviewCache::presentation(const graph::GraphRenderSpec& spec) {
+    const auto key = keyFor(spec);
+    auto& result = presentations_[key];
+    if (!result) {
+        result = std::make_shared<GraphPresentation>();
+        publishPresentations();
+    }
+    return result;
+}
+
 void GraphPreviewCache::shutdown() {
     if (closed_)
         return;
@@ -446,6 +475,7 @@ void GraphPreviewCache::shutdown() {
 
 void GraphPreviewCache::setBudgetForTest(std::size_t bytes) {
     frames_.clear();
+    publishPresentations();
     budget_ = std::make_shared<Budget>();
     budget_->limit = bytes;
 }

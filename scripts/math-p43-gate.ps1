@@ -56,6 +56,9 @@ try {
         'Focused' {
             Invoke-Recorded 'build' $pwshExe @('scripts/build.ps1', '-Target', 'mvm_test_graph_preview_cache')
             Invoke-Recorded 'cache' 'build/ucrt64-release/bin/mvm_test_graph_preview_cache.exe' @($evidenceRoot)
+            Invoke-Recorded 'continuous' 'build/ucrt64-release/bin/mvm_test_graph_preview_cache.exe' @('--continuous')
+            Invoke-Recorded 'build-publication' $pwshExe @('scripts/build.ps1', '-Target', 'mvm_test_graph_render', '-ReuseConfigure')
+            Invoke-Recorded 'publication' 'build/ucrt64-release/bin/mvm_test_graph_render.exe' @((Join-Path $evidenceRoot 'publication'))
         }
         'Real' {
             Invoke-Recorded 'build' $pwshExe @('scripts/build.ps1', '-Target', 'mvm_test_graph_native_preview')
@@ -73,10 +76,10 @@ try {
             Invoke-Recorded 'native' 'build/ucrt64-release/bin/mvm_test_graph_native_preview.exe' @($Manim, $video, (Join-Path $evidenceRoot 'native'))
         }
         'Regressions' {
-            foreach ($target in @('mvm_test_graph_preview_cache', 'mvm_test_math_controller', 'mvm_test_graph_numeric', 'mvm_test_graph_domain', 'mvm_test_graph_render', 'mvm_test_equation_preview_controller', 'mvm_test_timeline_preview_mapping', 'mvm_test_still_layer_compositor', 'mvm_test_clip_effects')) {
+            foreach ($target in @('mvm_test_graph_preview_cache', 'mvm_test_subtitle_controller', 'mvm_test_math_controller', 'mvm_test_graph_numeric', 'mvm_test_graph_domain', 'mvm_test_graph_render', 'mvm_test_equation_preview_controller', 'mvm_test_timeline_preview_mapping', 'mvm_test_still_layer_compositor', 'mvm_test_clip_effects')) {
                 Invoke-Recorded ('build-' + $target) $pwshExe @('scripts/build.ps1', '-Target', $target, '-ReuseConfigure')
             }
-            $pattern = '^(graph_.*|math_equation_sequence_preview_controller|math_equation_sequence_native_preview|math_write_native_playback|math_transform_native_playback|m7b_2_timeline_preview_mapping_focused|m7a_1_clip_effects_focused|still_layer_compositor)$'
+            $pattern = '^(graph_.*|audio_mixer_controls_qml.*|subtitle_native_preview.*|math_equation_sequence_preview_controller|math_equation_sequence_native_preview|math_write_native_playback|math_transform_native_playback|m7b_2_timeline_preview_mapping_focused|m7a_1_clip_effects_focused|still_layer_compositor)$'
             $ctest = 'C:\msys64\ucrt64\bin\ctest.exe'
             $selection = (& $ctest --test-dir build/ucrt64-release -N -R $pattern) -join "`n"
             if ($LASTEXITCODE -ne 0 -or $selection -notmatch 'Total Tests: [1-9][0-9]*') { throw '回帰の対象が0件または列挙失敗です' }
