@@ -90,9 +90,29 @@
   この結果は P3-6 の履歴として保持する。P3-6.1 で画面外 static の依存を除去し、
   旧条件の変異を新しい回帰で検出した。実 Manim の製品受け入れ、通常 release 1473/1473、
   BuildIndependent 1080/1080 と lint が通過し、P3-6.1・P3-6・初期 vertical slice を再閉鎖した。
-  [依存範囲修正の証拠](math-equation-sequence-p30.md#p3-61-可視範囲の静止依存) を参照。P4 は未着手。
+  [依存範囲修正の証拠](math-equation-sequence-p30.md#p3-61-可視範囲の静止依存) を参照。
 
-未解決の判断・検証:
+### P4: native Graph Clip
+
+- P4-0 は PASS/CLOSED。設計契約は [math-graph-p40.md](math-graph-p40.md)、
+  実測の自動集計は [math-graph-p40-results.md](math-graph-p40-results.md)。
+  mvm 所有の式 AST・C++ 数値評価・切断済み点列を Manim に渡す方式を採用する。
+  1〜3 関数、透明 RGBA、Draw i/N、source 範囲を保つ trim/split、所有 ID と key の分離、
+  schema 22 の提案を確定した。製品コードと schema 21 は変更していない。P4-1 は未着手。
+- P4-1: domain/parser/evaluator/sampling の正式実装、pure timing、schema 22、
+  ID の編集・Undo/Redo、無効原文の round-trip、構造・注入・精度境界の独立負例。
+- P4-2: Graph 専用 renderer/artifact、公的な pixel 線幅換算、各ラベルの支持範囲と3帯の配置、
+  per-curve alpha と重なりの独立合成 oracle、provenance-last publication、toolchain/key authority。
+  P4-0 の多色・AA・透明背景の証拠を、全 alpha/style の保証へ一般化しない。
+- P4-3: residency と native preview。製品の現在frame RAM・先読み・cache量は未測定。
+  任意 seek、generation/ticket、動画上の合成を検証する。
+- P4-4: 既存暗色パネルからの authoring。低い/狭いpanel、無効 source の修復と最後の関数削除の拒否。
+- P4-5: source 範囲と現在specを正にしたvideo export、保存再読込、Draw途中trim/splitの製品UI閉鎖。
+- sampling/1 は有限密度と midpoint の保守的切断であり、任意高周波・標本間だけの特異点の完全検出は
+  保証しない。必要時は独立fixtureと新sampling/key versionで精度改善を検証する。
+  追加の性能閾値・adaptive sampling・artifact圧縮は製品要求と実測に基づく後続判断とする。
+
+### P3 の未解決の判断・検証
 
 - 任意 TeX macro の支持は未検証。P3-3 は P3-2 の支持範囲の segment について、Manim 0.21 の
   点を持つ子孫の排他的所有を描画ごとに検査する (実装記録)。検査を通った範囲の成功を、
