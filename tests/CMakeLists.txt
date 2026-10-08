@@ -4087,6 +4087,22 @@ add_test(NAME math_inspector_qml
 set_tests_properties(math_inspector_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QUICK_CONTROLS_STYLE=Basic"
     TIMEOUT 30)
+foreach(graph_style Basic Windows)
+    add_test(NAME graph_inspector_qml_${graph_style}
+        COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_graph_inspector.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/graph-inspector-${graph_style}.txt)
+    set_tests_properties(graph_inspector_qml_${graph_style} PROPERTIES TIMEOUT 60
+        ENVIRONMENT_MODIFICATION "QT_QUICK_CONTROLS_STYLE=set:${graph_style}")
+endforeach()
+add_test(NAME graph_inspector_qml_scaled
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+        -Runner ${MVM_QMLTESTRUNNER}
+        -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_graph_inspector.qml
+        -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/graph-inspector-scaled.txt)
+set_tests_properties(graph_inspector_qml_scaled PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION "QT_QUICK_CONTROLS_STYLE=set:Basic;QT_SCALE_FACTOR=set:1.25")
 add_test(NAME math_equation_sequence_inspector_qml
     COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
             -Runner ${MVM_QMLTESTRUNNER}
@@ -4252,6 +4268,12 @@ set_target_properties(mvm_test_equation_preview_controller PROPERTIES WIN32_EXEC
 mvm_add_test(math_equation_sequence_preview_controller
     COMMAND mvm_test_equation_preview_controller PROPERTIES TIMEOUT 180)
 # P3-5: EquationSequence の authoring controller (偽の backend、GPU なし)。
+qt_add_executable(mvm_test_graph_editor harness/test_graph_editor.cpp ${_subtitle_controller_sources})
+target_include_directories(mvm_test_graph_editor PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_graph_editor PRIVATE ${_subtitle_controller_libraries})
+target_compile_definitions(mvm_test_graph_editor PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_test_graph_editor PROPERTIES WIN32_EXECUTABLE OFF)
+mvm_add_test(graph_editor_controller COMMAND mvm_test_graph_editor PROPERTIES TIMEOUT 180)
 qt_add_executable(mvm_test_equation_sequence_editor
     harness/test_equation_sequence_editor.cpp ${_subtitle_controller_sources})
 target_include_directories(mvm_test_equation_sequence_editor PRIVATE

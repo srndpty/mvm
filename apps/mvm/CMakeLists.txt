@@ -93,6 +93,7 @@ qt_add_qml_module(mvm
         TextClipInspector.qml
         MathClipInspector.qml
         EquationSequenceInspector.qml
+        GraphClipInspector.qml
         MathDependencyGuidance.qml
         KeyframeInspector.qml
         TransitionInspector.qml
@@ -209,6 +210,7 @@ qt_add_qml_module(mvm_test_text_ui_input
         TextClipInspector.qml
         MathClipInspector.qml
         EquationSequenceInspector.qml
+        GraphClipInspector.qml
         MathDependencyGuidance.qml
         KeyframeInspector.qml
         TransitionInspector.qml

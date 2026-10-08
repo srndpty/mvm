@@ -130,7 +130,11 @@
 - 静止 artifact の物理共有は未実装。static identity は Draw N に依存しないが、
   異なる N は static.png も再描画する（P4-2.1 は契約 B）。共有依存を持つ manifest と
   独立検証の形式設計は後続の最適化判断とする。
-- P4-4: GO、未着手。既存暗色パネルからの authoring。低い/狭いpanel、無効 source の修復と最後の関数削除の拒否。
+- [事実] 2026-10-09、P4-4 は PASS/CLOSED。製品メニューから Graph clip を作り、
+  inspector で範囲・軸・関数・色・Draw を編集し、実 Manim の native 全画素、
+  不正原文の保存と修復、Undo/Redo、Draw 途中 split、低い/狭い panel を検証した。
+  契約は [math-graph-p44.md](math-graph-p44.md)、失敗を含む機械集計は
+  [math-graph-p44-results.md](math-graph-p44-results.md)。P4-5 の export は未着手。
 - P4-5: source 範囲と現在specを正にしたvideo export、保存再読込、Draw途中trim/splitの製品UI閉鎖。
 - sampling/1 は有限密度と midpoint の保守的切断であり、任意高周波・標本間だけの特異点の完全検出は
   保証しない。必要時は独立fixtureと新sampling/key versionで精度改善を検証する。

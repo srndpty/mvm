@@ -947,6 +947,15 @@ public:
         const std::function<bool(project::EquationSequenceClipData&, std::string&)>& edit);
     Q_INVOKABLE bool redoLastEdit();
     bool createGraphClip(std::int64_t start, project::TrackRef track);
+    // QML の編集は表示 snapshot の authority を明示し、古い欄からの確定を拒否する。
+    Q_PROPERTY(QVariantMap selectedGraphClip READ selectedGraphClip NOTIFY stateChanged)
+    QVariantMap selectedGraphClip() const;
+    Q_INVOKABLE bool createGraphClipFromUi();
+    Q_INVOKABLE QVariantMap editGraphFromUi(const QVariantMap& authority,
+                                            const QString& functionId,
+                                            const QString& operation,
+                                            const QVariantMap& values);
+    Q_INVOKABLE QVariantMap graphStatusFromUi(const QString& clipId) const;
     bool setGraphDuration(const std::string& clipId, std::int64_t sourceFrames);
     bool editGraphData(const std::string& clipId,
                        const std::function<bool(project::GraphClipData&, std::string&)>& edit);

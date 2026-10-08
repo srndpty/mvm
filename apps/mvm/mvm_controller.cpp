@@ -8159,8 +8159,171 @@ bool MvmController::createGraphClip(std::int64_t start, project::TrackRef track)
     }
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Graph を作成できません: ")))
         return false;
+    requestMathRenders();
     Q_EMIT stateChanged();
-    return true;
+    refreshTextPreview();
+    return selectClip(result.selectedIndex);
+}
+
+bool MvmController::createGraphClipFromUi() {
+    project::TrackRef track{project::TrackKind::Video, 0};
+    if (currentClipIndex_ >= 0 &&
+        currentClipIndex_ < static_cast<int>(project_.timelineClips.size()))
+        track = project_.timelineClips[static_cast<std::size_t>(currentClipIndex_)].track;
+    return createGraphClip(playheadFrame_, track);
+}
+
+QVariantMap MvmController::selectedGraphClip() const {
+    if (currentClipIndex_ < 0 ||
+        currentClipIndex_ >= static_cast<int>(project_.timelineClips.size()))
+        return {};
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(currentClipIndex_)];
+    if (clip.kind != project::TimelineClipKind::Graph)
+        return {};
+    const auto& data = clip.graph;
+    QVariantList functions;
+    for (const auto& f : data.functions) {
+        QVariantMap row{{"id", QString::fromStdString(f.id.value)},
+                        {"expression", QString::fromStdString(f.expression)},
+                        {"label", QString::fromStdString(f.label)},
+                        {"color", QString::fromStdString(f.color)},
+                        {"strokeWidth", f.strokeWidth},
+                        {"domainMin", f.domainMin ? QString::number(*f.domainMin, 'g', 17) : QString()},
+                        {"domainMax", f.domainMax ? QString::number(*f.domainMax, 'g', 17) : QString()}};
+        functions.push_back(row);
+    }
+    return {{"clipId", QString::fromStdString(clip.id)},
+            {"generation", QString::number(projectGeneration_)},
+            {"revision", QString::number(currentRevision_)},
+            {"xMin", data.viewport.xMin}, {"xMax", data.viewport.xMax},
+            {"yMin", data.viewport.yMin}, {"yMax", data.viewport.yMax},
+            {"showAxes", data.axes.showAxes}, {"showGrid", data.axes.showGrid},
+            {"xLabel", QString::fromStdString(data.axes.xLabel)},
+            {"yLabel", QString::fromStdString(data.axes.yLabel)},
+            {"functions", functions}, {"draw", data.intro.kind == project::GraphIntroKind::Draw},
+            {"frames", static_cast<qint64>(data.intro.frames)},
+            {"sourceFrames", static_cast<qint64>(clip.sourceFrameCount)}};
+}
+
+QVariantMap MvmController::editGraphFromUi(const QVariantMap& authority,
+                                          const QString& functionId,
+                                          const QString& operation,
+                                          const QVariantMap& values) {
+    const auto current = selectedGraphClip();
+    const auto reject = [](const QString& message) -> QVariantMap {
+        return {{"ok", false}, {"message", message}};
+    };
+    if (current.isEmpty() || authority.value("clipId") != current.value("clipId") ||
+        authority.value("generation") != current.value("generation") ||
+        authority.value("revision") != current.value("revision"))
+        return reject(QStringLiteral("編集対象が変わりました。欄を戻してから編集してください"));
+    const auto clipId = current.value("clipId").toString().toStdString();
+    const auto length = current.value("sourceFrames").toLongLong();
+    QString message;
+    const bool ok = editGraphData(clipId, [&](auto& data, std::string& error) {
+        const auto fail = [&](const QString& text) {
+            message = text;
+            error = text.toStdString();
+            return false;
+        };
+        const auto number = [&](const QString& key, double& destination) {
+            bool valid = false;
+            const auto text = values.value(key).toString().trimmed();
+            const double value = text.toDouble(&valid);
+            if (!valid || !std::isfinite(value))
+                return false;
+            destination = value;
+            return true;
+        };
+        if (operation == "add") {
+            project::GraphFunction f;
+            f.id = {newClipId()};
+            if (!project::addGraphFunction(data, f, length))
+                return fail(QStringLiteral("関数は 1〜3 個です"));
+        } else if (operation == "delete") {
+            if (!project::deleteGraphFunction(data, {functionId.toStdString()}, length))
+                return fail(QStringLiteral("最後の関数、または存在しない関数は削除できません"));
+        } else if (operation == "move") {
+            if (!project::moveGraphFunction(data, {functionId.toStdString()},
+                                            values.value("index").toUInt(), length))
+                return fail(QStringLiteral("関数の移動先が不正です"));
+        } else if (operation == "field") {
+            auto function = std::find_if(data.functions.begin(), data.functions.end(),
+                                         [&](const auto& f) { return f.id.value == functionId.toStdString(); });
+            if (!functionId.isEmpty() && function == data.functions.end())
+                return fail(QStringLiteral("編集する関数がありません"));
+            for (auto it = values.cbegin(); it != values.cend(); ++it) {
+                const auto& key = it.key();
+                if (key == "xMin" || key == "xMax" || key == "yMin" || key == "yMax") {
+                    double* destination = key == "xMin" ? &data.viewport.xMin :
+                                          key == "xMax" ? &data.viewport.xMax :
+                                          key == "yMin" ? &data.viewport.yMin : &data.viewport.yMax;
+                    if (!number(key, *destination))
+                        return fail(QStringLiteral("有限の数値を入力してください"));
+                } else if (key == "xLabel") data.axes.xLabel = it.value().toString().toStdString();
+                else if (key == "yLabel") data.axes.yLabel = it.value().toString().toStdString();
+                else if (key == "showAxes") data.axes.showAxes = it.value().toBool();
+                else if (key == "showGrid") data.axes.showGrid = it.value().toBool();
+                else if (key == "draw") {
+                    data.intro = it.value().toBool() ? project::GraphIntro{project::GraphIntroKind::Draw, 1}
+                                                    : project::GraphIntro{};
+                } else if (key == "frames") {
+                    bool valid = false;
+                    const auto frames = it.value().toString().toLongLong(&valid);
+                    if (!valid || data.intro.kind != project::GraphIntroKind::Draw)
+                        return fail(QStringLiteral("Draw の整数 frame 数を入力してください"));
+                    data.intro.frames = frames;
+                } else if (function == data.functions.end()) {
+                    return fail(QStringLiteral("関数を選択してください"));
+                } else if (key == "expression") function->expression = it.value().toString().toStdString();
+                else if (key == "label") function->label = it.value().toString().toStdString();
+                else if (key == "color") function->color = it.value().toString().toUpper().toStdString();
+                else if (key == "strokeWidth") {
+                    if (!number(key, function->strokeWidth))
+                        return fail(QStringLiteral("有限の線幅を入力してください"));
+                } else if (key == "domainMin" || key == "domainMax") {
+                    auto& bound = key == "domainMin" ? function->domainMin : function->domainMax;
+                    if (it.value().toString().trimmed().isEmpty()) bound.reset();
+                    else {
+                        double value = 0;
+                        if (!number(key, value))
+                            return fail(QStringLiteral("範囲は有限の数値、または空欄にしてください"));
+                        bound = value;
+                    }
+                } else return fail(QStringLiteral("未知の Graph 編集項目です"));
+            }
+        } else return fail(QStringLiteral("未知の Graph 操作です"));
+        return true;
+    });
+    return {{"ok", ok}, {"message", ok ? QString() : message.isEmpty() ? statusText_ : message}};
+}
+
+QVariantMap MvmController::graphStatusFromUi(const QString& clipId) const {
+    const auto status = graphPreviewStatus(clipId.toStdString(), playheadFrame_);
+    const bool ready = status.compileValid && status.validatedSnapshot && status.frameAvailable &&
+                       !status.transparentFallback && status.reason == GraphPreviewCache::Reason::None;
+    // enum の値に対応する表示。renderer の本文を照合して状態を推定しない。
+    const QStringList captions{
+        QStringLiteral("表示準備中"), QStringLiteral("グラフの構造または表示範囲が不正です"),
+        QStringLiteral("式の構文が不正です。式を修正してください"),
+        QStringLiteral("未対応の識別子です。対応する関数名に修正してください"),
+        QStringLiteral("定義域に描画できる有限の線がありません"),
+        QStringLiteral("renderer が利用できません。Manim の設定を確認してください"),
+        QStringLiteral("描画中"), QStringLiteral("現在の成果物がありません"),
+        QStringLiteral("成果物が破損しています"), QStringLiteral("成果物の生成元が一致しません"),
+        QStringLiteral("現在の frame が未読込です"), QStringLiteral("メモリ上限を超えました"),
+        QStringLiteral("描画を取り消しました"), QStringLiteral("新しい編集の描画を待っています"),
+        QStringLiteral("グラフの transition は未対応です"), QStringLiteral("描画に失敗しました"),
+        QStringLiteral("TeX ラベルを描画できません。ラベルを修正してください"),
+        QStringLiteral("成果物を公開できません"), QStringLiteral("描画量の上限を超えました"),
+        QStringLiteral("frame を読み込み中"), QStringLiteral("clip が無効です"),
+        QStringLiteral("track の出力が無効です")};
+    QString caption = captions.value(static_cast<int>(status.reason));
+    if (status.backendCheckInProgress)
+        caption = QStringLiteral("renderer を確認中");
+    return {{"reason", static_cast<int>(status.reason)}, {"job", static_cast<int>(status.job)},
+            {"ready", ready}, {"caption", caption}, {"message", status.message}, {"key", status.key},
+            {"sourceFrame", static_cast<qint64>(status.sourceFrame)}};
 }
 
 bool MvmController::editGraphData(
@@ -8176,7 +8339,9 @@ bool MvmController::editGraphData(
     }
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Graph を更新できません: ")))
         return false;
+    requestMathRenders();
     Q_EMIT stateChanged();
+    refreshTextPreview();
     return true;
 }
 

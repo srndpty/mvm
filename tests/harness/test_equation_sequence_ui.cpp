@@ -26,6 +26,7 @@
 #include "mvm_controller.h"
 #include "project/equation_sequence.h"
 #include "project/equation_sequence_edit.h"
+#include "project/graph_edit.h"
 #include "project/project_json.h"
 #include "test_window_focus.h"
 #include "waveform_cache.h"
@@ -80,7 +81,11 @@ void check(bool ok, const std::string& message) {
 
 bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs = 10000) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+    while (std::chrono::steady_clock::now() < deadline) {
+        // 成立した観測は追加の event drain で再評価しない。Ready の直後に次の更新が
+        // Seeking を公開すると、成功を観測していたのに false を返してしまう。
+        if (predicate())
+            return true;
         QCoreApplication::processEvents();
         // 手動の event loop でも、一覧の作り直しで deleteLater された delegate を解放する。
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
@@ -575,8 +580,14 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
     s->window->setProperty("leftPanelWidth", 520);
     const bool ready = pumpUntil([&] { return s->controller->previewReady(); }, 30000);
     check(ready, "製品 UI: preview の初期化: " + s->controller->statusText().toStdString());
-    if (!ready)
+    if (!ready) {
+        const auto native = s->controller->previewEngineForTest()->status();
+        std::fprintf(stderr, "初期化診断: engine state=%d accepted=%d presented=%d\n",
+                     static_cast<int>(native.state),
+                     native.latestAcceptedDesiredComposition.has_value(),
+                     native.lastPresentedComposition.has_value());
         return nullptr;
+    }
     s->controller->setEquationPreviewObserverForTest(
         [observation = s->observation](const std::string&, std::int64_t frame,
                                        const std::optional<mvm::app::EquationPreviewTime>&,
@@ -1408,6 +1419,236 @@ int longContent(const std::filesystem::path& directory) {
     return 0;
 }
 } // namespace
+
+int runGraphAuthoringUi(const std::filesystem::path& directory,
+                        const std::filesystem::path& manim) {
+    if (std::filesystem::exists(directory))
+        return 2;
+    std::filesystem::create_directories(directory);
+    evidence = directory;
+    const auto path = directory / L"graph.mvm";
+    bool observedReady = true;
+    QMetaObject::invokeMethod(
+        QCoreApplication::instance(), [&] { observedReady = false; }, Qt::QueuedConnection);
+    check(pumpUntil([&] { return observedReady; }),
+          "Graph: 成立した待機条件を次の更新で失敗へ反転させない");
+    QCoreApplication::processEvents();
+    check(!observedReady, "Graph: 待機の負例が次の更新を実際に配送した");
+    auto initial = project::createDefaultProject();
+    initial.outputWidth = 320;
+    initial.outputHeight = 180;
+    check(project::saveProjectJson(initial, path).success, "Graph: 空の Project の準備");
+    qputenv("MVM_P36_REAL_MANIM", QByteArray::fromStdString(manim.string()));
+    auto s = open(path, initial);
+    if (!s)
+        return 4;
+    auto* entry = s->window->findChild<QObject*>(QStringLiteral("addGraphClipMenuItem"));
+    const auto depth = s->controller->undoDepthForTest();
+    check(entry && QMetaObject::invokeMethod(entry, "triggered"), "Graph: 実際の作成メニュー");
+    pump(100);
+    check(s->controller->selectedGraphClip().contains("clipId") &&
+              s->controller->undoDepthForTest() == depth + 1,
+          "Graph: 一回の作成と選択");
+    const auto input = [&](const QString& key, const std::string& text) {
+        auto* field = s->find(QStringLiteral("graphField_") + key);
+        if (!field || !s->reach(field)) {
+            check(false, "Graph: 編集欄への到達 " + key.toStdString());
+            return false;
+        }
+        QTest::mouseClick(s->window, Qt::LeftButton, {}, s->center(field));
+        s->key(Qt::Key_A, Qt::ControlModifier);
+        s->type(text);
+        check(field->property("text").toString() == QString::fromStdString(text),
+              "Graph: キー入力 " + key.toStdString());
+        s->key(Qt::Key_Return);
+        pump(50);
+        return true;
+    };
+    check(input("yMax", "25"), "Graph: viewport の入力");
+    check(input("label", "f_1"), "Graph: 表示ラベル");
+    check(input("color", "#80FF6655"), "Graph: 半透明色");
+    check(s->click("graphAddFunction"), "Graph: 関数を追加");
+    pump(50);
+    auto functions = s->controller->selectedGraphClip().value("functions").toList();
+    if (functions.size() != 2) {
+        s->close();
+        return 1;
+    }
+    const auto second = functions[1].toMap().value("id").toString();
+    check(s->click("graphFunction_" + second) && input("expression", "2*x+1") &&
+              input("color", "#FF55FF66"),
+          "Graph: 二番目を ID で選び編集");
+    check(s->click("graphAddFunction"), "Graph: 三番目の追加");
+    pump(50);
+    functions = s->controller->selectedGraphClip().value("functions").toList();
+    if (functions.size() != 3) {
+        s->close();
+        return 1;
+    }
+    const auto third = functions[2].toMap().value("id").toString();
+    check(s->click("graphFunction_" + third) && input("expression", "sin(x)") &&
+              input("color", "#FF5577FF"),
+          "Graph: 三番目の式と色");
+    check(s->click("graphDraw") && input("frames", "3"), "Graph: Draw 三 frame");
+    const auto clipId = s->controller->selectedGraphClip().value("clipId").toString();
+    check(
+        pumpUntil([&] { return s->controller->graphStatusFromUi(clipId).value("ready").toBool(); },
+                  180000),
+        "Graph: 実 Manim の現在 artifact と resident frame が Ready");
+    s->shot("graph-ready");
+    check(s->controller->saveProject(), "Graph: 製品保存");
+    const auto saved = s->project();
+    s->close();
+    // UI で確定した同じ Project を原寸の native surface で描く。期待値は検証済み PNG の
+    // straight RGBA に独立の整数式で黒背景を合成し、全画素を比較する。
+    {
+        MvmController nativeController(path, manim, saved);
+        QQuickWindow nativeWindow;
+        nativeWindow.setFlags(mvm::app::testBackgroundWindowFlags());
+        mvm::app::applyTestFixedWindow(nativeWindow);
+        nativeWindow.resize(320, 180);
+        auto* surface = new mvm::app::PreviewEngineRhiItem(nativeWindow.contentItem());
+        surface->setWidth(320);
+        surface->setHeight(180);
+        nativeController.attachPreview(surface);
+        nativeWindow.show();
+        check(pumpUntil([&] { return nativeController.previewReady(); }, 30000),
+              "Graph: UI で確定した Project の native 初期化");
+        QString isolation;
+        check(mvm::test::isolatedFromUserInput(&nativeWindow, isolation),
+              "Graph: 原寸比較も利用者の操作から隔離する");
+        for (int frame : {2, 0, 1, 3, 10}) {
+            bool accepted = false;
+            check(pumpUntil([&] {
+                      if (!accepted)
+                          accepted = nativeController.seekTimelineFrame(frame);
+                      return accepted;
+                  }),
+                  "Graph: Draw の非単調 seek");
+            check(pumpUntil(
+                      [&] {
+                          return nativeController.graphPreviewStatus(clipId.toStdString(), frame)
+                                     .frameAvailable &&
+                                 nativeController.previewPresentedLatest();
+                      },
+                      180000),
+                  "Graph: 現在 frame の native 提示");
+            const auto status = nativeController.graphPreviewStatus(clipId.toStdString(), frame);
+            const auto png = directory / L"cache" / L"graph" / L"graph.mvm" /
+                             status.key.toStdWString() /
+                             (frame < 3 ? "frame-" + std::to_string(frame) + ".png" : "static.png");
+            const auto decoded = mvm::graph::readRgba(png, 320, 180);
+            check(std::holds_alternative<mvm::graph::Raster>(decoded), "Graph: 期待値 PNG の読込");
+            if (const auto* raster = std::get_if<mvm::graph::Raster>(&decoded)) {
+                const auto image =
+                    nativeWindow.grabWindow().convertToFormat(QImage::Format_RGBA8888);
+                int mismatches = 0;
+                if (image.size() != QSize(320, 180))
+                    mismatches = 320 * 180;
+                else
+                    for (int y = 0; y < 180; ++y) {
+                        const auto* actual = image.constScanLine(y);
+                        for (int x = 0; x < 320; ++x) {
+                            const auto at = static_cast<std::size_t>(y * 320 + x) * 4;
+                            bool mismatch = actual[x * 4 + 3] != 255;
+                            for (int c = 0; c < 3; ++c) {
+                                const auto expected =
+                                    (raster->rgba[at + static_cast<std::size_t>(c)] *
+                                         raster->rgba[at + 3] +
+                                     127) /
+                                    255;
+                                mismatch = mismatch || actual[x * 4 + c] != expected;
+                            }
+                            mismatches += mismatch;
+                        }
+                    }
+                check(mismatches == 0,
+                      "Graph: native 全画素の独立 RGBA 比較 frame=" + std::to_string(frame) +
+                          " 不一致=" + std::to_string(mismatches));
+                image.save(QString::fromStdWString(
+                    (directory / ("native-" + std::to_string(frame) + ".png")).wstring()));
+            }
+        }
+        nativeController.shutdown();
+    }
+    const auto loaded = project::loadProjectJson(path);
+    check(loaded.success && loaded.project.timelineClips == saved.timelineClips,
+          "Graph: 保存した全データと ID の一致");
+    s = open(path, loaded.project);
+    if (!s)
+        return 4;
+    check(s->controller->selectClip(0), "Graph: 再起動後の選択");
+    pump(100);
+    check(input("expression", "sin("), "Graph: 不正原文を UI から保存");
+    check(s->controller->saveProject(), "Graph: 不正原文の製品保存");
+    const auto invalid = project::loadProjectJson(path);
+    check(invalid.success &&
+              invalid.project.timelineClips[0].graph.functions[0].expression == "sin(",
+          "Graph: 不正原文の再読込");
+    s->close();
+    s = open(path, invalid.project);
+    if (!s)
+        return 4;
+    check(s->controller->selectClip(0), "Graph: 不正原文の Project を再起動して選ぶ");
+    pump(100);
+    const auto invalidState = s->project();
+    check(input("expression", "x^2"), "Graph: 式の修復");
+    const auto repaired = s->project();
+    const auto firstId = repaired.timelineClips[0].graph.functions[0].id.value;
+    check(s->click("graphFunction_" + QString::fromStdString(firstId)),
+          "Graph: 確定欄から関数選択へ移る");
+    s->key(Qt::Key_Z, Qt::ControlModifier);
+    check(s->project() == invalidState, "Graph: 製品 Undo shortcut で原文と ID を戻す");
+    s->key(Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+    check(s->project() == repaired, "Graph: 製品 Redo shortcut で修復と ID を戻す");
+    for (const auto& size : {QSize(520, 900), QSize(300, 900), QSize(520, 480), QSize(300, 480)}) {
+        s->window->setProperty("leftPanelWidth", size.width());
+        s->window->resize(1280, size.height());
+        pump(100);
+        for (const auto& name : {"graphAddFunction", "graphDeleteFunction", "graphMoveFunctionUp",
+                                 "graphField_expression", "graphField_color", "graphField_frames"})
+            check(s->reach(s->find(QString::fromLatin1(name))),
+                  "Graph: 低い/狭い panel の操作到達");
+        s->shot("graph-layout-" + std::to_string(size.width()) + "-" +
+                std::to_string(size.height()));
+    }
+    bool seekAccepted = false;
+    check(pumpUntil([&] {
+              if (!seekAccepted)
+                  seekAccepted = s->controller->seekTimelineFrame(1);
+              return seekAccepted;
+          }),
+          "Graph: Draw 内の split 位置へ seek");
+    check(s->click("graphFunction_" + QString::fromStdString(firstId)),
+          "Graph: split 前の focus を編集欄から外す");
+    const auto beforeSplit = s->project();
+    s->key(Qt::Key_K, Qt::ControlModifier);
+    const auto split = s->project();
+    check(split.timelineClips.size() == 2, "Graph: 製品 split shortcut で二つに分割");
+    const auto right = std::find_if(split.timelineClips.begin(), split.timelineClips.end(),
+                                    [](const auto& clip) { return clip.sourceInFrame == 1; });
+    if (right != split.timelineClips.end()) {
+        std::string error;
+        const auto frame = project::evaluateGraphClip(*right, {60, 1}, 0, error);
+        check(frame && frame->sourceFrame == 1 && frame->progressNumerator == 1 &&
+                  frame->progressDenominator == 3,
+              "Graph: UI split の右側は Draw を最初から始めない");
+        check(right->graph.functions[0].id.value != firstId,
+              "Graph: UI split の右側で所有 ID を remap");
+    } else
+        check(false, "Graph: split の右側が存在する");
+    s->key(Qt::Key_Z, Qt::ControlModifier);
+    check(s->project() == beforeSplit, "Graph: UI split の Undo 完全一致");
+    s->key(Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+    check(s->project() == split, "Graph: UI split の Redo 完全一致");
+    s->close();
+    QJsonObject summary{
+        {"checks", checks}, {"failures", failures}, {"results", results}, {"screenshots", shots}};
+    QFile output(QString::fromStdWString((directory / L"results.json").wstring()));
+    if (output.open(QIODevice::WriteOnly))
+        output.write(QJsonDocument(summary).toJson());
+    return failures == 0 && checks > 0 ? 0 : 1;
+}
 
 int runEquationSequenceUi(const std::filesystem::path& requestedDirectory, bool scratch) {
     const auto directory =

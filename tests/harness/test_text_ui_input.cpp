@@ -1829,6 +1829,7 @@ int checkMathTransformAuthoring(const std::filesystem::path& projectPath) {
 // tests/harness/math_p28_acceptance.cpp
 int runMathP28Acceptance(const std::filesystem::path& manim, const std::filesystem::path& work);
 int runEquationSequenceUi(const std::filesystem::path& directory, bool scratch);
+int runGraphAuthoringUi(const std::filesystem::path& directory, const std::filesystem::path& manim);
 
 int main(int argc, char** argv) {
     mvm::app::prepareTestFixedWindowEnvironment();
@@ -1862,6 +1863,15 @@ int main(int argc, char** argv) {
             return 2;
         }
         const int result = runEquationSequenceUi(arguments[at + 1].toStdWString(), scratch);
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
+
+    if (application.arguments().contains(QStringLiteral("--graph-ui"))) {
+        const auto values = application.arguments();
+        if (values.size() != 4)
+            return 2;
+        const int result = runGraphAuthoringUi(values[3].toStdWString(), values[2].toStdWString());
         mvm_mlt_runtime_shutdown();
         return result;
     }
