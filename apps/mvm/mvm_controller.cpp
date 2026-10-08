@@ -2385,6 +2385,26 @@ void attachClipMotion(preview::PreviewCompositionLayer& layer, const project::Cl
 } // namespace
 
 std::shared_ptr<preview::CompositionSnapshot>
+MvmController::previewCompositionForTest(qint64 frame, QString& error, bool reuse) const {
+    const auto mapped = mapTimelinePreviewFrame(project_, frame);
+    if (!mapped.success) {
+        error = QString::fromStdString(mapped.error);
+        return {};
+    }
+    const auto saved = graphComposition_;
+    const auto memo = graphCompositionMemo_;
+    if (!reuse)
+        graphComposition_.reset();
+    preview::PreviewFrameRequest request;
+    auto result = previewCompositionFor(mapped, trackSources_, request, error);
+    if (!reuse) {
+        graphComposition_ = saved;
+        graphCompositionMemo_ = memo;
+    }
+    return result;
+}
+
+std::shared_ptr<preview::CompositionSnapshot>
 MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFrame,
                                      const std::map<int, TrackPreviewSource>& sources,
                                      preview::PreviewFrameRequest& request, QString& error) const {

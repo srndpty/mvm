@@ -469,6 +469,10 @@ public:
     std::shared_ptr<preview::CompositionSnapshot> subtitleCompositionForTest(qint64 frame,
                                                                              QString& error) const;
 
+    // 再利用の有無を比較する。非再利用の呼び出しは製品の memo を変更しない。
+    std::shared_ptr<preview::CompositionSnapshot>
+    previewCompositionForTest(qint64 frame, QString& error, bool reuse = true) const;
+
     // Undo / Redo 履歴が持つ Project の複製の概算 byte 数の合計。
     std::size_t editHistoryBytes() const;
 

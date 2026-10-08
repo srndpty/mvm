@@ -117,6 +117,12 @@
   全 gate の閉鎖と A/B・変異の根拠は [math-graph-p431.md](math-graph-p431.md)、
   新規証拠の機械集計は [math-graph-p431-results.md](math-graph-p431-results.md)。
   P4-3 の historical FAIL は [元の結果](math-graph-p43-results.md) と元 directory に保持する。
+- [事実] 2026-10-09、P4-3.2 と P4-3 は PASS/CLOSED。composition 再利用中も既存の
+  render-time motion が当該 frame の ClipEffects を評価する契約を、毎 frame 新規構築する
+  経路との native 全画素比較と、Graph motion を外す負例で検証した。製品の再利用判定は維持する。
+  全 gate と source の根拠は [math-graph-p432.md](math-graph-p432.md)、
+  生記録の機械集計は [math-graph-p432-results.md](math-graph-p432-results.md)。
+  P4-3.1 の PASS と P4-3 の historical FAIL は変更せず保持する。P4-4 は GO、未着手。
 - [事実] 2026-10-09、P4-2.1 は PASS/CLOSED。publication の重い I/O を authority mutex の外へ移し、
   同期バリアで supersede/shutdown の応答性と旧世代の公開拒否を検証した。
   契約と source provenance は [math-graph-p421.md](math-graph-p421.md)、

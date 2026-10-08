@@ -4222,6 +4222,11 @@ target_include_directories(mvm_test_graph_native_preview PRIVATE ${CMAKE_SOURCE_
 target_link_libraries(mvm_test_graph_native_preview PRIVATE ${_subtitle_controller_libraries})
 target_compile_definitions(mvm_test_graph_native_preview PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_graph_native_preview PROPERTIES WIN32_EXECUTABLE OFF)
+# 再利用した composition の時間依存効果を、seek 無しの実 D3D11 描画で比較する。
+add_test(NAME graph_continuous_effects_native COMMAND mvm_test_graph_native_preview --effects unused --fresh-directory)
+set_tests_properties(graph_continuous_effects_native PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
 mvm_add_test(math_equation_sequence_history COMMAND mvm_test_math_controller --equation-domain
     PROPERTIES TIMEOUT 30)
 # 実 D3D11 の preview で再生し、Write の mask が再生中に届いたときの表示を確かめる。

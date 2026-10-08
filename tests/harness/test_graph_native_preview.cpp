@@ -19,6 +19,7 @@
 #include <QQuickWindow>
 #include <QThread>
 #include <QUrl>
+#include <QUuid>
 
 namespace {
 using namespace mvm;
@@ -76,6 +77,211 @@ public:
                                          Qt::QueuedConnection);
     }
 };
+
+void continuousEffects(const std::filesystem::path& root) {
+    QQuickWindow window;
+    window.setFlags(app::testBackgroundWindowFlags());
+    app::applyTestFixedWindow(window);
+    window.resize(320, 180);
+    auto* surface = new app::PreviewEngineRhiItem(window.contentItem());
+    surface->setWidth(320);
+    surface->setHeight(180);
+    auto engine = std::make_shared<preview::PreviewEngine>();
+    check(bool(engine->initialize({{{30, 1}}}, std::make_shared<Dispatcher>())),
+          "ClipEffects の連続 engine を初期化");
+    surface->setEngine(engine);
+    window.show();
+    if (!check(pump([&] {
+                   return engine->status().state == preview::PreviewEngineState::ReadyPaused;
+               }),
+               "ClipEffects の native device"))
+        return;
+    QString isolation;
+    check(test::backgroundWindowIsolated(window, isolation), "ClipEffects 試験も操作を奪わない");
+    std::ofstream evidence(root / "continuous-effects.tsv");
+    evidence << "case\tframe\treused\tmismatch_pixels\toracle_mismatch\tcomposition_revision\n";
+    const auto drawFrame = [&](int frame) {
+        const auto before = engine->telemetry().presentedFrameCount;
+        check(bool(preview::internal::PreviewRenderPort::setSourcelessRenderClockForTest(*engine,
+                                                                                         frame)),
+              "ClipEffects は seek せず render clock で進める");
+        surface->update();
+        check(pump([&] {
+                  return engine->telemetry().presentedFrameCount > before &&
+                         engine->status().position.outputFrame == frame;
+              }),
+              "ClipEffects の対象 frame を提示");
+        return pixels(window.grabWindow());
+    };
+    for (const std::string name :
+         {"static", "opacity", "position-scale", "vertical", "draw-effects", "draw-transform",
+          "rotation", "crop", "crop-all", "fade"}) {
+        auto project = project::createDefaultProject();
+        project.timelineFpsNum = 30;
+        project.outputWidth = 320;
+        project.outputHeight = 180;
+        check(project::addGraph(project, "effects", {"f"}, "動く Graph",
+                                {project::TrackKind::Video, 0}, 0)
+                  .success,
+              "ClipEffects 用の Graph を作る");
+        auto& clip = project.timelineClips.back();
+        clip.sourceFrameCount = clip.sourceOutFrame = 10;
+        clip.sourceFpsNum = 30;
+        clip.sourceFpsDen = 1;
+        if (name == "opacity" || name == "draw-effects")
+            clip.effects.opacityKeys = {{0, 100}, {3, 40}};
+        if (name == "position-scale" || name == "draw-effects" || name == "draw-transform") {
+            clip.effects.positionXKeys = {{0, 0}, {3, 30}};
+            clip.effects.scaleXKeys = {{0, 100}, {3, 40}};
+        }
+        if (name == "rotation")
+            clip.effects.rotationKeys = {{0, 0}, {3, 270}};
+        if (name == "vertical") {
+            clip.effects.positionYKeys = {{0, 0}, {3, 30}};
+            clip.effects.scaleYKeys = {{0, 100}, {3, 40}};
+        }
+        if (name == "crop")
+            clip.effects.cropLeftKeys = {{0, 0}, {3, 30}};
+        if (name == "crop-all") {
+            clip.effects.cropLeftKeys = clip.effects.cropRightKeys = {{0, 0}, {3, 15}};
+            clip.effects.cropTopKeys = clip.effects.cropBottomKeys = {{0, 0}, {3, 15}};
+        }
+        if (name == "fade")
+            clip.effects.fadeInFrames = 4;
+        if (name == "draw-effects" || name == "draw-transform")
+            clip.graph.intro = {project::GraphIntroKind::Draw, 3};
+        app::MvmController controller(root / (name + ".mvm"), {}, project);
+        QString error;
+        auto initial = controller.previewCompositionForTest(0, error);
+        // 初回は animation record を作る。次の呼び出しで安定した memo が確立する。
+        initial = controller.previewCompositionForTest(0, error);
+        if (!check(initial && error.isEmpty() && initial->layers.size() == 1,
+                   "製品 controller から実際の Graph composition を取得"))
+            continue;
+        // renderer の画素だけを独立した色 fixture に置換し、製品の motion と memo は保持する。
+        auto slot = std::make_shared<app::GraphPresentation>();
+        auto frames = std::make_shared<app::GraphPresentation::Frames>();
+        std::vector<std::shared_ptr<const preview::PreviewStillImage>> owners;
+        for (int index : {-1, 0, 1, 2}) {
+            auto image = std::make_shared<preview::PreviewStillImage>();
+            image->width = 320;
+            image->height = 180;
+            image->rgba.resize(320 * 180 * 4);
+            for (std::size_t at = 0; at < image->rgba.size(); at += 4) {
+                image->rgba[at] = static_cast<std::uint8_t>(index < 0 ? 100 : 20 + 20 * index);
+                image->rgba[at + 3] = 255;
+            }
+            frames->emplace(index, image);
+            owners.push_back(image);
+        }
+        slot->frames.store(frames);
+        const auto animation = std::make_shared<app::GraphPreviewAnimation>(
+            clip, core::FrameRate{30, 1}, slot, 10, 320, 180);
+        const auto fixture = [&](const std::shared_ptr<preview::CompositionSnapshot>& input,
+                                 bool reference) {
+            auto result = std::make_shared<preview::CompositionSnapshot>(*input);
+            result->layers[0].stillAnimation = animation;
+            // 非再利用の基準は GUI 側で当該 frame の値を評価済み。render motion に依存させない。
+            if (reference)
+                result->layers[0].motion.reset();
+            return result;
+        };
+        check(bool(engine->submitComposition(fixture(initial, false))),
+              "連続 ClipEffects は composition を一度だけ公開");
+        check(bool(preview::internal::PreviewRenderPort::setSourcelessRenderClockForTest(*engine,
+                                                                                         0)) &&
+                  bool(engine->play()),
+              "ClipEffects の連続 clock を開始");
+        std::array<std::vector<std::uint8_t>, 4> actual;
+        std::array<bool, 4> reused{};
+        std::uint64_t epoch = 0;
+        for (int frame = 0; frame < 4; ++frame) {
+            const auto index = static_cast<std::size_t>(frame);
+            auto candidate = controller.previewCompositionForTest(frame, error);
+            reused[index] = candidate == initial;
+            const bool opacityChanges =
+                name == "opacity" || name == "draw-effects" || name == "fade";
+            check(reused[index] == (!opacityChanges || frame == 0),
+                  "memo は位置・拡大・回転・crop を再利用し、opacity の変化を識別する");
+            actual[index] = drawFrame(frame);
+            const auto revision = engine->status().lastPresentedComposition->revision;
+            if (frame == 0)
+                epoch = revision;
+            check(revision == epoch, "連続 ClipEffects の composition revision は不変");
+        }
+        check(bool(engine->pause()), "連続 ClipEffects を停止");
+        for (int frame = 0; frame < 4; ++frame) {
+            const auto index = static_cast<std::size_t>(frame);
+            auto reference = controller.previewCompositionForTest(frame, error, false);
+            check(reference && reference != initial && error.isEmpty(),
+                  "比較対象は同じ製品経路で毎 frame 新規構築する");
+            if (!reference)
+                continue;
+            check(bool(engine->submitComposition(fixture(reference, true))) && bool(engine->play()),
+                  "非再利用の評価済み基準を提示");
+            const auto expected = drawFrame(frame);
+            check(bool(engine->pause()), "基準 frame の描画を停止");
+            std::size_t mismatch = 0, oracleMismatch = 0;
+            if (actual[index].size() == expected.size())
+                for (std::size_t at = 0; at < expected.size(); at += 4)
+                    mismatch += !std::equal(expected.data() + at, expected.data() + at + 4,
+                                            actual[index].data() + at);
+            else
+                mismatch = 320 * 180;
+            // 四隅と丸め境界を含む全画素を、key の標準的な線形値から独立に計算する。
+            if (actual[index].size() == 320 * 180 * 4 &&
+                (name == "static" || name == "opacity" || name == "position-scale" ||
+                 name == "vertical" || name == "draw-effects" || name == "draw-transform" ||
+                 name == "crop" || name == "crop-all")) {
+                const bool transform =
+                    name == "position-scale" || name == "draw-effects" || name == "draw-transform";
+                const int left = transform            ? 64 * frame
+                                 : name == "crop"     ? 32 * frame
+                                 : name == "crop-all" ? 16 * frame
+                                                      : 0;
+                const int right = transform            ? left + 320 - 64 * frame
+                                  : name == "crop-all" ? 320 - 16 * frame
+                                                       : 320;
+                const int top = name == "vertical"   ? 36 * frame
+                                : name == "crop-all" ? 9 * frame
+                                                     : 0;
+                const int bottom = name == "vertical"   ? top + 180 - 36 * frame
+                                   : name == "crop-all" ? 180 - 9 * frame
+                                                        : 180;
+                const int red = name == "draw-effects" || name == "draw-transform"
+                                    ? (frame < 3 ? 20 + 20 * frame : 100)
+                                    : 100;
+                const int alpha =
+                    name == "opacity" || name == "draw-effects" ? 100 - 20 * frame : 100;
+                for (int y = 0; y < 180; ++y)
+                    for (int x = 0; x < 320; ++x) {
+                        const auto at = static_cast<std::size_t>(y * 320 + x) * 4;
+                        const int value = x >= left && x < right && y >= top && y < bottom
+                                              ? red * alpha / 100
+                                              : 0;
+                        oracleMismatch +=
+                            actual[index][at] != value || actual[index][at + 1] != 0 ||
+                            actual[index][at + 2] != 0 || actual[index][at + 3] != 255;
+                    }
+            }
+            check(actual[index].size() == 320 * 180 * 4 && mismatch == 0 && oracleMismatch == 0,
+                  "連続 ClipEffects は非再利用の基準と独立 oracle の全画素に一致");
+            evidence << name << '\t' << frame << '\t' << reused[index] << '\t' << mismatch << '\t'
+                     << oracleMismatch << '\t' << epoch << '\n';
+        }
+        if (name != "static")
+            check(actual[0] != actual[3], "時間変化を実際の画素で比較し、空振りを拒否する");
+        controller.shutdown();
+    }
+    const auto diagnostics = preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+    check(diagnostics.seekRequestCount == 0, "連続 ClipEffects と比較基準は seek を発行しない");
+    std::ofstream state(root / "continuous-effects.json");
+    state << "{\"seek_requests\":" << diagnostics.seekRequestCount << ",\"checks\":" << checks
+          << ",\"failures\":" << failures << "}\n";
+    check(bool(engine->requestShutdown()) &&
+              pump([&] { return engine->status().state == preview::PreviewEngineState::Shutdown; }),
+          "ClipEffects の native engine を解放");
+}
 
 void continuousNative(const std::filesystem::path& root) {
     auto project = project::createDefaultProject();
@@ -221,13 +427,22 @@ int main(int argc, char** argv) {
         std::filesystem::absolute(std::filesystem::path(args[2].toStdWString()), pathError)
             .lexically_normal();
     const std::filesystem::path root =
-        std::filesystem::absolute(std::filesystem::path(args[3].toStdWString()), pathError)
-            .lexically_normal();
+        args[3] == QStringLiteral("--fresh-directory")
+            ? std::filesystem::current_path() /
+                  ("graph-effects-" +
+                   QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString())
+            : std::filesystem::absolute(std::filesystem::path(args[3].toStdWString()), pathError)
+                  .lexically_normal();
     if (pathError || manim.empty() || video.empty() || root.empty())
         return 2;
     std::error_code ec;
     if (!std::filesystem::create_directories(root, ec) || ec)
         return 2;
+    continuousEffects(root);
+    if (args[1] == QStringLiteral("--effects")) {
+        std::cout << "ClipEffects 検査=" << checks << " 失敗=" << failures << '\n';
+        return failures ? 1 : 0;
+    }
     continuousNative(root);
     auto initial = project::createDefaultProject();
     initial.timelineFpsNum = 30;

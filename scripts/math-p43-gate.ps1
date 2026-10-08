@@ -4,7 +4,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Focused', 'Real', 'Regressions', 'BuildIndependent', 'Lint', 'Release')]
+    [ValidateSet('Focused', 'Effects', 'Real', 'Regressions', 'BuildIndependent', 'Lint', 'Release')]
     [string]$Stage = 'Focused',
     [string]$EvidenceDirectory,
     [string]$Manim = "$env:APPDATA/uv/tools/manim/Scripts/manim.exe"
@@ -48,11 +48,16 @@ Push-Location $repoRoot
 $displayLease = $null
 try {
     Write-Host '【操作可】背面・入力透過の native preview と既存の display-power protocol を使います。'
-    if ($Stage -in @('Real', 'Regressions')) {
+    if ($Stage -in @('Effects', 'Real', 'Regressions')) {
         . (Join-Path $PSScriptRoot 'lib/test-display-lease.ps1')
         $displayLease = Start-MvmTestDisplayLease
     }
     switch ($Stage) {
+        'Effects' {
+            Invoke-Recorded 'build' $pwshExe @('scripts/build.ps1', '-Target', 'mvm_test_graph_native_preview', '-ReuseConfigure')
+            $env:MVM_TEST_FIXED_WINDOW = '1'
+            Invoke-Recorded 'effects' 'build/ucrt64-release/bin/mvm_test_graph_native_preview.exe' @('--effects', 'unused', (Join-Path $evidenceRoot 'native'))
+        }
         'Focused' {
             Invoke-Recorded 'build' $pwshExe @('scripts/build.ps1', '-Target', 'mvm_test_graph_preview_cache')
             Invoke-Recorded 'cache' 'build/ucrt64-release/bin/mvm_test_graph_preview_cache.exe' @($evidenceRoot)
@@ -76,10 +81,10 @@ try {
             Invoke-Recorded 'native' 'build/ucrt64-release/bin/mvm_test_graph_native_preview.exe' @($Manim, $video, (Join-Path $evidenceRoot 'native'))
         }
         'Regressions' {
-            foreach ($target in @('mvm_test_graph_preview_cache', 'mvm_test_subtitle_controller', 'mvm_test_math_controller', 'mvm_test_graph_numeric', 'mvm_test_graph_domain', 'mvm_test_graph_render', 'mvm_test_equation_preview_controller', 'mvm_test_timeline_preview_mapping', 'mvm_test_still_layer_compositor', 'mvm_test_clip_effects')) {
+            foreach ($target in @('mvm_test_graph_native_preview', 'mvm_test_transition_preview', 'mvm_test_graph_preview_cache', 'mvm_test_subtitle_controller', 'mvm_test_math_controller', 'mvm_test_graph_numeric', 'mvm_test_graph_domain', 'mvm_test_graph_render', 'mvm_test_equation_preview_controller', 'mvm_test_timeline_preview_mapping', 'mvm_test_still_layer_compositor', 'mvm_test_clip_effects')) {
                 Invoke-Recorded ('build-' + $target) $pwshExe @('scripts/build.ps1', '-Target', $target, '-ReuseConfigure')
             }
-            $pattern = '^(graph_.*|audio_mixer_controls_qml.*|subtitle_native_preview.*|math_equation_sequence_preview_controller|math_equation_sequence_native_preview|math_write_native_playback|math_transform_native_playback|m7b_2_timeline_preview_mapping_focused|m7a_1_clip_effects_focused|still_layer_compositor)$'
+            $pattern = '^(graph_.*|transition_preview|audio_mixer_controls_qml.*|subtitle_native_preview.*|math_equation_sequence_preview_controller|math_equation_sequence_native_preview|math_write_native_playback|math_transform_native_playback|m7b_2_timeline_preview_mapping_focused|m7a_1_clip_effects_focused|still_layer_compositor)$'
             $ctest = 'C:\msys64\ucrt64\bin\ctest.exe'
             $selection = (& $ctest --test-dir build/ucrt64-release -N -R $pattern) -join "`n"
             if ($LASTEXITCODE -ne 0 -or $selection -notmatch 'Total Tests: [1-9][0-9]*') { throw '回帰の対象が0件または列挙失敗です' }
