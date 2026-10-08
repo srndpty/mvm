@@ -890,7 +890,7 @@ int quadraticWorkflow(const std::filesystem::path& path) {
     s->close();
     s.reset();
     const auto loaded = project::loadProjectJson(path);
-    check(loaded.success && loaded.project.schemaVersion == 21,
+    check(loaded.success && loaded.project.schemaVersion == project::kProjectSchemaVersion,
           "再読込: schema 21: " + loaded.error);
     if (!loaded.success)
         return 1;

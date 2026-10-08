@@ -317,3 +317,108 @@ pre-encoder frameのsource identity、phase、曲線分割、alpha合成を独�
 無効式保持、未知識別子、backend不在、破損manifest/raster、Draw途中右片の継続も必須。
 P4-0の性能値にPASS閾値は設けない。量の最適化は後続の正しさのgateとは別に判断する。
 未解決の改善・検証課題は [roadmap.md](roadmap.md) だけで管理する。
+
+## P4-1 domain, numeric compiler, sampling and schema 22
+
+P4-0 の上記記録は当時の設計・実測として保持する。以下は P4-1 の製品実装である。
+閉鎖判定は focused、変異、既存回帰、BuildIndependent、lint、通常 release の証拠が揃ってから行う。
+
+### API と構造の正
+
+`src/project/graph_clip.*` は GraphViewport/GraphAxes/GraphFunction/GraphIntro/GraphClipData と
+`validateGraph` を持つ。GraphValidationStatus は Valid/InvalidGraph/InvalidViewport。
+関数数・ASCII ID・finite viewport/span・有効 domain の正長交差・線幅・byte 長・intro と L を検査する。
+背景 field は持たず透明固定。色の検査は既存 `parseArgbColor`、保存は同じ parser を使う
+`canonicalArgbColor` の大文字 ARGB。空・不正・未知の式は構造として有効で、原文を保持する。
+ClipEffects は TimelineClip の既存 field のまま。
+
+`src/project/graph_edit.*` は候補 Project の全体検証後に一度だけ置き換える。
+新規は既存の 5 秒の既定尺を整数 source frame と作成時の有理数 FPS にする。
+関数の追加・削除・並べ替え・置換は候補を検査し、最後の関数の削除を拒否する。
+置換は ID で対象を特定し、式/domain/label/color/stroke の変更は所有 ID を保持する。
+viewport/axes/intro の変更は `editGraph` の同じ全体検証を通す。
+controller の createGraphClip/editGraphData/setGraphDuration は既存 commitProjectEdit に一回だけ確定する。
+失敗時に履歴を追加しない。Undo/Redo は Project snapshot に保存された生成済み ID を復元する。
+
+copy/paste/duplicate は外側 ID と関数 ID を発行し直し、trim は Graph データを保つ。
+split/上書きの分割/時間編集の右片も関数 ID を発行し直す。左片は元の所有 ID を保つ。
+`remapGraphIds` は旧 ID と今回の新 ID を予約し、発行試行は関数あたり最大128回。
+Graph は video track のみで media path と media item を持たず、isStillClipKind には加えない。
+速度変更・frame hold・リンクは構造として拒否する。
+
+### 式・AST と資源上限
+
+`src/media/graph/graph_numeric.*` は Qt/Project/Manim/Python/FFmpeg/MLT/D3D11 に依存しない。
+graph-expression/1 の文法は上記 P4-0 と同じ。Operation enum と後置順の有限 vector を使い、
+文字列による演算 dispatch はしない。number は `from_chars`、小数点と空白は ASCII のみ。
+`-x^2` は `-(x^2)`、累乗は右結合、関数は一引数、暗黙の積を拒否する。
+compile status と sample-local EvaluationStatus は別の型である。
+
+source <=4096 byte、AST depth <=64、node <=4096、入力が増やす parser recursion <=64。
+固定した sum/product/unary/atom 間の呼び出しは入力再帰 budget と区別する。
+括弧・関数引数・単項・累乗の再帰は降下前に検査する。括弧64重は有効、65重は Recursion。
+関数・単項・累乗64層は literal を含む AST depth65 が先に拒否する。65層は降下前の Recursion。
+左結合の深い AST も node の追加時に拒否し、評価と正準化は反復で行う。
+4096/4097 node の独立した大きい平衡木入力は、より小さい source byte 上限が先に拒否する。
+node guard 自体は呼び出し側が上限を縮める CompileBudget で独立検査する。
+4096 を超える指定で最大値を引き上げることはできない。既定の production 上限は変更しない。
+
+canonical は `graph-expression/1:` に prefix 順の固定2桁 Operation code と、literal の
+binary64 bit pattern の16桁 hex を連結する。子の順序と unary node を保ち、代数的簡約しない。
+例: `1` は `graph-expression/1:003ff0000000000000`、
+`x+1` は `graph-expression/1:0601003ff0000000000000`。
+所有 ID と source の空白は含まない。将来の key はこの version と numeric/toolchain identity を別々に持つ。
+cross-libm の bitwise determinism は主張しない。
+
+### 数値・sampling・Draw
+
+e/pi は std::numbers、log は自然対数。division/domain/overflow は enum で報告する。
+入力 x と各演算結果の finite 性を検査し、未定義の value は成功として渡さない。
+fast-math を target で明示的に無効化する。中間の未定義も後段へ伝播する。
+
+graph-sampling/1 は M=ceil(4W)、M+1 の端点と finite な隣接端点の midpoint を評価する。
+M<=32768、最大65537評価。密度の引き下げや適応的再試行はない。
+中央未定義・H/8 超の縦変位・0.5px 超の中央偏差で辺を切る。閾値の等号は接続する。
+幾何の差と平均は拡張精度で求め、極端な有限 binary64 値の差で overflow しないようにする。
+関数値自体の authority は binary64 evaluator のまま。
+finiteSamples は端点数、finiteEvaluations と未定義の分類別数は中央を含む全評価数。
+discardedEdges/midpointFailures/jumpDiscardedEdges/deviationDiscardedEdges と segment vector を返す。
+
+Liang–Barsky で各辺を viewport に clip する。切断後や可視範囲外を経由して再接続しない。
+同一点の線・孤立一点・境界への一点接触は描画可能な線ではない。接触だけの可視結果は
+ValidEmptyCurve、有効 domain 内で接続可能な二点の辺が無ければ NoFiniteSamples。
+正常な空曲線を式の構文不正と混同しない。関数ごとに Geometry が所有 ID と有効 domain を持つ。
+
+graph-draw/1 の reveal は source i/N と各関数の有効 domain から x 境界を求め、
+交差辺を直線補間する。i>=N は static Geometry をそのまま返す。履歴・arc length は使わない。
+evaluateGraphClip は既存 clipSourceFrameAt/clipTimebase の frame 始点標本化を使う。
+trim/split の sourceInFrame を進捗から引かず、右片は元の位相を継続する。
+L の延長で intro は変えず、N>L になる短縮は候補検証で拒否する。
+
+### schema と検証の証拠
+
+schema22 は graph payload を Graph kind にだけ要求する。Graph subtree の必須・未知・重複 field を
+既存の strict object reader で検査し、domain の省略だけを許可する。明示 null は拒否する。
+schema21 は既存内容を変えず22へ上げ、21以下の Graph と未来版は拒否する。
+AST/diagnostics/segments/raster/backend を保存しない。loader は式の描画可能性を要求しない。
+preview/export は Graph を明示的に未対応として拒否し、別の clip kind へ変換しない。
+
+実行入口は `pwsh scripts/math-p41-gate.ps1 -Stage <Focused|Mutations|Regressions|BuildIndependent|Lint|Release>`。
+各実行は新規 `build/math-p41-<timestamp>-<stage>/` に source snapshot/hash、revision、正確なコマンド、
+選択件数、終了コード、stdout/stderr、CTest raw log を保存する。0件の focused test を拒否する。
+変異は source の byte 列を退避し、finally で復元して SHA256 を照合する。
+compile 失敗・crash・timeout は assertion による変異検出成功に数えない。
+初期の失敗と環境切り分けは [初期記録](math-graph-p41-early-runs.md) を参照する。
+最終 gate の [機械集計](math-graph-p41-results.md) は `scripts/math-p41-report.ps1` が生成する。
+P4-0 の実測・閾値・過去分類は変更しない。
+
+[事実] 2026-10-08、P4-1 は PASS/CLOSED。構造 domain、bounded parser/AST、数値評価、
+切断・clipping、pure Draw、trim/split の source 継続、所有 ID、Undo/Redo、schema22 の
+移行・round-trip、編集可能な無効式、security/resource 負例を集中試験で確認した。
+最終 focused、15 個の変異検出、関連回帰、BuildIndependent、lint、通常 release 一回は
+すべて通過した。件数と終了コードは上記の機械集計を正とする。
+最終通常 gate は `build/math-p41-20261008-191124-Release/` に保存した。
+初期の失敗証拠も保持している。P4 全体の閉鎖を意味せず、P4-2 は未着手である。
+
+renderer/artifact/cache/UI/preview 実装/export 実装は追加しない。固定密度 sampling の限界と
+後続の未解決事項は [roadmap.md](roadmap.md) の P4-2 以降で管理する。

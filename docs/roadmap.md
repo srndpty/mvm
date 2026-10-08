@@ -98,9 +98,11 @@
   実測の自動集計は [math-graph-p40-results.md](math-graph-p40-results.md)。
   mvm 所有の式 AST・C++ 数値評価・切断済み点列を Manim に渡す方式を採用する。
   1〜3 関数、透明 RGBA、Draw i/N、source 範囲を保つ trim/split、所有 ID と key の分離、
-  schema 22 の提案を確定した。製品コードと schema 21 は変更していない。P4-1 は未着手。
-- P4-1: domain/parser/evaluator/sampling の正式実装、pure timing、schema 22、
-  ID の編集・Undo/Redo、無効原文の round-trip、構造・注入・精度境界の独立負例。
+  schema 22 の提案を確定した。P4-0 時点では製品コードと schema 21 を変更していない。
+- [事実] 2026-10-08、P4-1 は PASS/CLOSED。domain/parser/evaluator/sampling、pure timing、
+  schema22、ID の編集・Undo/Redo、無効原文の round-trip を実装した。
+  契約と閉鎖条件は [math-graph-p40.md](math-graph-p40.md)、全 gate と初期失敗を含む
+  証拠の機械集計は [math-graph-p41-results.md](math-graph-p41-results.md)。P4-2 は未着手。
 - P4-2: Graph 専用 renderer/artifact、公的な pixel 線幅換算、各ラベルの支持範囲と3帯の配置、
   per-curve alpha と重なりの独立合成 oracle、provenance-last publication、toolchain/key authority。
   P4-0 の多色・AA・透明背景の証拠を、全 alpha/style の保証へ一般化しない。

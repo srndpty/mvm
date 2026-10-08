@@ -1467,7 +1467,7 @@ int main(int argc, char** argv) {
         // schema 21 の fixture を読み、試験の中の定義と同じ data であること (取り違え防止)。
         const auto loaded = project::loadProjectJson(
             std::filesystem::path(QGuiApplication::arguments()[2].toStdWString()));
-        check(loaded.success && loaded.project.schemaVersion == 21,
+        check(loaded.success && loaded.project.schemaVersion == project::kProjectSchemaVersion,
               "native: schema 21 の fixture を読める: " + loaded.error);
         if (!loaded.success)
             return 1;

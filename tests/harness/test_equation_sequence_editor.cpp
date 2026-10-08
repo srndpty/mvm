@@ -815,7 +815,7 @@ void testSaveReopen() {
     check(f->controller->saveProject(), "保存: 製品の保存");
     const auto saved = f->project();
     const auto loaded = project::loadProjectJson(f->path);
-    check(loaded.success && loaded.project.schemaVersion == 21 &&
+    check(loaded.success && loaded.project.schemaVersion == project::kProjectSchemaVersion &&
               loaded.project.timelineClips == saved.timelineClips,
           "保存: 再読込で clip (状態の順・尺・ID・binding・対応・action) が同じ: " + loaded.error);
     f->controller->shutdown();

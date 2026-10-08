@@ -1,6 +1,7 @@
 #include "mvm_controller.h"
 
 #include "app/audio_source_set_transaction.h"
+#include "app/equation_sequence_authoring.h"
 #include "app/manim_clip_workflow.h"
 #include "app/math_clip_render.h"
 #include "app/preview/preview_engine_rhi_item.h"
@@ -13,15 +14,15 @@
 #include "core/checked_output_timebase.h"
 #include "core/export_eta.h"
 #include "core/timecode.h"
-#include "app/equation_sequence_authoring.h"
 #include "equation_sequence_editor.h"
 #include "image_raster_cache.h"
-#include "media_file_filters.h"
 #include "media/manim/manim_math_tex.h"
+#include "media_file_filters.h"
 #include "media_import.h"
 #include "preview_engine/preview_engine_internal.h"
 #include "project/clip_effects.h"
 #include "project/equation_sequence_edit.h"
+#include "project/graph_edit.h"
 #include "project/path_identity.h"
 #include "project/project_json.h"
 #include "project/subtitles.h"
@@ -2129,7 +2130,7 @@ private:
 };
 
 preview::PreviewPixelRect pixelRectUnion(const preview::PreviewPixelRect& a,
-                                          const preview::PreviewPixelRect& b) {
+                                         const preview::PreviewPixelRect& b) {
     if (a.width <= 0 || a.height <= 0)
         return b;
     const int left = std::min(a.x, b.x);
@@ -2160,6 +2161,7 @@ public:
         // 静止の mask を置いた矩形。
         preview::PreviewPixelRect rect;
     };
+
     struct TransformPart {
         std::string transitionId;
         MathTransformWindow window;
@@ -2186,10 +2188,10 @@ public:
         for (const auto& part : transforms_) {
             const int width = part.frames->width;
             const int height = part.frames->height;
-            rect_ = pixelRectUnion(rect_, {part.placement.sourceLeft, part.placement.sourceTop,
-                                           width, height});
-            rect_ = pixelRectUnion(rect_, {part.placement.targetLeft, part.placement.targetTop,
-                                           width, height});
+            rect_ = pixelRectUnion(
+                rect_, {part.placement.sourceLeft, part.placement.sourceTop, width, height});
+            rect_ = pixelRectUnion(
+                rect_, {part.placement.targetLeft, part.placement.targetTop, width, height});
         }
     }
 
@@ -3728,7 +3730,8 @@ void MvmController::requestMathRenders() {
         statics.push_back(mathRenderSpecFor(mathPreviewOverride_->second));
     const auto atPlayhead = [&](const project::TimelineClip& clip) {
         return clip.timelineStartFrame <= playheadFrame_ &&
-               playheadFrame_ < clip.timelineStartFrame + (clip.sourceOutFrame - clip.sourceInFrame);
+               playheadFrame_ <
+                   clip.timelineStartFrame + (clip.sourceOutFrame - clip.sourceInFrame);
     };
     for (const auto& clip : project_.timelineClips) {
         if (clip.kind != project::TimelineClipKind::Math)
@@ -3760,8 +3763,8 @@ void MvmController::requestMathRenders() {
     // Equation Sequence (P3-4): 再生位置に掛かる (preview に見える) clip だけを要求する。Project に
     // あるだけの sequence を先回りして描かない。残すのは今の sequence の key と、その全状態の今の
     // 静止 (代用と描画の入力)。preview 用の層の key は sequence の key の下なので一緒に残る。
-    // compile できない sequence も静止は要求する (代用に使う)。無効にした clip と出力しない track の
-    // clip は preview にも書き出しにも出ないので描かない (mapTimelinePreviewFrame と同じ条件)。
+    // compile できない sequence も静止は要求する (代用に使う)。無効にした clip と出力しない track
+    // の clip は preview にも書き出しにも出ないので描かない (mapTimelinePreviewFrame と同じ条件)。
     std::vector<math::EquationSequenceRenderSpec> sequences;
     for (const auto& clip : project_.timelineClips) {
         if (clip.kind != project::TimelineClipKind::EquationSequence || !clip.enabled ||
@@ -3861,13 +3864,14 @@ MvmController::mathTransformPreviewInputs(const project::TimelineTransition& tra
             artifact->targetY, targetStatic.mask->width, targetStatic.mask->height,
             project_.outputWidth, project_.outputHeight, inputs.placement)) {
         if (placementError)
-            *placementError = QStringLiteral(
-                "変形の途中の式が出力サイズ (%1x%2) に収まらないため、cut で表示します。"
-                "文字サイズを下げてください (変形 %3x%4)")
-                                  .arg(project_.outputWidth)
-                                  .arg(project_.outputHeight)
-                                  .arg(artifact->width)
-                                  .arg(artifact->height);
+            *placementError =
+                QStringLiteral(
+                    "変形の途中の式が出力サイズ (%1x%2) に収まらないため、cut で表示します。"
+                    "文字サイズを下げてください (変形 %3x%4)")
+                    .arg(project_.outputWidth)
+                    .arg(project_.outputHeight)
+                    .arg(artifact->width)
+                    .arg(artifact->height);
         return std::nullopt;
     }
     return inputs;
@@ -3916,17 +3920,19 @@ std::shared_ptr<const preview::PreviewStillAnimation> MvmController::mathPreview
                 write = MathClipPreviewAnimation::WritePart{
                     resident.frames, style,
                     preview::PreviewPixelRect{left, top, sequence.width, sequence.height}};
-                memo += QStringLiteral("|W:") + mathRasters_->sequenceKeyFor(*spec) +
-                        QStringLiteral("|%1|").arg(reinterpret_cast<quintptr>(resident.frames.get())) +
-                        QString::fromStdString(clip.math.color) + QLatin1Char('|') +
-                        QString::fromStdString(clip.math.backgroundColor) +
-                        QStringLiteral("|%1/%2").arg(clip.sourceFpsNum).arg(clip.sourceFpsDen);
+                memo +=
+                    QStringLiteral("|W:") + mathRasters_->sequenceKeyFor(*spec) +
+                    QStringLiteral("|%1|").arg(reinterpret_cast<quintptr>(resident.frames.get())) +
+                    QString::fromStdString(clip.math.color) + QLatin1Char('|') +
+                    QString::fromStdString(clip.math.backgroundColor) +
+                    QStringLiteral("|%1/%2").arg(clip.sourceFpsNum).arg(clip.sourceFpsDen);
             }
         }
     }
 
-    // この clip が前・後ろの端の変形。揃わない・memory に無い変形は付けず、その区間は cut で見せる。
-    // 前の端の layer にも後ろの端の layer にも同じ区間の部分を付ける (state は出力 frame から決まる)。
+    // この clip が前・後ろの端の変形。揃わない・memory に無い変形は付けず、その区間は cut
+    // で見せる。 前の端の layer にも後ろの端の layer にも同じ区間の部分を付ける (state は出力 frame
+    // から決まる)。
     std::vector<MathClipPreviewAnimation::TransformPart> transforms;
     for (const auto& transition : project_.timelineTransitions) {
         if (transition.kind != project::TransitionKind::MathTransform ||
@@ -4106,8 +4112,8 @@ MvmController::equationSequencePreviewAnimation(int clipIndex, std::int64_t outp
             coverage = std::make_shared<const std::vector<std::uint8_t>>(std::move(alpha));
             equationStaticCoverage_.insert(key, coverage);
         }
-        in.statics.push_back(
-            EquationPreviewStatic{entry.mask->width, entry.mask->height, coverage, style.colorArgb});
+        in.statics.push_back(EquationPreviewStatic{entry.mask->width, entry.mask->height, coverage,
+                                                   style.colorArgb});
         memo += QStringLiteral("|S%1#%2").arg(key).arg(style.colorArgb);
     }
 
@@ -4122,26 +4128,25 @@ MvmController::equationSequencePreviewAnimation(int clipIndex, std::int64_t outp
         if (artifact && artifact->stateStaticKeys == staticKeys) {
             in.artifactReady = true;
             for (const auto& item : artifact->transitions) {
-                EquationPreviewTransitionArtifact out{item.width,   item.height,  item.sourceX,
-                                                      item.sourceY, item.targetX, item.targetY,
-                                                      {}};
+                EquationPreviewTransitionArtifact out{
+                    item.width,   item.height, item.sourceX, item.sourceY, item.targetX,
+                    item.targetY, {}};
                 for (const auto& frame : item.frames)
                     out.colors.push_back(frame.colorArgb); // provenance の色
                 in.transitions.push_back(std::move(out));
             }
             for (const auto& item : artifact->actions) {
-                EquationPreviewActionArtifact out{item.width,   item.height,
-                                                  item.staticX, item.staticY,
-                                                  item.base.colorArgb, {}};
+                EquationPreviewActionArtifact out{item.width,   item.height,         item.staticX,
+                                                  item.staticY, item.base.colorArgb, {}};
                 for (const auto& frame : item.accent)
                     out.accentColors.push_back(frame.colorArgb);
                 in.actions.push_back(std::move(out));
             }
             memo += QStringLiteral("|Q") + mathRasters_->equationSequenceKeyFor(*renderSpec);
             std::string timeError;
-            const auto time = equationPreviewTimeAt(clip, project_.timelineFpsNum,
-                                                    project_.timelineFpsDen, &*in.spec,
-                                                    outputFrame, timeError);
+            const auto time =
+                equationPreviewTimeAt(clip, project_.timelineFpsNum, project_.timelineFpsDen,
+                                      &*in.spec, outputFrame, timeError);
             if (time) {
                 // 今の frame の束を最優先で読む。揃ったときだけ先読みする (先読みは何も追い出さず、
                 // 今の frame の読み込みを待たせない)。
@@ -4156,8 +4161,8 @@ MvmController::equationSequencePreviewAnimation(int clipIndex, std::int64_t outp
                     }
                 }
                 if (currentReady)
-                    for (const auto& bundle : equationPreviewUpcomingLayers(
-                             *in.spec, *time, kEquationPrefetchBundles)) {
+                    for (const auto& bundle :
+                         equationPreviewUpcomingLayers(*in.spec, *time, kEquationPrefetchBundles)) {
                         const auto resident = mathRasters_->residentEquationLayers(
                             *renderSpec, equationLayerRefs(bundle), false);
                         if (resident.state == MathRasterCache::Residency::Resident)
@@ -4198,14 +4203,15 @@ MvmController::equationSequencePreviewStatus(const QString& clipId, qint64 outpu
     status.backend = mathRasters_->backendState();
     // compile も memo を書き換えない (data が同じ memo があれば使い、無ければその場で compile)。
     const auto memo = equationCompiles_.constFind(clipId);
-    const auto compiled = memo != equationCompiles_.constEnd() && memo->data == found->equationSequence
-                              ? memo->result
-                              : compileEquationSequence(found->equationSequence);
+    const auto compiled =
+        memo != equationCompiles_.constEnd() && memo->data == found->equationSequence
+            ? memo->result
+            : compileEquationSequence(found->equationSequence);
     status.compile = compiled.failure;
     std::string error;
-    status.time = equationPreviewTimeAt(*found, project_.timelineFpsNum, project_.timelineFpsDen,
-                                        compiled.value ? &*compiled.value : nullptr, outputFrame,
-                                        error);
+    status.time =
+        equationPreviewTimeAt(*found, project_.timelineFpsNum, project_.timelineFpsDen,
+                              compiled.value ? &*compiled.value : nullptr, outputFrame, error);
     for (const auto& state : found->equationSequence.states) {
         const auto entry = mathRasters_->entryOf(equationStateStaticSpec(state));
         status.staticsReady.push_back(entry.state == MathRasterCache::State::Ready && entry.mask);
@@ -4238,7 +4244,8 @@ MvmController::equationSequencePreviewStatus(const QString& clipId, qint64 outpu
     return status;
 }
 
-QVariantMap MvmController::mathTransformStatus(const project::TimelineTransition& transition) const {
+QVariantMap
+MvmController::mathTransformStatus(const project::TimelineTransition& transition) const {
     if (transition.kind != project::TransitionKind::MathTransform || !mathRasters_)
         return {};
     const int outgoing = indexOfClipId(project_.timelineClips, transition.outgoingClipId);
@@ -4313,20 +4320,21 @@ QVariantMap MvmController::mathTransformStatus(const project::TimelineTransition
         break;
     }
     }
-    return {{QStringLiteral("transformState"), state},
-            {QStringLiteral("transformMessage"), message},
-            {QStringLiteral("transformLog"), log},
-            {QStringLiteral("transformUnavailableReason"), unavailableReason},
-            {QStringLiteral("transformCanRetry"),
-             mathRasters_->authorized() && !shutdownStarted_ &&
-                 mathRasters_->backendState() != MathRasterCache::BackendState::Checking},
-            {QStringLiteral("transformToolchain"), mathRasters_->toolchainText()},
-            // preview で変形を使えるか (書き出しの可否とは別。disk が ready のときだけ)。
-            //   "" 未要求 (前・後ろの clip が見える frame の合成が要求する) / loading / ready /
-            //   memory (memory の上限に収まらない) / placement (artifact が出力 raster に収まらない)。
-            // memory・placement の間は cut で見せ、理由は transformPreviewMessage。
-            {QStringLiteral("transformPreview"), preview.first},
-            {QStringLiteral("transformPreviewMessage"), preview.second}};
+    return {
+        {QStringLiteral("transformState"), state},
+        {QStringLiteral("transformMessage"), message},
+        {QStringLiteral("transformLog"), log},
+        {QStringLiteral("transformUnavailableReason"), unavailableReason},
+        {QStringLiteral("transformCanRetry"),
+         mathRasters_->authorized() && !shutdownStarted_ &&
+             mathRasters_->backendState() != MathRasterCache::BackendState::Checking},
+        {QStringLiteral("transformToolchain"), mathRasters_->toolchainText()},
+        // preview で変形を使えるか (書き出しの可否とは別。disk が ready のときだけ)。
+        //   "" 未要求 (前・後ろの clip が見える frame の合成が要求する) / loading / ready /
+        //   memory (memory の上限に収まらない) / placement (artifact が出力 raster に収まらない)。
+        // memory・placement の間は cut で見せ、理由は transformPreviewMessage。
+        {QStringLiteral("transformPreview"), preview.first},
+        {QStringLiteral("transformPreviewMessage"), preview.second}};
 }
 
 std::pair<QString, QString> MvmController::mathWriteState(const project::TimelineClip& clip) const {
@@ -4362,8 +4370,8 @@ std::pair<QString, QString> MvmController::mathWriteState(const project::Timelin
     return {QStringLiteral("ready"), {}};
 }
 
-std::shared_ptr<const preview::PreviewStillImage> MvmController::mathStillImage(int clipIndex,
-                                                                                bool& pending) const {
+std::shared_ptr<const preview::PreviewStillImage>
+MvmController::mathStillImage(int clipIndex, bool& pending) const {
     pending = false;
     const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
     const project::MathClipData data = effectiveMathData(clip);
@@ -4386,14 +4394,14 @@ std::shared_ptr<const preview::PreviewStillImage> MvmController::mathStillImage(
         pending = true;
         return nullptr;
     }
-    const QString memo = maskKey + QLatin1Char('|') + QString::fromStdString(data.color) +
-                         QLatin1Char('|') + QString::fromStdString(data.backgroundColor) +
-                         QStringLiteral("|%1x%2").arg(project_.outputWidth).arg(project_.outputHeight);
+    const QString memo =
+        maskKey + QLatin1Char('|') + QString::fromStdString(data.color) + QLatin1Char('|') +
+        QString::fromStdString(data.backgroundColor) +
+        QStringLiteral("|%1x%2").arg(project_.outputWidth).arg(project_.outputHeight);
     if (const auto found = mathStillImages_.constFind(clipId);
         found != mathStillImages_.constEnd() && found->memo == memo)
         return found->image;
-    auto composed =
-        composeMathClipRaster(*mask, data, project_.outputWidth, project_.outputHeight);
+    auto composed = composeMathClipRaster(*mask, data, project_.outputWidth, project_.outputHeight);
     if (!composed.success) {
         // 出力より大きい式など。状態は mathClipData が示す。preview からは外す。
         pending = true;
@@ -4417,10 +4425,10 @@ std::int64_t mathIntroMaximumFrames(const project::TimelineClip& clip) {
 
 // clip の素材 frame の数を秒にする (数式 clip の素材 fps は置いたときの timeline の fps)。
 double mathIntroSeconds(const project::TimelineClip& clip, std::int64_t frames) {
-    return clip.sourceFpsNum > 0 ? static_cast<double>(frames) *
-                                       static_cast<double>(clip.sourceFpsDen) /
-                                       static_cast<double>(clip.sourceFpsNum)
-                                 : 0.0;
+    return clip.sourceFpsNum > 0
+               ? static_cast<double>(frames) * static_cast<double>(clip.sourceFpsDen) /
+                     static_cast<double>(clip.sourceFpsNum)
+               : 0.0;
 }
 
 // 秒を clip の素材 frame にし、1 から上限までに収める。
@@ -4428,7 +4436,8 @@ std::int64_t mathIntroFramesForSeconds(const project::TimelineClip& clip, double
     const double frames = seconds * static_cast<double>(clip.sourceFpsNum) /
                           static_cast<double>(std::max<std::int64_t>(1, clip.sourceFpsDen));
     const auto rounded = std::isfinite(frames) ? std::llround(frames) : 1LL;
-    return std::clamp<std::int64_t>(rounded, 1, std::max<std::int64_t>(1, mathIntroMaximumFrames(clip)));
+    return std::clamp<std::int64_t>(rounded, 1,
+                                    std::max<std::int64_t>(1, mathIntroMaximumFrames(clip)));
 }
 
 } // namespace
@@ -4445,7 +4454,8 @@ QVariantMap MvmController::mathClipData(const QString& clipId) const {
     const bool hasPrevious = mathLastGood_.contains(clipId);
     const auto write = mathWriteState(*found);
     std::pair<QString, QString> writePreview;
-    if (const auto spec = mathSequenceSpecFor(*found); spec && write.first == QStringLiteral("ready")) {
+    if (const auto spec = mathSequenceSpecFor(*found);
+        spec && write.first == QStringLiteral("ready")) {
         const auto residency = mathRasters_->residencyOf(*spec);
         switch (residency.state) {
         case MathRasterCache::Residency::Resident:
@@ -4522,8 +4532,7 @@ QVariantMap MvmController::mathClipData(const QString& clipId) const {
             // Write (clip の先頭で式を書く)。尺は clip の素材 frame で、秒は表示用。
             {QStringLiteral("intro"),
              QString::fromLatin1(project::mathIntroKindName(found->mathAnimation.intro))},
-            {QStringLiteral("introFrames"),
-             static_cast<qint64>(found->mathAnimation.introFrames)},
+            {QStringLiteral("introFrames"), static_cast<qint64>(found->mathAnimation.introFrames)},
             {QStringLiteral("introSeconds"),
              mathIntroSeconds(*found, found->mathAnimation.introFrames)},
             {QStringLiteral("introMaxSeconds"),
@@ -6574,6 +6583,13 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
         for (auto& copy : laneClips) {
             copy.track = {kind, chosen};
             copy.id = newClipId();
+            if (copy.kind == project::TimelineClipKind::Graph) {
+                std::string error;
+                if (!project::remapGraphIds(copy.graph, [this] { return newClipId(); }, error)) {
+                    setStatus(QString::fromStdString(error));
+                    return false;
+                }
+            }
             if (copy.kind == project::TimelineClipKind::EquationSequence) {
                 std::string error;
                 if (!project::remapEquationSequenceIds(
@@ -7421,10 +7437,11 @@ bool MvmController::applyMathTransform() {
     selectedEditOutgoing_.clear();
     selectedEditIncoming_.clear();
     selectedTransitionId_ = placed.transitionId;
-    QString status = QString::number(placed.frames) +
-                     QStringLiteral("フレームの数式の変形を作成しました");
+    QString status =
+        QString::number(placed.frames) + QStringLiteral("フレームの数式の変形を作成しました");
     if (placed.frames < requestedFrames)
-        status += QStringLiteral("。後ろの数式 clip の尺・区間の見た目の条件に合わせて短くしました");
+        status +=
+            QStringLiteral("。後ろの数式 clip の尺・区間の見た目の条件に合わせて短くしました");
     setStatus(status);
     notifyTimelineTransitions();
     Q_EMIT stateChanged();
@@ -7637,28 +7654,28 @@ QVariantMap MvmController::computeSelectedTransition() const {
     if (!outgoingDuration.success || !incomingDuration.success || !limits.success)
         return {};
     const qint64 cut = outgoingClip.timelineStartFrame + outgoingDuration.frame;
-    QVariantMap selected{{QStringLiteral("transitionId"), QString::fromStdString(found->id)},
-            {QStringLiteral("trackKind"),
-             QString::fromLatin1(project::trackKindName(outgoingClip.track.kind))},
-            {QStringLiteral("cut"), cut},
-            {QStringLiteral("framesBeforeCut"), static_cast<qint64>(found->framesBeforeCut)},
-            {QStringLiteral("framesAfterCut"), static_cast<qint64>(found->framesAfterCut)},
-            {QStringLiteral("durationText"),
-             QString::fromStdString(
-                 core::formatTimecode(found->framesBeforeCut + found->framesAfterCut,
-                                      project_.timelineFpsNum, project_.timelineFpsDen))},
-            {QStringLiteral("maxBefore"), static_cast<qint64>(limits.maxBefore)},
-            {QStringLiteral("maxAfter"), static_cast<qint64>(limits.maxAfter)},
-            {QStringLiteral("outgoingClipId"), QString::fromStdString(outgoingClip.id)},
-            {QStringLiteral("outgoingName"), QString::fromStdString(outgoingClip.name)},
-            {QStringLiteral("outgoingStart"), static_cast<qint64>(outgoingClip.timelineStartFrame)},
-            {QStringLiteral("outgoingEnd"), cut},
-            {QStringLiteral("incomingClipId"), QString::fromStdString(incomingClip.id)},
-            {QStringLiteral("incomingName"), QString::fromStdString(incomingClip.name)},
-            {QStringLiteral("incomingStart"), static_cast<qint64>(incomingClip.timelineStartFrame)},
-            {QStringLiteral("incomingEnd"),
-             static_cast<qint64>(incomingClip.timelineStartFrame + incomingDuration.frame)},
-            {QStringLiteral("kind"), QString::fromLatin1(project::transitionKindName(found->kind))}};
+    QVariantMap selected{
+        {QStringLiteral("transitionId"), QString::fromStdString(found->id)},
+        {QStringLiteral("trackKind"),
+         QString::fromLatin1(project::trackKindName(outgoingClip.track.kind))},
+        {QStringLiteral("cut"), cut},
+        {QStringLiteral("framesBeforeCut"), static_cast<qint64>(found->framesBeforeCut)},
+        {QStringLiteral("framesAfterCut"), static_cast<qint64>(found->framesAfterCut)},
+        {QStringLiteral("durationText"), QString::fromStdString(core::formatTimecode(
+                                             found->framesBeforeCut + found->framesAfterCut,
+                                             project_.timelineFpsNum, project_.timelineFpsDen))},
+        {QStringLiteral("maxBefore"), static_cast<qint64>(limits.maxBefore)},
+        {QStringLiteral("maxAfter"), static_cast<qint64>(limits.maxAfter)},
+        {QStringLiteral("outgoingClipId"), QString::fromStdString(outgoingClip.id)},
+        {QStringLiteral("outgoingName"), QString::fromStdString(outgoingClip.name)},
+        {QStringLiteral("outgoingStart"), static_cast<qint64>(outgoingClip.timelineStartFrame)},
+        {QStringLiteral("outgoingEnd"), cut},
+        {QStringLiteral("incomingClipId"), QString::fromStdString(incomingClip.id)},
+        {QStringLiteral("incomingName"), QString::fromStdString(incomingClip.name)},
+        {QStringLiteral("incomingStart"), static_cast<qint64>(incomingClip.timelineStartFrame)},
+        {QStringLiteral("incomingEnd"),
+         static_cast<qint64>(incomingClip.timelineStartFrame + incomingDuration.frame)},
+        {QStringLiteral("kind"), QString::fromLatin1(project::transitionKindName(found->kind))}};
     // 数式の変形は描画と preview の状態を足す (Blend には無い)。
     const auto status = mathTransformStatus(*found);
     for (auto it = status.cbegin(); it != status.cend(); ++it)
@@ -7710,11 +7727,12 @@ bool MvmController::setTransitionSpan(qint64 framesBeforeCut, qint64 framesAfter
             framesBeforeCut == fitted.framesBeforeCut && framesAfterCut == fitted.framesAfterCut;
         if (requestedSame)
             return reject(QStringLiteral("トランジションの長さは変わっていません"));
-        return reject(mathTransform
-                          ? QStringLiteral("数式の変形はこれ以上変えられません (後ろの数式 clip の"
-                                           "尺・前の数式 clip の Write・区間の見た目の範囲の端です)")
-                          : QStringLiteral("トランジションはこれ以上変えられません "
-                                           "(素材の余白・フレーム・不透明度の範囲の端です)"));
+        return reject(
+            mathTransform
+                ? QStringLiteral("数式の変形はこれ以上変えられません (後ろの数式 clip の"
+                                 "尺・前の数式 clip の Write・区間の見た目の範囲の端です)")
+                : QStringLiteral("トランジションはこれ以上変えられません "
+                                 "(素材の余白・フレーム・不透明度の範囲の端です)"));
     }
     QString status = QStringLiteral("トランジションを") +
                      QString::number(fitted.framesBeforeCut + fitted.framesAfterCut) +
@@ -7874,9 +7892,11 @@ bool MvmController::unlinkTimelineClip(const QString& clipId) {
                                         QStringLiteral("clipのリンクを解除しました"));
 }
 
-bool MvmController::editEquationSequenceData(const std::string& clipId,
+bool MvmController::editEquationSequenceData(
+    const std::string& clipId,
     const std::function<bool(project::EquationSequenceClipData&, std::string&)>& edit) {
-    if (busy_ || !pauseTimeline()) return false;
+    if (busy_ || !pauseTimeline())
+        return false;
     auto candidate = project_;
     const auto result = project::editEquationSequence(candidate, clipId, edit);
     if (!result.success) {
@@ -7891,6 +7911,54 @@ bool MvmController::editEquationSequenceData(const std::string& clipId,
     requestMathRenders();
     Q_EMIT stateChanged();
     refreshTextPreview();
+    return true;
+}
+
+bool MvmController::createGraphClip(std::int64_t start, project::TrackRef track) {
+    if (busy_ || !pauseTimeline())
+        return false;
+    auto candidate = project_;
+    const auto result =
+        project::addGraph(candidate, newClipId(), {newClipId()}, "グラフ", track, start);
+    if (!result.success) {
+        setStatus(QString::fromStdString(result.error));
+        return false;
+    }
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Graph を作成できません: ")))
+        return false;
+    Q_EMIT stateChanged();
+    return true;
+}
+
+bool MvmController::editGraphData(
+    const std::string& clipId,
+    const std::function<bool(project::GraphClipData&, std::string&)>& edit) {
+    if (busy_ || !pauseTimeline())
+        return false;
+    auto candidate = project_;
+    const auto result = project::editGraph(candidate, clipId, edit);
+    if (!result.success) {
+        setStatus(QString::fromStdString(result.error));
+        return false;
+    }
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Graph を更新できません: ")))
+        return false;
+    Q_EMIT stateChanged();
+    return true;
+}
+
+bool MvmController::setGraphDuration(const std::string& clipId, std::int64_t frames) {
+    if (busy_ || !pauseTimeline())
+        return false;
+    auto candidate = project_;
+    const auto result = project::setGraphSourceDuration(candidate, clipId, frames);
+    if (!result.success) {
+        setStatus(QString::fromStdString(result.error));
+        return false;
+    }
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Graph の尺を更新できません: ")))
+        return false;
+    Q_EMIT stateChanged();
     return true;
 }
 
@@ -8416,7 +8484,8 @@ bool MvmController::saveProjectAs(const QUrl& fileUrl) {
         removedRecovery = removeRecoveryBeside(previousPath, recoveryError);
     adoptProjectLock(acquiredLock, path);
     projectPath_ = path;
-    // 数式の描画は保存先の cache/math/<file 名> に置く。保存先が変われば描き直す (cache を移さない)。
+    // 数式の描画は保存先の cache/math/<file 名> に置く。保存先が変われば描き直す (cache
+    // を移さない)。
     syncMathCacheAuthority();
     savedProject_ = project_;
     savedRevision_ = currentRevision_;
@@ -8847,19 +8916,17 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
         // Write の連番も現在の式・尺のものが描けていなければ書き出さない (静止で代用しない)。
         if (const auto write = mathSequenceSpecFor(clip)) {
             const auto [writeState, writeMessage] = mathWriteState(clip);
-            const auto sequence =
-                writeState == QStringLiteral("ready") && mathRasters_
-                    ? mathRasters_->readySequence(*write)
-                    : std::nullopt;
+            const auto sequence = writeState == QStringLiteral("ready") && mathRasters_
+                                      ? mathRasters_->readySequence(*write)
+                                      : std::nullopt;
             if (!sequence) {
                 const QString reason =
                     writeMessage.isEmpty()
                         ? QStringLiteral("描画中です。終わってから書き出してください")
                         : writeMessage;
-                reportExportFailure(QStringLiteral("数式 clip '") +
-                                    QString::fromStdString(clip.name) +
-                                    QStringLiteral("' の Write の描画が完了していません: ") +
-                                    reason);
+                reportExportFailure(
+                    QStringLiteral("数式 clip '") + QString::fromStdString(clip.name) +
+                    QStringLiteral("' の Write の描画が完了していません: ") + reason);
                 return false;
             }
             request.mathWriteFrames.emplace(clip.id, sequence->frames);

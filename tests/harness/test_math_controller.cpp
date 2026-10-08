@@ -14,10 +14,12 @@
 
 #include "app/preview/preview_engine_rhi_item.h"
 #include "app/timeline_export.h"
+#include "app/timeline_preview_mapping.h"
 #include "math_fake_backend.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/equation_sequence_edit.h"
+#include "project/graph_edit.h"
 #include "project/project_json.h"
 
 #include <algorithm>
@@ -2143,6 +2145,89 @@ int realManimTransform(const std::filesystem::path& manim,
     return failures == 0 && checks > 0 ? 0 : 1;
 }
 
+void testGraphHistory() {
+    QTemporaryDir temp;
+    check(temp.isValid(), "Graph 履歴試験の作業 directory");
+    const auto path = std::filesystem::path(temp.path().toStdWString()) / L"graph.mvm";
+    const auto initial = project::createDefaultProject();
+    check(project::saveProjectJson(initial, path).success, "Graph 初期保存");
+    auto captured = std::make_shared<CapturedExport>();
+    auto controller = makeController(path, initial, captured);
+    const auto depth = controller->undoDepthForTest();
+    check(controller->createGraphClip(0, {project::TrackKind::Video, 0}), "Graph 作成");
+    const auto created = controller->projectForTest();
+    check(created.timelineClips.size() == 1 && controller->undoDepthForTest() == depth + 1,
+          "Graph 作成は Undo 一回");
+    if (created.timelineClips.empty()) {
+        controller->shutdown();
+        return;
+    }
+    const auto id = created.timelineClips[0].id;
+    check(controller->undoLastEdit() && controller->projectForTest() == initial &&
+              controller->redoLastEdit() && controller->projectForTest() == created,
+          "作成の exact Undo/Redo");
+    check(controller->setGraphDuration(id, 400), "Graph source 尺の確定");
+    const auto extended = controller->projectForTest();
+    check(extended.timelineClips[0].sourceFrameCount == 400 && controller->undoLastEdit() &&
+              controller->projectForTest() == created && controller->redoLastEdit() &&
+              controller->projectForTest() == extended && controller->undoLastEdit() &&
+              controller->projectForTest() == created,
+          "source 尺も exact Undo/Redo");
+    const auto beforeDepth = controller->undoDepthForTest();
+    check(!controller->editGraphData(id,
+                                     [](auto& g, auto&) {
+                                         g.functions.clear();
+                                         return true;
+                                     }) &&
+              controller->undoDepthForTest() == beforeDepth &&
+              controller->projectForTest() == created,
+          "拒否編集の Project と Undo 不変");
+    check(controller->editGraphData(id,
+                                    [](auto& g, auto&) {
+                                        g.functions[0].expression = "sin(";
+                                        g.intro = {project::GraphIntroKind::Draw, 3};
+                                        return true;
+                                    }),
+          "不正式と Draw の確定");
+    const auto edited = controller->projectForTest();
+    check(edited.timelineClips[0].graph.functions[0].id ==
+                  created.timelineClips[0].graph.functions[0].id &&
+              controller->undoDepthForTest() == beforeDepth + 1,
+          "普通の編集は ID 保持と Undo 一回");
+    check(controller->undoLastEdit() && controller->projectForTest() == created &&
+              controller->redoLastEdit() && controller->projectForTest() == edited,
+          "編集 exact Undo/Redo");
+    check(controller->selectClip(0) && controller->duplicateSelectedClips(), "Graph 複製");
+    const auto duplicated = controller->projectForTest();
+    check(duplicated.timelineClips.size() == 2 && duplicated.timelineClips[1].id != id &&
+              duplicated.timelineClips[1].graph.functions[0].id !=
+                  edited.timelineClips[0].graph.functions[0].id,
+          "複製の新しい所有 ID");
+    check(controller->undoLastEdit() && controller->projectForTest() == edited &&
+              controller->redoLastEdit() && controller->projectForTest() == duplicated &&
+              controller->undoLastEdit(),
+          "複製 ID の exact Undo/Redo");
+    check(controller->splitClipAt(QString::fromStdString(id), 1, false, false), "Draw 内 split");
+    const auto split = controller->projectForTest();
+    check(split.timelineClips.size() == 2 && split.timelineClips[1].graph.functions[0].id !=
+                                                 split.timelineClips[0].graph.functions[0].id,
+          "右片は新所有 ID");
+    check(controller->undoLastEdit() && controller->projectForTest() == edited &&
+              controller->redoLastEdit() && controller->projectForTest() == split,
+          "split ID exact Undo/Redo");
+    auto serialized = project::serializeProjectJson(split, path);
+    auto reopened = project::parseProjectJsonText(serialized.json, path);
+    check(serialized.success && reopened.success && reopened.project == split,
+          "controller 状態往復");
+    const auto mapping = mvm::app::mapTimelineExportPlan(split, {});
+    check(!mapping.success && mapping.error.find("Graph") != std::string::npos,
+          "Graph export の明示拒否");
+    const auto preview = mvm::app::mapTimelinePreviewFrame(split, 0);
+    check(!preview.success && preview.error.find("Graph") != std::string::npos,
+          "Graph preview の明示拒否");
+    controller->shutdown();
+}
+
 void testEquationSequenceHistory() {
     QTemporaryDir temp;
     check(temp.isValid(), "sequence 履歴試験の作業 directory");
@@ -2372,6 +2457,11 @@ int main(int argc, char** argv) {
     check(temp.isValid(), "作業フォルダー");
     if (argc == 2 && std::string_view(argv[1]) == "--equation-domain") {
         testEquationSequenceHistory();
+        std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
+        return failures == 0 && checks > 0 ? 0 : 1;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--graph-domain") {
+        testGraphHistory();
         std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
         return failures == 0 && checks > 0 ? 0 : 1;
     }

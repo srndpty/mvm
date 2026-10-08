@@ -190,6 +190,13 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
 TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
                                          const TimelineExportRequest& request) {
     TimelineExportPlan plan;
+    for (const auto& clip : project.timelineClips) {
+        if (clip.enabled && clip.kind == project::TimelineClipKind::Graph &&
+            project::isTrackOutputEnabled(project, clip.track)) {
+            plan.error = "Graph の書き出しは未対応です: " + clip.name;
+            return plan;
+        }
+    }
     if (request.width <= 0 || request.height <= 0 || request.fpsNum <= 0 || request.fpsDen <= 0 ||
         request.videoCrf < 0 || request.videoCrf > 51 || request.fpsNum != project.timelineFpsNum ||
         request.fpsDen != project.timelineFpsDen) {

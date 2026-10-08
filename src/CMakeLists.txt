@@ -25,6 +25,8 @@ add_library(mvm_project STATIC
     project/math_clip.cpp
     project/equation_sequence.cpp
     project/equation_sequence_edit.cpp
+    project/graph_clip.cpp
+    project/graph_edit.cpp
     project/equation_binding_edit.cpp
     project/media_bin.cpp
     project/path_identity.cpp
@@ -39,6 +41,12 @@ target_include_directories(mvm_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # ため PUBLIC で持つ。
 target_link_libraries(mvm_project PUBLIC mvm::core PRIVATE mvm::warnings)
 add_library(mvm::project ALIAS mvm_project)
+
+add_library(mvm_graph_numeric STATIC media/graph/graph_numeric.cpp)
+target_include_directories(mvm_graph_numeric PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_graph_numeric PRIVATE mvm::warnings)
+target_compile_options(mvm_graph_numeric PRIVATE -fno-fast-math)
+add_library(mvm::graph_numeric ALIAS mvm_graph_numeric)
 
 # --- Windows / UTF-8 ヘルパ -------------------------------------------------
 # Phase 0 スパイク用の小さなヘルパ。製品用の platform 層ではない。
