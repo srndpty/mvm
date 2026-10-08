@@ -2223,8 +2223,48 @@ void testGraphHistory() {
     check(!mapping.success && mapping.error.find("Graph") != std::string::npos,
           "Graph export の明示拒否");
     const auto preview = mvm::app::mapTimelinePreviewFrame(split, 0);
-    check(!preview.success && preview.error.find("Graph") != std::string::npos,
-          "Graph preview の明示拒否");
+    check(preview.success && preview.stillLayers.size() == 1 &&
+              preview.stillLayers.front().kind == project::TimelineClipKind::Graph,
+          "Graph は preview の静止画合成境界へ渡す");
+    const auto rendersBeforeStatus = controller->graphRastersForTest().renderCount();
+    for (int i = 0; i < 20; ++i)
+        (void)controller->graphPreviewStatus(id, 0);
+    check(controller->graphRastersForTest().renderCount() == rendersBeforeStatus,
+          "状態照会は描画を起動しない");
+    check(controller->toggleTimelineClipEnabled(QString::fromStdString(id)), "Graph を無効化");
+    const auto disabled = controller->projectForTest();
+    const auto disabledPreview = mvm::app::mapTimelinePreviewFrame(disabled, 0);
+    check(disabledPreview.success &&
+              std::none_of(disabledPreview.stillLayers.begin(), disabledPreview.stillLayers.end(),
+                           [&](const auto& layer) {
+                               return layer.kind == project::TimelineClipKind::Graph &&
+                                      layer.clipId == id;
+                           }),
+          "無効 Graph は preview に出ない");
+    const auto disabledStatus = controller->graphPreviewStatus(id, 0);
+    check(disabledStatus.reason == mvm::app::GraphPreviewCache::Reason::DisabledClip &&
+              disabledStatus.transparentFallback,
+          "無効 Graph は typed の透明 fallback");
+    check(controller->toggleTimelineClipEnabled(QString::fromStdString(id)), "Graph を再有効化");
+    check(controller->setTrackMuted(QStringLiteral("video"), 0, true), "video track をミュート");
+    const auto hiddenPreview = mvm::app::mapTimelinePreviewFrame(controller->projectForTest(), 0);
+    check(hiddenPreview.success && hiddenPreview.stillLayers.empty(),
+          "非表示 track の Graph は preview に出ない");
+    const auto hiddenStatus = controller->graphPreviewStatus(id, 0);
+    check(hiddenStatus.reason == mvm::app::GraphPreviewCache::Reason::HiddenTrack &&
+              hiddenStatus.transparentFallback,
+          "非表示 track は typed reason");
+    check(controller->setTrackMuted(QStringLiteral("video"), 0, false), "video track を戻す");
+    auto transitionProject = controller->projectForTest();
+    std::string incoming;
+    for (const auto& clip : transitionProject.timelineClips)
+        if (clip.id != id)
+            incoming = clip.id;
+    const auto placed = project::applyDefaultEditTransition(
+        transitionProject, id, incoming, 2, project::LinkMode::Single,
+        [] { return std::string("graph-transition"); });
+    check(!placed.success && controller->projectForTest().timelineTransitions.empty(),
+          "Graph の外側 TimelineTransition は hard-cut として受理しない");
     controller->shutdown();
 }
 

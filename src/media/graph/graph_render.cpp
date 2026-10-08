@@ -3,6 +3,7 @@
 #include "util/mvm_atomic_write.h"
 #include "util/mvm_sha256.h"
 
+#include <windows.h>
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -192,6 +193,20 @@ std::variant<Validation, Error> inspectFrames(const std::filesystem::path& direc
     field(result.manifest, "endpoint=static.png");
     field(result.manifest, result.pixelHashes.front());
     return result;
+}
+
+// directory の rename は、中の file を索引やウイルス対策が共有ロックしている間
+// ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION になる。file の atomic 置換と同じ
+// 短い競合であり、artifact が不正という意味ではない。
+bool transientDirectoryRename(const std::error_code& error) {
+    if (!error)
+        return false;
+    if (error.category() == std::system_category()) {
+        const auto code = static_cast<DWORD>(error.value());
+        return code == ERROR_ACCESS_DENIED || code == ERROR_SHARING_VIOLATION ||
+               code == ERROR_LOCK_VIOLATION;
+    }
+    return error == std::errc::permission_denied || error == std::errc::device_or_resource_busy;
 }
 } // namespace
 
@@ -636,18 +651,44 @@ ArtifactResult PublicationAuthority::generate(const RenderRequest& request,
     if (mvm_atomic_write_file(manifestPath.c_str(), validated.manifest.data(),
                               validated.manifest.size(), writeError, sizeof(writeError)) != 0)
         return Error{Failure::PublicationFailure, 0, "manifest を確定できません"};
-    {
-        std::lock_guard lock(mutex_);
-        if (auto error = guard())
-            return *error;
-        // この非置換 rename が公開の線形化点。重い検証は mutex の外で行う。
-        std::filesystem::rename(staging, target, ec);
+    // この非置換 rename が公開の線形化点。共有ロックの待ちは mutex の外で行う。
+    // readPublished は validate 後に同じ mutex を取るので、lock を保持したまま呼ばない。
+    std::error_code renameError;
+    std::optional<Error> blocked;
+    bool ready = false;
+    for (int attempt = 0; attempt < 40 && !ready && !blocked; ++attempt) {
+        bool retry = false;
+        {
+            std::lock_guard lock(mutex_);
+            if (auto error = guard()) {
+                blocked = *error;
+                break;
+            }
+            std::error_code existsError;
+            if (std::filesystem::exists(target, existsError)) {
+                ready = true;
+                break;
+            }
+            if (existsError) {
+                renameError = existsError;
+            } else {
+                std::filesystem::rename(staging, target, renameError);
+                if (!renameError) {
+                    ready = true;
+                    break;
+                }
+            }
+            retry = transientDirectoryRename(renameError);
+        }
+        if (!retry)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    if (ec) {
-        if (std::filesystem::exists(target))
-            return readPublished();
-        return Error{Failure::PublicationFailure, 0, "artifact を公開できません"};
-    }
-    return readPublished();
+    if (blocked)
+        return *blocked;
+    if (ready || std::filesystem::exists(target))
+        return readPublished();
+    return Error{Failure::PublicationFailure, 0,
+                 "artifact を公開できません (error " + std::to_string(renameError.value()) + ")"};
 }
 } // namespace mvm::graph

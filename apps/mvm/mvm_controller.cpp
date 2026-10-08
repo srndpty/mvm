@@ -2,6 +2,7 @@
 
 #include "app/audio_source_set_transaction.h"
 #include "app/equation_sequence_authoring.h"
+#include "app/graph_render_compile.h"
 #include "app/manim_clip_workflow.h"
 #include "app/math_clip_render.h"
 #include "app/preview/preview_engine_rhi_item.h"
@@ -459,6 +460,26 @@ MvmController::MvmController(std::filesystem::path projectPath,
             refreshTextPreview();
         // 変形の描画・memory の状態は選択中のトランジションの inspector が示す。
         notifyTimelineTransitions();
+        Q_EMIT stateChanged();
+    });
+    graphRasters_ = std::make_unique<GraphPreviewCache>(
+        [python = manimExecutablePath_.parent_path() / L"python.exe"](
+            const std::filesystem::path& work, const std::atomic<bool>* cancel) {
+            return manim::preflightGraph(python, MVM_GRAPH_BACKEND_SCRIPT, work, cancel);
+        });
+    connect(graphRasters_.get(), &GraphPreviewCache::changed, this, [this] {
+        if (shutdownStarted_)
+            return;
+        requestMathRenders();
+        // Graph が無い Project の cache 通知で preview を組み直すと、初期 seek の後に
+        // もう一度提示する。字幕だけの native preview はその増加を失敗にする。
+        if (std::none_of(project_.timelineClips.begin(), project_.timelineClips.end(),
+                         [](const auto& clip) {
+                             return clip.kind == project::TimelineClipKind::Graph;
+                         }))
+            return;
+        if (!playing_)
+            refreshTextPreview();
         Q_EMIT stateChanged();
     });
     syncMathCacheAuthority();
@@ -2300,6 +2321,46 @@ private:
 // EquationPreviewModel (Qt・cache に依存しない) が output frame だけから決める。sequence の全区間を
 // 1 つの instance にまとめ、再生中の合成の切り替えの遅れで区間の境の frame が古い instance で
 // 提示されても、同じ output frame は同じ画素になる。ClipEffects は layer が 1 回だけ掛ける。
+class GraphPreviewAnimation final : public preview::PreviewStillAnimation {
+public:
+    GraphPreviewAnimation(project::TimelineClip clip, core::FrameRate fps, std::int64_t index,
+                          std::shared_ptr<const preview::PreviewStillImage> image,
+                          std::int64_t visibleFrames)
+        : clip_(std::move(clip)), fps_(fps), index_(index), image_(std::move(image)),
+          visibleFrames_(visibleFrames) {}
+
+    preview::PreviewPixelRect patchRect() const override {
+        return {0, 0, image_->width, image_->height};
+    }
+
+    std::int64_t stateAt(std::int64_t output) const override {
+        if (output < clip_.timelineStartFrame ||
+            output - clip_.timelineStartFrame >= visibleFrames_)
+            return 0;
+        std::string error;
+        const auto frame =
+            project::evaluateGraphClip(clip_, fps_, output - clip_.timelineStartFrame, error);
+        if (!frame)
+            return 0;
+        const auto index = frame->sourceFrame < clip_.graph.intro.frames ? frame->sourceFrame : -1;
+        return index == index_ ? 1 : 0;
+    }
+
+    void fillPatch(std::int64_t state, std::uint8_t* out) const override {
+        if (state == 1)
+            std::copy(image_->rgba.begin(), image_->rgba.end(), out);
+        else
+            std::fill_n(out, image_->rgba.size(), std::uint8_t{0});
+    }
+
+private:
+    project::TimelineClip clip_;
+    core::FrameRate fps_;
+    std::int64_t index_;
+    std::shared_ptr<const preview::PreviewStillImage> image_;
+    std::int64_t visibleFrames_ = 0;
+};
+
 class EquationSequencePreviewAnimation final : public preview::PreviewStillAnimation {
 public:
     EquationSequencePreviewAnimation(std::shared_ptr<const EquationPreviewModel> model,
@@ -2380,6 +2441,52 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
             const auto& stillMapping = mappedFrame.stillLayers[entry.index];
             const double opacity = std::clamp(stillMapping.opacity, 0.0, 1.0);
             preview::PreviewCompositionLayer layer;
+            if (stillMapping.kind == project::TimelineClipKind::Graph) {
+                const auto& clip =
+                    project_.timelineClips[static_cast<std::size_t>(stillMapping.clipIndex)];
+                const bool transition = std::any_of(
+                    project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
+                    [&](const auto& value) {
+                        return value.outgoingClipId == clip.id || value.incomingClipId == clip.id;
+                    });
+                if (transition)
+                    continue;
+                auto compiled = compileGraphRender(clip.graph, clip.sourceFrameCount,
+                                                   project_.outputWidth, project_.outputHeight);
+                const auto* spec = std::get_if<graph::GraphRenderSpec>(&compiled);
+                std::string mappingError;
+                const auto frame = project::evaluateGraphClip(
+                    clip, {project_.timelineFpsNum, project_.timelineFpsDen},
+                    mappedFrame.outputFrameNumber - clip.timelineStartFrame, mappingError);
+                if (!spec || !frame)
+                    continue;
+                graphRasters_->requestFrame(*spec, frame->sourceFrame);
+                const auto frames = graphRasters_->frames(*spec);
+                const auto index = frame->sourceFrame < spec->drawFrames ? frame->sourceFrame : -1;
+                const auto found = frames.find(index);
+                if (found == frames.end())
+                    continue;
+                layer.stillImage = equationTransparentOutput();
+                const auto clipId = QString::fromStdString(clip.id);
+                auto existing = graphAnimations_.find(clipId);
+                if (existing == graphAnimations_.end() || existing->clip != clip ||
+                    existing->image != found->second) {
+                    auto animation = std::make_shared<GraphPreviewAnimation>(
+                        clip, core::FrameRate{project_.timelineFpsNum, project_.timelineFpsDen},
+                        index, found->second, project::timelineClipDuration(project_, clip).frame);
+                    graphAnimations_.insert(clipId, {clip, found->second, std::move(animation)});
+                }
+                layer.stillAnimation = graphAnimations_[clipId].animation;
+                const auto effects = effectsForPreview(stillMapping.clipIndex);
+                applyPreviewLayerEffects(
+                    layer,
+                    project::evaluateClipEffects(effects, mappedFrame.outputFrameNumber -
+                                                              clip.timelineStartFrame),
+                    opacity, 0, clip.sourceOutFrame - clip.sourceInFrame);
+                attachClipMotion(layer, effects, clip, project_);
+                composition->layers.push_back(std::move(layer));
+                continue;
+            }
             if (stillMapping.kind == project::TimelineClipKind::EquationSequence) {
                 // 内部の合成 (静止・変形・action の 2 層) は animation の中で済ませ、外側の
                 // ClipEffects は数式と同じく layer に 1 回だけ掛ける。何も見せられない間
@@ -3697,6 +3804,10 @@ std::filesystem::path MvmController::mathCacheDirectory() const {
 }
 
 void MvmController::syncMathCacheAuthority() {
+    if (graphRasters_)
+        graphRasters_->setAuthority(mathCacheDirectory().parent_path().parent_path() / L"graph" /
+                                        projectPath_.filename(),
+                                    projectLockHeld_);
     if (!mathRasters_)
         return;
     mathRasters_->setAuthority(
@@ -3713,6 +3824,30 @@ project::MathClipData MvmController::effectiveMathData(const project::TimelineCl
 }
 
 void MvmController::requestMathRenders() {
+    if (graphRasters_) {
+        graphAnimations_.removeIf([&](const auto& item) {
+            return std::none_of(project_.timelineClips.begin(), project_.timelineClips.end(),
+                                [&](const auto& clip) {
+                                    return QString::fromStdString(clip.id) == item.key() &&
+                                           clip == item.value().clip;
+                                });
+        });
+        QSet<QString> keys;
+        std::vector<graph::GraphRenderSpec> specs;
+        for (const auto& clip : project_.timelineClips) {
+            if (clip.kind != project::TimelineClipKind::Graph || !clip.enabled)
+                continue;
+            auto compiled = compileGraphRender(clip.graph, clip.sourceFrameCount,
+                                               project_.outputWidth, project_.outputHeight);
+            if (auto* spec = std::get_if<graph::GraphRenderSpec>(&compiled)) {
+                keys.insert(graphRasters_->keyFor(*spec));
+                specs.push_back(std::move(*spec));
+            }
+        }
+        graphRasters_->retainOnly(keys);
+        for (const auto& spec : specs)
+            graphRasters_->request(spec);
+    }
     if (!mathRasters_)
         return;
     // 入力中の式を最優先にし、次に再生位置に掛かる clip の静止・Write・変形、残りの静止、残りの
@@ -7914,6 +8049,58 @@ bool MvmController::editEquationSequenceData(
     return true;
 }
 
+GraphPreviewCache::Status MvmController::graphPreviewStatus(const std::string& clipId,
+                                                            std::int64_t outputFrame) const {
+    GraphPreviewCache::Status status;
+    status.clipId = clipId;
+    status.projectGeneration = projectGeneration_;
+    status.projectRevision = currentRevision_;
+    const auto found = std::find_if(
+        project_.timelineClips.begin(), project_.timelineClips.end(), [&](const auto& clip) {
+            return clip.id == clipId && clip.kind == project::TimelineClipKind::Graph;
+        });
+    if (found == project_.timelineClips.end())
+        return status;
+    if (!found->enabled) {
+        status.reason = GraphPreviewCache::Reason::DisabledClip;
+        return status;
+    }
+    if (!project::isTrackOutputEnabled(project_, found->track)) {
+        status.reason = GraphPreviewCache::Reason::HiddenTrack;
+        return status;
+    }
+    if (std::any_of(project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
+                    [&](const auto& transition) {
+                        return transition.outgoingClipId == clipId ||
+                               transition.incomingClipId == clipId;
+                    })) {
+        status.reason = GraphPreviewCache::Reason::UnsupportedTransition;
+        return status;
+    }
+    auto compiled = compileGraphRender(found->graph, found->sourceFrameCount, project_.outputWidth,
+                                       project_.outputHeight);
+    if (const auto* error = std::get_if<graph::Error>(&compiled)) {
+        status.compileValid = false;
+        status.reason = GraphPreviewCache::reasonFor(error->failure);
+        status.message = QString::fromStdString(error->message);
+        return status;
+    }
+    std::string error;
+    const auto frame =
+        project::evaluateGraphClip(*found, {project_.timelineFpsNum, project_.timelineFpsDen},
+                                   outputFrame - found->timelineStartFrame, error);
+    if (!frame) {
+        status.reason = GraphPreviewCache::Reason::InvalidGraph;
+        return status;
+    }
+    auto ready =
+        graphRasters_->status(std::get<graph::GraphRenderSpec>(compiled), frame->sourceFrame);
+    ready.clipId = clipId;
+    ready.projectGeneration = projectGeneration_;
+    ready.projectRevision = currentRevision_;
+    return ready;
+}
+
 bool MvmController::createGraphClip(std::int64_t start, project::TrackRef track) {
     if (busy_ || !pauseTimeline())
         return false;
@@ -8328,6 +8515,8 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     audioFileCache_.clear();
     audioContentDirty_ = true;
     project_ = std::move(loaded);
+    if (graphRasters_)
+        graphRasters_->resetSession();
     refreshAudioInputAuthority(false);
     ++projectGeneration_;
     selectedSubtitleId_.clear();
@@ -9642,6 +9831,8 @@ void MvmController::shutdown() {
         return;
     shutdownStarted_ = true;
     // 描画中の Manim / LaTeX を process ごと止め、worker が終わるまで待つ。
+    if (graphRasters_)
+        graphRasters_->shutdown();
     if (mathRasters_)
         mathRasters_->shutdown();
     // shutdown 後に素材の stat・内容 hash を始めない。cancel が再開した poll もここで止める。

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <thread>
 
 namespace {
@@ -489,6 +490,39 @@ void artifacts(const std::filesystem::path& root, bool responsivenessOnly = fals
     check(failedAs(authority.generate(request, root / "shutdown-cache", concurrentGeneration, fake),
                    Failure::Cancelled),
           "shutdown 後は公開しない");
+
+    PublicationAuthority retryAuthority;
+    const auto retryGeneration = retryAuthority.supersede();
+    RenderRequest retryRequest{s, "test-authority", root / "share-job"};
+    const auto retryCache = root / "share-cache";
+    std::unique_ptr<std::ifstream> held;
+    std::atomic<bool> locked{false};
+    std::thread releaser;
+    const auto retryResult = retryAuthority.generate(
+        retryRequest, retryCache, retryGeneration, fake, nullptr, [&](PublicationStage stage) {
+            if (stage != PublicationStage::Validate || locked.load())
+                return;
+            for (const auto& entry : std::filesystem::directory_iterator(retryCache)) {
+                if (!entry.path().filename().string().starts_with(".pending-"))
+                    continue;
+                held =
+                    std::make_unique<std::ifstream>(entry.path() / "static.png", std::ios::binary);
+                if (!held->is_open())
+                    return;
+                locked.store(true);
+                releaser = std::thread([&held] {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                    held.reset();
+                });
+                return;
+            }
+        });
+    if (releaser.joinable())
+        releaser.join();
+    check(locked.load() && std::holds_alternative<Artifact>(retryResult),
+          "共有ロック中の directory rename は待って公開する");
+    if (const auto* error = std::get_if<Error>(&retryResult))
+        std::cerr << error->message << '\n';
 }
 
 void real(const std::filesystem::path& root, const std::filesystem::path& python,

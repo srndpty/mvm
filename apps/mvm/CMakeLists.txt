@@ -8,14 +8,15 @@ target_link_libraries(mvm_audio_adjustment PUBLIC mvm::audio_analysis mvm::proje
 add_library(mvm::audio_adjustment ALIAS mvm_audio_adjustment)
 
 # 数式 clip の描画結果の cache。backend は preflight 関数で注入する (試験は偽の backend)。
-add_library(mvm_math_raster_cache STATIC math_raster_cache.cpp math_equation_sequence_artifact.cpp)
+add_library(mvm_math_raster_cache STATIC math_raster_cache.cpp math_equation_sequence_artifact.cpp graph_preview_cache.cpp)
 set_target_properties(mvm_math_raster_cache PROPERTIES AUTOMOC ON)
 target_include_directories(mvm_math_raster_cache PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_math_raster_cache
-    PUBLIC mvm::math mvm::still_image mvm::equation_sequence_compile Qt6::Core
+    PUBLIC mvm::math mvm::still_image mvm::equation_sequence_compile mvm::graph_render_compile mvm::manim mvm::preview_engine Qt6::Core
     # 変形の backend の PNG は静止の mask と同じ decoder (loadMathCoverage) で読む。
     PRIVATE mvm::math_clip_render mvm::util mvm::warnings)
 add_library(mvm::math_raster_cache ALIAS mvm_math_raster_cache)
+target_compile_definitions(mvm_math_raster_cache PUBLIC MVM_GRAPH_BACKEND_SCRIPT="${CMAKE_SOURCE_DIR}/src/media/manim/graph_backend.py")
 
 qt_add_executable(mvm
     main.cpp

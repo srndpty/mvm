@@ -112,8 +112,10 @@
   toolchain/key authority を追加し、必要な全 gate が通過した。
   契約は [math-graph-p40.md](math-graph-p40.md)、失敗を含む機械集計は
   [math-graph-p42-results.md](math-graph-p42-results.md)。
-- P4-3 は GO・未着手: residency と native preview。製品の現在frame RAM・先読み・cache量は未測定。
-  任意 seek、generation/ticket、動画上の合成を検証する。
+- P4-3 は実装・検証中。非同期 request、現在 key の disk 検証、専用64 MiBの RGBA residency、
+  製品 native preview の接続と読むだけの状態を追加した。契約と未閉鎖の判定は
+  [math-graph-p43.md](math-graph-p43.md)、失敗を含む機械集計は
+  [math-graph-p43-results.md](math-graph-p43-results.md)。全閉鎖条件の通過前に P4-4 へ進まない。
 - [事実] 2026-10-09、P4-2.1 は PASS/CLOSED。publication の重い I/O を authority mutex の外へ移し、
   同期バリアで supersede/shutdown の応答性と旧世代の公開拒否を検証した。
   契約と source provenance は [math-graph-p421.md](math-graph-p421.md)、

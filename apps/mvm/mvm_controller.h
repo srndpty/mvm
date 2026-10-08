@@ -6,6 +6,7 @@
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
 #include "audio_adjustment_job.h"
+#include "graph_preview_cache.h"
 #include "math_raster_cache.h"
 #include "media/audio_preview/audio_mixer_bus.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
@@ -672,6 +673,11 @@ public:
     void setMathPreflightForTest(MathRasterCache::PreflightFunction preflight);
 
     MathRasterCache& mathRastersForTest() { return *mathRasters_; }
+
+    GraphPreviewCache& graphRastersForTest() { return *graphRasters_; }
+
+    GraphPreviewCache::Status graphPreviewStatus(const std::string& clipId,
+                                                 std::int64_t outputFrame) const;
 
     // 試験用: disk 検査後に要求へ渡す frame reader を差し替え、実行 thread と待機を検査する。
     using MathTransformExportFrameLoader =
@@ -1595,6 +1601,15 @@ private:
     std::unique_ptr<ImageRasterCache> imageRasters_;
     // 数式 clip の描画結果 (key 単位、<project>/cache/math)。
     std::unique_ptr<MathRasterCache> mathRasters_;
+    std::unique_ptr<GraphPreviewCache> graphRasters_;
+
+    struct GraphAnimationRecord {
+        project::TimelineClip clip;
+        std::shared_ptr<const preview::PreviewStillImage> image;
+        std::shared_ptr<const preview::PreviewStillAnimation> animation;
+    };
+
+    mutable QHash<QString, GraphAnimationRecord> graphAnimations_;
     // P3-5 の authoring。controller の stateChanged を購読するので controller より先に壊す。
     std::unique_ptr<EquationSequenceEditor> equationEditor_;
 

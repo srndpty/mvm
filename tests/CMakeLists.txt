@@ -800,6 +800,9 @@ target_link_libraries(mvm_test_graph_numeric PRIVATE mvm::graph_numeric mvm::war
 mvm_add_test(graph_numeric COMMAND mvm_test_graph_numeric PROPERTIES TIMEOUT 120)
 
 add_executable(mvm_test_graph_render core/test_graph_render.cpp)
+add_executable(mvm_test_graph_preview_cache harness/test_graph_preview_cache.cpp)
+target_link_libraries(mvm_test_graph_preview_cache PRIVATE mvm::math_raster_cache mvm::warnings)
+mvm_add_test(graph_preview_cache COMMAND mvm_test_graph_preview_cache "${CMAKE_CURRENT_BINARY_DIR}" PROPERTIES TIMEOUT 120)
 target_link_libraries(mvm_test_graph_render PRIVATE mvm::graph_render_compile mvm::manim mvm::warnings)
 mvm_add_test(graph_render_presentation COMMAND mvm_test_graph_render PROPERTIES TIMEOUT 120)
 mvm_add_test(graph_render_artifact
@@ -4203,6 +4206,12 @@ set_target_properties(mvm_test_math_controller PROPERTIES WIN32_EXECUTABLE OFF)
 mvm_add_test(math_controller_focused COMMAND mvm_test_math_controller PROPERTIES TIMEOUT 120)
 mvm_add_test(graph_controller_history COMMAND mvm_test_math_controller --graph-domain
     PROPERTIES TIMEOUT 120)
+qt_add_executable(mvm_test_graph_native_preview harness/test_graph_native_preview.cpp
+    ${_subtitle_controller_sources})
+target_include_directories(mvm_test_graph_native_preview PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_graph_native_preview PRIVATE ${_subtitle_controller_libraries})
+target_compile_definitions(mvm_test_graph_native_preview PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_test_graph_native_preview PROPERTIES WIN32_EXECUTABLE OFF)
 mvm_add_test(math_equation_sequence_history COMMAND mvm_test_math_controller --equation-domain
     PROPERTIES TIMEOUT 30)
 # 実 D3D11 の preview で再生し、Write の mask が再生中に届いたときの表示を確かめる。
