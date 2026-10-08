@@ -3,7 +3,7 @@
     P4-1 の決定的な変異を一件ずつ検査し、source を byte 単位で復元する。
 #>
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$EvidenceDirectory)
+param([Parameter(Mandatory)][string]$EvidenceDirectory, [string]$CaseName)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -16,6 +16,7 @@ $mapping = 'src/project/graph_edit.cpp'
 $json = 'src/project/project_json.cpp'
 $controller = 'apps/mvm/mvm_controller.cpp'
 $cases = @(
+    @{ name = 'six-whitespace'; file = $numeric; old = 'return c == '' '' || c == ''\t'' || c == ''\n'' || c == ''\r'';'; new = 'return c == '' '' || c == ''\t'' || c == ''\n'' || c == ''\r'' || c == ''\f'' || c == ''\v'';' },
     @{ name = 'unary-precedence'; file = $numeric; old = 'return node(Operation::Negative, unary(d + 1));'; new = 'auto a = node(Operation::Negative, atom(d + 1)); if (take(''^'')) a = node(Operation::Power, a, unary(d + 1)); return a;' },
     @{ name = 'left-power'; file = $numeric; old = @'
         if (result_.status == CompileStatus::Success && take('^')) {
@@ -84,6 +85,12 @@ $cases = @(
 '@; pattern = '^graph_controller_history$'; target = 'mvm_test_math_controller' }
 )
 $reports = [System.Collections.Generic.List[object]]::new()
+if ($CaseName) {
+    $cases = @($cases | Where-Object name -eq $CaseName)
+    if ($cases.Count -ne 1) { throw '指定した変異が一件に解決できません' }
+}
+@{ expected_count = $cases.Count } | ConvertTo-Json |
+    Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'mutation-suite.json') -Encoding utf8NoBOM
 try {
 foreach ($case in $cases) {
     $path = Join-Path $repoRoot $case.file

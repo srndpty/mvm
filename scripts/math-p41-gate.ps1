@@ -6,7 +6,9 @@
 param(
     [ValidateSet('Focused', 'Mutations', 'Regressions', 'BuildIndependent', 'Lint', 'Release')]
     [string]$Stage = 'Focused',
-    [string]$EvidenceDirectory
+    [string]$EvidenceDirectory,
+    [string]$EvidencePrefix = 'math-p41',
+    [string]$MutationCase
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -18,7 +20,7 @@ $gitCommand = Get-Command git -ErrorAction SilentlyContinue
 $gitExe = if ($gitCommand) { $gitCommand.Source } else { 'C:\Program Files\Git\cmd\git.exe' }
 if (-not (Test-Path -LiteralPath $gitExe)) { throw 'git がありません' }
 if (-not $EvidenceDirectory) {
-    $EvidenceDirectory = Join-Path $repoRoot ('build/math-p41-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $Stage)
+    $EvidenceDirectory = Join-Path $repoRoot ('build/' + $EvidencePrefix + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $Stage)
 }
 if (Test-Path -LiteralPath $EvidenceDirectory) { throw '証拠 directory は既存です。上書きしません' }
 $null = New-Item -ItemType Directory -Path $EvidenceDirectory
@@ -88,7 +90,7 @@ try {
         'Lint' { Invoke-RecordedCommand 'lint' $pwshExe @('scripts/lint.ps1') }
         'Release' { Invoke-RecordedCommand 'release' $pwshExe @('scripts/test.ps1', '-Preset', 'ucrt64-release', '-Fast') }
         'Mutations' {
-            & (Join-Path $PSScriptRoot 'math-p41-mutations.ps1') -EvidenceDirectory $evidenceRoot
+            & (Join-Path $PSScriptRoot 'math-p41-mutations.ps1') -EvidenceDirectory $evidenceRoot -CaseName $MutationCase
             if ($LASTEXITCODE -ne 0) { throw '変異検査に失敗しました' }
         }
     }

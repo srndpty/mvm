@@ -422,3 +422,23 @@ P4-0 の実測・閾値・過去分類は変更しない。
 
 renderer/artifact/cache/UI/preview 実装/export 実装は追加しない。固定密度 sampling の限界と
 後続の未解決事項は [roadmap.md](roadmap.md) の P4-2 以降で管理する。
+
+## P4-1.1 式の空白境界
+
+graph-expression/1 の凍結された空白は ASCII space (0x20)、tab (0x09)、
+CR (0x0D)、LF (0x0A) のみである。P4-1 の parser が form feed (0x0C) と
+vertical tab (0x0B) も読み飛ばしていた箇所を、この四種類へ限定する。
+それぞれの正例と、先頭・末尾・token 間・空白だけの FF/VT の負例を追加した。
+六種類を読み飛ばす旧実装へ戻す変異を `six-whitespace` として検査する。
+他の P4-1 契約、schema22、過去の証拠は保持する。P4-2 は未着手である。
+
+検証入口は `scripts/math-p41-gate.ps1 -EvidencePrefix math-p411 -Stage <stage>`、
+変異は `-Stage Mutations -MutationCase six-whitespace`。新しい directory に保存し、
+`scripts/math-p41-report.ps1 -EvidencePrefix math-p411 -Phase P4-1.1
+-OutputPath docs/math-graph-p411-results.md` で機械集計する。
+
+[事実] 2026-10-08、P4-1.1 は PASS/CLOSED。集中 parser/domain/history、旧六種類へ戻す
+変異、関連回帰、BuildIndependent、lint、通常 ucrt64-release 一回が通過した。
+件数・終了コード・source/revision は [機械集計](math-graph-p411-results.md) とリンク先の
+新規証拠を正とする。通常 gate は `build/math-p411-20261008-234140-Release/` に保存した。
+P4-1 の過去の gate と結果文書は上書きしていない。コミット・push は行っていない。

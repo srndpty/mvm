@@ -35,6 +35,21 @@ void undefined(const char* source, double x, EvaluationStatus expected) {
 } // namespace
 
 int main() {
+    for (char separator : {' ', '\t', '\r', '\n'}) {
+        const std::string ws(1, separator);
+        const auto result =
+            compile(ws + "sin" + ws + "(" + ws + "x" + ws + ")" + ws + "+" + ws + "1" + ws);
+        check(result.status == CompileStatus::Success && result.expression.evaluate(0).value == 1,
+              "ASCII space/tab/CR/LF は式の先頭・末尾・token 間で受容");
+    }
+    value(" \t\r\nsin(\t0\r)\n+ 1\r\n", 0, 1);
+    for (char separator : {'\f', '\v'}) {
+        const std::string ws(1, separator);
+        for (const auto& source :
+             {ws + "x", "x" + ws, "x" + ws + "+1", "sin" + ws + "(x)", "sin(" + ws + "x)", ws})
+            check(compile(source).status == CompileStatus::InvalidExpression,
+                  "form feed/vertical tab は先頭・末尾・token 間でも拒否");
+    }
     value("-x^2", 3, -9);
     value("(-x)^2", 3, 9);
     value("2^3^2", 0, 512);

@@ -103,6 +103,10 @@
   schema22、ID の編集・Undo/Redo、無効原文の round-trip を実装した。
   契約と閉鎖条件は [math-graph-p40.md](math-graph-p40.md)、全 gate と初期失敗を含む
   証拠の機械集計は [math-graph-p41-results.md](math-graph-p41-results.md)。P4-2 は未着手。
+- [事実] 2026-10-08、P4-1.1 は PASS/CLOSED。graph-expression/1 の空白を
+  ASCII space/tab/CR/LF へ限定し、FF/VT の拒否と旧六種類を戻す変異を確認した。
+  詳細は [math-graph-p40.md](math-graph-p40.md)、指定 gate の機械集計は
+  [math-graph-p411-results.md](math-graph-p411-results.md)。P4-2 は未着手。
 - P4-2: Graph 専用 renderer/artifact、公的な pixel 線幅換算、各ラベルの支持範囲と3帯の配置、
   per-curve alpha と重なりの独立合成 oracle、provenance-last publication、toolchain/key authority。
   P4-0 の多色・AA・透明背景の証拠を、全 alpha/style の保証へ一般化しない。

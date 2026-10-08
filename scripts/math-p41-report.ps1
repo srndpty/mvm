@@ -3,18 +3,19 @@
     P4-1 の保存済み gate 証拠から結果を集計する。失敗 run も一覧に残す。
 #>
 [CmdletBinding()]
-param([string]$OutputPath = 'docs/math-graph-p41-results.md')
+param([string]$OutputPath = 'docs/math-graph-p41-results.md', [string]$EvidencePrefix = 'math-p41',
+      [string]$Phase = 'P4-1')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $lines = [System.Collections.Generic.List[string]]::new()
-$lines.Add('# P4-1 検証の機械集計')
+$lines.Add("# $Phase 検証の機械集計")
 $lines.Add('')
 $lines.Add('`scripts/math-p41-report.ps1` が保存済みログから生成する。過去の失敗・途中版を削除しない。')
 $lines.Add('')
 $lines.Add('|証拠 directory|検証|件数|結果|')
 $lines.Add('|---|---|---:|---|')
-$roots = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'build') -Directory -Filter 'math-p41-*' | Sort-Object Name)
+$roots = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'build') -Directory -Filter ($EvidencePrefix + '-*') | Sort-Object Name)
 foreach ($root in $roots) {
     $commandsPath = Join-Path $root.FullName 'commands.json'
     $mutationsPath = Join-Path $root.FullName 'mutations.json'
@@ -29,9 +30,13 @@ foreach ($root in $roots) {
     if (Test-Path -LiteralPath $mutationsPath) {
         $entries = @(Get-Content -LiteralPath $mutationsPath -Raw | ConvertFrom-Json)
         $detected = @($entries | Where-Object result -eq 'DETECTED').Count
-        $complete = $detected -eq 15 -and $entries.Count -eq 15
+        $suitePath = Join-Path $root.FullName 'mutation-suite.json'
+        $expected = if (Test-Path -LiteralPath $suitePath) {
+            (Get-Content -LiteralPath $suitePath -Raw | ConvertFrom-Json).expected_count
+        } else { 15 }
+        $complete = $detected -eq $expected -and $entries.Count -eq $expected
         $result = if ($complete) { 'PASS' } else { '未完了/FAIL' }
-        $lines.Add("|[$($root.Name)](../$relative/mutations.json)|変異|$detected/15|$result|")
+        $lines.Add("|[$($root.Name)](../$relative/mutations.json)|変異|$detected/$expected|$result|")
     }
 }
 $lines.Add('')
