@@ -798,6 +798,14 @@ add_executable(mvm_test_equation_sequence harness/test_equation_sequence.cpp)
 add_executable(mvm_test_graph_numeric core/test_graph_numeric.cpp)
 target_link_libraries(mvm_test_graph_numeric PRIVATE mvm::graph_numeric mvm::warnings)
 mvm_add_test(graph_numeric COMMAND mvm_test_graph_numeric PROPERTIES TIMEOUT 120)
+
+add_executable(mvm_test_graph_render core/test_graph_render.cpp)
+target_link_libraries(mvm_test_graph_render PRIVATE mvm::graph_render_compile mvm::manim mvm::warnings)
+mvm_add_test(graph_render_presentation COMMAND mvm_test_graph_render PROPERTIES TIMEOUT 120)
+mvm_add_test(graph_render_artifact
+    COMMAND ${MVM_PWSH} -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/harness/test_graph_artifact.ps1"
+        -Executable "$<TARGET_FILE:mvm_test_graph_render>" -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}"
+    PROPERTIES TIMEOUT 120)
 add_executable(mvm_test_graph_domain harness/test_graph_domain.cpp)
 target_link_libraries(mvm_test_graph_domain PRIVATE mvm::project mvm::warnings)
 mvm_add_test(graph_domain COMMAND mvm_test_graph_domain PROPERTIES TIMEOUT 120)

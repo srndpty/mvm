@@ -107,16 +107,21 @@
   ASCII space/tab/CR/LF へ限定し、FF/VT の拒否と旧六種類を戻す変異を確認した。
   詳細は [math-graph-p40.md](math-graph-p40.md)、指定 gate の機械集計は
   [math-graph-p411-results.md](math-graph-p411-results.md)。P4-2 は未着手。
-- P4-2: Graph 専用 renderer/artifact、公的な pixel 線幅換算、各ラベルの支持範囲と3帯の配置、
-  per-curve alpha と重なりの独立合成 oracle、provenance-last publication、toolchain/key authority。
-  P4-0 の多色・AA・透明背景の証拠を、全 alpha/style の保証へ一般化しない。
-- P4-3: residency と native preview。製品の現在frame RAM・先読み・cache量は未測定。
+- [事実] 2026-10-09、P4-2 は PASS/CLOSED。Graph 専用の中立 spec と Manim renderer、straight RGBA artifact、
+  pixel 線幅換算、3帯のラベル、独立合成 oracle、provenance-last publication、
+  toolchain/key authority を追加し、必要な全 gate が通過した。
+  契約は [math-graph-p40.md](math-graph-p40.md)、失敗を含む機械集計は
+  [math-graph-p42-results.md](math-graph-p42-results.md)。
+- P4-3 は GO・未着手: residency と native preview。製品の現在frame RAM・先読み・cache量は未測定。
   任意 seek、generation/ticket、動画上の合成を検証する。
 - P4-4: 既存暗色パネルからの authoring。低い/狭いpanel、無効 source の修復と最後の関数削除の拒否。
 - P4-5: source 範囲と現在specを正にしたvideo export、保存再読込、Draw途中trim/splitの製品UI閉鎖。
 - sampling/1 は有限密度と midpoint の保守的切断であり、任意高周波・標本間だけの特異点の完全検出は
   保証しない。必要時は独立fixtureと新sampling/key versionで精度改善を検証する。
   追加の性能閾値・adaptive sampling・artifact圧縮は製品要求と実測に基づく後続判断とする。
+- P4-2 の Cairo では基準幅0.1の水平線が854×480で消える。極細線の支持範囲を製品UIで
+  示すか、backendを変更して改善するかは後続の判断。幅を黙って下限へ丸めない。
+  現在の被覆量子化の実測は [math-graph-p42-results.md](math-graph-p42-results.md) に保存する。
 
 ### P3 の未解決の判断・検証
 

@@ -4,6 +4,153 @@
 Project は schema 21 のまま。P4-1 の実装、製品 UI、preview/export 統合、production cache は追加しない。
 コミット・push は行わない。P3 EquationSequence の PASS/CLOSED と過去の失敗・INVALID は維持する。
 
+## P4-2 renderer, RGBA artifact and provenance
+
+2026-10-09。以下は P4-2 の実装契約であり、上の P4-0 の履歴を変更しない。
+schema22、graph-expression/1、graph-sampling/1、graph-draw/1 と timeline semantics は維持する。
+P4-3 の residency/D3D11、P4-4 の製品 UI、P4-5 の export は追加しない。
+gate と失敗を含む証拠の集計は [math-graph-p42-results.md](math-graph-p42-results.md) に置く。
+
+### 中立 spec と座標
+
+`app::compileGraphRender` が Project の構造検証と P4-1 の compile/sample を呼び、
+`graph::GraphRenderSpec` または typed な `graph::Error` を返す。Project と Manim の接続は app に置く。
+中立層は Qt・MLT・Project・Manim を参照しない。
+spec は canvas、viewport、plot、順序付き background paths、曲線別 AST identity/effective domain/
+切断済み geometry/ARGB/基準線幅/解決済み pixel 線幅、ラベル帯/内側矩形/回転、Draw N を持つ。
+所有 ID は診断に残すが、正準 spec、JSON protocol、artifact key へ入れない。
+Project JSON に spec・backend 名・artifact path を保存しない。
+
+graph-layout/1 は canvas の各辺の1/8を余白、中央3/4を plot とする。
+1920×1080 では左上(240,135)、plot1440×810。座標は比を先に求める affine map で
+`left+(x-xMin)/(xMax-xMin)*plotWidth`、`top+(yMax-y)/(yMax-yMin)*plotHeight`。
+軸は zero が viewport 内のときだけ描く。grid は独立で各方向11本、色#FF333A44。
+軸は白、基準線幅2 pixel、grid の基準線幅は1 pixel。
+曲線は関数順・segment順に、切断済み端点を丸め直さず直線として描く。
+backend で式の評価・再標本化・smoothing・segment の接続をしない。
+
+ラベルは下帯のx、左帯で90度回転するy、上帯を関数数で等分した関数ラベルの順。
+空文字でも帯は保持する。中立層が帯の左右5%・上下10%を除いた content 矩形を確定する。
+MathTex の実際の glyph 矩形を、その content 矩形へ等比で最大 fit し中央配置する。
+内容・順序・実描画 bounds を C++ で照合し、非空入力の空 glyph は ArtifactCorrupt、
+TeX の失敗は LabelFailure とする。数値式を TeX として解釈しない。
+
+### 線幅と RGBA
+
+保存線幅は1920×1080の pixel 単位。解決済み幅は
+`referenceWidth*min(canvasWidth/1920,canvasHeight/1080)`。
+縦横倍率が違っても線幅は等方的に保つ。Manim Camera は1 unitを1 pixelに固定し、
+`backendStrokeWidth=resolvedPixelWidth/camera.cairo_line_width_multiple` で換算する。
+この係数と Camera/VMobject の実ソースを toolchain fingerprint に含める。
+stroke は pixel center が plot 内にある画素だけへ切り出す。
+これは border の stroke footprint も切る明示的な raster 規則である。
+
+RGBA は `rgba8-straight-source-over/1`。Cairo の premultiplied RGB を straight と誤認しない。
+オブジェクトを白・不透明で個別に raster 化し、alpha 被覆だけを取得する。
+各 path を background→関数→segment の順で、最後に白いラベルを source-over する。
+同じ曲線の複数 segment もこの明示順で合成し、backend 独自の union は行わない。
+被覆c・色alphaAから `a=round(c*A/255)`、既存straight画素のalphaをbとして
+`w=a*255+b*(255-a)`、出力alphaは `round(w/255)`、各RGBは
+`round((sourceRGB*a*255+underRGB*b*(255-a))/w)`。w=0なら全byteを0にする。
+丸めは非負の最近接、ちょうど半分は上側。各段階でRGBA8へ量子化する。
+将来のpreview/exportも、この完成済みstraight RGBAを同じ意味で読み、別の丸めを導入しない。
+
+独立 oracle は long double の source-over と明示した重なりの期待byteを使う。
+axis/grid の AA 被覆は診断用白RGBA PNGへ保存し、被覆という共通のcanonical段階から
+高精度 oracle を適用して、backend の完成RGBAと照合する。合成実装のhelperは呼ばない。
+AA 境界でも単色のstraight RGBが変わらず、alpha0のRGBは0であることを検査する。
+線幅の被覆積分は固定した水平fixture専用であり、量子化差をpreview/exportの許容差にしない。
+細い正の線幅がCairoで消える場合を、全透明PNGの一律拒否で隠さない。
+一方、十分な幅・alpha・長さがある内側の線を全透明へ縮退させた出力は拒否する。
+
+### Draw、key、toolchain
+
+Draw frame i の点列は P4-1 `reveal` の i/N だけで確定する。
+0..N-1と別のstatic endpointを保存する。frame N以上の中立 geometry はstaticそのもの。
+ManimのCreate・秒・履歴を使わない。Drawのendpointは照合専用に再描画し、decoded RGBA全byteを
+staticと照合する。endpointの照合PNGはjobの証拠だけに残し、追加のtimeline状態にしない。
+axes/grid/labelsは静止。alpha0曲線・正当な空曲線・曲線のないframe0は成功できる。
+
+静止 namespace はmvm-graph-static/1、Drawはmvm-graph-draw/1。
+静止はcanonical AST、viewport/effective domains、曲線順、geometry、全style、labels/layout、
+expression/sampling/layout/RGBA版とtoolchainをbyte長前置でserializeしてSHA-256。
+Drawはstatic key、N、graph-draw/1を同じ方式でhashする。
+UUID、FunctionId、Project filename、start、trim/split、effects、L、FPSは入れない。
+Nだけの変更はstatic keyを変えない。artifactの物理locationはkeyと別である。
+Drawの総量budgetを超えるNでも静止identityは計算できる。総量は生成要求で拒否し、
+静止だけを要求する場合は中立specのDraw枚数を0にして同じstatic keyを使う。
+
+preflightは明示したPythonと固定backend scriptを使う。Manim0.21.0を要求し、実際の
+Python/NumPy/Pillow/pycairo/Cairo、Camera/VMobjectソース、TeX template、latex/dvisvgm/kpsewhichの
+版とexe SHA、Computer Modernのtfm SHAを取得する。C++ compiler版/build種別/flagsと
+numeric/presentation/adapterのsource/header SHA、およびbackend script SHAを加える。
+renderの直前にも環境とscript authorityを照合する。identity不明の新規生成は失敗する。
+将来のexportは、信頼できる期待specと記録済みtoolchain identityを保持している場合に限り、
+Manimを起動せず`validateArtifact`で既存artifactを検証できる。P4-5はここでは実装しない。
+
+### 成果物と公開
+
+static.pngとDrawのframe-0.png..frame-(N-1).pngは透明RGBA8 PNG。
+manifest.txtはUTF-8のbyte長前置field列であり、deterministicな完全一致で検証する。
+順序はstatic/Draw namespace、static/Draw key、toolchain、compiler/sampling/layout/Draw/RGBA版、
+width/height/N、geometryを含むcanonical specのSHAと本文、その後に各frameの
+index/name/encoded SHA/decoded RGBA SHA、最後にstatic endpointの関係と画素SHA。
+NoneではDraw keyを空にし、static一枚だけを要求する。
+読み取り検証はManim・preview residencyを使わず、期待spec/provenance、PNGのRGBA8・寸法・
+decode・透明RGB・可視性・全hash・必須frameを独立に照合する。存在するだけではReadyにしない。
+
+新規job→backend構造検査→raster検査→hash→cache内の新規pending directoryへPNGをコピー→
+コピー後の再検証→flushを伴うatomic manifest write→既存を置換しないdirectory rename→Ready。
+manifestは最後に書く。jobのTeX・request・構造報告・白い被覆・process出力を消さず、
+cacheにはPNGとmanifestだけを置く。壊れた同keyを黙って旧keyへ置き換えない。
+同keyの重複要求は独立jobで生成し、公開を直列化する。後着は先着artifactを再検証する。
+新しいkeyの失敗で以前の正常artifactを削除しない。
+
+`PublicationAuthority`の世代変更と公開は同じmutexをlinearization pointとする。
+supersede/shutdownは実行中のbackendへ取消を伝える。取消・旧世代をrenderer失敗と区別し、
+検証・コピー・最終公開でも再検査する。既存Win32 Job Objectのprocess-tree取消を再利用する。
+同期generateを使う呼び出し側はshutdown後に実行中呼び出しをjoinしてからauthorityを破棄する。
+自動retryはしない。publicationのwrite/rename失敗はPublicationFailureとして返す。
+
+### 上限と gate
+
+canvas各辺1..8192、総pixel16,777,216、点数196,608、JSON32MiB、RGBA一枚最大64MiB、
+Draw1..10,000（Noneは0）、decoded全frame合計とencoded全PNG合計それぞれ1GiB、
+processのstdout/stderr各1MiB、backend timeout最大300秒。
+実行前の計算と逐次検査でResourceLimitを返し、密度を落としたり部分出力で成功にしない。
+NumPyの合成には複数のuint64作業面が必要であり、一枚のRGBA byte数をpeak RAMと呼ばない。
+
+【操作可】以下はoffline描画と通常検証であり、performance/ETW/DWMの測定ではない。
+通常releaseでは既存display-power leaseを取得し、背面・入力透過のGUI試験を使う。
+
+```powershell
+pwsh scripts/math-p42-gate.ps1 -Stage Focused
+pwsh scripts/math-p42-gate.ps1 -Stage Real
+pwsh scripts/math-p42-gate.ps1 -Stage Mutations
+pwsh scripts/math-p42-gate.ps1 -Stage Regressions
+pwsh scripts/math-p42-gate.ps1 -Stage BuildIndependent
+pwsh scripts/math-p42-gate.ps1 -Stage Lint
+pwsh scripts/math-p42-gate.ps1 -Stage Release
+pwsh scripts/math-p42-report.ps1
+```
+
+[事実] 2026-10-09、必要な全 gate が通過したため P4-2 は PASS/CLOSED。
+証拠は以下の新規取得に固定する。件数・線幅測定・初期失敗を含む結果は
+[機械集計](math-graph-p42-results.md) を参照する。
+
+|gate|最終証拠|
+|---|---|
+|Focused|`build/math-p42-20261009-011019-Focused`|
+|Real・独立 alpha oracle|`build/math-p42-20261009-011100-Real`|
+|17変異・復元後ビルド|`build/math-p42-20261009-011338-Mutations`|
+|P4-1/P3回帰|`build/math-p42-20261009-010134-Regressions`|
+|BuildIndependent|`build/math-p42-20261009-010327-BuildIndependent`|
+|Lint|`build/math-p42-20261009-012027-Lint`|
+|通常release・display-power lease|`build/math-p42-20261009-011640-Release`|
+
+P3/P4の過去の失敗・INVALIDは変更しない。P4-3 は GO・未着手であり、
+この閉鎖は preview/residency・製品UI・export の完了を意味しない。
+
 ## 回収した P3 の制約
 
 [事実] [P3 の記録](math-equation-sequence-p30.md) と現在の `src/project/project.h`、
