@@ -34,6 +34,7 @@
 #include "waveform_cache.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -59,6 +60,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QTest>
+#include <QThread>
 #include <QUuid>
 #include <QtQuickTest/quicktest.h>
 
@@ -134,6 +136,23 @@ struct Session {
         bool graphExport = false;
         std::set<std::int64_t> graphComparedFrames;
         mvm::test::Pixel graphBackground{0, 0, 0, 255};
+        // P4-5 補遺: 最初の encoder frame で worker を止め、製品の shutdown が出す取消を
+        // その場で観測する。exporting() や出力の不在だけを取消の証拠にしない。
+        bool holdFirstEncoderFrame = false;
+        std::atomic<bool> barrierReached{false};
+        std::atomic<bool> barrierReleased{false};
+        std::atomic<bool> runnerReturned{false};
+        // 保持中に encoder の完了待ち loop が progress で取消を受け取った。
+        std::atomic<bool> cancelPolledWhileHeld{false};
+        std::int64_t barrierFrame = -1;
+        bool barrierFrameValid = false;
+        bool barrierCancelObserved = false;
+        bool preflightConfigured = false;
+        std::thread::id barrierThread;
+        bool runnerSuccess = false;
+        bool runnerCancelled = false;
+        bool runnerGraphCancelled = false;
+        std::string runnerError;
     };
 
     std::shared_ptr<Observation> observation = std::make_shared<Observation>();
@@ -611,14 +630,42 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
                         observation->exportExpected[frame] = std::move(composed);
                     }
                 };
-                observed.encoderFrameValidator = [observation](std::int64_t frame,
-                                                               const std::uint8_t* actual,
-                                                               int width, int height) {
-                    std::lock_guard lock(observation->mutex);
+                observed.encoderFrameValidator = [observation,
+                                                  cancel = request.graphEnvironment.cancel](
+                                                     std::int64_t frame, const std::uint8_t* actual,
+                                                     int width, int height) {
+                    std::unique_lock lock(observation->mutex);
                     const auto found = observation->exportExpected.find(frame);
                     if (found == observation->exportExpected.end() ||
                         found->second.size() != static_cast<std::size_t>(width * height * 4))
                         return false;
+                    // 最初の encoder frame を独立 oracle で検証した後、lock を外して encoder を
+                    // 保持する。解放条件は、製品の取消 flag を encoder の完了待ち loop が
+                    // progress で受け取ったことだけで、待機時間を合否に使わない。期限は変異で
+                    // 取消が来ない場合に試験を終わらせるためで、consumer の timeout より短い。
+                    const auto holdAtBarrier = [&](bool valid) {
+                        if (!observation->holdFirstEncoderFrame ||
+                            observation->barrierReached.load(std::memory_order_acquire))
+                            return valid;
+                        observation->barrierFrame = frame;
+                        observation->barrierFrameValid = valid;
+                        observation->barrierThread = std::this_thread::get_id();
+                        lock.unlock();
+                        observation->barrierReached.store(true, std::memory_order_release);
+                        const auto deadline =
+                            std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                        while (
+                            !observation->cancelPolledWhileHeld.load(std::memory_order_acquire) &&
+                            std::chrono::steady_clock::now() < deadline)
+                            std::this_thread::yield();
+                        const bool cancelObserved =
+                            cancel && cancel->load(std::memory_order_acquire) &&
+                            observation->cancelPolledWhileHeld.load(std::memory_order_acquire);
+                        lock.lock();
+                        observation->barrierCancelObserved = cancelObserved;
+                        observation->barrierReleased.store(true, std::memory_order_release);
+                        return valid;
+                    };
                     ++observation->exportCompared;
                     observation->graphComparedFrames.insert(frame);
                     for (std::size_t at = 0; at < found->second.size(); at += 4) {
@@ -638,7 +685,7 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
                                 actual[at + channel] != expected[channel];
                         }
                     }
-                    return observation->exportMismatches == 0;
+                    return holdAtBarrier(observation->exportMismatches == 0);
                 };
             }
             observed.equationFrameObserver = [observation](const std::string&, std::int64_t frame,
@@ -650,7 +697,33 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
                     observation->exportMismatches += found->second != rgba ? 1 : 0;
                 }
             };
-            return mvm::app::exportTimeline(project, observed);
+            {
+                std::lock_guard lock(observation->mutex);
+                observation->preflightConfigured =
+                    static_cast<bool>(request.graphEnvironment.preflight);
+                if (observation->holdFirstEncoderFrame && request.progress)
+                    observed.progress = [observation, progress = request.progress](
+                                            long long completed, long long total) {
+                        const bool cancelled = progress(completed, total);
+                        if (cancelled &&
+                            observation->barrierReached.load(std::memory_order_acquire) &&
+                            !observation->barrierReleased.load(std::memory_order_acquire))
+                            observation->cancelPolledWhileHeld.store(true,
+                                                                     std::memory_order_release);
+                        return cancelled;
+                    };
+            }
+            auto exported = mvm::app::exportTimeline(project, observed);
+            {
+                std::lock_guard lock(observation->mutex);
+                observation->runnerSuccess = exported.success;
+                observation->runnerCancelled = exported.cancelled;
+                observation->runnerGraphCancelled =
+                    exported.graphReadiness.failure == mvm::app::GraphExportFailure::Cancelled;
+                observation->runnerError = exported.error;
+            }
+            observation->runnerReturned.store(true, std::memory_order_release);
+            return exported;
         },
         MvmController::ExportThreadFactory{},
         [](const std::filesystem::path&, QString&) { return true; });
@@ -1710,6 +1783,14 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
             s->observation->exportExpected.clear();
             s->observation->graphComparedFrames.clear();
             s->observation->exportCompared = s->observation->exportMismatches = 0;
+            s->observation->holdFirstEncoderFrame = stopMode == 3;
+            s->observation->barrierReached.store(false);
+            s->observation->barrierReleased.store(false);
+            s->observation->runnerReturned.store(false);
+            s->observation->cancelPolledWhileHeld.store(false);
+            s->observation->barrierFrame = -1;
+            s->observation->barrierFrameValid = s->observation->barrierCancelObserved = false;
+            s->observation->barrierThread = {};
         }
         auto* dialog = s->window->findChild<QObject*>(QStringLiteral("exportFileDialog"));
         check(dialog &&
@@ -1740,6 +1821,100 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
         }
         if (stopMode == 2 && exportStarted)
             s->controller->shutdown();
+        // stopMode 3: 最初の encoder frame で保持した worker に対して、controller を所有する
+        // thread から製品の shutdown を呼ぶ。
+        bool activeShutdownProven = false;
+        QJsonObject activeShutdown;
+        if (stopMode == 3) {
+            const bool reached =
+                exportStarted &&
+                pumpUntil([&] { return s->observation->barrierReached.load(); }, 60000);
+            bool frameValid = false;
+            std::int64_t frame = -1;
+            bool workerThread = false;
+            bool preflight = false;
+            {
+                std::lock_guard lock(s->observation->mutex);
+                frameValid = s->observation->barrierFrameValid;
+                frame = s->observation->barrierFrame;
+                workerThread = s->observation->barrierThread != std::thread::id{} &&
+                               s->observation->barrierThread != std::this_thread::get_id();
+                preflight = s->observation->preflightConfigured;
+            }
+            check(reached && frame == 0 && frameValid && preflight && workerThread,
+                  "P4-5 補遺: preflight と compile を通り、独立 oracle で一致した最初の encoder "
+                  "frame で worker を保持する");
+            const bool ownerThread = QThread::currentThread() == s->controller->thread();
+            const bool heldBeforeShutdown = reached && !s->observation->barrierReleased.load() &&
+                                            !s->observation->runnerReturned.load() &&
+                                            s->controller->exporting();
+            check(ownerThread && heldBeforeShutdown,
+                  "P4-5 補遺: 保持中の worker に controller の所有 thread から shutdown する");
+            int failureNotifications = 0;
+            const auto failureWatch =
+                QObject::connect(s->controller.get(), &MvmController::exportFailed,
+                                 [&](const QString&) { ++failureNotifications; });
+            if (reached)
+                s->controller->shutdown();
+            const auto statusesAtShutdown = observedStatuses.size();
+            const auto statusAtShutdown = s->controller->statusText();
+            bool cancelObserved = false;
+            bool runnerCancelled = false;
+            bool runnerSuccess = true;
+            bool graphCancelled = false;
+            QString runnerError;
+            {
+                std::lock_guard lock(s->observation->mutex);
+                cancelObserved = s->observation->barrierCancelObserved;
+                runnerCancelled = s->observation->runnerCancelled;
+                runnerSuccess = s->observation->runnerSuccess;
+                graphCancelled = s->observation->runnerGraphCancelled;
+                runnerError = QString::fromStdString(s->observation->runnerError);
+            }
+            // shutdown の join が戻った時点で worker は runner を返し、完了の queued 呼出を
+            // 投函し終えている。後から投函した marker が届けば、その完了呼出も配送済みである。
+            const bool lifetimeResolved = reached && s->observation->barrierReleased.load() &&
+                                          s->observation->runnerReturned.load() &&
+                                          !s->controller->exporting() && !s->controller->busy();
+            check(reached && cancelObserved && runnerCancelled && !runnerSuccess &&
+                      graphCancelled && lifetimeResolved,
+                  "P4-5 補遺: encoder の保持中に shutdown の取消を完了待ち loop が観測し、join "
+                  "で寿命を解決する");
+            bool markerDelivered = false;
+            QMetaObject::invokeMethod(
+                s->controller.get(), [&] { markerDelivered = true; }, Qt::QueuedConnection);
+            const bool drained = pumpUntil([&] { return markerDelivered; });
+            QObject::disconnect(failureWatch);
+            const bool noStaleCompletion =
+                drained && observedStatuses.size() == statusesAtShutdown &&
+                s->controller->statusText() == statusAtShutdown && failureNotifications == 0;
+            check(reached && noStaleCompletion,
+                  "P4-5 補遺: shutdown 後に stale な完了通知を出さない");
+            activeShutdownProven = reached && frame == 0 && frameValid && preflight &&
+                                   workerThread && ownerThread && heldBeforeShutdown &&
+                                   cancelObserved && runnerCancelled && !runnerSuccess &&
+                                   graphCancelled && lifetimeResolved && noStaleCompletion;
+            QJsonArray afterShutdown;
+            for (auto i = statusesAtShutdown; i < observedStatuses.size(); ++i)
+                afterShutdown.append(observedStatuses[i]);
+            activeShutdown =
+                QJsonObject{{"barrierReached", reached},
+                            {"barrierFrame", static_cast<qint64>(frame)},
+                            {"barrierFrameOracleMatched", frameValid},
+                            {"preflightConfigured", preflight},
+                            {"barrierOffOwnerThread", workerThread},
+                            {"shutdownOnOwnerThread", ownerThread},
+                            {"heldBeforeShutdown", heldBeforeShutdown},
+                            {"cancelObservedAtBarrier", cancelObserved},
+                            {"runnerCancelled", runnerCancelled},
+                            {"runnerSuccess", runnerSuccess},
+                            {"graphReadinessCancelled", graphCancelled},
+                            {"runnerError", runnerError},
+                            {"lifetimeResolved", lifetimeResolved},
+                            {"queuedCompletionDrained", drained},
+                            {"statusesAfterShutdown", afterShutdown},
+                            {"failureNotificationsAfterShutdown", failureNotifications}};
+        }
         const bool completed = (stopMode == 0 || exportStarted) &&
                                pumpUntil([&] { return !s->controller->exporting(); }, 60000);
         if (statusWatch)
@@ -1752,7 +1927,8 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
             stopMode == 0 ||
             (stopMode == 1 && sawStatus(QStringLiteral("書き出しをキャンセルしました"))) ||
             (stopMode == 2 && sawStatus(QStringLiteral("書き出しています…")) &&
-             !s->controller->exporting());
+             !s->controller->exporting()) ||
+            (stopMode == 3 && activeShutdownProven);
         if (stopMode != 0 && !stopProven) {
             std::fprintf(stderr, "P4-5: 停止の観測が不足:");
             for (const auto& text : observedStatuses)
@@ -1773,6 +1949,8 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
                 observed.append(text);
             exportResult.insert(QStringLiteral("observedStatuses"), observed);
         }
+        if (stopMode == 3)
+            exportResult.insert(QStringLiteral("activeShutdown"), activeShutdown);
         if (!expectedSuccess) {
             check(!std::filesystem::exists(output.wstring() + L".mvmtmp"),
                   "P4-5: 製品の失敗・取消・終了で一時出力を残さない");
@@ -2085,6 +2263,21 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
         if (restored && !stillInvalid) {
             exportProduct(directory / L"graph-cancelled.mp4", false, true, 1);
             exportProduct(directory / L"graph-shutdown.mp4", false, true, 2);
+            // P4-5 補遺: shutdown 済みの session を閉じ、保存した同じ Project を再起動して、
+            // encoder が実際に frame を処理している最中の shutdown を検査する。
+            const auto beforeRestart = s->project().timelineClips;
+            const auto background = s->observation->graphBackground;
+            s->close();
+            const auto reopened = project::loadProjectJson(path);
+            check(reopened.success && reopened.project.timelineClips == beforeRestart,
+                  "P4-5 補遺: 保存した Project を再起動して開く");
+            s = open(path, reopened.project);
+            if (!s)
+                return 4;
+            // 同じ Project の既知 RGB 実動画を背景にした独立 oracle を引き継ぐ。artifact は
+            // 製品の書き出しが disk から検証し、最初の encoder frame を全画素で比較する。
+            s->observation->graphBackground = background;
+            exportProduct(directory / L"graph-active-shutdown.mp4", false, true, 3);
         }
     }
     s->close();

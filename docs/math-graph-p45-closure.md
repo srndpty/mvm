@@ -153,3 +153,5 @@ focused 72、encode 16。AlphaDomain は 4608。RealPng は 7。回帰は 17。
 BuildIndependent は 1084。lint は通過。通常 release は 1494。
 Review は製品 exe に診断 symbol が無く、検証 exe にだけあることを確認した。
 診断専用 source は静的 library に残す。製品の範囲指定 export は追加していない。
+
+実際に frame を処理している最中の shutdown の補遺は [閉鎖補遺](math-graph-p45-shutdown-supplement.md) に記録する。
