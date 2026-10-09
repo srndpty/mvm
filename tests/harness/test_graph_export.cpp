@@ -1,5 +1,6 @@
 #include "app/timeline_export.h"
 #include "media/mlt/mvm_mlt_runtime.h"
+#include "mlt_rgba_oracle.h"
 
 #include <fstream>
 #include <iostream>
@@ -246,12 +247,13 @@ void encode(const std::filesystem::path& root) {
             raw.write(reinterpret_cast<const char*>(rgba), static_cast<std::streamsize>(w * h * 4));
         }
         bool ok = t >= 0 && t < 12 && w == 64 && h == 36;
-        // 黒い不透明背景との独立な整数 source-over。色変換前の共通 RGBA 段階で比較する。
-        const int source[] = {200, t < 10 ? static_cast<int>(t) : 99, 31};
+        // artifact の整数契約とは別の、MLT binary32・切り捨て契約を照合する。
+        const test::Pixel source =
+            t == 0 ? test::Pixel{}
+                   : test::Pixel{200, static_cast<std::uint8_t>(t < 10 ? t : 99), 31, 128};
+        const auto pixel = test::mltSourceOver({0, 0, 0, 255}, source);
         for (int channel = 0; channel < 4; ++channel) {
-            const int expected = channel == 3 ? 255
-                                 : t == 0     ? 0
-                                              : (source[channel] * 128 + 127) / 255;
+            const int expected = pixel[static_cast<std::size_t>(channel)];
             if (rgba[channel] != expected) {
                 std::cerr << "frame " << t << " channel " << channel << ": " << int(rgba[channel])
                           << " 期待 " << expected << '\n';

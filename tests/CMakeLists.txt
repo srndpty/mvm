@@ -801,6 +801,16 @@ mvm_add_test(graph_numeric COMMAND mvm_test_graph_numeric PROPERTIES TIMEOUT 120
 
 add_executable(mvm_test_graph_render core/test_graph_render.cpp)
 add_executable(mvm_test_graph_export harness/test_graph_export.cpp)
+add_executable(mvm_test_graph_composition harness/test_graph_composition.cpp)
+target_link_libraries(mvm_test_graph_composition PRIVATE mvm::timeline_export mvm::manim mvm::mlt Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_test_graph_composition PRIVATE ${MVM_MLT_PATH_DEFS})
+foreach(_composition_stage diagnostic oracle differential)
+    add_test(NAME graph_composition_${_composition_stage}
+        COMMAND ${MVM_PWSH} -NoProfile -File "${CMAKE_SOURCE_DIR}/tests/harness/test_graph_composition.ps1"
+            -Executable "$<TARGET_FILE:mvm_test_graph_composition>" -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}"
+            -Stage ${_composition_stage})
+    set_tests_properties(graph_composition_${_composition_stage} PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+endforeach()
 target_link_libraries(mvm_test_graph_export PRIVATE mvm::timeline_export mvm::manim mvm::mlt Qt6::Gui mvm::warnings)
 target_compile_definitions(mvm_test_graph_export PRIVATE ${MVM_MLT_PATH_DEFS})
 mvm_add_test(graph_export_focused

@@ -51,10 +51,13 @@ encoder の YUV 変換前に callback を呼ぶ。検査が失敗／不足なら
 最終ファイルを公開しない。callback が無い通常出力にはこの filter を接続しない。
 最終 stage の alpha を書き換えず、Graph の半透明を不透明にする代用は入れていない。
 
-**現在の阻害条件:** 黒背景と `[200,99,31,128]` の Graph endpoint の独立整数 oracle は
+**P4-5.1 で解決した阻害条件:** 黒背景と `[200,99,31,128]` の Graph endpoint の旧整数 oracle は
 `[100,50,16,255]` だが、既存 MLT 合成後は `[100,49,15,254]` だった。
 Graph を通さない通常 Image の同じ RGBA でも全画素で一致する。MLT の float 切り捨てと
 Graph の凍結した最近接整数丸めの相違を、許容差や Graph 限定の別合成で隠していない。
-この不一致が残るため、実 Manim・製品 UI・変異・関連回帰・BuildIndependent・通常 release
-による P4-5 の閉鎖はまだ行っていない。製品の範囲指定 export は追加しておらず、
+P4-5.1 は artifact の整数丸めと MLT の binary32・切り捨てを別々の authority として検証し、
+production の合成を保持した。数式・stage 診断・exact oracle・変異・関連回帰は
+[合成契約](math-graph-p451.md) と [結果](math-graph-p451-results.md) に記録する。
+P4-5 の集中阻害条件は解決したが、実 Manim・製品 UI・BuildIndependent・通常 release
+による P4-5 全体の閉鎖はまだ行っていない。製品の範囲指定 export は追加しておらず、
 既存の全 timeline 出力だけを Graph 対応させた段階である。

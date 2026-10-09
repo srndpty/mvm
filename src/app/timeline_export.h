@@ -47,6 +47,9 @@ struct TimelineExportRequest {
     GraphExportEnvironment graphEnvironment;
     // Graph の層の RGBA。最終 encoder 合成の oracle とは別の検証境界。
     std::function<void(const std::string&, std::int64_t, const graph::Raster&)> graphFrameObserver;
+    // 検証用: 実際に保存した Graph staging PNG。callback の間だけ一時パスが有効。
+    std::function<void(const std::string&, std::int64_t, const std::filesystem::path&)>
+        graphStagingObserver;
     // 最終 MLT 合成後、encoder の YUV 変換前。false は検査失敗として公開を拒否する。
     std::function<bool(std::int64_t, const std::uint8_t*, int, int)> encoderFrameValidator;
     // 検証用: PNG へ保存する直前の内部合成の RGBA。外側 effects は既存 MLT 合成で掛ける。

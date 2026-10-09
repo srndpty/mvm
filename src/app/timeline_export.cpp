@@ -693,6 +693,10 @@ TimelineExportResult exportTimeline(const project::Project& project,
                     result.graphReadiness = {GraphExportFailure::PublicationFailure, result.error};
                     return result;
                 }
+                if (request.graphStagingObserver)
+                    request.graphStagingObserver(
+                        planned.renderClip.id, outputFrame,
+                        std::filesystem::path(QString::fromUtf8(staged).toStdWString()));
             }
             const auto pattern = QString::number(mappingIndex) + QStringLiteral("-graph-%05d.png");
             transformPaths.emplace(

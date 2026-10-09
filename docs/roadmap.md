@@ -140,7 +140,10 @@
   最終 source の Focused は 4/4、Regressions は 26/26。P4-5 は GO、未着手。
 - P4-5 は着手済み・HOLD。実装と未達条件は [math-graph-p45.md](math-graph-p45.md)、
   新規の失敗と検証結果は [math-graph-p45-results.md](math-graph-p45-results.md) に移した。
-  既存 MLT の外側合成と凍結した整数 RGBA oracle の不一致を解決し、製品 UI・全 gate を閉じる必要がある。
+  P4-5.1 で外側合成の集中阻害条件を解決した。MLT の binary32・byte 切り捨てと artifact の
+  凍結した整数 RGBA は別契約であり、[合成契約](math-graph-p451.md) と
+  [集中結果](math-graph-p451-results.md) に移した。
+  残る実製品 UI→Manim→H.264 と製品受け入れ・BuildIndependent・通常 release を閉じる必要がある。
 - sampling/1 は有限密度と midpoint の保守的切断であり、任意高周波・標本間だけの特異点の完全検出は
   保証しない。必要時は独立fixtureと新sampling/key versionで精度改善を検証する。
   追加の性能閾値・adaptive sampling・artifact圧縮は製品要求と実測に基づく後続判断とする。
