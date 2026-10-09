@@ -2,7 +2,7 @@
 
 P4-5.1 composition authority: **PASS/CLOSED**。
 P4-5 original focused blocker: **RESOLVED**。
-P4-5 full product closure: **STILL OPEN**。P4/P4-5 は CLOSED にしない。
+P4-5.1 時点の P4-5 全体は未閉鎖だった。後続の製品受入は [P4-5](math-graph-p45.md) で PASS/CLOSED。この測定表は変えない。
 
 結論 A: artifact の最近接整数 oracle を post-MLT に適用した境界誤り。合成の production 処理は変更しない。
 数式・source provenance・観測の限界は [契約文書](math-graph-p451.md) を参照する。

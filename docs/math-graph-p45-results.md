@@ -1,6 +1,9 @@
 # P4-5 の検証結果
 
-状態: **HOLD**。encoder 直前の独立 RGBA oracle が未通過。P4 と P4-5 を PASS/CLOSED にしていない。
+このファイルは閉鎖前の HOLD 記録である。下の表と画素差は書き換えない。
+最終判定は [P4-5](math-graph-p45.md) と [再開記録](math-graph-p45-closure.md)。
+
+当時の状態: **HOLD**。encoder 直前の独立 RGBA oracle が未通過。P4 と P4-5 を PASS/CLOSED にしていない。
 
 以下は新規の生ログから再計算した件数。通常 release、BuildIndependent、実 Manim と製品 UI、変異の閉鎖 gate は未実施。過去の P3/P4 の証拠は変更していない。
 

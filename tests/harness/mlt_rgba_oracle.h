@@ -16,8 +16,11 @@ inline double binary32(double value) {
 }
 
 inline Pixel mltSourceOver(Pixel destination, Pixel source, double opacity = 1) {
-    const double sourceAlpha = binary32(binary32(source[3] / 255.0) * binary32(opacity));
-    const double destinationAlpha = binary32(destination[3] / 255.0);
+    // UCRT64 7.36.1-1 Release の実 DLL は -ffast-math により定数除算を逆数へ変換する。
+    // nearest の命令列は opacity * reciprocal を先に評価する。他の補間へ流用しない。
+    const double reciprocal = binary32(1.0 / 255.0);
+    const double sourceAlpha = binary32(binary32(binary32(opacity) * reciprocal) * source[3]);
+    const double destinationAlpha = binary32(destination[3] * reciprocal);
     const double alpha = binary32(binary32(sourceAlpha + destinationAlpha) -
                                   binary32(sourceAlpha * destinationAlpha));
     if (alpha <= 0)

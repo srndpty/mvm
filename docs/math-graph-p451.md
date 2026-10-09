@@ -1,7 +1,7 @@
 # P4-5.1: MLT 合成の authority と exact oracle
 
 結論は **A: oracle の境界誤り**。Graph artifact と MLT の通常合成を別々に検査する。
-今回の閉鎖対象は合成契約だけであり、P4-5 全体と P4 は HOLD を維持する。
+この文書が閉じたのは合成契約だけである。当時、P4-5 全体と P4 は HOLD だった。後続の製品受入は [P4-5](math-graph-p45.md) で PASS/CLOSED にした。
 実行結果は [結果文書](math-graph-p451-results.md) に機械集計する。
 
 ## 三つの境界
@@ -132,4 +132,4 @@ pwsh scripts/math-p451-report.ps1
 P4-2 artifact の長倍精度独立 oracle と期待値は変更していない。
 過去 P4-5 の整数 oracle FAIL は履歴として保持する。
 初回 P4-5.1 の色背景入力誤りと診断試験の compile error も閉鎖結果へ混ぜず記録する。
-P4-5 の残りの実 UI→Manim→H.264、製品受け入れ、full release・BuildIndependent は別の閉鎖作業である。
+当時残っていた実 UI→Manim→H.264、製品受け入れ、full release・BuildIndependent は、後続の [P4-5 閉鎖](math-graph-p45-closure.md) で別証拠として閉じた。

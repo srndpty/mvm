@@ -1,7 +1,7 @@
 # P4-5: Graph の映像書き出し
 
-状態: **実装中・HOLD**。schema22 を維持する。過去の P3/P4 の証拠は変更しない。
-コミット・push は行わない。
+状態: **P4-5 PASS/CLOSED**、**P4 PASS/CLOSED**。schema22 を維持する。
+過去の P3/P4 の証拠と P4-5.1 の測定は変更しない。コミット・push は行わない。
 
 ## 実装前に確認した接続点と計画
 
@@ -16,9 +16,17 @@
 
 ## 検証記録
 
-実行結果と未達の閉鎖条件は [結果文書](math-graph-p45-results.md) に記録する。
+P4-5.1 閉鎖後の再開では、まず変更前の同一 source の focused 合成・依存・encoder を検証する。
+実製品受け入れは既存 `runGraphAuthoringUi` のメニュー・入力・schema22 保存再読込・native 提示を
+維持し、専用 `--graph-export-ui` から実書き出しダイアログと H.264 worker へ接続する。
+この製品経路の合成比較は P4-5.1 の独立 binary32/truncation oracle を使う。
+これは source-frame 選択の独立検査を代替しない。trim/split、有理 FPS、共存、失敗、変異と
+通常 gate が成立するまで HOLD を維持した。
 
-## 現在の実装と未達条件
+閉鎖前の未達と失敗は [結果文書](math-graph-p45-results.md) に残す。
+再開後の失敗と最終の機械集計は [再開記録](math-graph-p45-closure.md) に記録する。
+
+## 実装
 
 `prepareGraphExport` は半開区間 `[outputBegin, outputEnd)` と既存の video render segments の
 交差だけを計画する。clip/track の出力規則を通し、source は P4-1 の整数・有理数 authority
@@ -58,6 +66,8 @@ Graph の凍結した最近接整数丸めの相違を、許容差や Graph 限�
 P4-5.1 は artifact の整数丸めと MLT の binary32・切り捨てを別々の authority として検証し、
 production の合成を保持した。数式・stage 診断・exact oracle・変異・関連回帰は
 [合成契約](math-graph-p451.md) と [結果](math-graph-p451-results.md) に記録する。
-P4-5 の集中阻害条件は解決したが、実 Manim・製品 UI・BuildIndependent・通常 release
-による P4-5 全体の閉鎖はまだ行っていない。製品の範囲指定 export は追加しておらず、
-既存の全 timeline 出力だけを Graph 対応させた段階である。
+[事実] 2026-10-10、同一 source `0791B37C7E976A2A0C089E733F787868C863315AF3AB57A8C705C0AE8EECFAC8`
+で製品 UI 205 件、Focused、AlphaDomain、RealPng、回帰 17 件、変異 10/10、
+BuildIndependent 1084 件、lint、通常 release 1494 件、診断 symbol の非リンクが閉じた。
+機械集計は `build/math-p45-20261010-040724-Closure`。製品の範囲指定 export は追加していない。
+閉じたのは既存の timeline 全体の書き出しである。診断専用 MLT source は静的 library に残す。

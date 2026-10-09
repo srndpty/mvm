@@ -138,12 +138,16 @@
 - [事実] 2026-10-09、P4-4 の閉鎖確認は PASS。共有ダイアログ三部品の Basic 固定は
   製品の Basic style と一致し、未確定 draft は関数・clip・Undo をまたがない。
   最終 source の Focused は 4/4、Regressions は 26/26。P4-5 は GO、未着手。
-- P4-5 は着手済み・HOLD。実装と未達条件は [math-graph-p45.md](math-graph-p45.md)、
-  新規の失敗と検証結果は [math-graph-p45-results.md](math-graph-p45-results.md) に移した。
-  P4-5.1 で外側合成の集中阻害条件を解決した。MLT の binary32・byte 切り捨てと artifact の
-  凍結した整数 RGBA は別契約であり、[合成契約](math-graph-p451.md) と
-  [集中結果](math-graph-p451-results.md) に移した。
-  残る実製品 UI→Manim→H.264 と製品受け入れ・BuildIndependent・通常 release を閉じる必要がある。
+- [事実] 2026-10-10、P4-5 と P4 は PASS/CLOSED。製品 UI から schema22 を保存・再読込し、
+  実 Manim の native 提示と H.264、trim/split、24000/1001、可視範囲だけの依存、
+  映像・音声・字幕・ClipEffects、欠損・破損・取消・shutdown、独立 MLT 7.36.1 oracle を検証した。
+  同一 source の機械集計は Focused、製品 205 件、回帰 17 件、変異 10/10、
+  BuildIndependent 1084 件、lint、通常 release 1494 件。
+  契約は [math-graph-p45.md](math-graph-p45.md)、閉鎖前の HOLD は
+  [math-graph-p45-results.md](math-graph-p45-results.md)、再開後の失敗と集計は
+  [math-graph-p45-closure.md](math-graph-p45-closure.md)。
+  P4-5.1 の合成契約は [math-graph-p451.md](math-graph-p451.md) のまま変えない。
+  製品は timeline 全体を書き出す。範囲指定の export UI は追加していない。
 - sampling/1 は有限密度と midpoint の保守的切断であり、任意高周波・標本間だけの特異点の完全検出は
   保証しない。必要時は独立fixtureと新sampling/key versionで精度改善を検証する。
   追加の性能閾値・adaptive sampling・artifact圧縮は製品要求と実測に基づく後続判断とする。

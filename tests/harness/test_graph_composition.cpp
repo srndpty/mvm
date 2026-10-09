@@ -45,6 +45,7 @@ struct Evidence {
     std::ofstream rows;
     std::string name;
     std::vector<std::vector<std::uint8_t>> stages;
+    std::size_t width = 64;
 
     void record(const std::string& stage, int layer, const std::vector<std::uint8_t>& bytes,
                 const std::vector<std::uint8_t>& expected) {
@@ -68,7 +69,7 @@ struct Evidence {
         if (first == bytes.size())
             rows << "-1\t-1\t-1";
         else
-            rows << (first / 4) % 64 << '\t' << (first / 4) / 64 << '\t' << first % 4;
+            rows << (first / 4) % width << '\t' << (first / 4) / width << '\t' << first % 4;
         rows << '\t' << mismatches << '\n';
         check(mismatches == 0, "各境界の全画素が独立期待値に完全一致する");
     }
@@ -299,7 +300,99 @@ void matrix(Evidence& e, const std::string& name, std::vector<test::Pixel> sourc
           "通常 Image と Graph endpoint は全画素一致する");
 }
 
+// 空間 filtering の oracle を一般化せず、同じ実 PNG と同じ通常効果の経路を比較する。
+void spatialEffects(Evidence& e) {
+    auto input = raster({200, 99, 31, 128});
+    for (int y = 0; y < 36; ++y)
+        for (int x = 0; x < 64; ++x) {
+            const auto offset = static_cast<std::size_t>((y * 64 + x) * 4);
+            input.rgba[offset] = static_cast<std::uint8_t>(x * 3);
+            input.rgba[offset + 1] = static_cast<std::uint8_t>(y * 7);
+            input.rgba[offset + 3] = static_cast<std::uint8_t>(32 + (x + y) % 200);
+        }
+    std::vector<project::ClipEffects> effects(6);
+    effects[0].positionXPercent = 13;
+    effects[0].positionYPercent = -7;
+    effects[1].scaleXPercent = 73;
+    effects[1].scaleYPercent = 61;
+    effects[2].rotationDegrees = 17;
+    effects[3].cropLeftPercent = 11;
+    effects[3].cropTopPercent = 9;
+    effects[3].cropRightPercent = 13;
+    effects[3].cropBottomPercent = 7;
+    effects[4] = effects[3];
+    effects[4].rotationDegrees = 12;
+    effects[4].scaleXPercent = 79;
+    effects[4].positionXPercent = 9;
+    effects[4].opacityPercent = 50;
+    effects[5].positionXKeys = {{0, -13}, {2, 17}};
+    effects[5].scaleXKeys = {{0, 61}, {2, 83}};
+    effects[5].rotationKeys = {{0, -9}, {2, 21}};
+    for (std::size_t i = 0; i < effects.size(); ++i) {
+        const auto name = "spatial-" + std::to_string(i);
+        auto p = projectFor({{200, 99, 31, 128}}, false, 1);
+        p.timelineClips.front().effects = effects[i];
+        app::TimelineExportRequest request;
+        request.width = 64;
+        request.height = 36;
+        request.fpsNum = 30;
+        request.fpsDen = 1;
+        request.renderThreads = 1;
+        request.graphEnvironment.cache = e.root / (name + "-cache");
+        request.graphEnvironment.toolchain = "空間効果の固定入力";
+        request.graphEnvironment.preflight =
+            [input](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
+            return manim::GraphBackend{"空間効果の固定入力",
+                                       [input](const graph::RenderRequest& r,
+                                               const std::atomic<bool>*) -> graph::RenderResult {
+                                           if (!graph::writeRgba(r.job / "static.png", input))
+                                               return graph::Error{graph::Failure::RendererFailure,
+                                                                   0, "試験 PNG の保存失敗"};
+                                           return std::monostate{};
+                                       }};
+        };
+        const auto samePng = e.root / (name + "-actual.png");
+        request.graphStagingObserver = [&](const auto&, auto frame, const auto& path) {
+            if (frame == 0)
+                std::filesystem::copy_file(path, samePng);
+        };
+        std::mutex mutex;
+        std::map<std::int64_t, std::vector<std::uint8_t>> actualGraph;
+        request.encoderFrameValidator = [&](auto frame, const auto* bytes, int w, int h) {
+            std::lock_guard lock(mutex);
+            actualGraph[frame] = {bytes, bytes + w * h * 4};
+            return true;
+        };
+        request.outputPath = e.root / (name + "-graph.mp4");
+        check(app::exportTimeline(p, request).success && actualGraph.size() == 3,
+              "空間 ClipEffects の Graph 全 frame を実 encoder 境界で観測する");
+        if (actualGraph.size() != 3 || !std::filesystem::exists(samePng))
+            continue;
+        p.timelineClips.front().kind = project::TimelineClipKind::Image;
+        p.timelineClips.front().graph = {};
+        p.timelineClips.front().mediaPath = samePng;
+        request.graphStagingObserver = {};
+        std::set<std::int64_t> compared;
+        request.encoderFrameValidator = [&](auto frame, const auto* bytes, int w, int h) {
+            std::lock_guard lock(mutex);
+            const std::vector<std::uint8_t> image(bytes, bytes + w * h * 4);
+            compared.insert(frame);
+            e.name = name;
+            e.record("image-differential", static_cast<int>(frame), image, actualGraph.at(frame));
+            return image == actualGraph.at(frame);
+        };
+        request.outputPath = e.root / (name + "-image.mp4");
+        check(app::exportTimeline(p, request).success && compared.size() == 3,
+              "Graph と通常 Image の空間 ClipEffects は全画素で同じ一回の効果になる");
+        if (i == 5)
+            check(actualGraph.at(0) != actualGraph.at(2), "空間 keyframe は実際に画素を変える");
+    }
+}
+
 void negatives() {
+    check(test::mltSourceOver({0, 0, 0, 255}, {255, 255, 255, 112}) ==
+              test::Pixel{112, 112, 112, 254},
+          "負例: alpha 112 の定数逆数演算を直接除算へ置き換えない");
     const test::Pixel source{200, 99, 31, 128}, bg{0, 0, 0, 255};
     const auto expected = test::mltSourceOver(bg, source);
     check(expected == test::Pixel{100, 49, 15, 254}, "記録された差分を数式から再現する");
@@ -322,11 +415,55 @@ void negatives() {
     check(source != expected, "負例: audit を合成前へ移動する");
     check(test::mltSourceOver({0, 0, 0, 0}, source) != expected, "負例: 背景 alpha が欠ける");
 }
+
+void realPng(Evidence& evidence, const std::filesystem::path& path) {
+    evidence.width = 320;
+    evidence.name = "real-manim";
+    const auto decoded = graph::readRgba(path, 320, 180);
+    check(std::holds_alternative<graph::Raster>(decoded), "実 Manim の PNG を独立に decode する");
+    if (!std::holds_alternative<graph::Raster>(decoded))
+        return;
+
+    struct Input {
+        Evidence* evidence;
+        std::vector<std::uint8_t> source, background, composed;
+    } input{&evidence, std::get<graph::Raster>(decoded).rgba, {}, {}};
+
+    input.background.resize(input.source.size());
+    input.composed.resize(input.source.size());
+    for (std::size_t at = 0; at < input.source.size(); at += 4) {
+        input.background[at + 3] = 255;
+        const auto result =
+            test::mltSourceOver({0, 0, 0, 255}, {input.source[at], input.source[at + 1],
+                                                 input.source[at + 2], input.source[at + 3]});
+        std::copy(result.begin(), result.end(),
+                  input.composed.begin() + static_cast<std::ptrdiff_t>(at));
+    }
+    evidence.rows << "real-manim\tpng-sha\t0\t" << fileHash(path) << '\n';
+    const auto filename = path.string();
+    const char* filenames[] = {filename.c_str()};
+    check(mvm_mlt_rgba_diagnostic(
+              filenames, 1, "#000000", 320, 180, 1,
+              [](int stage, int layer, const unsigned char* bytes, int width, int height,
+                 void* opaque) {
+                  auto& observed = *static_cast<Input*>(opaque);
+                  const char* names[] = {"background", "producer", "pre-destination", "pre-source",
+                                         "post"};
+                  const auto& expected = stage == 4                 ? observed.composed
+                                         : stage == 1 || stage == 3 ? observed.source
+                                                                    : observed.background;
+                  observed.evidence->record(
+                      names[stage], layer,
+                      std::vector<std::uint8_t>(bytes, bytes + width * height * 4), expected);
+              },
+              &input) == 0,
+          "実 Manim の非一様 PNG を同じ DLL の全境界で観測する");
+}
 } // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
-    if (argc != 3) {
+    if (argc != 3 && argc != 4) {
         std::cerr << "段階名と新規の証拠 directory を指定してください\n";
         return 2;
     }
@@ -340,10 +477,24 @@ int main(int argc, char** argv) {
     if (mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR))
         return 1;
     const std::string mode(argv[1]);
-    if (mode == "diagnostic") {
+    if (mode == "real-png" && argc == 4) {
+        realPng(evidence, argv[3]);
+    } else if (mode == "alpha-domain") {
+        for (int alpha = 0; alpha <= 255; ++alpha) {
+            const auto source = alpha == 0
+                                    ? test::Pixel{}
+                                    : test::Pixel{255, 99, 31, static_cast<std::uint8_t>(alpha)};
+            matrix(evidence, "alpha-" + std::to_string(alpha), {source}, {0, 0, 0, 255}, "#000000",
+                   false, 1, false);
+            matrix(evidence, "colored-alpha-" + std::to_string(alpha), {source}, {23, 71, 143, 255},
+                   "#ff17478f", false, 1, false);
+        }
+    } else if (mode == "diagnostic") {
         matrix(evidence, "recorded", {{200, 99, 31, 128}}, {0, 0, 0, 255}, "#000000");
     } else if (mode == "oracle" || mode == "differential") {
         const bool product = mode == "differential";
+        if (product)
+            spatialEffects(evidence);
         negatives();
         for (int alpha : {255, 128, 0, 1, 254}) {
             const test::Pixel source =

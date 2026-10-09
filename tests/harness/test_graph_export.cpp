@@ -1,10 +1,17 @@
 #include "app/timeline_export.h"
+#include "media/mlt/mvm_mlt_export.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mlt_rgba_oracle.h"
+#include "project/timeline_edit.h"
 
 #include <fstream>
 #include <iostream>
 #include <mutex>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 #include <QGuiApplication>
 
@@ -103,6 +110,19 @@ void run(const std::filesystem::path& root) {
     }
     auto noBackend = env;
     noBackend.preflight = {};
+    auto missingPackage = plan;
+    missingPackage.packages.clear();
+    const auto missingRaster = app::loadGraphExportFrame(missingPackage, "graph", 0);
+    check(missingRaster.readiness.failure == E::ArtifactMissing && !missingRaster.raster,
+          "package 欠損を preview の透明 fallback で代用しない");
+    auto wrongProvenance = plan;
+    auto wrongPackage = *plan.packages.begin()->second;
+    wrongPackage.toolchain = "別の identity";
+    wrongProvenance.packages.begin()->second =
+        std::make_shared<const app::GraphExportPackage>(wrongPackage);
+    check(app::loadGraphExportFrame(wrongProvenance, "graph", 0).readiness.failure ==
+              E::ProvenanceMismatch,
+          "decoded frame を読む前に現在 package の provenance を照合する");
     auto drawOnly = app::prepareGraphExport(p, 64, 36, 0, 10, noBackend);
     check(drawOnly.readiness.ready() && drawOnly.packages.size() == 1 && preparations == 1,
           "Draw のみは独立 static package と backend を要求しない");
@@ -146,6 +166,13 @@ void run(const std::filesystem::path& root) {
     check(twins.readiness.ready() && twins.packages.size() == 1 && twins.clips.size() == 2 &&
               twins.clips.at("other").frames.front().sourceFrame == 4,
           "key 共有でも所有と時間を共有しない");
+    auto transition = shared;
+    transition.timelineClips[0].sourceOutFrame = 11;
+    transition.timelineClips[1].timelineStartFrame = 11;
+    transition.timelineTransitions.push_back({"transition", "graph", "other", 1, 1});
+    check(app::prepareGraphExport(transition, 64, 36, 0, 20, noBackend).readiness.failure ==
+              E::UnsupportedTransition,
+          "未対応 Graph transition を黙って hard cut にしない");
     auto staticFirst = shared;
     staticFirst.timelineClips[0].id = "a-static";
     staticFirst.timelineClips[0].sourceInFrame = 10;
@@ -169,6 +196,21 @@ void run(const std::filesystem::path& root) {
                   "P4-1 の有理数 mapping と一致する");
         }
     auto changed = p;
+    auto fractionalTrim = p;
+    fractionalTrim.timelineFpsNum = 24000;
+    fractionalTrim.timelineFpsDen = 1001;
+    fractionalTrim.timelineClips[0].sourceFpsNum = 60;
+    fractionalTrim.timelineClips[0].sourceInFrame = 4;
+    fractionalTrim.timelineClips[0].sourceFrameCount =
+        fractionalTrim.timelineClips[0].sourceOutFrame = 24;
+    const auto mixed = app::prepareGraphExport(fractionalTrim, 64, 36, 0, 8, noBackend);
+    const std::int64_t expectedMixed[] = {5, 7, 10, 12, 15, 17, 20, 22};
+    check(mixed.readiness.ready() && mixed.clips.at("graph").frames.size() == 8,
+          "fractional FPS と異なる素材 FPS の trim を計画する");
+    if (mixed.readiness.ready())
+        for (std::size_t frame = 0; frame < 8; ++frame)
+            check(mixed.clips.at("graph").frames[frame].sourceFrame == expectedMixed[frame],
+                  "trim の source 境界を有理数で変換し可視 frame 始点を保つ");
     changed.timelineClips[0].graph.functions[0].expression = "1";
     check(app::prepareGraphExport(changed, 64, 36, 0, 1, noBackend).readiness.failure ==
               E::BackendUnavailable,
@@ -202,6 +244,13 @@ void run(const std::filesystem::path& root) {
     std::filesystem::remove(directory / "frame-5.png");
     check(app::loadGraphExportFrame(plan, "graph", 5).readiness.failure == E::FrameMissing,
           "Draw 欠損を static で代用しない");
+    std::filesystem::copy_file(directory / "frame-3.png", root / "valid-frame-3.png");
+    {
+        std::ofstream broken(directory / "frame-3.png", std::ios::binary);
+        broken << "PNG ではない入力";
+    }
+    check(app::loadGraphExportFrame(plan, "graph", 3).readiness.failure == E::DecodeFailure,
+          "不正 PNG の decoder 失敗を空 raster に置き換えない");
     app::TimelineExportRequest request;
     request.width = 64;
     request.height = 36;
@@ -233,8 +282,10 @@ void encode(const std::filesystem::path& root) {
     request.outputPath = root / "graph.mp4";
     request.graphEnvironment.cache = root / "cache";
     request.graphEnvironment.toolchain = "独立 encoder 試験";
+    std::atomic<int> backendCalls{0};
     request.graphEnvironment.preflight =
-        [](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
+        [&](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
+        ++backendCalls;
         return manim::GraphBackend{"独立 encoder 試験", render};
     };
     std::mutex mutex;
@@ -270,6 +321,8 @@ void encode(const std::filesystem::path& root) {
           "H.264 と encoder 直前の全 frame／全画素 oracle");
     if (!exported.success)
         std::cerr << exported.error << '\n';
+    check(backendCalls.load() == 1,
+          "backend の準備は encoding 前の一回だけで encoder callback から呼ばない");
     // 因果対照: 同じ straight PNG を通常 Image として出す。Graph の decode／timing は通さない。
     auto ordinary = p;
     auto& imageClip = ordinary.timelineClips[0];
@@ -322,6 +375,96 @@ void encode(const std::filesystem::path& root) {
     const auto cancelled = app::exportTimeline(p, request);
     check(cancelled.cancelled && !std::filesystem::exists(request.outputPath),
           "encode の取消で最終公開しない");
+    check(!std::filesystem::exists(request.outputPath.string() + ".mvmtmp"),
+          "取消後に一時出力を残さない");
+    request.outputPath = root / "publication-cancelled.mp4";
+    bool reachedPublication = false;
+    bool reachedBackendCompletion = false;
+    DWORD64 backendImage = 0;
+    const auto* backendEntry = RtlLookupFunctionEntry(
+        reinterpret_cast<DWORD64>(&mvm_mlt_export_two_track), &backendImage, nullptr);
+    check(backendEntry != nullptr, "公開境界の対照に実 backend の unwind identity がある");
+    request.progress = [&](auto completed, auto total) {
+        if (completed != total || !backendEntry ||
+            !std::filesystem::exists(request.outputPath.string() + ".mvmtmp"))
+            return false;
+        // avformat は C backend の完了通知より前にファイルを閉じうる。
+        // 通知回数や file handle ではなく、実 C backend の stack 範囲で区別する。
+        void* frames[32]{};
+        const auto count = CaptureStackBackTrace(0, 32, frames, nullptr);
+        for (USHORT i = 0; i < count; ++i) {
+            const auto pc = reinterpret_cast<DWORD64>(frames[i]);
+            if (pc >= backendImage + backendEntry->BeginAddress &&
+                pc < backendImage + backendEntry->EndAddress) {
+                reachedBackendCompletion = true;
+                return false;
+            }
+        }
+        reachedPublication = true;
+        return true;
+    };
+    const auto publicationCancelled = app::exportTimeline(p, request);
+    check(reachedBackendCompletion && reachedPublication && publicationCancelled.cancelled &&
+              publicationCancelled.error == "最終公開前に書き出しを取消しました" &&
+              !std::filesystem::exists(request.outputPath) &&
+              !std::filesystem::exists(request.outputPath.string() + ".mvmtmp"),
+          "公開境界での取消を反映し最終出力と一時出力を残さない");
+    request.progress = {};
+    request.outputPath = root / "publication-blocked.mp4";
+    std::filesystem::create_directory(request.outputPath);
+    {
+        std::ofstream marker(request.outputPath / "preserve.txt");
+        marker << "公開前から存在する内容";
+    }
+    const auto publicationFailed = app::exportTimeline(p, request);
+    check(!publicationFailed.success &&
+              publicationFailed.graphReadiness.failure ==
+                  app::GraphExportFailure::PublicationFailure &&
+              std::filesystem::exists(request.outputPath / "preserve.txt") &&
+              !std::filesystem::exists(request.outputPath.string() + ".mvmtmp"),
+          "実 rename 失敗を型付きで拒否し既存内容を保持する");
+    auto split = p;
+    int nextId = 0;
+    check(project::splitTimelineClips(
+              split, {"graph"}, 4, [&] { return "split-" + std::to_string(++nextId); },
+              project::LinkMode::Single)
+              .success,
+          "Draw 内を正式な Project 編集で split する");
+    request.outputPath = root / "split.mp4";
+    std::set<std::int64_t> splitFrames;
+    request.encoderFrameValidator = [&](auto t, const auto* rgba, int, int) {
+        std::lock_guard lock(mutex);
+        splitFrames.insert(t);
+        const auto source =
+            t == 0 ? test::Pixel{}
+                   : test::Pixel{200, static_cast<std::uint8_t>(t < 10 ? t : 99), 31, 128};
+        const auto expected = test::mltSourceOver({0, 0, 0, 255}, source);
+        return std::equal(expected.begin(), expected.end(), rgba);
+    };
+    check(app::exportTimeline(split, request).success && splitFrames.size() == 12,
+          "split 右側の実 encoder 画素が元の source frame 4 から継続する");
+    auto fractional = p;
+    fractional.timelineFpsNum = 24000;
+    fractional.timelineFpsDen = 1001;
+    fractional.timelineClips[0].sourceFpsNum = 24000;
+    fractional.timelineClips[0].sourceFpsDen = 1001;
+    fractional.timelineClips[0].sourceInFrame = 4;
+    request.fpsNum = 24000;
+    request.fpsDen = 1001;
+    request.outputPath = root / "fractional-trim.mp4";
+    std::set<std::int64_t> fractionFrames;
+    request.encoderFrameValidator = [&](auto t, const auto* rgba, int, int) {
+        std::lock_guard lock(mutex);
+        fractionFrames.insert(t);
+        const auto source = t + 4;
+        const auto expected = test::mltSourceOver(
+            {0, 0, 0, 255}, {200, static_cast<std::uint8_t>(source < 10 ? source : 99), 31, 128});
+        return std::equal(expected.begin(), expected.end(), rgba);
+    };
+    const auto fractionalResult = app::exportTimeline(fractional, request);
+    check(fractionalResult.success && fractionalResult.frameCount == 8 &&
+              fractionFrames.size() == 8,
+          "24000/1001 FPS の trim を実 H.264 の全 source frame と照合する");
 }
 } // namespace
 
