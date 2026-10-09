@@ -236,3 +236,6 @@ mingw-w64-ucrt-x86_64-zvbi 0.2.44-2
 
 # 字幕・文字起こしのVulkan構築に追加した依存
 mingw-w64-ucrt-x86_64-spirv-headers 2~1.4.357.0-1
+
+# clang の依存として導入・退避済み (third_party/pkgs にある) だったが、記録から漏れていた
+mingw-w64-ucrt-x86_64-compiler-rt 22.1.8-2

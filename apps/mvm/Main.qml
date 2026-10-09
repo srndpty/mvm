@@ -346,6 +346,15 @@ ApplicationWindow {
                     }
                 }
             }
+            CompactMenuItem {
+                objectName: "addGraphClipMenuItem"
+                text: "グラフ clip を追加"
+                enabled: !root.mvmController.busy
+                onTriggered: {
+                    if (root.mvmController.createGraphClipFromUi())
+                        root.leftPanelTab = 0;
+                }
+            }
             CompactMenuSeparator {}
             CompactMenuItem {
                 action: exportMediaAction
@@ -1081,6 +1090,12 @@ ApplicationWindow {
                                         visible: root.mvmController.equationEditor.view.clipId !== undefined
                                         mvmController: root.mvmController
                                         editor: root.mvmController.equationEditor
+                                    }
+
+                                    GraphClipInspector {
+                                        Layout.fillWidth: true
+                                        visible: root.mvmController.selectedGraphClip.clipId !== undefined
+                                        mvmController: root.mvmController
                                     }
 
                                     KeyframeInspector {

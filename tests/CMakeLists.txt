@@ -795,6 +795,44 @@ mvm_add_test(long_path_focused
 # --- 数式 clip: renderer の中立な契約と manim-mathtex backend ---------------
 add_executable(mvm_test_project_math harness/test_project_math.cpp)
 add_executable(mvm_test_equation_sequence harness/test_equation_sequence.cpp)
+add_executable(mvm_test_graph_numeric core/test_graph_numeric.cpp)
+target_link_libraries(mvm_test_graph_numeric PRIVATE mvm::graph_numeric mvm::warnings)
+mvm_add_test(graph_numeric COMMAND mvm_test_graph_numeric PROPERTIES TIMEOUT 120)
+
+add_executable(mvm_test_graph_render core/test_graph_render.cpp)
+add_executable(mvm_test_graph_export harness/test_graph_export.cpp)
+add_executable(mvm_test_graph_composition harness/test_graph_composition.cpp)
+target_link_libraries(mvm_test_graph_composition PRIVATE mvm::timeline_export mvm::manim mvm::mlt Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_test_graph_composition PRIVATE ${MVM_MLT_PATH_DEFS})
+foreach(_composition_stage diagnostic oracle differential)
+    add_test(NAME graph_composition_${_composition_stage}
+        COMMAND ${MVM_PWSH} -NoProfile -File "${CMAKE_SOURCE_DIR}/tests/harness/test_graph_composition.ps1"
+            -Executable "$<TARGET_FILE:mvm_test_graph_composition>" -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}"
+            -Stage ${_composition_stage})
+    set_tests_properties(graph_composition_${_composition_stage} PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+endforeach()
+target_link_libraries(mvm_test_graph_export PRIVATE mvm::timeline_export mvm::manim mvm::mlt Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_test_graph_export PRIVATE ${MVM_MLT_PATH_DEFS})
+mvm_add_test(graph_export_focused
+    COMMAND ${MVM_PWSH} -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/harness/test_graph_export.ps1"
+        -Executable "$<TARGET_FILE:mvm_test_graph_export>" -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}"
+    PROPERTIES TIMEOUT 120)
+mvm_add_test(graph_export_encoder_oracle
+    COMMAND ${MVM_PWSH} -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/harness/test_graph_export.ps1"
+        -Executable "$<TARGET_FILE:mvm_test_graph_export>" -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}" -Encode
+    PROPERTIES TIMEOUT 120)
+add_executable(mvm_test_graph_preview_cache harness/test_graph_preview_cache.cpp)
+target_link_libraries(mvm_test_graph_preview_cache PRIVATE mvm::math_raster_cache mvm::warnings)
+mvm_add_test(graph_preview_cache COMMAND mvm_test_graph_preview_cache "${CMAKE_CURRENT_BINARY_DIR}" PROPERTIES TIMEOUT 120)
+target_link_libraries(mvm_test_graph_render PRIVATE mvm::graph_render_compile mvm::graph_manim mvm::warnings)
+mvm_add_test(graph_render_presentation COMMAND mvm_test_graph_render PROPERTIES TIMEOUT 120)
+mvm_add_test(graph_render_artifact
+    COMMAND ${MVM_PWSH} -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/harness/test_graph_artifact.ps1"
+        -Executable "$<TARGET_FILE:mvm_test_graph_render>" -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}"
+    PROPERTIES TIMEOUT 120)
+add_executable(mvm_test_graph_domain harness/test_graph_domain.cpp)
+target_link_libraries(mvm_test_graph_domain PRIVATE mvm::project mvm::warnings)
+mvm_add_test(graph_domain COMMAND mvm_test_graph_domain PROPERTIES TIMEOUT 120)
 target_link_libraries(mvm_test_equation_sequence PRIVATE mvm::project mvm::util mvm::warnings)
 mvm_add_test(math_equation_sequence_domain COMMAND mvm_test_equation_sequence
     PROPERTIES TIMEOUT 30)
@@ -4070,6 +4108,22 @@ add_test(NAME math_inspector_qml
 set_tests_properties(math_inspector_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QUICK_CONTROLS_STYLE=Basic"
     TIMEOUT 30)
+foreach(graph_style Basic Windows)
+    add_test(NAME graph_inspector_qml_${graph_style}
+        COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_graph_inspector.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/graph-inspector-${graph_style}.txt)
+    set_tests_properties(graph_inspector_qml_${graph_style} PROPERTIES TIMEOUT 60
+        ENVIRONMENT_MODIFICATION "QT_QUICK_CONTROLS_STYLE=set:${graph_style}")
+endforeach()
+add_test(NAME graph_inspector_qml_scaled
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+        -Runner ${MVM_QMLTESTRUNNER}
+        -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_graph_inspector.qml
+        -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/graph-inspector-scaled.txt)
+set_tests_properties(graph_inspector_qml_scaled PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION "QT_QUICK_CONTROLS_STYLE=set:Basic;QT_SCALE_FACTOR=set:1.25")
 add_test(NAME math_equation_sequence_inspector_qml
     COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
             -Runner ${MVM_QMLTESTRUNNER}
@@ -4106,6 +4160,16 @@ add_test(NAME audio_mixer_controls_qml
             -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/audio-mixer-qml.txt)
 set_tests_properties(audio_mixer_controls_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QUICK_CONTROLS_STYLE=Basic"
+    ENVIRONMENT_MODIFICATION "QT_QUICK_CONTROLS_STYLE=set:Basic"
+    TIMEOUT 30)
+add_test(NAME audio_mixer_controls_qml_windows
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_audio_mixer.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/audio-mixer-windows-qml.txt)
+set_tests_properties(audio_mixer_controls_qml_windows PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    ENVIRONMENT_MODIFICATION "QT_QUICK_CONTROLS_STYLE=set:Windows"
     TIMEOUT 30)
 
 add_test(NAME audio_mixer_product_ui COMMAND mvm_test_text_ui_input --audio-mixer)
@@ -4187,6 +4251,19 @@ target_link_libraries(mvm_test_math_controller PRIVATE ${_subtitle_controller_li
 target_compile_definitions(mvm_test_math_controller PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_math_controller PROPERTIES WIN32_EXECUTABLE OFF)
 mvm_add_test(math_controller_focused COMMAND mvm_test_math_controller PROPERTIES TIMEOUT 120)
+mvm_add_test(graph_controller_history COMMAND mvm_test_math_controller --graph-domain
+    PROPERTIES TIMEOUT 120)
+qt_add_executable(mvm_test_graph_native_preview harness/test_graph_native_preview.cpp
+    ${_subtitle_controller_sources})
+target_include_directories(mvm_test_graph_native_preview PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_graph_native_preview PRIVATE ${_subtitle_controller_libraries})
+target_compile_definitions(mvm_test_graph_native_preview PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_test_graph_native_preview PROPERTIES WIN32_EXECUTABLE OFF)
+# 再利用した composition の時間依存効果を、seek 無しの実 D3D11 描画で比較する。
+add_test(NAME graph_continuous_effects_native COMMAND mvm_test_graph_native_preview --effects unused --fresh-directory)
+set_tests_properties(graph_continuous_effects_native PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
 mvm_add_test(math_equation_sequence_history COMMAND mvm_test_math_controller --equation-domain
     PROPERTIES TIMEOUT 30)
 # 実 D3D11 の preview で再生し、Write の mask が再生中に届いたときの表示を確かめる。
@@ -4212,6 +4289,12 @@ set_target_properties(mvm_test_equation_preview_controller PROPERTIES WIN32_EXEC
 mvm_add_test(math_equation_sequence_preview_controller
     COMMAND mvm_test_equation_preview_controller PROPERTIES TIMEOUT 180)
 # P3-5: EquationSequence の authoring controller (偽の backend、GPU なし)。
+qt_add_executable(mvm_test_graph_editor harness/test_graph_editor.cpp ${_subtitle_controller_sources})
+target_include_directories(mvm_test_graph_editor PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_graph_editor PRIVATE ${_subtitle_controller_libraries})
+target_compile_definitions(mvm_test_graph_editor PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_test_graph_editor PROPERTIES WIN32_EXECUTABLE OFF)
+mvm_add_test(graph_editor_controller COMMAND mvm_test_graph_editor PROPERTIES TIMEOUT 180)
 qt_add_executable(mvm_test_equation_sequence_editor
     harness/test_equation_sequence_editor.cpp ${_subtitle_controller_sources})
 target_include_directories(mvm_test_equation_sequence_editor PRIVATE
@@ -4234,6 +4317,13 @@ target_compile_definitions(mvm_test_subtitle_controller PRIVATE ${MVM_MLT_PATH_D
 add_test(NAME subtitle_controller_contract COMMAND mvm_test_subtitle_controller)
 add_test(NAME subtitle_native_preview COMMAND mvm_test_subtitle_controller --native)
 set_tests_properties(subtitle_native_preview PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+foreach(graph_case disabled hidden outside absent)
+    add_test(NAME subtitle_native_preview_graph_${graph_case}
+        COMMAND mvm_test_subtitle_controller --native-${graph_case})
+    set_tests_properties(subtitle_native_preview_graph_${graph_case} PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+endforeach()
 set_tests_properties(subtitle_controller_contract PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120 WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 add_dependencies(mvm_subtitle_validation mvm_test_subtitle_controller)
 set_tests_properties(subtitle_controller_contract PROPERTIES LABELS workstation)

@@ -20,16 +20,21 @@
 #include "app/math_clip_render.h"
 #include "app/preview/preview_engine_rhi_item.h"
 #include "app/preview/test_window_mode.h"
+#include "app/text_raster.h"
 #include "equation_sequence_editor.h"
 #include "focus_release_filter.h"
 #include "math_fake_backend.h"
+#include "mlt_rgba_oracle.h"
 #include "mvm_controller.h"
 #include "project/equation_sequence.h"
 #include "project/equation_sequence_edit.h"
+#include "project/graph_edit.h"
 #include "project/project_json.h"
 #include "test_window_focus.h"
 #include "waveform_cache.h"
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -37,10 +42,12 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <QColor>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFile>
@@ -53,6 +60,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QTest>
+#include <QThread>
 #include <QUuid>
 #include <QtQuickTest/quicktest.h>
 
@@ -80,7 +88,11 @@ void check(bool ok, const std::string& message) {
 
 bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs = 10000) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+    while (std::chrono::steady_clock::now() < deadline) {
+        // 成立した観測は追加の event drain で再評価しない。Ready の直後に次の更新が
+        // Seeking を公開すると、成功を観測していたのに false を返してしまう。
+        if (predicate())
+            return true;
         QCoreApplication::processEvents();
         // 手動の event loop でも、一覧の作り直しで deleteLater された delegate を解放する。
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
@@ -121,6 +133,26 @@ struct Session {
         std::map<std::int64_t, std::vector<std::uint8_t>> exportExpected;
         int exportCompared = 0;
         int exportMismatches = 0;
+        bool graphExport = false;
+        std::set<std::int64_t> graphComparedFrames;
+        mvm::test::Pixel graphBackground{0, 0, 0, 255};
+        // P4-5 補遺: 最初の encoder frame で worker を止め、製品の shutdown が出す取消を
+        // その場で観測する。exporting() や出力の不在だけを取消の証拠にしない。
+        bool holdFirstEncoderFrame = false;
+        std::atomic<bool> barrierReached{false};
+        std::atomic<bool> barrierReleased{false};
+        std::atomic<bool> runnerReturned{false};
+        // 保持中に encoder の完了待ち loop が progress で取消を受け取った。
+        std::atomic<bool> cancelPolledWhileHeld{false};
+        std::int64_t barrierFrame = -1;
+        bool barrierFrameValid = false;
+        bool barrierCancelObserved = false;
+        bool preflightConfigured = false;
+        std::thread::id barrierThread;
+        bool runnerSuccess = false;
+        bool runnerCancelled = false;
+        bool runnerGraphCancelled = false;
+        std::string runnerError;
     };
 
     std::shared_ptr<Observation> observation = std::make_shared<Observation>();
@@ -522,6 +554,140 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
         [observation = s->observation](const project::Project& project,
                                        const mvm::app::TimelineExportRequest& request) {
             auto observed = request;
+            if (observation->graphExport) {
+                observed.timeoutMs = 30000;
+                observed.graphFrameObserver = [observation, project,
+                                               request](const std::string& id, std::int64_t frame,
+                                                        const mvm::graph::Raster& raster) {
+                    std::lock_guard lock(observation->mutex);
+                    const auto clip =
+                        std::find_if(project.timelineClips.begin(), project.timelineClips.end(),
+                                     [&](const auto& candidate) { return candidate.id == id; });
+                    if (clip == project.timelineClips.end())
+                        return;
+                    auto compiled = mvm::app::compileGraphRender(
+                        clip->graph, clip->sourceFrameCount, request.width, request.height);
+                    const auto* spec = std::get_if<mvm::graph::GraphRenderSpec>(&compiled);
+                    if (!spec)
+                        return;
+                    // loader の台帳を期待値に使わない。元の clip の有理時刻から直接選ぶ。
+                    const auto numerator =
+                        clip->sourceFpsDen * project.timelineFpsNum * clip->speedDen;
+                    const auto denominator =
+                        clip->sourceFpsNum * project.timelineFpsDen * clip->speedNum;
+                    const auto origin =
+                        (clip->sourceInFrame * numerator + denominator - 1) / denominator;
+                    const auto source = std::min(clip->sourceFrameCount - 1,
+                                                 (origin + frame - clip->timelineStartFrame) *
+                                                     denominator / numerator);
+                    const auto base =
+                        mvm::graph::staticKey(*spec, request.graphEnvironment.toolchain);
+                    const auto key =
+                        spec->drawFrames ? mvm::graph::drawKey(base, spec->drawFrames) : base;
+                    const auto name = source < spec->drawFrames
+                                          ? "frame-" + std::to_string(source) + ".png"
+                                          : "static.png";
+                    const auto decoded = mvm::graph::readRgba(
+                        request.graphEnvironment.cache / key / name, request.width, request.height);
+                    if (const auto* expected = std::get_if<mvm::graph::Raster>(&decoded)) {
+                        observation->exportMismatches += raster.rgba != expected->rgba;
+                        auto composed = expected->rgba;
+                        for (std::size_t at = 0; at < composed.size(); at += 4) {
+                            const auto pixel =
+                                mvm::test::mltSourceOver(observation->graphBackground,
+                                                         {composed[at], composed[at + 1],
+                                                          composed[at + 2], composed[at + 3]},
+                                                         clip->effects.opacityPercent / 100.0);
+                            std::copy(pixel.begin(), pixel.end(),
+                                      composed.begin() + static_cast<std::ptrdiff_t>(at));
+                        }
+                        if (request.burnSubtitles && project.subtitles &&
+                            project.subtitles->visible)
+                            for (const auto& cue : project.subtitles->cues) {
+                                if (frame < cue.startFrame || frame >= cue.endFrame)
+                                    continue;
+                                QString error;
+                                const auto subtitle = mvm::app::renderSubtitleRaster(
+                                                          cue, project.subtitles->style,
+                                                          request.width, request.height, error)
+                                                          .convertToFormat(QImage::Format_RGBA8888);
+                                if (subtitle.isNull())
+                                    return;
+                                for (int y = 0; y < request.height; ++y)
+                                    for (int x = 0; x < request.width; ++x) {
+                                        const auto at =
+                                            static_cast<std::size_t>(y * request.width + x) * 4;
+                                        const auto* pixel = subtitle.constScanLine(y) + x * 4;
+                                        const auto result = mvm::test::mltSourceOver(
+                                            {composed[at], composed[at + 1], composed[at + 2],
+                                             composed[at + 3]},
+                                            {pixel[0], pixel[1], pixel[2], pixel[3]});
+                                        std::copy(result.begin(), result.end(),
+                                                  composed.begin() +
+                                                      static_cast<std::ptrdiff_t>(at));
+                                    }
+                            }
+                        observation->exportExpected[frame] = std::move(composed);
+                    }
+                };
+                observed.encoderFrameValidator = [observation,
+                                                  cancel = request.graphEnvironment.cancel](
+                                                     std::int64_t frame, const std::uint8_t* actual,
+                                                     int width, int height) {
+                    std::unique_lock lock(observation->mutex);
+                    const auto found = observation->exportExpected.find(frame);
+                    if (found == observation->exportExpected.end() ||
+                        found->second.size() != static_cast<std::size_t>(width * height * 4))
+                        return false;
+                    // 最初の encoder frame を独立 oracle で検証した後、lock を外して encoder を
+                    // 保持する。解放条件は、製品の取消 flag を encoder の完了待ち loop が
+                    // progress で受け取ったことだけで、待機時間を合否に使わない。期限は変異で
+                    // 取消が来ない場合に試験を終わらせるためで、consumer の timeout より短い。
+                    const auto holdAtBarrier = [&](bool valid) {
+                        if (!observation->holdFirstEncoderFrame ||
+                            observation->barrierReached.load(std::memory_order_acquire))
+                            return valid;
+                        observation->barrierFrame = frame;
+                        observation->barrierFrameValid = valid;
+                        observation->barrierThread = std::this_thread::get_id();
+                        lock.unlock();
+                        observation->barrierReached.store(true, std::memory_order_release);
+                        const auto deadline =
+                            std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                        while (
+                            !observation->cancelPolledWhileHeld.load(std::memory_order_acquire) &&
+                            std::chrono::steady_clock::now() < deadline)
+                            std::this_thread::yield();
+                        const bool cancelObserved =
+                            cancel && cancel->load(std::memory_order_acquire) &&
+                            observation->cancelPolledWhileHeld.load(std::memory_order_acquire);
+                        lock.lock();
+                        observation->barrierCancelObserved = cancelObserved;
+                        observation->barrierReleased.store(true, std::memory_order_release);
+                        return valid;
+                    };
+                    ++observation->exportCompared;
+                    observation->graphComparedFrames.insert(frame);
+                    for (std::size_t at = 0; at < found->second.size(); at += 4) {
+                        const auto& rgba = found->second;
+                        const mvm::test::Pixel expected{rgba[at], rgba[at + 1], rgba[at + 2],
+                                                        rgba[at + 3]};
+                        for (std::size_t channel = 0; channel < 4; ++channel) {
+                            if (actual[at + channel] != expected[channel] &&
+                                observation->exportMismatches == 0)
+                                std::fprintf(stderr,
+                                             "P4-5: 最初の不一致 frame=%lld pixel=%zu channel=%zu "
+                                             "実値=%u 期待=%u\n",
+                                             static_cast<long long>(frame), at / 4, channel,
+                                             unsigned(actual[at + channel]),
+                                             unsigned(expected[channel]));
+                            observation->exportMismatches +=
+                                actual[at + channel] != expected[channel];
+                        }
+                    }
+                    return holdAtBarrier(observation->exportMismatches == 0);
+                };
+            }
             observed.equationFrameObserver = [observation](const std::string&, std::int64_t frame,
                                                            const std::vector<std::uint8_t>& rgba) {
                 std::lock_guard lock(observation->mutex);
@@ -531,7 +697,33 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
                     observation->exportMismatches += found->second != rgba ? 1 : 0;
                 }
             };
-            return mvm::app::exportTimeline(project, observed);
+            {
+                std::lock_guard lock(observation->mutex);
+                observation->preflightConfigured =
+                    static_cast<bool>(request.graphEnvironment.preflight);
+                if (observation->holdFirstEncoderFrame && request.progress)
+                    observed.progress = [observation, progress = request.progress](
+                                            long long completed, long long total) {
+                        const bool cancelled = progress(completed, total);
+                        if (cancelled &&
+                            observation->barrierReached.load(std::memory_order_acquire) &&
+                            !observation->barrierReleased.load(std::memory_order_acquire))
+                            observation->cancelPolledWhileHeld.store(true,
+                                                                     std::memory_order_release);
+                        return cancelled;
+                    };
+            }
+            auto exported = mvm::app::exportTimeline(project, observed);
+            {
+                std::lock_guard lock(observation->mutex);
+                observation->runnerSuccess = exported.success;
+                observation->runnerCancelled = exported.cancelled;
+                observation->runnerGraphCancelled =
+                    exported.graphReadiness.failure == mvm::app::GraphExportFailure::Cancelled;
+                observation->runnerError = exported.error;
+            }
+            observation->runnerReturned.store(true, std::memory_order_release);
+            return exported;
         },
         MvmController::ExportThreadFactory{},
         [](const std::filesystem::path&, QString&) { return true; });
@@ -575,8 +767,14 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
     s->window->setProperty("leftPanelWidth", 520);
     const bool ready = pumpUntil([&] { return s->controller->previewReady(); }, 30000);
     check(ready, "製品 UI: preview の初期化: " + s->controller->statusText().toStdString());
-    if (!ready)
+    if (!ready) {
+        const auto native = s->controller->previewEngineForTest()->status();
+        std::fprintf(stderr, "初期化診断: engine state=%d accepted=%d presented=%d\n",
+                     static_cast<int>(native.state),
+                     native.latestAcceptedDesiredComposition.has_value(),
+                     native.lastPresentedComposition.has_value());
         return nullptr;
+    }
     s->controller->setEquationPreviewObserverForTest(
         [observation = s->observation](const std::string&, std::int64_t frame,
                                        const std::optional<mvm::app::EquationPreviewTime>&,
@@ -890,7 +1088,7 @@ int quadraticWorkflow(const std::filesystem::path& path) {
     s->close();
     s.reset();
     const auto loaded = project::loadProjectJson(path);
-    check(loaded.success && loaded.project.schemaVersion == 21,
+    check(loaded.success && loaded.project.schemaVersion == project::kProjectSchemaVersion,
           "再読込: schema 21: " + loaded.error);
     if (!loaded.success)
         return 1;
@@ -1408,6 +1606,688 @@ int longContent(const std::filesystem::path& directory) {
     return 0;
 }
 } // namespace
+
+int runGraphAuthoringUi(const std::filesystem::path& directory, const std::filesystem::path& manim,
+                        bool exportAcceptance) {
+    if (std::filesystem::exists(directory))
+        return 2;
+    std::filesystem::create_directories(directory);
+    evidence = directory;
+    const auto path = directory / L"graph.mvm";
+    bool observedReady = true;
+    QMetaObject::invokeMethod(
+        QCoreApplication::instance(), [&] { observedReady = false; }, Qt::QueuedConnection);
+    check(pumpUntil([&] { return observedReady; }),
+          "Graph: 成立した待機条件を次の更新で失敗へ反転させない");
+    QCoreApplication::processEvents();
+    check(!observedReady, "Graph: 待機の負例が次の更新を実際に配送した");
+    auto initial = project::createDefaultProject();
+    initial.outputWidth = 320;
+    initial.outputHeight = 180;
+    check(project::saveProjectJson(initial, path).success, "Graph: 空の Project の準備");
+    qputenv("MVM_P36_REAL_MANIM", QByteArray::fromStdString(manim.string()));
+    auto s = open(path, initial);
+    if (!s)
+        return 4;
+    auto* entry = s->window->findChild<QObject*>(QStringLiteral("addGraphClipMenuItem"));
+    const auto depth = s->controller->undoDepthForTest();
+    check(entry && QMetaObject::invokeMethod(entry, "triggered"), "Graph: 実際の作成メニュー");
+    pump(100);
+    check(s->controller->selectedGraphClip().contains("clipId") &&
+              s->controller->undoDepthForTest() == depth + 1,
+          "Graph: 一回の作成と選択");
+    const auto input = [&](const QString& key, const std::string& text) {
+        auto* field = s->find(QStringLiteral("graphField_") + key);
+        if (!field || !s->reach(field)) {
+            check(false, "Graph: 編集欄への到達 " + key.toStdString());
+            return false;
+        }
+        QTest::mouseClick(s->window, Qt::LeftButton, {}, s->center(field));
+        s->key(Qt::Key_A, Qt::ControlModifier);
+        s->type(text);
+        const bool typed = field->property("text").toString() == QString::fromStdString(text);
+        check(typed, "Graph: キー入力 " + key.toStdString());
+        if (!typed)
+            return false;
+        s->key(Qt::Key_Return);
+        pump(50);
+        return true;
+    };
+    check(input("yMax", "25"), "Graph: viewport の入力");
+    check(input("label", "f_1"), "Graph: 表示ラベル");
+    check(input("color", "#80FF6655"), "Graph: 半透明色");
+    check(s->click("graphAddFunction"), "Graph: 関数を追加");
+    pump(50);
+    auto functions = s->controller->selectedGraphClip().value("functions").toList();
+    if (functions.size() != 2) {
+        s->close();
+        return 1;
+    }
+    const auto second = functions[1].toMap().value("id").toString();
+    check(s->click("graphFunction_" + second) && input("expression", "2*x+1") &&
+              input("color", "#FF55FF66"),
+          "Graph: 二番目を ID で選び編集");
+    check(s->click("graphAddFunction"), "Graph: 三番目の追加");
+    pump(50);
+    functions = s->controller->selectedGraphClip().value("functions").toList();
+    if (functions.size() != 3) {
+        s->close();
+        return 1;
+    }
+    const auto third = functions[2].toMap().value("id").toString();
+    check(s->click("graphFunction_" + third) && input("expression", "sin(x)") &&
+              input("color", "#FF5577FF"),
+          "Graph: 三番目の式と色");
+    const int drawFrames = exportAcceptance ? 10 : 3;
+    check(s->click("graphDraw") && input("frames", std::to_string(drawFrames)),
+          "Graph: Draw frame の確定");
+    const auto clipId = s->controller->selectedGraphClip().value("clipId").toString();
+    check(
+        pumpUntil([&] { return s->controller->graphStatusFromUi(clipId).value("ready").toBool(); },
+                  180000),
+        "Graph: 実 Manim の現在 artifact と resident frame が Ready");
+    if (exportAcceptance)
+        check(s->controller->trimClip(clipId, QStringLiteral("right"), -276, false),
+              "P4-5: 製品 timeline の trim で受け入れ区間を 24 frame に確定する");
+    s->shot("graph-ready");
+    check(s->controller->saveProject(), "Graph: 製品保存");
+    const auto saved = s->project();
+    s->close();
+    // UI で確定した同じ Project を原寸の native surface で描く。期待値は検証済み PNG の
+    // straight RGBA に独立の整数式で黒背景を合成し、全画素を比較する。
+    {
+        MvmController nativeController(path, manim, saved);
+        QQuickWindow nativeWindow;
+        nativeWindow.setFlags(mvm::app::testBackgroundWindowFlags());
+        mvm::app::applyTestFixedWindow(nativeWindow);
+        nativeWindow.resize(320, 180);
+        auto* surface = new mvm::app::PreviewEngineRhiItem(nativeWindow.contentItem());
+        surface->setWidth(320);
+        surface->setHeight(180);
+        nativeController.attachPreview(surface);
+        nativeWindow.show();
+        check(pumpUntil([&] { return nativeController.previewReady(); }, 30000),
+              "Graph: UI で確定した Project の native 初期化");
+        QString isolation;
+        check(mvm::test::isolatedFromUserInput(&nativeWindow, isolation),
+              "Graph: 原寸比較も利用者の操作から隔離する");
+        for (int frame : {2, 0, 1, 3, 10}) {
+            bool accepted = false;
+            check(pumpUntil([&] {
+                      if (!accepted)
+                          accepted = nativeController.seekTimelineFrame(frame);
+                      return accepted;
+                  }),
+                  "Graph: Draw の非単調 seek");
+            check(pumpUntil(
+                      [&] {
+                          return nativeController.graphPreviewStatus(clipId.toStdString(), frame)
+                                     .frameAvailable &&
+                                 nativeController.previewPresentedLatest();
+                      },
+                      180000),
+                  "Graph: 現在 frame の native 提示");
+            const auto status = nativeController.graphPreviewStatus(clipId.toStdString(), frame);
+            const auto png =
+                directory / L"cache" / L"graph" / L"graph.mvm" / status.key.toStdWString() /
+                (frame < drawFrames ? "frame-" + std::to_string(frame) + ".png" : "static.png");
+            const auto decoded = mvm::graph::readRgba(png, 320, 180);
+            check(std::holds_alternative<mvm::graph::Raster>(decoded), "Graph: 期待値 PNG の読込");
+            if (const auto* raster = std::get_if<mvm::graph::Raster>(&decoded)) {
+                const auto image =
+                    nativeWindow.grabWindow().convertToFormat(QImage::Format_RGBA8888);
+                int mismatches = 0;
+                if (image.size() != QSize(320, 180))
+                    mismatches = 320 * 180;
+                else
+                    for (int y = 0; y < 180; ++y) {
+                        const auto* actual = image.constScanLine(y);
+                        for (int x = 0; x < 320; ++x) {
+                            const auto at = static_cast<std::size_t>(y * 320 + x) * 4;
+                            bool mismatch = actual[x * 4 + 3] != 255;
+                            for (int c = 0; c < 3; ++c) {
+                                const auto expected =
+                                    (raster->rgba[at + static_cast<std::size_t>(c)] *
+                                         raster->rgba[at + 3] +
+                                     127) /
+                                    255;
+                                mismatch = mismatch || actual[x * 4 + c] != expected;
+                            }
+                            mismatches += mismatch;
+                        }
+                    }
+                check(mismatches == 0,
+                      "Graph: native 全画素の独立 RGBA 比較 frame=" + std::to_string(frame) +
+                          " 不一致=" + std::to_string(mismatches));
+                image.save(QString::fromStdWString(
+                    (directory / ("native-" + std::to_string(frame) + ".png")).wstring()));
+            }
+        }
+        nativeController.shutdown();
+    }
+    const auto loaded = project::loadProjectJson(path);
+    check(loaded.success && loaded.project.timelineClips == saved.timelineClips,
+          "Graph: 保存した全データと ID の一致");
+    s = open(path, loaded.project);
+    if (!s)
+        return 4;
+    check(s->controller->selectClip(0), "Graph: 再起動後の選択");
+    pump(100);
+    const auto exportProduct = [&](const std::filesystem::path& output, bool expectedSuccess = true,
+                                   bool oracle = true, int stopMode = 0) {
+        const auto snapshot = s->project();
+        const auto duration = project::timelineEndFrame(snapshot);
+        {
+            std::lock_guard lock(s->observation->mutex);
+            s->observation->graphExport = oracle;
+            s->observation->exportExpected.clear();
+            s->observation->graphComparedFrames.clear();
+            s->observation->exportCompared = s->observation->exportMismatches = 0;
+            s->observation->holdFirstEncoderFrame = stopMode == 3;
+            s->observation->barrierReached.store(false);
+            s->observation->barrierReleased.store(false);
+            s->observation->runnerReturned.store(false);
+            s->observation->cancelPolledWhileHeld.store(false);
+            s->observation->barrierFrame = -1;
+            s->observation->barrierFrameValid = s->observation->barrierCancelObserved = false;
+            s->observation->barrierThread = {};
+        }
+        auto* dialog = s->window->findChild<QObject*>(QStringLiteral("exportFileDialog"));
+        check(dialog &&
+                  dialog->setProperty("selectedFile", QUrl::fromLocalFile(QString::fromStdWString(
+                                                          output.wstring()))) &&
+                  QMetaObject::invokeMethod(dialog, "accepted"),
+              "P4-5: 保存再読込した Graph の製品書き出し設定を開く");
+        pump(100);
+        auto* button = s->find(QStringLiteral("exportAcceptButton"));
+        // 失敗を期待するだけでは、開始前の no-op 取消や別理由の失敗が通る。
+        // 取消と終了は、worker 開始後の status 遷移を同期的に記録して区別する。
+        std::vector<QString> observedStatuses;
+        QMetaObject::Connection statusWatch;
+        if (stopMode != 0)
+            statusWatch = QObject::connect(s->controller.get(), &MvmController::stateChanged, [&] {
+                observedStatuses.push_back(s->controller->statusText());
+            });
+        if (button)
+            QTest::mouseClick(s->window, Qt::LeftButton, {}, s->center(button));
+        bool exportStarted = s->controller->exporting();
+        if (stopMode != 0 && !exportStarted)
+            exportStarted = pumpUntil([&] { return s->controller->exporting(); }, 15000);
+        check(button && (stopMode == 0 ? exportStarted || !expectedSuccess : exportStarted),
+              "P4-5: 製品の書き出すボタン");
+        if (stopMode == 1 && exportStarted) {
+            s->controller->cancelTimelineExport();
+            observedStatuses.push_back(s->controller->statusText());
+        }
+        if (stopMode == 2 && exportStarted)
+            s->controller->shutdown();
+        // stopMode 3: 最初の encoder frame で保持した worker に対して、controller を所有する
+        // thread から製品の shutdown を呼ぶ。
+        bool activeShutdownProven = false;
+        QJsonObject activeShutdown;
+        if (stopMode == 3) {
+            const bool reached =
+                exportStarted &&
+                pumpUntil([&] { return s->observation->barrierReached.load(); }, 60000);
+            bool frameValid = false;
+            std::int64_t frame = -1;
+            bool workerThread = false;
+            bool preflight = false;
+            {
+                std::lock_guard lock(s->observation->mutex);
+                frameValid = s->observation->barrierFrameValid;
+                frame = s->observation->barrierFrame;
+                workerThread = s->observation->barrierThread != std::thread::id{} &&
+                               s->observation->barrierThread != std::this_thread::get_id();
+                preflight = s->observation->preflightConfigured;
+            }
+            check(reached && frame == 0 && frameValid && preflight && workerThread,
+                  "P4-5 補遺: preflight と compile を通り、独立 oracle で一致した最初の encoder "
+                  "frame で worker を保持する");
+            const bool ownerThread = QThread::currentThread() == s->controller->thread();
+            const bool heldBeforeShutdown = reached && !s->observation->barrierReleased.load() &&
+                                            !s->observation->runnerReturned.load() &&
+                                            s->controller->exporting();
+            check(ownerThread && heldBeforeShutdown,
+                  "P4-5 補遺: 保持中の worker に controller の所有 thread から shutdown する");
+            int failureNotifications = 0;
+            const auto failureWatch =
+                QObject::connect(s->controller.get(), &MvmController::exportFailed,
+                                 [&](const QString&) { ++failureNotifications; });
+            if (reached)
+                s->controller->shutdown();
+            const auto statusesAtShutdown = observedStatuses.size();
+            const auto statusAtShutdown = s->controller->statusText();
+            bool cancelObserved = false;
+            bool runnerCancelled = false;
+            bool runnerSuccess = true;
+            bool graphCancelled = false;
+            QString runnerError;
+            {
+                std::lock_guard lock(s->observation->mutex);
+                cancelObserved = s->observation->barrierCancelObserved;
+                runnerCancelled = s->observation->runnerCancelled;
+                runnerSuccess = s->observation->runnerSuccess;
+                graphCancelled = s->observation->runnerGraphCancelled;
+                runnerError = QString::fromStdString(s->observation->runnerError);
+            }
+            // shutdown の join が戻った時点で worker は runner を返し、完了の queued 呼出を
+            // 投函し終えている。後から投函した marker が届けば、その完了呼出も配送済みである。
+            const bool lifetimeResolved = reached && s->observation->barrierReleased.load() &&
+                                          s->observation->runnerReturned.load() &&
+                                          !s->controller->exporting() && !s->controller->busy();
+            check(reached && cancelObserved && runnerCancelled && !runnerSuccess &&
+                      graphCancelled && lifetimeResolved,
+                  "P4-5 補遺: encoder の保持中に shutdown の取消を完了待ち loop が観測し、join "
+                  "で寿命を解決する");
+            bool markerDelivered = false;
+            QMetaObject::invokeMethod(
+                s->controller.get(), [&] { markerDelivered = true; }, Qt::QueuedConnection);
+            const bool drained = pumpUntil([&] { return markerDelivered; });
+            QObject::disconnect(failureWatch);
+            const bool noStaleCompletion =
+                drained && observedStatuses.size() == statusesAtShutdown &&
+                s->controller->statusText() == statusAtShutdown && failureNotifications == 0;
+            check(reached && noStaleCompletion,
+                  "P4-5 補遺: shutdown 後に stale な完了通知を出さない");
+            activeShutdownProven = reached && frame == 0 && frameValid && preflight &&
+                                   workerThread && ownerThread && heldBeforeShutdown &&
+                                   cancelObserved && runnerCancelled && !runnerSuccess &&
+                                   graphCancelled && lifetimeResolved && noStaleCompletion;
+            QJsonArray afterShutdown;
+            for (auto i = statusesAtShutdown; i < observedStatuses.size(); ++i)
+                afterShutdown.append(observedStatuses[i]);
+            activeShutdown =
+                QJsonObject{{"barrierReached", reached},
+                            {"barrierFrame", static_cast<qint64>(frame)},
+                            {"barrierFrameOracleMatched", frameValid},
+                            {"preflightConfigured", preflight},
+                            {"barrierOffOwnerThread", workerThread},
+                            {"shutdownOnOwnerThread", ownerThread},
+                            {"heldBeforeShutdown", heldBeforeShutdown},
+                            {"cancelObservedAtBarrier", cancelObserved},
+                            {"runnerCancelled", runnerCancelled},
+                            {"runnerSuccess", runnerSuccess},
+                            {"graphReadinessCancelled", graphCancelled},
+                            {"runnerError", runnerError},
+                            {"lifetimeResolved", lifetimeResolved},
+                            {"queuedCompletionDrained", drained},
+                            {"statusesAfterShutdown", afterShutdown},
+                            {"failureNotificationsAfterShutdown", failureNotifications}};
+        }
+        const bool completed = (stopMode == 0 || exportStarted) &&
+                               pumpUntil([&] { return !s->controller->exporting(); }, 60000);
+        if (statusWatch)
+            QObject::disconnect(statusWatch);
+        const auto sawStatus = [&](const QString& text) {
+            return std::find(observedStatuses.cbegin(), observedStatuses.cend(), text) !=
+                   observedStatuses.cend();
+        };
+        const bool stopProven =
+            stopMode == 0 ||
+            (stopMode == 1 && sawStatus(QStringLiteral("書き出しをキャンセルしました"))) ||
+            (stopMode == 2 && sawStatus(QStringLiteral("書き出しています…")) &&
+             !s->controller->exporting()) ||
+            (stopMode == 3 && activeShutdownProven);
+        if (stopMode != 0 && !stopProven) {
+            std::fprintf(stderr, "P4-5: 停止の観測が不足:");
+            for (const auto& text : observedStatuses)
+                std::fprintf(stderr, " [%s]", text.toUtf8().constData());
+            std::fprintf(stderr, "\n");
+        }
+        check(completed && std::filesystem::exists(output) == expectedSuccess && stopProven,
+              "P4-5: 実 Manim の Graph を製品 H.264 へ公開: " +
+                  s->controller->statusText().toStdString());
+        QJsonObject exportResult{{"successExpected", expectedSuccess},
+                                 {"completed", completed},
+                                 {"outputExists", std::filesystem::exists(output)},
+                                 {"stopProven", stopProven},
+                                 {"status", s->controller->statusText()}};
+        if (stopMode != 0) {
+            QJsonArray observed;
+            for (const auto& text : observedStatuses)
+                observed.append(text);
+            exportResult.insert(QStringLiteral("observedStatuses"), observed);
+        }
+        if (stopMode == 3)
+            exportResult.insert(QStringLiteral("activeShutdown"), activeShutdown);
+        if (!expectedSuccess) {
+            check(!std::filesystem::exists(output.wstring() + L".mvmtmp"),
+                  "P4-5: 製品の失敗・取消・終了で一時出力を残さない");
+            QFile resultFile(QString::fromStdWString((output.wstring() + L".result.json")));
+            if (resultFile.open(QIODevice::WriteOnly))
+                resultFile.write(QJsonDocument(exportResult).toJson());
+            if (stopMode == 0) {
+                pump(100);
+                bool closed = false;
+                for (auto* failureDialog : s->window->findChildren<QObject*>()) {
+                    if (failureDialog->property("title").toString() !=
+                            QStringLiteral("書き出しに失敗しました") ||
+                        !failureDialog->property("visible").toBool())
+                        continue;
+                    for (auto* closeButton : failureDialog->findChildren<QQuickItem*>()) {
+                        if (closeButton->property("text").toString() != QStringLiteral("OK"))
+                            continue;
+                        QTest::mouseClick(s->window, Qt::LeftButton, {}, s->center(closeButton));
+                        closed =
+                            pumpUntil([&] { return !failureDialog->property("visible").toBool(); });
+                        break;
+                    }
+                    break;
+                }
+                check(closed, "P4-5: 製品の失敗ダイアログの OK を押して修復へ戻る");
+            }
+            return;
+        }
+        if (oracle) {
+            std::lock_guard lock(s->observation->mutex);
+            check(s->observation->exportCompared > 3 && s->observation->exportMismatches == 0 &&
+                      s->observation->graphComparedFrames.size() ==
+                          s->observation->exportExpected.size(),
+                  "P4-5: 実 artifact の全出力 frame を独立 MLT 7.36.1 oracle と完全比較");
+            std::fprintf(stderr, "P4-5: 比較 frame=%d staged=%zu 不一致 channel=%d\n",
+                         s->observation->exportCompared, s->observation->exportExpected.size(),
+                         s->observation->exportMismatches);
+            exportResult.insert("comparedCalls", s->observation->exportCompared);
+            exportResult.insert("mismatches", s->observation->exportMismatches);
+            QJsonArray identities;
+            for (const auto frame : s->observation->graphComparedFrames)
+                identities.append(static_cast<qint64>(frame));
+            exportResult.insert("comparedFrames", identities);
+        }
+        QFile resultFile(QString::fromStdWString((output.wstring() + L".result.json")));
+        if (resultFile.open(QIODevice::WriteOnly))
+            resultFile.write(QJsonDocument(exportResult).toJson());
+        QProcess decoder;
+        decoder.start(
+            QStringLiteral("C:/msys64/ucrt64/bin/ffmpeg.exe"),
+            {"-v", "error", "-i", QString::fromStdWString(output.wstring()), "-f", "null", "-"});
+        check(decoder.waitForFinished(30000) && decoder.exitCode() == 0,
+              "P4-5: 製品 H.264 の全 frame を復号");
+        QProcess probe;
+        probe.start(QStringLiteral("C:/msys64/ucrt64/bin/ffprobe.exe"),
+                    {"-v", "error", "-select_streams", "v:0", "-count_frames", "-show_frames",
+                     "-show_entries",
+                     "stream=codec_name,width,height,r_frame_rate,nb_read_frames,time_base:frame="
+                     "best_effort_timestamp",
+                     "-of", "json", QString::fromStdWString(output.wstring())});
+        check(probe.waitForFinished(30000) && probe.exitCode() == 0,
+              "P4-5: 製品出力の frame 数と有理 timestamp を取得する");
+        const auto probeBytes = probe.readAllStandardOutput();
+        QFile probeEvidence(QString::fromStdWString((output.wstring() + L".probe.json")));
+        if (probeEvidence.open(QIODevice::WriteOnly))
+            probeEvidence.write(probeBytes);
+        const auto info = QJsonDocument::fromJson(probeBytes).object();
+        const auto streams = info.value("streams").toArray();
+        const auto frames = info.value("frames").toArray();
+        check(duration.success && streams.size() == 1 && frames.size() == duration.frame &&
+                  streams[0].toObject().value("codec_name").toString() == QStringLiteral("h264") &&
+                  streams[0].toObject().value("r_frame_rate").toString() ==
+                      QString::number(snapshot.timelineFpsNum) + "/" +
+                          QString::number(snapshot.timelineFpsDen),
+              "P4-5: 実 MP4 の H.264・FPS・frame 数が一致する");
+        if (streams.size() == 1) {
+            const auto timeBase = streams[0].toObject().value("time_base").toString().split('/');
+            bool timestamps =
+                timeBase.size() == 2 && duration.success && frames.size() == duration.frame;
+            if (timeBase.size() == 2)
+                for (qsizetype frame = 0; frame < frames.size(); ++frame)
+                    timestamps =
+                        timestamps &&
+                        frames[frame].toObject().value("best_effort_timestamp").toInteger(-1) *
+                                timeBase[0].toLongLong() * snapshot.timelineFpsNum ==
+                            frame * timeBase[1].toLongLong() * snapshot.timelineFpsDen;
+            check(timestamps, "P4-5: 全出力 timestamp を整数の有理式で検査する");
+        }
+    };
+    if (exportAcceptance)
+        exportProduct(directory / L"graph-reopened.mp4");
+    check(input("expression", "sin("), "Graph: 不正原文を UI から保存");
+    check(s->controller->saveProject(), "Graph: 不正原文の製品保存");
+    const auto invalid = project::loadProjectJson(path);
+    check(invalid.success &&
+              invalid.project.timelineClips[0].graph.functions[0].expression == "sin(",
+          "Graph: 不正原文の再読込");
+    s->close();
+    s = open(path, invalid.project);
+    if (!s)
+        return 4;
+    check(s->controller->selectClip(0), "Graph: 不正原文の Project を再起動して選ぶ");
+    pump(100);
+    const auto invalidState = s->project();
+    if (exportAcceptance)
+        exportProduct(directory / L"visible-invalid.mp4", false);
+    check(input("expression", "x^2"), "Graph: 式の修復");
+    const auto repaired = s->project();
+    const auto firstId = repaired.timelineClips[0].graph.functions[0].id.value;
+    check(s->click("graphFunction_" + QString::fromStdString(firstId)),
+          "Graph: 確定欄から関数選択へ移る");
+    s->key(Qt::Key_Z, Qt::ControlModifier);
+    check(s->project() == invalidState, "Graph: 製品 Undo shortcut で原文と ID を戻す");
+    s->key(Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+    check(s->project() == repaired, "Graph: 製品 Redo shortcut で修復と ID を戻す");
+    if (exportAcceptance) {
+        check(s->controller->saveProject(), "P4-5: 修復した原文を製品保存する");
+        s->close();
+        const auto reopened = project::loadProjectJson(path);
+        check(reopened.success && reopened.project == repaired,
+              "P4-5: 修復を schema22 から完全に再読込する");
+        s = open(path, reopened.project);
+        if (!s)
+            return 4;
+        check(s->controller->selectClip(0), "P4-5: 修復再読込後の Graph を選ぶ");
+        pump(100);
+        exportProduct(directory / L"repaired-reopened.mp4");
+        const auto status = s->controller->graphPreviewStatus(clipId.toStdString(), 0);
+        const auto framePath = directory / L"cache" / L"graph" / L"graph.mvm" /
+                               status.key.toStdWString() / L"frame-4.png";
+        const auto originalPath = directory / L"original-draw-frame-4.png";
+        check(!status.key.isEmpty() && std::filesystem::exists(framePath),
+              "P4-5: 現在 key の実 Draw frame を検査する");
+        if (!status.key.isEmpty() && std::filesystem::exists(framePath)) {
+            std::filesystem::copy_file(framePath, originalPath);
+            auto decoded = mvm::graph::readRgba(framePath, 320, 180);
+            if (auto* raster = std::get_if<mvm::graph::Raster>(&decoded)) {
+                for (std::size_t at = 0; at < raster->rgba.size(); at += 4)
+                    if (raster->rgba[at + 3] != 0) {
+                        raster->rgba[at] ^= 1;
+                        break;
+                    }
+                check(mvm::graph::writeRgba(framePath, *raster),
+                      "P4-5: decoder が読める実 artifact の SHA 破損を作る");
+                exportProduct(directory / L"corrupt-artifact.mp4", false);
+                std::filesystem::copy_file(originalPath, framePath,
+                                           std::filesystem::copy_options::overwrite_existing);
+                check(std::filesystem::remove(framePath), "P4-5: 必要な実 Draw frame の欠損を作る");
+                exportProduct(directory / L"missing-artifact.mp4", false);
+                std::filesystem::copy_file(originalPath, framePath);
+            } else
+                check(false, "P4-5: 破損対照を作る前の実 PNG が読める");
+        }
+    }
+    for (const auto& size : {QSize(520, 900), QSize(300, 900), QSize(520, 480), QSize(300, 480)}) {
+        s->window->setProperty("leftPanelWidth", size.width());
+        s->window->resize(1280, size.height());
+        pump(100);
+        for (const auto& name : {"graphAddFunction", "graphDeleteFunction", "graphMoveFunctionUp",
+                                 "graphField_expression", "graphField_color", "graphField_frames"})
+            check(s->reach(s->find(QString::fromLatin1(name))),
+                  "Graph: 低い/狭い panel の操作到達");
+        s->shot("graph-layout-" + std::to_string(size.width()) + "-" +
+                std::to_string(size.height()));
+    }
+    bool seekAccepted = false;
+    check(pumpUntil([&] {
+              if (!seekAccepted)
+                  seekAccepted = s->controller->seekTimelineFrame(1);
+              return seekAccepted;
+          }),
+          "Graph: Draw 内の split 位置へ seek");
+    check(s->click("graphFunction_" + QString::fromStdString(firstId)),
+          "Graph: split 前の focus を編集欄から外す");
+    const auto beforeSplit = s->project();
+    s->key(Qt::Key_K, Qt::ControlModifier);
+    const auto split = s->project();
+    check(split.timelineClips.size() == 2, "Graph: 製品 split shortcut で二つに分割");
+    const auto right = std::find_if(split.timelineClips.begin(), split.timelineClips.end(),
+                                    [](const auto& clip) { return clip.sourceInFrame == 1; });
+    if (right != split.timelineClips.end()) {
+        std::string error;
+        const auto frame = project::evaluateGraphClip(*right, {60, 1}, 0, error);
+        check(frame && frame->sourceFrame == 1 && frame->progressNumerator == 1 &&
+                  frame->progressDenominator == drawFrames,
+              "Graph: UI split の右側は Draw を最初から始めない");
+        check(right->graph.functions[0].id.value != firstId,
+              "Graph: UI split の右側で所有 ID を remap");
+    } else
+        check(false, "Graph: split の右側が存在する");
+    s->key(Qt::Key_Z, Qt::ControlModifier);
+    check(s->project() == beforeSplit, "Graph: UI split の Undo 完全一致");
+    s->key(Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+    check(s->project() == split, "Graph: UI split の Redo 完全一致");
+    if (exportAcceptance) {
+        exportProduct(directory / L"graph-split.mp4");
+        s->window->contentItem()->forceActiveFocus();
+        s->key(Qt::Key_Z, Qt::ControlModifier);
+        check(s->controller->trimClip(clipId, QStringLiteral("left"), 4, false) &&
+                  s->controller->moveTimelineClip(clipId, QStringLiteral("video"), 0, 0, false),
+              "P4-5: 製品 trim と移動で元の source frame 4 を先頭にする");
+        exportProduct(directory / L"graph-trim.mp4");
+        check(s->controller->setTimelineFrameRate(24000, 1001),
+              "P4-5: 製品で fractional FPS を確定する");
+        exportProduct(directory / L"graph-fractional.mp4");
+        check(s->controller->setTimelineFrameRate(60, 1) &&
+                  s->controller->moveTimelineClip(clipId, QStringLiteral("video"), 1, 0, false),
+              "P4-5: 実映像の上へ Graph を置く");
+        const auto backgroundPath = directory / L"background.png";
+        QImage background(320, 180, QImage::Format_RGBA8888);
+        background.fill(QColor(20, 40, 60));
+        check(background.save(QString::fromStdWString(backgroundPath.wstring())),
+              "P4-5: 独立した既知 RGB の動画入力を作る");
+        const auto video = directory / L"background.mkv";
+        const auto audio = directory / L"tone.wav";
+        const auto ffmpeg = [&](const QStringList& arguments) {
+            QProcess process;
+            process.start(QStringLiteral("C:/msys64/ucrt64/bin/ffmpeg.exe"), arguments);
+            return process.waitForFinished(30000) && process.exitCode() == 0;
+        };
+        check(ffmpeg({"-v", "error", "-loop", "1", "-framerate", "60", "-i",
+                      QString::fromStdWString(backgroundPath.wstring()), "-frames:v", "20", "-c:v",
+                      "ffv1", "-pix_fmt", "bgr0", QString::fromStdWString(video.wstring())}) &&
+                  ffmpeg({"-v", "error", "-f", "lavfi", "-i",
+                          "sine=frequency=440:sample_rate=48000", "-t", "0.333333333333", "-c:a",
+                          "pcm_s16le", QString::fromStdWString(audio.wstring())}),
+              "P4-5: 実 FFV1 映像と PCM 音声を生成する");
+        check(
+            s->controller->addMediaFilesToTimelineAt(
+                {QUrl::fromLocalFile(QString::fromStdWString(video.wstring()))}, "video", 0, 0) &&
+                s->controller->addMediaFilesToTimelineAt(
+                    {QUrl::fromLocalFile(QString::fromStdWString(audio.wstring()))}, "audio", 0, 0),
+            "P4-5: 製品の素材配置経路で映像と音声を載せる");
+        check(s->controller->addSubtitle(QStringLiteral("共存"), 0, 20) &&
+                  s->controller->setClipEffectValues(clipId, {{"opacity", 50}}, true),
+              "P4-5: 字幕と Graph の通常 ClipEffects を確定する");
+        s->observation->graphBackground = {20, 40, 60, 255};
+        const auto coexist = directory / L"graph-coexist.mp4";
+        exportProduct(coexist);
+        check(s->controller->toggleTimelineClipEnabled(clipId),
+              "P4-5: 音声対照で Graph を非出力にする");
+        int graphIndex = -1;
+        for (std::size_t i = 0; i < s->project().timelineClips.size(); ++i)
+            if (s->project().timelineClips[i].id == clipId.toStdString())
+                graphIndex = static_cast<int>(i);
+        if (graphIndex >= 0)
+            s->controller->selectClip(graphIndex);
+        pump(100);
+        check(graphIndex >= 0 &&
+                  s->controller->selectedGraphClip().value("clipId").toString() == clipId &&
+                  input("expression", "sin("),
+              "P4-5: 非出力の Graph に不正原文を残す");
+        const auto baseline = directory / L"audio-baseline.mp4";
+        exportProduct(baseline, true, false);
+        const auto pcmGraph = directory / L"graph-audio.pcm";
+        const auto pcmBaseline = directory / L"baseline-audio.pcm";
+        check(ffmpeg({"-v", "error", "-i", QString::fromStdWString(coexist.wstring()), "-map",
+                      "0:a:0", "-f", "f32le", QString::fromStdWString(pcmGraph.wstring())}) &&
+                  ffmpeg({"-v", "error", "-i", QString::fromStdWString(baseline.wstring()), "-map",
+                          "0:a:0", "-f", "f32le", QString::fromStdWString(pcmBaseline.wstring())}),
+              "P4-5: 共存出力と Graph なし対照の実 AAC を PCM に復号する");
+        QFile graphAudio(QString::fromStdWString(pcmGraph.wstring()));
+        QFile baselineAudio(QString::fromStdWString(pcmBaseline.wstring()));
+        check(graphAudio.open(QIODevice::ReadOnly) && baselineAudio.open(QIODevice::ReadOnly) &&
+                  graphAudio.size() > 48000 && graphAudio.readAll() == baselineAudio.readAll(),
+              "P4-5: Graph が実音声の PCM を一 byte も変えない");
+        check(s->controller->toggleTimelineClipEnabled(clipId), "P4-5: Graph の出力を戻す");
+        int enabledIndex = -1;
+        const auto enabledProject = s->project();
+        for (std::size_t i = 0; i < enabledProject.timelineClips.size(); ++i)
+            if (enabledProject.timelineClips[i].id == clipId.toStdString())
+                enabledIndex = static_cast<int>(i);
+        if (enabledIndex >= 0)
+            s->controller->selectClip(enabledIndex);
+        check(enabledIndex >= 0 &&
+                  s->controller->selectedGraphClip().value("clipId").toString() == clipId,
+              "P4-5: 出力へ戻した Graph を選ぶ");
+        pump(100);
+        QString invalidFunction;
+        for (const auto& row : s->controller->selectedGraphClip().value("functions").toList()) {
+            const auto function = row.toMap();
+            if (function.value("expression").toString() == QStringLiteral("sin("))
+                invalidFunction = function.value("id").toString();
+        }
+        check(!invalidFunction.isEmpty() &&
+                  s->click(QStringLiteral("graphFunction_") + invalidFunction),
+              "P4-5: 不正原文の関数を選び直す");
+        if (auto* expression = s->find(QStringLiteral("graphField_expression"))) {
+            QTest::mouseClick(s->window, Qt::LeftButton, {}, s->center(expression));
+            s->key(Qt::Key_Escape);
+            pump(50);
+        }
+        check(input("expression", "x^2"), "P4-5: 非可視負例の原文を修復する");
+        bool restored = false;
+        bool stillInvalid = false;
+        for (const auto& row : s->controller->selectedGraphClip().value("functions").toList()) {
+            const auto expression = row.toMap().value("expression").toString();
+            restored = restored || expression == QStringLiteral("x^2");
+            stillInvalid = stillInvalid || expression == QStringLiteral("sin(");
+        }
+        check(restored && !stillInvalid, "P4-5: 修復した原文が製品の Project に残る");
+        if (!restored || stillInvalid) {
+            std::fprintf(stderr, "P4-5: 修復後 status=%s\n",
+                         s->controller->statusText().toUtf8().constData());
+            for (const auto& row : s->controller->selectedGraphClip().value("functions").toList())
+                std::fprintf(stderr, "P4-5: 式 [%s]\n",
+                             row.toMap().value("expression").toString().toUtf8().constData());
+        }
+        check(s->controller->saveProject(), "P4-5: 共存した schema22 を製品保存する");
+        if (restored && !stillInvalid) {
+            exportProduct(directory / L"graph-cancelled.mp4", false, true, 1);
+            exportProduct(directory / L"graph-shutdown.mp4", false, true, 2);
+            // P4-5 補遺: shutdown 済みの session を閉じ、保存した同じ Project を再起動して、
+            // encoder が実際に frame を処理している最中の shutdown を検査する。
+            const auto beforeRestart = s->project().timelineClips;
+            const auto background = s->observation->graphBackground;
+            s->close();
+            const auto reopened = project::loadProjectJson(path);
+            check(reopened.success && reopened.project.timelineClips == beforeRestart,
+                  "P4-5 補遺: 保存した Project を再起動して開く");
+            s = open(path, reopened.project);
+            if (!s)
+                return 4;
+            // 同じ Project の既知 RGB 実動画を背景にした独立 oracle を引き継ぐ。artifact は
+            // 製品の書き出しが disk から検証し、最初の encoder frame を全画素で比較する。
+            s->observation->graphBackground = background;
+            exportProduct(directory / L"graph-active-shutdown.mp4", false, true, 3);
+        }
+    }
+    s->close();
+    QJsonObject summary{
+        {"checks", checks}, {"failures", failures}, {"results", results}, {"screenshots", shots}};
+    QFile output(QString::fromStdWString((directory / L"results.json").wstring()));
+    if (output.open(QIODevice::WriteOnly))
+        output.write(QJsonDocument(summary).toJson());
+    return failures == 0 && checks > 0 ? 0 : 1;
+}
 
 int runEquationSequenceUi(const std::filesystem::path& requestedDirectory, bool scratch) {
     const auto directory =

@@ -58,8 +58,8 @@
     CI で複数 job に分けて並列に走らせるために使う。
 
 .PARAMETER WhisperRoot
-    固定リビジョンの Whisper の導入先。CI は MSYS2 の package の版が固定と違うため、
-    scripts/build-whisper.ps1 で構築した build/whisper-install を渡す。
+    固定リビジョンの Whisper の導入先。省略時は build.ps1 の既定 (C:\msys64\ucrt64) を使う。
+    CI は lock の版の whisper.cpp を入れた UCRT64 (-Ucrt64 と同じ場所) を渡す。
 
 .EXAMPLE
     pwsh scripts/test.ps1

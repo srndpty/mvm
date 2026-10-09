@@ -6,6 +6,7 @@
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
 #include "audio_adjustment_job.h"
+#include "graph_preview_cache.h"
 #include "math_raster_cache.h"
 #include "media/audio_preview/audio_mixer_bus.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
@@ -221,9 +222,12 @@ public:
     // 取消した worker の破棄まで終わっている。中止そのものは待たない。
     // 100 ms の poll が動いているか。待機中に常駐しないことの試験用。
     bool audioAdjustmentPollingForTest() const { return audioAdjustmentTimer_.isActive(); }
+
     bool audioWatchFallbackActiveForTest() const { return audioWatchFallbackTimer_.isActive(); }
+
     // watcher が通知を取りこぼして path を外した状態を作る。
     void dropAudioFileWatchForTest();
+
     // 5 秒の取りこぼし確認を 1 回だけ実行する (timer の発火と同じ処理)。
     void runAudioWatchFallbackForTest() { checkAudioWatchFallback(); }
 
@@ -465,6 +469,10 @@ public:
     std::shared_ptr<preview::CompositionSnapshot> subtitleCompositionForTest(qint64 frame,
                                                                              QString& error) const;
 
+    // 再利用の有無を比較する。非再利用の呼び出しは製品の memo を変更しない。
+    std::shared_ptr<preview::CompositionSnapshot>
+    previewCompositionForTest(qint64 frame, QString& error, bool reuse = true) const;
+
     // Undo / Redo 履歴が持つ Project の複製の概算 byte 数の合計。
     std::size_t editHistoryBytes() const;
 
@@ -650,56 +658,74 @@ public:
     // 結果を使い続ける (強制の描き直しではない。MiKTeX の導入後や一時的な失敗の後に使う)。
     Q_INVOKABLE void retryMathRendering();
     // clipId / source / fontSize / color / backgroundColor と描画の状態
-    // (state: checking / rendering / stale / ready / error / unavailable、message、log、toolchain)。
-    // unavailableReason: backend / authority / 空、canRetry: この instance で再試行できるか。
+    // (state: checking / rendering / stale / ready / error /
+    // unavailable、message、log、toolchain)。 unavailableReason: backend / authority /
+    // 空、canRetry: この instance で再試行できるか。
     Q_INVOKABLE QVariantMap mathClipData(const QString& clipId) const;
     QVariantMap selectedMathClip() const;
     // P3-5: 一つの状態 (透明背景・今の Project の FPS・既定の hold) だけを持つ数式 sequence を
     // 再生位置に置いて選ぶ。Undo 1 回分。
     Q_INVOKABLE bool createEquationSequenceClip(const QString& source);
     QObject* equationEditor() const;
+
     EquationSequenceEditor& equationEditorRef() const { return *equationEditor_; }
+
     // 読むだけの今の Project (authoring の controller が表示の値を作るのに使う)。
     const project::Project& currentProject() const { return project_; }
+
     // 試験用: 数式の backend の確認を差し替えて確かめ直す (偽の backend を注入する)。
     void setMathPreflightForTest(MathRasterCache::PreflightFunction preflight);
+
     MathRasterCache& mathRastersForTest() { return *mathRasters_; }
+
+    GraphPreviewCache& graphRastersForTest() { return *graphRasters_; }
+
+    GraphPreviewCache::Status graphPreviewStatus(const std::string& clipId,
+                                                 std::int64_t outputFrame) const;
+
     // 試験用: disk 検査後に要求へ渡す frame reader を差し替え、実行 thread と待機を検査する。
     using MathTransformExportFrameLoader =
         std::function<bool(std::size_t, std::vector<std::uint8_t>&, std::string&)>;
+
     void setMathTransformExportFrameLoaderForTest(MathTransformExportFrameLoader loader) {
         mathTransformExportFrameLoaderForTest_ = std::move(loader);
     }
-    // 試験用: Write の preview の評価 (engine の render thread が出力 frame ごとに呼ぶ) を観測する。
-    // 引数は clip ID・出力 frame・見せる Write の frame (-1 は静止)。設定後に作る animation に効く。
-    // render thread から呼ぶので、observer は thread 安全にすること。
-    using MathWriteObserver =
-        std::function<void(const std::string& clipId, std::int64_t outputFrame, std::int64_t state)>;
+
+    // 試験用: Write の preview の評価 (engine の render thread が出力 frame ごとに呼ぶ)
+    // を観測する。 引数は clip ID・出力 frame・見せる Write の frame (-1 は静止)。設定後に作る
+    // animation に効く。 render thread から呼ぶので、observer は thread 安全にすること。
+    using MathWriteObserver = std::function<void(const std::string& clipId,
+                                                 std::int64_t outputFrame, std::int64_t state)>;
+
     void setMathWriteObserverForTest(MathWriteObserver observer) {
         mathWriteObserverForTest_ = std::move(observer);
         mathPreviewAnimations_.clear();
     }
+
     // 試験用: 変形の preview の評価を観測する。引数はトランジション ID・評価した clip (前・後ろの
     // どちらの layer か) の ID・出力 frame・見せる変形の frame (-1 は区間の外の静止)。
     // 設定後に作る animation に効く。render thread から呼ぶので、thread 安全にすること。
     using MathTransformObserver =
         std::function<void(const std::string& transitionId, const std::string& clipId,
                            std::int64_t outputFrame, std::int64_t transformFrame)>;
+
     void setMathTransformObserverForTest(MathTransformObserver observer) {
         mathTransformObserverForTest_ = std::move(observer);
         mathPreviewAnimations_.clear();
     }
+
     // 試験用: Equation Sequence の preview の評価 (engine の render thread が出力 frame ごとに呼ぶ)
     // を観測する。引数は clip ID・出力 frame・P3-1 の区間 (clip の外は nullopt)・見せたもの
     // (代用を解決した結果)。設定後に作る animation に効く。thread 安全にすること。
-    using EquationPreviewObserver =
-        std::function<void(const std::string& clipId, std::int64_t outputFrame,
-                           const std::optional<EquationPreviewTime>& time,
-                           const EquationPreviewShown& shown)>;
+    using EquationPreviewObserver = std::function<void(
+        const std::string& clipId, std::int64_t outputFrame,
+        const std::optional<EquationPreviewTime>& time, const EquationPreviewShown& shown)>;
+
     void setEquationPreviewObserverForTest(EquationPreviewObserver observer) {
         equationPreviewObserverForTest_ = std::move(observer);
         equationPreviewAnimations_.clear();
     }
+
     // Equation Sequence clip の preview の状態 (P3-4)。見た目の代用が同じでも、内部の状態は
     // 区別したまま保つ (編集・修復の UI は P3-5)。outputFrame の区間について調べる。
     // 読むだけで、静止・sequence の描画を要求せず cache の record も作らない (P3-4.1)。
@@ -723,8 +749,10 @@ public:
         std::vector<bool> staticsReady;
         QString sequenceKey;
     };
+
     EquationSequencePreviewStatus equationSequencePreviewStatus(const QString& clipId,
-                                                               qint64 outputFrame) const;
+                                                                qint64 outputFrame) const;
+
     // 試験用: 最後に engine へ出した composition (再生中の引き継ぎも含む)。
     std::shared_ptr<const preview::CompositionSnapshot> submittedCompositionForTest() const {
         return submittedComposition_;
@@ -918,6 +946,20 @@ public:
         const std::string& clipId,
         const std::function<bool(project::EquationSequenceClipData&, std::string&)>& edit);
     Q_INVOKABLE bool redoLastEdit();
+    // track を省略すると、作成メニューと同じく start で空いている映像 track へ置く。
+    bool createGraphClip(std::int64_t start, std::optional<project::TrackRef> track = std::nullopt);
+    // QML の編集は表示 snapshot の authority を明示し、古い欄からの確定を拒否する。
+    Q_PROPERTY(QVariantMap selectedGraphClip READ selectedGraphClip NOTIFY stateChanged)
+    QVariantMap selectedGraphClip() const;
+    Q_INVOKABLE bool createGraphClipFromUi();
+    Q_INVOKABLE QVariantMap editGraphFromUi(const QVariantMap& authority,
+                                            const QString& functionId,
+                                            const QString& operation,
+                                            const QVariantMap& values);
+    Q_INVOKABLE QVariantMap graphStatusFromUi(const QString& clipId) const;
+    bool setGraphDuration(const std::string& clipId, std::int64_t sourceFrames);
+    bool editGraphData(const std::string& clipId,
+                       const std::function<bool(project::GraphClipData&, std::string&)>& edit);
     Q_INVOKABLE QVariantMap exportSettingsSummary() const;
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
     Q_INVOKABLE bool exportTimelineWithQuality(const QUrl& outputUrl, const QString& quality);
@@ -1292,6 +1334,7 @@ private:
     std::shared_ptr<const preview::PreviewStillAnimation>
     mathPreviewAnimation(int clipIndex,
                          const std::shared_ptr<const preview::PreviewStillImage>& still) const;
+
     // 変形の preview に要る値が揃っているか。揃わなければ理由を返し、preview は cut で切り替える
     // (古い変形・前に描けた別の式の静止は使わない)。
     //   - 両 clip が描かれ (mathTransformIsRendered)、どちらも入力中でない
@@ -1305,6 +1348,7 @@ private:
         std::uint32_t sourceColor = 0;
         std::uint32_t targetColor = 0;
     };
+
     std::optional<MathTransformPreviewInputs>
     mathTransformPreviewInputs(const project::TimelineTransition& transition,
                                QString* placementError = nullptr) const;
@@ -1330,9 +1374,11 @@ private:
     project::MathClipData effectiveMathData(const project::TimelineClip& clip) const;
     // 現在の数式 clip がすべて描かれるよう要求し、使わなくなった描画を止める。
     void requestMathRenders();
-    // <project の directory>/cache/math/<project の file 名>。同じ directory の別の Project と分ける。
+    // <project の directory>/cache/math/<project の file 名>。同じ directory の別の Project
+    // と分ける。
     std::filesystem::path mathCacheDirectory() const;
-    // cache の場所と権限 (Project lock を持つか) を cache へ伝える。lock か保存先が変わるたびに呼ぶ。
+    // cache の場所と権限 (Project lock を持つか) を cache へ伝える。lock
+    // か保存先が変わるたびに呼ぶ。
     void syncMathCacheAuthority();
     // 再生中、frame の clip を今の source のまま表示できれば source を引き継いで true。
     // 引き継げなければ何も変更せず false (呼び出し側が一時停止して組み直す)。
@@ -1477,6 +1523,7 @@ private:
     std::string selectedEditOutgoing_;
     std::string selectedEditIncoming_;
     std::string selectedTransitionId_;
+
     // 数式の変形の作成・長さの変更を model が断った理由。断ったときの編集点 (またはトランジション)
     // と Project の revision が今と同じ間だけ UI に出す (Project が変われば古い理由は出さない)。
     struct MathTransformRejection {
@@ -1486,6 +1533,7 @@ private:
         std::uint64_t revision = 0;
         QString message;
     };
+
     MathTransformRejection mathTransformRejection_;
     // 最後に通知した timelineTransitions。変わったときだけ timelineTransitionsChanged を出す。
     QVariantList shownTransitions_;
@@ -1567,37 +1615,57 @@ private:
     std::unique_ptr<ImageRasterCache> imageRasters_;
     // 数式 clip の描画結果 (key 単位、<project>/cache/math)。
     std::unique_ptr<MathRasterCache> mathRasters_;
+    std::unique_ptr<GraphPreviewCache> graphRasters_;
+
+    struct GraphAnimationRecord {
+        project::TimelineClip clip;
+        std::shared_ptr<const GraphPresentation> presentation;
+        std::shared_ptr<const preview::PreviewStillAnimation> animation;
+        graph::GraphRenderSpec spec;
+    };
+
+    mutable QHash<QString, GraphAnimationRecord> graphAnimations_;
+    mutable QString graphCompositionMemo_;
+    mutable std::shared_ptr<preview::CompositionSnapshot> graphComposition_;
     // P3-5 の authoring。controller の stateChanged を購読するので controller より先に壊す。
     std::unique_ptr<EquationSequenceEditor> equationEditor_;
+
     // clip ごとの最後に描けた mask。式を直して描き直している間・失敗した間はこれを出す。
     // 派生物なので Project には入れず、session の間だけ持つ。
     struct MathLastGood {
         QString key;
         std::shared_ptr<const media::StillImage> mask;
     };
+
     mutable QHash<QString, MathLastGood> mathLastGood_;
+
     // clip ごとの合成済みの画素。同じ見た目なら同じ instance を engine へ渡す。
     struct MathComposed {
         QString memo;
         std::shared_ptr<const preview::PreviewStillImage> image;
     };
+
     mutable QHash<QString, MathComposed> mathStillImages_;
+
     // clip ごとの preview の animation (Write と変形)。mask・見た目・時間が同じなら同じ instance を
     // engine へ渡す (engine は instance ごとに texture を持つ)。
     struct MathPreviewAnimationMemo {
         QString memo;
         std::shared_ptr<const preview::PreviewStillAnimation> animation;
     };
+
     mutable QHash<QString, MathPreviewAnimationMemo> mathPreviewAnimations_;
     MathWriteObserver mathWriteObserverForTest_;
     MathTransformObserver mathTransformObserverForTest_;
     MathTransformExportFrameLoader mathTransformExportFrameLoaderForTest_;
+
     // Equation Sequence (P3-4)。clip ごとの compile の結果 (data が変われば作り直す)・preview の
     // animation・静止の被覆 (静止の key ごと)・透明な下地。
     struct EquationCompileMemo {
         project::EquationSequenceClipData data;
         EquationCompileResult<EquationSequenceSpec> result;
     };
+
     mutable QHash<QString, EquationCompileMemo> equationCompiles_;
     mutable QHash<QString, MathPreviewAnimationMemo> equationPreviewAnimations_;
     mutable QHash<QString, EquationPreviewCoverage> equationStaticCoverage_;

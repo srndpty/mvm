@@ -90,9 +90,72 @@
   この結果は P3-6 の履歴として保持する。P3-6.1 で画面外 static の依存を除去し、
   旧条件の変異を新しい回帰で検出した。実 Manim の製品受け入れ、通常 release 1473/1473、
   BuildIndependent 1080/1080 と lint が通過し、P3-6.1・P3-6・初期 vertical slice を再閉鎖した。
-  [依存範囲修正の証拠](math-equation-sequence-p30.md#p3-61-可視範囲の静止依存) を参照。P4 は未着手。
+  [依存範囲修正の証拠](math-equation-sequence-p30.md#p3-61-可視範囲の静止依存) を参照。
 
-未解決の判断・検証:
+### P4: native Graph Clip
+
+- P4-0 は PASS/CLOSED。設計契約は [math-graph-p40.md](math-graph-p40.md)、
+  実測の自動集計は [math-graph-p40-results.md](math-graph-p40-results.md)。
+  mvm 所有の式 AST・C++ 数値評価・切断済み点列を Manim に渡す方式を採用する。
+  1〜3 関数、透明 RGBA、Draw i/N、source 範囲を保つ trim/split、所有 ID と key の分離、
+  schema 22 の提案を確定した。P4-0 時点では製品コードと schema 21 を変更していない。
+- [事実] 2026-10-08、P4-1 は PASS/CLOSED。domain/parser/evaluator/sampling、pure timing、
+  schema22、ID の編集・Undo/Redo、無効原文の round-trip を実装した。
+  契約と閉鎖条件は [math-graph-p40.md](math-graph-p40.md)、全 gate と初期失敗を含む
+  証拠の機械集計は [math-graph-p41-results.md](math-graph-p41-results.md)。P4-2 は未着手。
+- [事実] 2026-10-08、P4-1.1 は PASS/CLOSED。graph-expression/1 の空白を
+  ASCII space/tab/CR/LF へ限定し、FF/VT の拒否と旧六種類を戻す変異を確認した。
+  詳細は [math-graph-p40.md](math-graph-p40.md)、指定 gate の機械集計は
+  [math-graph-p411-results.md](math-graph-p411-results.md)。P4-2 は未着手。
+- [事実] 2026-10-09、P4-2 は PASS/CLOSED。Graph 専用の中立 spec と Manim renderer、straight RGBA artifact、
+  pixel 線幅換算、3帯のラベル、独立合成 oracle、provenance-last publication、
+  toolchain/key authority を追加し、必要な全 gate が通過した。
+  契約は [math-graph-p40.md](math-graph-p40.md)、失敗を含む機械集計は
+  [math-graph-p42-results.md](math-graph-p42-results.md)。
+- [事実] 2026-10-09、P4-3.1 と P4-3 は PASS/CLOSED。Graph の不変 presentation で
+  連続 Draw の exact frame を選択し、ミキサーの寸法循環と字幕の無関係な cache 通知を修正した。
+  全 gate の閉鎖と A/B・変異の根拠は [math-graph-p431.md](math-graph-p431.md)、
+  新規証拠の機械集計は [math-graph-p431-results.md](math-graph-p431-results.md)。
+  P4-3 の historical FAIL は [元の結果](math-graph-p43-results.md) と元 directory に保持する。
+- [事実] 2026-10-09、P4-3.2 と P4-3 は PASS/CLOSED。composition 再利用中も既存の
+  render-time motion が当該 frame の ClipEffects を評価する契約を、毎 frame 新規構築する
+  経路との native 全画素比較と、Graph motion を外す負例で検証した。製品の再利用判定は維持する。
+  全 gate と source の根拠は [math-graph-p432.md](math-graph-p432.md)、
+  生記録の機械集計は [math-graph-p432-results.md](math-graph-p432-results.md)。
+  P4-3.1 の PASS と P4-3 の historical FAIL は変更せず保持する。P4-4 は GO、未着手。
+- [事実] 2026-10-09、P4-2.1 は PASS/CLOSED。publication の重い I/O を authority mutex の外へ移し、
+  同期バリアで supersede/shutdown の応答性と旧世代の公開拒否を検証した。
+  契約と source provenance は [math-graph-p421.md](math-graph-p421.md)、
+  全 gate と初回 runner 失敗を含む機械集計は [math-graph-p421-results.md](math-graph-p421-results.md)。
+- 静止 artifact の物理共有は未実装。static identity は Draw N に依存しないが、
+  異なる N は static.png も再描画する（P4-2.1 は契約 B）。共有依存を持つ manifest と
+  独立検証の形式設計は後続の最適化判断とする。
+- [事実] 2026-10-09、P4-4 は PASS/CLOSED。製品メニューから Graph clip を作り、
+  inspector で範囲・軸・関数・色・Draw を編集し、実 Manim の native 全画素、
+  不正原文の保存と修復、Undo/Redo、Draw 途中 split、低い/狭い panel を検証した。
+  契約は [math-graph-p44.md](math-graph-p44.md)、失敗を含む機械集計は
+  [math-graph-p44-results.md](math-graph-p44-results.md)。
+- [事実] 2026-10-09、P4-4 の閉鎖確認は PASS。共有ダイアログ三部品の Basic 固定は
+  製品の Basic style と一致し、未確定 draft は関数・clip・Undo をまたがない。
+  最終 source の Focused は 4/4、Regressions は 26/26。P4-5 は GO、未着手。
+- [事実] 2026-10-10、P4-5 と P4 は PASS/CLOSED。製品 UI から schema22 を保存・再読込し、
+  実 Manim の native 提示と H.264、trim/split、24000/1001、可視範囲だけの依存、
+  映像・音声・字幕・ClipEffects、欠損・破損・取消・shutdown、独立 MLT 7.36.1 oracle を検証した。
+  同一 source の機械集計は Focused、製品 205 件、回帰 17 件、変異 10/10、
+  BuildIndependent 1084 件、lint、通常 release 1494 件。
+  契約は [math-graph-p45.md](math-graph-p45.md)、閉鎖前の HOLD は
+  [math-graph-p45-results.md](math-graph-p45-results.md)、再開後の失敗と集計は
+  [math-graph-p45-closure.md](math-graph-p45-closure.md)。
+  P4-5.1 の合成契約は [math-graph-p451.md](math-graph-p451.md) のまま変えない。
+  製品は timeline 全体を書き出す。範囲指定の export UI は追加していない。
+- sampling/1 は有限密度と midpoint の保守的切断であり、任意高周波・標本間だけの特異点の完全検出は
+  保証しない。必要時は独立fixtureと新sampling/key versionで精度改善を検証する。
+  追加の性能閾値・adaptive sampling・artifact圧縮は製品要求と実測に基づく後続判断とする。
+- P4-2 の Cairo では基準幅0.1の水平線が854×480で消える。極細線の支持範囲を製品UIで
+  示すか、backendを変更して改善するかは後続の判断。幅を黙って下限へ丸めない。
+  現在の被覆量子化の実測は [math-graph-p42-results.md](math-graph-p42-results.md) に保存する。
+
+### P3 の未解決の判断・検証
 
 - 任意 TeX macro の支持は未検証。P3-3 は P3-2 の支持範囲の segment について、Manim 0.21 の
   点を持つ子孫の排他的所有を描画ごとに検査する (実装記録)。検査を通った範囲の成功を、

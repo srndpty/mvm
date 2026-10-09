@@ -4,6 +4,7 @@
 #include "core/checked_output_timebase.h"
 #include "project/clip_effects.h"
 #include "project/equation_sequence.h"
+#include "project/graph_clip.h"
 #include "project/math_clip.h"
 
 #include <cstddef>
@@ -27,7 +28,7 @@ struct ManimAsset {
     bool operator==(const ManimAsset&) const = default;
 };
 
-enum class TimelineClipKind { Video, Manim, Audio, Text, Image, Math, EquationSequence };
+enum class TimelineClipKind { Video, Manim, Audio, Text, Image, Math, EquationSequence, Graph };
 
 // 素材の時間軸を持たない clip (文字・静止画・数式)。尺は timeline 上で自由に伸縮し、
 // 素材 frame domain は in = 0・out = 尺 の合成値にする (fps は置いたときの timeline の値)。
@@ -43,6 +44,7 @@ bool clipKindHasMediaPath(TimelineClipKind kind);
 
 // "#AARRGGBB" (16 進 8 桁) を 0xAARRGGBB にする。文字・数式の色の形式はこれだけで判定する。
 bool parseArgbColor(const std::string& text, std::uint32_t& argb);
+std::string canonicalArgbColor(const std::string& text);
 
 // 文字・静止画を置いたときの既定の尺 (5 秒、最低 1 frame)。
 std::int64_t defaultStillClipFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen);
@@ -132,6 +134,7 @@ struct TimelineClip {
     // kind が Math のときだけ意味を持つ時間の振る舞い (Write など)。それ以外の kind では既定値。
     MathClipAnimation mathAnimation{};
     EquationSequenceClipData equationSequence{};
+    GraphClipData graph{};
     // 無効にした clip は timeline に残るが、preview・書き出し・音声に出さない (Shift+E)。
     bool enabled = true;
     bool operator==(const TimelineClip&) const = default;
@@ -174,7 +177,8 @@ inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 // 20: トランジションの種類 ("kind"、必須。"blend" / "math_transform")。
 // 20・19・18・17・16 の file は読み込み時に現行版へ上げる (19 以前のトランジションは blend)。
 // 21: 内部の素材時間軸を持つ EquationSequence。旧 Math を自動変換しない。
-inline constexpr int kProjectSchemaVersion = 21;
+// 22: 中立数値コンパイラで評価する Graph。式の構文不正は保存可能。
+inline constexpr int kProjectSchemaVersion = 22;
 
 struct SubtitleCue {
     std::string id;

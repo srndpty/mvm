@@ -123,7 +123,7 @@ void testValidation() {
             {"action が状態の順でない", [](auto& s) { std::swap(s.actions[0], s.actions[1]); }},
             {"syntax", [](auto& s) { s.states[1].still.syntax = "typst"; }},
             {"compiler の版が空", [](auto& s) { s.compilerVersion.clear(); }},
-        };
+    };
     for (const auto& [name, mutate] : cases) {
         auto spec = base();
         mutate(spec);
@@ -188,7 +188,7 @@ void testKey() {
             {"action の start", [](auto& s) { s.actions[0].start = 1; }},
             {"action の対象", [](auto& s) { s.actions[0].segment = 2; }},
             {"compiler の版", [](auto& s) { s.compilerVersion = "equation-neutral/2"; }},
-        };
+    };
     std::set<std::string> keys{key};
     for (const auto& [name, mutate] : changes) {
         auto spec = base();

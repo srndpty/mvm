@@ -320,12 +320,16 @@ void testShutdown(const std::filesystem::path& path, bool finishBeforeShutdown) 
           "shutdown試験のworkerが起動しません");
     if (finishBeforeShutdown) {
         release.store(true);
-        check(pumpUntil([&] { return stopped.load(); }), "完了直前のworkerが戻りません");
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (!stopped.load() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        check(stopped.load(), "完了直前のworkerが戻りません");
     }
     controller.shutdown();
     QCoreApplication::processEvents();
     check(stopped.load() && !controller.exporting() && !controller.busy(),
           "shutdownがworkerをjoinして状態を解放しません");
+    check(reveals.calls == 0, "shutdown 後の stale 完了結果を公開通知へ流してはいけません");
 }
 
 void testThreadFailure(const std::filesystem::path& path) {

@@ -25,6 +25,8 @@ add_library(mvm_project STATIC
     project/math_clip.cpp
     project/equation_sequence.cpp
     project/equation_sequence_edit.cpp
+    project/graph_clip.cpp
+    project/graph_edit.cpp
     project/equation_binding_edit.cpp
     project/media_bin.cpp
     project/path_identity.cpp
@@ -39,6 +41,12 @@ target_include_directories(mvm_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # ため PUBLIC で持つ。
 target_link_libraries(mvm_project PUBLIC mvm::core PRIVATE mvm::warnings)
 add_library(mvm::project ALIAS mvm_project)
+
+add_library(mvm_graph_numeric STATIC media/graph/graph_numeric.cpp)
+target_include_directories(mvm_graph_numeric PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_graph_numeric PRIVATE mvm::warnings)
+target_compile_options(mvm_graph_numeric PRIVATE -fno-fast-math)
+add_library(mvm::graph_numeric ALIAS mvm_graph_numeric)
 
 # --- Windows / UTF-8 ヘルパ -------------------------------------------------
 # Phase 0 スパイク用の小さなヘルパ。製品用の platform 層ではない。
@@ -70,6 +78,16 @@ target_include_directories(mvm_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_math PUBLIC mvm::util PRIVATE mvm::warnings)
 add_library(mvm::math ALIAS mvm_math)
 
+pkg_check_modules(GRAPH_PNG REQUIRED IMPORTED_TARGET libpng)
+add_library(mvm_graph_render STATIC media/graph/graph_render.cpp)
+target_include_directories(mvm_graph_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_graph_render PUBLIC mvm::graph_numeric mvm::util PRIVATE PkgConfig::GRAPH_PNG mvm::warnings)
+add_library(mvm::graph_render ALIAS mvm_graph_render)
+add_library(mvm_graph_render_compile STATIC app/graph_render_compile.cpp)
+target_include_directories(mvm_graph_render_compile PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_graph_render_compile PUBLIC mvm::graph_render mvm::project PRIVATE mvm::warnings)
+add_library(mvm::graph_render_compile ALIAS mvm_graph_render_compile)
+
 # Project の binding と P2 の純粋な計算を結ぶ。描画 backend / Qt は参照しない。
 add_library(mvm_equation_sequence_compile STATIC app/equation_sequence_compile.cpp
     app/equation_sequence_render.cpp app/equation_sequence_preview.cpp
@@ -90,6 +108,23 @@ add_library(mvm_manim STATIC
 target_include_directories(mvm_manim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_manim PUBLIC mvm::util mvm::math PRIVATE mvm::warnings ole32)
 add_library(mvm::manim ALIAS mvm_manim)
+
+# --- Graph の Manim backend -------------------------------------------------
+# Graph の契約 (media/graph) を外部の Python で実装する。Manim 層 (mvm::manim) には
+# 依存せず、Manim 層も Graph を知らない。依存の向きは graph_manim -> graph。
+add_library(mvm_graph_manim STATIC media/graph_manim/graph_manim_backend.cpp)
+target_include_directories(mvm_graph_manim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_graph_manim PUBLIC mvm::util mvm::graph_render PRIVATE mvm::warnings)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS media/graph/graph_numeric.cpp media/graph/graph_numeric.h media/graph/graph_render.cpp media/graph/graph_render.h app/graph_render_compile.cpp media/graph_manim/graph_manim_backend.cpp)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/graph/graph_numeric.cpp" MVM_GRAPH_NUMERIC_SOURCE_SHA)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/graph/graph_numeric.h" MVM_GRAPH_NUMERIC_HEADER_SHA)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/graph/graph_render.cpp" MVM_GRAPH_PRESENTATION_SHA)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/graph/graph_render.h" MVM_GRAPH_PRESENTATION_HEADER_SHA)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/app/graph_render_compile.cpp" MVM_GRAPH_COMPILE_SHA)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/graph_manim/graph_manim_backend.cpp" MVM_GRAPH_ADAPTER_SHA)
+string(SHA256 MVM_GRAPH_NUMERIC_SHA "${MVM_GRAPH_NUMERIC_SOURCE_SHA}:${MVM_GRAPH_NUMERIC_HEADER_SHA}:${MVM_GRAPH_PRESENTATION_SHA}:${MVM_GRAPH_PRESENTATION_HEADER_SHA}:${MVM_GRAPH_COMPILE_SHA}:${MVM_GRAPH_ADAPTER_SHA}:${CMAKE_CXX_FLAGS}:${CMAKE_CXX_FLAGS_RELEASE}")
+target_compile_definitions(mvm_graph_manim PRIVATE MVM_GRAPH_BUILD_ID="${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}-${CMAKE_BUILD_TYPE}-${MVM_GRAPH_NUMERIC_SHA}")
+add_library(mvm::graph_manim ALIAS mvm_graph_manim)
 
 # --- M2: Manim clip orchestration ------------------------------------------
 # QtやPreviewEngineを含めず、render・fingerprint・Project保存の順序だけを担う。
@@ -136,10 +171,11 @@ add_library(mvm::math_clip_render ALIAS mvm_math_clip_render)
 # 正規名へ rename する順序だけを担う。MLT の呼び出しは mvm::mlt に閉じる。
 add_library(mvm_timeline_export STATIC
     app/timeline_export.cpp
+    app/graph_export.cpp
 )
 target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_timeline_export
-    PUBLIC mvm::project mvm::equation_sequence_compile
+    PUBLIC mvm::project mvm::equation_sequence_compile mvm::graph_render_compile
     PRIVATE mvm::core mvm::mlt mvm::text_raster mvm::math_clip_render mvm_still_image
         mvm::warnings)
 add_library(mvm::timeline_export ALIAS mvm_timeline_export)
@@ -165,6 +201,7 @@ add_library(mvm_mlt STATIC
     media/mlt/mvm_mlt_explore.c
     media/mlt/mvm_mlt_compose.c
     media/mlt/mvm_mlt_export.c
+    media/mlt/mvm_mlt_rgba_diagnostic.c
     media/mlt/mvm_mlt_effects_p0.c
     media/mlt/mvm_mlt_overlay_p0.c
     media/mlt/mvm_mlt_audiograph.c

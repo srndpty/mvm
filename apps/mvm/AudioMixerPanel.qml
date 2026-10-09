@@ -9,6 +9,10 @@ BoundedScrollView {
     clip: true
     contentWidth: strips.width
     contentHeight: strips.height
+    // native style の effectiveScrollBar 寸法は visible → size → available 寸法へ戻る。
+    // mixer の viewport は棒の可視性から独立させ、棒は内容の上に重ねる。
+    rightPadding: 0
+    bottomPadding: 0
     ScrollBar.vertical.policy: ScrollBar.AsNeeded
     WheelHandler {
         target: null

@@ -296,7 +296,7 @@ TimelineFrameResult mappedSourceFrameAt(const TimelineClip& clip, std::int64_t t
     // Sequence は標本を frame 始点へ置く。四捨五入では可視範囲の exclusive end を
     // 左片が表示しうるため、内部区間と分割の authority に使わない。既存素材は従来どおり。
     const auto source =
-        clip.kind == TimelineClipKind::EquationSequence
+        (clip.kind == TimelineClipKind::EquationSequence || clip.kind == TimelineClipKind::Graph)
             ? core::convertFrameBoundary(origin.frame + clipLocalFrame,
                                          {timelineFpsNum, timelineFpsDen}, *clipTimebase(clip),
                                          false)
@@ -991,6 +991,17 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "数式 clip 以外が数式のデータを持っています: " + clip.name;
             return result;
         }
+        if (clip.kind == TimelineClipKind::Graph) {
+            if (validateGraph(clip.graph, clip.sourceFrameCount) != GraphValidationStatus::Valid ||
+                clip.speedNum != 1 || clip.speedDen != 1 || clip.preservePitch || clip.frameHold ||
+                !clip.linkGroupId.empty()) {
+                result.error = "Graph の構造・素材尺・速度・リンクが不正です";
+                return result;
+            }
+        } else if (clip.graph != GraphClipData{}) {
+            result.error = "Graph 以外が Graph データを持っています";
+            return result;
+        }
         if (clip.kind == TimelineClipKind::EquationSequence) {
             std::vector<EquationInterval> equationTimeline;
             std::int64_t length = 0;
@@ -1253,6 +1264,8 @@ bool overwriteTrackRange(Project& candidate, TrackRef track, std::int64_t start,
             right.id = newId();
             if (right.kind == TimelineClipKind::EquationSequence &&
                 !remapEquationSequenceIds(right.equationSequence, newId, error))
+                return false;
+            if (right.kind == TimelineClipKind::Graph && !remapGraphIds(right.graph, newId, error))
                 return false;
             if (right.id.empty() || right.id == clip.id) {
                 error = "上書きで分けた clip の ID を作れません";
@@ -1547,7 +1560,8 @@ TimelineEditResult placeStillClipAt(Project& project, TimelineClip clip,
                                     std::int64_t timelineStartFrame) {
     TimelineEditResult result;
     // 数式 sequence も素材を持たない映像 clip として同じ規則で置く (内部の尺は呼び出し側が決める)。
-    if ((!isStillClipKind(clip.kind) && clip.kind != TimelineClipKind::EquationSequence) ||
+    if ((!isStillClipKind(clip.kind) && clip.kind != TimelineClipKind::EquationSequence &&
+         clip.kind != TimelineClipKind::Graph) ||
         timelineStartFrame < 0) {
         result.error = "配置する text / image clip または開始位置が不正です";
         return result;
@@ -2161,7 +2175,9 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
             result.error = "分割位置を素材 frame へ一意に換算できません: " + left.name;
             return result;
         }
-        if (left.kind == TimelineClipKind::EquationSequence && right.timelineStartFrame != frame) {
+        if ((left.kind == TimelineClipKind::EquationSequence ||
+             left.kind == TimelineClipKind::Graph) &&
+            right.timelineStartFrame != frame) {
             result.error = "分割位置を sequence の整数素材境界で正確に表現できません";
             return result;
         }
@@ -2176,6 +2192,9 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
         right.id = newId();
         if (right.kind == TimelineClipKind::EquationSequence &&
             !remapEquationSequenceIds(right.equationSequence, newId, result.error))
+            return result;
+        if (right.kind == TimelineClipKind::Graph &&
+            !remapGraphIds(right.graph, newId, result.error))
             return result;
         if (right.id.empty() || right.id == left.id) {
             result.error = "分割後の clip ID を作れません";
@@ -3141,6 +3160,17 @@ bool timeEditCandidate(Project& candidate, std::int64_t start, std::int64_t remo
             }
             if (a < start) {
                 right.id = timeEditId(candidate, original.id);
+                if (right.kind == TimelineClipKind::Graph) {
+                    std::uint64_t serial = 0;
+                    if (!remapGraphIds(
+                            right.graph,
+                            [&] {
+                                return "graph-internal-" + right.id + "-" +
+                                       std::to_string(++serial);
+                            },
+                            error))
+                        return false;
+                }
                 if (right.kind == TimelineClipKind::EquationSequence) {
                     std::uint64_t serial = 0;
                     if (!remapEquationSequenceIds(

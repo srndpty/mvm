@@ -58,6 +58,16 @@ Phase 1 で追加した層:
 | `src/media/math`  | 数式 renderer の backend 中立な契約と、出力 raster への配置 | `src/util`。**Manim・Project・Qt は不可**       |
 | `src/media/manim` | Manim の外部 process との唯一の接点 (backend の実装)      | `src/util`、`src/media/math`。Qt は不可         |
 
+Graph clip で追加した層:
+
+| 層                      | 責務                                                        | 依存してよいもの                                   |
+| ----------------------- | ----------------------------------------------------------- | -------------------------------------------------- |
+| `src/media/graph`       | Graph の数値評価・描画契約 (`GraphBackend`)・artifact の検証 | `src/util`。**Manim・Project・Qt は不可**          |
+| `src/media/graph_manim` | Graph 契約の Manim backend (外部 Python の起動)             | `src/util`、`src/media/graph`。`src/media/manim` は不可 |
+
+Manim 層は Graph を知らない。Graph の backend を Manim 層へ置くと、数式の利用者すべてへ
+Graph への依存が伝播する。
+
 素材種別の判定は `apps/mvm/media_import.cpp` の `probeMediaFile` に一本化している。
 画像の画素は preview と書き出しの両方がこの層の decoder から得る (Qt の画像 reader を使わない)。
 
@@ -123,12 +133,25 @@ FFmpeg / ffprobe は `C:\msys64\ucrt64\bin` のものだけを使う。
 
 ```powershell
 pwsh scripts/bootstrap-msys2.ps1     # 依存導入
+pwsh scripts/install-clang-format.ps1  # 固定版の clang-format を build/tools へ導入
 pwsh scripts/build.ps1               # ビルド (PATH を整えて cmake を呼ぶ)
 pwsh scripts/test.ps1                # ビルド + CTest (release/debug)
 pwsh scripts/format.ps1              # clang-format 適用
 pwsh scripts/lint.ps1                # 整形差分と静的検査
 pwsh scripts/coverage.ps1            # カバレッジ
 ```
+
+### CI と開発機の版を一致させる
+
+CI は MSYS2 の最新を取らず、`docs/deps-lock.txt` の版を `scripts/install-locked-deps.ps1` で
+入れる。導入後の UCRT64 パッケージ集合が lock と完全一致しなければ失敗する。
+依存を足す・上げるときは、開発機で導入して lock と `third_party/pkgs` を更新してから CI に反映する。
+CI の YAML に MSYS2 のパッケージを直接書き足さない (最新が入り、lock とずれる)。
+
+lint の道具も版を固定する。clang-format は `scripts/clang-format.requirements.txt` (版と wheel の
+SHA256)、PSScriptAnalyzer は `scripts/PSScriptAnalyzer.version`。MSYS2 の clang-format は使わない
+(版ごとに整形結果が違い、22.1.8 で通る lint が CI の 23.1.3 で落ちた)。
+CI だけの道具 (ccache) は lock に入れず、版と SHA256 を固定した公式 binary を使う。
 
 通常の開発作業では、次の repo-local な短い入口を推奨する。これらは上記の
 正式スクリプトをそのまま呼び出す front-end であり、詳細な option が必要な場合は

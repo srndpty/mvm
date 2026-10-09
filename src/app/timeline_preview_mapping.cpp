@@ -95,7 +95,8 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         }
         const double transitionOpacity =
             segment.fadeIn ? project::transitionProgress(*segment.fadeIn, timelineFrame) : 1.0;
-        if (sequence || project::isStillClipKind(clip.kind)) {
+        if (sequence || clip.kind == project::TimelineClipKind::Graph ||
+            project::isStillClipKind(clip.kind)) {
             // 文字・画像の不透明度は書き出しと同じ区間の評価 (値・key・fade を素材 frame で
             // 数え、トランジションを掛ける) を使う。
             const auto opacity = project::renderSegmentOpacity(

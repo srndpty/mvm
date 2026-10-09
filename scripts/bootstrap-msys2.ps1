@@ -118,7 +118,7 @@ $Packages = @(
 
     # test / 品質
     'gtest'
-    'clang'   # clang-format (整形と lint に使う)
+    'clang'   # 整形と lint は版を固定した clang-format (scripts/install-clang-format.ps1) を使い、これは使わない
     'gcovr'   # カバレッジ集計
 )
 

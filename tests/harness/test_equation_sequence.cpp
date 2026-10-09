@@ -557,15 +557,15 @@ void persistence() {
                .success,
           "重複 field 拒否");
     check(!parseProjectJsonText(
-               replace(saved.json, "\"schema_version\": 21", "\"schema_version\": 20"),
+               replace(saved.json, "\"schema_version\": 22", "\"schema_version\": 20"),
                "equation-test.mvm")
                .success,
           "schema 20 へ新 kind を混入できない");
     auto old = createDefaultProject();
     auto json = serializeProjectJson(old, "old.mvm").json;
-    loaded = parseProjectJsonText(replace(json, "\"schema_version\": 21", "\"schema_version\": 20"),
+    loaded = parseProjectJsonText(replace(json, "\"schema_version\": 22", "\"schema_version\": 20"),
                                   "old.mvm");
-    check(loaded.success && loaded.project == old, "schema 20 を読んで 21 へ上げる");
+    check(loaded.success && loaded.project == old, "schema 20 を読んで現行版へ上げる");
     TimelineClip math;
     math.kind = TimelineClipKind::Math;
     math.id = "old-math";
@@ -577,7 +577,7 @@ void persistence() {
     math.sourceOutFrame = 10;
     old.timelineClips.push_back(math);
     json = serializeProjectJson(old, "old.mvm").json;
-    loaded = parseProjectJsonText(replace(json, "\"schema_version\": 21", "\"schema_version\": 20"),
+    loaded = parseProjectJsonText(replace(json, "\"schema_version\": 22", "\"schema_version\": 20"),
                                   "old.mvm");
     check(loaded.success && loaded.project == old &&
               loaded.project.timelineClips[0].kind == TimelineClipKind::Math,

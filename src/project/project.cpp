@@ -99,6 +99,8 @@ const char* timelineClipKindName(TimelineClipKind kind) {
         return "math";
     case TimelineClipKind::EquationSequence:
         return "equation_sequence";
+    case TimelineClipKind::Graph:
+        return "graph";
     }
     return "";
 }
@@ -110,7 +112,18 @@ bool clipUsesMediaItem(TimelineClipKind kind) {
 
 bool clipKindHasMediaPath(TimelineClipKind kind) {
     return kind != TimelineClipKind::Text && kind != TimelineClipKind::Math &&
-           kind != TimelineClipKind::EquationSequence;
+           kind != TimelineClipKind::EquationSequence && kind != TimelineClipKind::Graph;
+}
+
+std::string canonicalArgbColor(const std::string& text) {
+    std::uint32_t value = 0;
+    if (!parseArgbColor(text, value))
+        return {};
+    constexpr char digits[] = "0123456789ABCDEF";
+    std::string result = "#";
+    for (int shift = 28; shift >= 0; shift -= 4)
+        result += digits[(value >> shift) & 15];
+    return result;
 }
 
 bool parseArgbColor(const std::string& text, std::uint32_t& argb) {

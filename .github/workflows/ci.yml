@@ -2,11 +2,11 @@
 #
 # Phase 0 の CI。Windows + MSYS2 UCRT64 でビルドしてテストする。
 #
-# 注意: 開発機の凍結パッケージ (third_party/pkgs) は git 管理外なので、
-# CI は MSYS2 の最新パッケージを取得する。したがって CI の緑は
-# 「最新の依存でも動く」ことしか示さず、docs/deps-lock.txt の構成を
-# 再現したことにはならない。再現性の検証は scripts/verify-frozen-restore.ps1
-# の役割であり、開発機で行う。
+# 依存は開発機と同じ docs/deps-lock.txt の版を使う (scripts/install-locked-deps.ps1)。
+# 以前は MSYS2 の最新を取っていたため、gcc・Qt・MLT・FFmpeg・clang-format の版が
+# 開発機とずれ、手元で通る lint が CI で落ちた。lock の版が mirror から消えたら
+# 最新へ置き換えずに失敗する。clean な base からの完全な復元検証は、引き続き
+# scripts/verify-frozen-restore.ps1 で開発機の凍結物 (third_party/pkgs) を使って行う。
 
 name: CI
 
@@ -49,45 +49,34 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # clang (LLVM 一式) は lint の clang-format にしか使わない。大きいので lint job だけに入れる。
+      # base だけを用意する。UCRT64 のパッケージは次の step で lock の版を入れる。
+      # update は行わない (最新へ上げると lock とずれる)。
       - name: MSYS2 UCRT64 を用意
         id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-binutils
-            mingw-w64-ucrt-x86_64-make
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-pkgconf
-            mingw-w64-ucrt-x86_64-qt6-base
-            mingw-w64-ucrt-x86_64-qt6-declarative
-            mingw-w64-ucrt-x86_64-qt6-shadertools
-            mingw-w64-ucrt-x86_64-qt6-multimedia
-            mingw-w64-ucrt-x86_64-qt6-svg
-            mingw-w64-ucrt-x86_64-qt6-5compat
-            mingw-w64-ucrt-x86_64-mlt
-            mingw-w64-ucrt-x86_64-ffmpeg
-            mingw-w64-ucrt-x86_64-SDL2
-            mingw-w64-ucrt-x86_64-frei0r-plugins
-            mingw-w64-ucrt-x86_64-libebur128
-            mingw-w64-ucrt-x86_64-fftw
-            mingw-w64-ucrt-x86_64-libsamplerate
-            mingw-w64-ucrt-x86_64-rubberband
-            mingw-w64-ucrt-x86_64-sox
-            mingw-w64-ucrt-x86_64-rtaudio
-            mingw-w64-ucrt-x86_64-rnnoise
-            mingw-w64-ucrt-x86_64-gtest
-            mingw-w64-ucrt-x86_64-libpng
-            mingw-w64-ucrt-x86_64-ccache
-            mingw-w64-ucrt-x86_64-vulkan-headers
-            mingw-w64-ucrt-x86_64-vulkan-loader
-            mingw-w64-ucrt-x86_64-spirv-headers
-            mingw-w64-ucrt-x86_64-shaderc
-            ${{ matrix.lint && 'mingw-w64-ucrt-x86_64-clang' || '' }}
+          update: false
+
+      # lock の版の実体を job 間で使い回す。鍵は lock の内容だけで決まる。
+      - name: 凍結版の依存を復元
+        id: deps-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: build/msys2-pkgs
+          key: msys2-locked-${{ hashFiles('docs/deps-lock.txt') }}
+
+      - name: 凍結版の依存を導入
+        shell: pwsh
+        run: pwsh scripts/install-locked-deps.ps1 -Msys2Root '${{ steps.msys2.outputs.msys2-location }}'
+
+      # 同じ鍵で同時に保存すると警告になるので、release だけが保存する。
+      - name: 凍結版の依存を保存
+        if: matrix.name == 'release' && steps.deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: build/msys2-pkgs
+          key: ${{ steps.deps-cache.outputs.cache-primary-key }}
 
       - name: MLT ランタイムの健全性を確認
         run: |
@@ -97,46 +86,18 @@ jobs:
           ls -la /ucrt64/lib/mlt/ | head -30
           pkgconf --modversion mlt-framework-7
 
-      # Whisper は固定リビジョン (CMakeLists.txt で版と commit を検査) を使う。MSYS2 の
-      # whisper.cpp package は更新で版が変わり configure が止まるので、CI は入れずに
-      # scripts/build-whisper.ps1 で構築する (Vulkan の shader 生成を含み数分かかる)。
-      # configure だけの scripts job も find_library で必要になるので全 job で用意する。
-      # 構築 script と gcc の版が同じ間は前回の導入先を使う。
-      - name: Whisper のキャッシュ鍵を決める
-        id: whisper
-        shell: pwsh
-        run: |
-          $gcc = & '${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\gcc.exe' -dumpfullversion
-          if ($LASTEXITCODE -ne 0 -or -not $gcc) { throw 'gcc の版を読めません' }
-          "gcc=$($gcc.Trim())" >> $env:GITHUB_OUTPUT
+      # Whisper は lock の MSYS2 whisper.cpp (固定リビジョン。CMakeLists.txt で版と commit を
+      # 検査) を開発機と同じく使う。別途の構築は行わない。
 
-      - name: Whisper を復元
-        id: whisper-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: build/whisper-install
-          key: whisper-${{ steps.whisper.outputs.gcc }}-${{ hashFiles('scripts/build-whisper.ps1') }}
-
-      - name: Whisper を構築
-        if: steps.whisper-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: pwsh scripts/build-whisper.ps1 -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64' -Jobs 4
-
-      # 同じ鍵で同時に保存すると警告になるので、release だけが保存する。
-      - name: Whisper を保存
-        if: matrix.name == 'release' && steps.whisper-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: build/whisper-install
-          key: ${{ steps.whisper-cache.outputs.cache-primary-key }}
-
+      # clang-format と PSScriptAnalyzer は開発機と同じ固定版を使う。
       - name: 整形とアーキテクチャ検査
         if: matrix.lint
         shell: pwsh
         run: |
           $analyzerVersion = (Get-Content scripts/PSScriptAnalyzer.version -Raw).Trim()
           Install-Module PSScriptAnalyzer -RequiredVersion $analyzerVersion -Scope CurrentUser -Force
-          pwsh scripts/lint.ps1 -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
+          pwsh scripts/install-clang-format.ps1
+          pwsh scripts/lint.ps1
 
       # 非依存テストは素材を参照しないので、scripts job では生成しない。
       # 生成には約 1.5 分かかるので、生成 script と FFmpeg の版が同じ間は前回の素材を使う。
@@ -174,6 +135,24 @@ jobs:
           path: tests/assets/smoke
           key: ${{ steps.testmedia-cache.outputs.cache-primary-key }}
 
+      # ccache は CI だけの道具で lock に無い。MSYS2 の最新を入れると lock の依存を
+      # 上書きしうるので、版と SHA256 を固定した公式の Windows binary を使う。
+      - name: ccache を用意
+        if: matrix.group == 'BuildDependent'
+        shell: pwsh
+        run: |
+          $version = '4.14.1'
+          $sha256 = '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4'
+          $zip = Join-Path $env:RUNNER_TEMP "ccache-$version.zip"
+          curl.exe --fail --silent --show-error --location --retry 3 -o $zip `
+            "https://github.com/ccache/ccache/releases/download/v$version/ccache-$version-windows-x86_64.zip"
+          if ($LASTEXITCODE -ne 0) { throw "ccache $version を取得できません" }
+          if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $sha256) { throw 'ccache の SHA256 が固定と違います' }
+          Expand-Archive -LiteralPath $zip -DestinationPath $env:RUNNER_TEMP -Force
+          $exe = Join-Path $env:RUNNER_TEMP "ccache-$version-windows-x86_64\ccache.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "ccache.exe がありません: $exe" }
+          "CCACHE_EXE=$exe" >> $env:GITHUB_ENV
+
       # ビルドする job だけ ccache を使う。テストが失敗してもキャッシュは保存したいので、
       # actions/cache ではなく restore / save を分けて使う。
       - name: ccache を復元
@@ -192,13 +171,13 @@ jobs:
           $ucrt64 = '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
           if ('${{ matrix.group }}' -eq 'BuildDependent') {
             # CMake は初回 configure 時にこの環境変数を compiler launcher として読む。
-            $env:CMAKE_C_COMPILER_LAUNCHER = "$ucrt64\bin\ccache.exe"
-            $env:CMAKE_CXX_COMPILER_LAUNCHER = "$ucrt64\bin\ccache.exe"
+            $env:CMAKE_C_COMPILER_LAUNCHER = $env:CCACHE_EXE
+            $env:CMAKE_CXX_COMPILER_LAUNCHER = $env:CCACHE_EXE
             $env:CCACHE_DIR = '${{ runner.temp }}\ccache'
-            # setup-msys2 は毎回 gcc を入れ直すため、既定の mtime 比較では常に外れる。
+            # job ごとに gcc を入れ直すため、既定の mtime 比較では常に外れる。
             $env:CCACHE_COMPILERCHECK = 'content'
             $env:CCACHE_MAXSIZE = '1G'
-            & "$ucrt64\bin\ccache.exe" --zero-stats | Out-Null
+            & $env:CCACHE_EXE --zero-stats | Out-Null
           }
           $testArgs = @('-Preset', '${{ matrix.preset }}', '-Group', '${{ matrix.group }}')
           if ('${{ matrix.shard }}') { $testArgs += @('-Shard', '${{ matrix.shard }}') }
@@ -206,7 +185,7 @@ jobs:
           # 既定の 8 並列ではなく vCPU 数に合わせる (試行中。PR #67 の -j 8 は 164.6 秒)。
           if ('${{ matrix.group }}' -eq 'BuildDependent') { $testArgs += @('-Jobs', '4') }
           pwsh scripts/test.ps1 -Portable @testArgs -Ucrt64 $ucrt64 `
-            -WhisperRoot '${{ github.workspace }}\build\whisper-install'
+            -WhisperRoot $ucrt64
 
       # ヒット率を毎回ログに残す。0% が続くならキャッシュが効いていない。
       - name: ccache の統計
@@ -214,7 +193,7 @@ jobs:
         shell: pwsh
         run: |
           $env:CCACHE_DIR = '${{ runner.temp }}\ccache'
-          & '${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\ccache.exe' --show-stats
+          & $env:CCACHE_EXE --show-stats
 
       - name: ccache を保存
         if: always() && matrix.group == 'BuildDependent'
@@ -228,7 +207,7 @@ jobs:
       - name: 文字起こし試験の backtrace (失敗時)
         if: failure() && matrix.group == 'BuildDependent'
         run: |
-          pacman -S --noconfirm --needed mingw-w64-ucrt-x86_64-gdb
+          # gdb は lock の版で導入済み。pacman -S で最新を足さない。
           cd "build/${{ matrix.preset }}"
           test -x bin/mvm_test_transcribe.exe || exit 0
           gdb -batch -ex run -ex bt -ex "info sharedlibrary" --args bin/mvm_test_transcribe.exe \

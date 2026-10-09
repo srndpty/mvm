@@ -1405,6 +1405,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     std::chrono::steady_clock::time_point schedulerStart;
     std::int64_t schedulerBaseFrame = 0;
     std::int64_t lastSchedulerTarget = -1;
+    std::optional<std::int64_t> sourcelessRenderClockForTest;
     std::uint64_t presentationSequence = 0;
     internal::DistinctFrameCounter distinctPresentedFrames;
     std::thread shutdownThread;
@@ -1442,6 +1443,11 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // frame換算そのものは`CheckedOutputTimebase`へ一本化し、ここで再実装しない。
     SchedulerTarget schedulerTargetLocked(std::chrono::steady_clock::time_point now) {
         SchedulerTarget result;
+        if (sourcelessRenderClockForTest) {
+            result.valid = true;
+            result.frame = *sourcelessRenderClockForTest;
+            return result;
+        }
         if (!timebase) {
             result.error =
                 makeError(PreviewErrorCategory::InvalidState, PreviewOperation::RenderDeviceAttach,
@@ -4303,6 +4309,19 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
         engine.impl_->notify(FramePresentedEvent{result.frame});
     }
     return Result<RenderFrameResult>::success(result);
+}
+
+Result<void> PreviewRenderPort::setSourcelessRenderClockForTest(PreviewEngine& engine,
+                                                                std::int64_t outputFrame) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (outputFrame < 0 || engine.impl_->publicAudioSource ||
+        !engine.impl_->videoWorkersLocked().empty())
+        return Result<void>::failure(
+            makeError(PreviewErrorCategory::InvalidState, PreviewOperation::Play,
+                      "描画 clock の試験は source 無しだけで使用できます"));
+    engine.impl_->sourcelessRenderClockForTest = outputFrame;
+    engine.impl_->lastSchedulerTarget = outputFrame - 1;
+    return Result<void>::success();
 }
 
 bool PreviewRenderPort::renderFrameDue(PreviewEngine& engine) {

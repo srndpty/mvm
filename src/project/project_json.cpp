@@ -31,8 +31,8 @@ constexpr char kFormatMarker[] = "mvm-project";
 //   18 -> 19: 数式 clip の時間の振る舞い ("math_animation" object、省略可) を追加
 //   19 -> 20: トランジションの種類 ("kind"、20 では必須) を追加。19 以前は blend だけ
 bool isReadableSchemaVersion(int schemaVersion) {
-    return schemaVersion == kSchemaVersion || schemaVersion == 20 || schemaVersion == 19 ||
-           schemaVersion == 18 || schemaVersion == 17 || schemaVersion == 16;
+    return schemaVersion == kSchemaVersion || schemaVersion == 21 || schemaVersion == 20 ||
+           schemaVersion == 19 || schemaVersion == 18 || schemaVersion == 17 || schemaVersion == 16;
 }
 
 std::string unsupportedSchemaMessage(int schemaVersion) {
@@ -326,6 +326,8 @@ public:
         // 16〜19 は field の追加だけなので、値を変えずに現行版として扱う。
         if (project.schemaVersion < 21 && sawEquationSequence_)
             return failAndFinish("EquationSequence には schema 21 が必要です", error);
+        if (project.schemaVersion < 22 && sawGraph_)
+            return failAndFinish("Graph には schema 22 が必要です", error);
         project.schemaVersion = kSchemaVersion;
         if (!hasFormat || format != kFormatMarker)
             return failAndFinish("mvm project ファイルではありません (format marker 不一致)",
@@ -352,6 +354,7 @@ private:
     // math_animation が 19 より前の版の file に現れたら壊れている (schema の確認は最後に行う)。
     bool sawMathAnimation_ = false;
     bool sawEquationSequence_ = false;
+    bool sawGraph_ = false;
     // transition の kind の有無。20 では全件に必須、19 以前には現れてはならない
     // (schema_version の位置に依らないよう、確認は最後に行う)。
     std::size_t transitionsWithKind_ = 0;
@@ -810,6 +813,8 @@ private:
             kind = TimelineClipKind::Math;
         else if (text == "equation_sequence")
             kind = TimelineClipKind::EquationSequence;
+        else if (text == "graph")
+            kind = TimelineClipKind::Graph;
         else
             return fail("未知の timeline clip kind です: " + text);
         return true;
@@ -1162,7 +1167,7 @@ private:
     // Sequence の全 object は未知・重複・欠落 field を拒否する。既存 Math のパーサーを共有する。
     using EquationFields = std::vector<std::pair<std::string, std::function<bool()>>>;
 
-    bool parseEquationObject(const EquationFields& fields) {
+    bool parseEquationObject(const EquationFields& fields, std::size_t optionalTail = 0) {
         if (!consume('{'))
             return false;
         std::vector<bool> seen(fields.size(), false);
@@ -1189,10 +1194,75 @@ private:
             }
         if (!consume('}'))
             return false;
-        for (bool present : seen)
-            if (!present)
+        for (std::size_t i = 0; i < seen.size() - optionalTail; ++i)
+            if (!seen[i])
                 return fail("数式 sequence の必須 field がありません");
         return true;
+    }
+
+    bool parseGraph(GraphClipData& data) {
+        return parseEquationObject(
+            {{"viewport",
+              [&] {
+                  auto& v = data.viewport;
+                  return parseEquationObject({{"x_min", [&] { return parseNumber(v.xMin); }},
+                                              {"x_max", [&] { return parseNumber(v.xMax); }},
+                                              {"y_min", [&] { return parseNumber(v.yMin); }},
+                                              {"y_max", [&] { return parseNumber(v.yMax); }}});
+              }},
+             {"axes",
+              [&] {
+                  auto& a = data.axes;
+                  return parseEquationObject({{"show_axes", [&] { return parseBool(a.showAxes); }},
+                                              {"show_grid", [&] { return parseBool(a.showGrid); }},
+                                              {"x_label", [&] { return parseString(a.xLabel); }},
+                                              {"y_label", [&] { return parseString(a.yLabel); }}});
+              }},
+             {"functions",
+              [&] {
+                  return parseEquationArray(data.functions, [&](GraphFunction& f) {
+                      return parseEquationObject(
+                          {{"id", [&] { return parseString(f.id.value); }},
+                           {"expression", [&] { return parseString(f.expression); }},
+                           {"label", [&] { return parseString(f.label); }},
+                           {"color", [&] { return parseString(f.color); }},
+                           {"stroke_width", [&] { return parseNumber(f.strokeWidth); }},
+                           {"domain_min",
+                            [&] {
+                                double v = 0;
+                                if (!parseNumber(v))
+                                    return false;
+                                f.domainMin = v;
+                                return true;
+                            }},
+                           {"domain_max",
+                            [&] {
+                                double v = 0;
+                                if (!parseNumber(v))
+                                    return false;
+                                f.domainMax = v;
+                                return true;
+                            }}},
+                          2);
+                  });
+              }},
+             {"intro", [&] {
+                  return parseEquationObject(
+                      {{"kind",
+                        [&] {
+                            std::string kind;
+                            if (!parseString(kind))
+                                return false;
+                            if (kind == "none")
+                                data.intro.kind = GraphIntroKind::None;
+                            else if (kind == "draw")
+                                data.intro.kind = GraphIntroKind::Draw;
+                            else
+                                return fail("Graph の intro の種類が不正です");
+                            return true;
+                        }},
+                       {"frames", [&] { return parseInteger64(data.intro.frames); }}});
+              }}});
     }
 
     template<class T, class Parse>
@@ -1514,6 +1584,7 @@ private:
         bool hasMath = false;
         bool hasMathAnimation = false;
         bool hasEquationSequence = false;
+        bool hasGraph = false;
         std::vector<std::string> unknownEquationClipFields;
         std::string kind;
         std::string media;
@@ -1662,6 +1733,11 @@ private:
                     if (hasMath || !parseMathClipData(clip.math))
                         return fail("timeline clip の math が重複または不正です");
                     hasMath = true;
+                } else if (key == "graph") {
+                    if (hasGraph || !parseGraph(clip.graph))
+                        return fail("graph が重複または不正です");
+                    hasGraph = true;
+                    sawGraph_ = true;
                 } else if (key == "equation_sequence") {
                     if (hasEquationSequence || !parseEquationSequence(clip.equationSequence))
                         return fail("equation_sequence が重複または不正です");
@@ -1698,7 +1774,11 @@ private:
             return fail("timeline clip の math と kind が一致しません");
         if (hasEquationSequence != (clip.kind == TimelineClipKind::EquationSequence))
             return fail("timeline clip の equation_sequence と kind が一致しません");
-        if (clip.kind == TimelineClipKind::EquationSequence && !unknownEquationClipFields.empty())
+        if (hasGraph != (clip.kind == TimelineClipKind::Graph))
+            return fail("timeline clip の graph と kind が一致しません");
+        if ((clip.kind == TimelineClipKind::EquationSequence ||
+             clip.kind == TimelineClipKind::Graph) &&
+            !unknownEquationClipFields.empty())
             return fail("EquationSequence clip に未知の field があります: " +
                         unknownEquationClipFields.front());
         // 省略は intro 無し。数式以外の clip には書けない (書き出しも数式 clip だけが書く)。
@@ -2295,6 +2375,43 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
                  << "        \"background_color\": \"" << escapeJson(math.backgroundColor)
                  << "\"\n      }";
         };
+        if (clip.kind == TimelineClipKind::Graph) {
+            const auto& g = clip.graph;
+            const auto& v = g.viewport;
+            auto quoted = [&](const std::string& s) { json << '"' << escapeJson(s) << '"'; };
+            json << ",\n      \"graph\": {\"viewport\": {\"x_min\": " << v.xMin
+                 << ", \"x_max\": " << v.xMax << ", \"y_min\": " << v.yMin
+                 << ", \"y_max\": " << v.yMax
+                 << "}, \"axes\": {\"show_axes\": " << (g.axes.showAxes ? "true" : "false")
+                 << ", \"show_grid\": " << (g.axes.showGrid ? "true" : "false")
+                 << ", \"x_label\": ";
+            quoted(g.axes.xLabel);
+            json << ", \"y_label\": ";
+            quoted(g.axes.yLabel);
+            json << "}, \"functions\": [";
+            for (std::size_t i = 0; i < g.functions.size(); ++i) {
+                const auto& f = g.functions[i];
+                if (i)
+                    json << ',';
+                json << "{\"id\": ";
+                quoted(f.id.value);
+                json << ", \"expression\": ";
+                quoted(f.expression);
+                json << ", \"label\": ";
+                quoted(f.label);
+                json << ", \"color\": ";
+                quoted(canonicalArgbColor(f.color));
+                json << ", \"stroke_width\": " << f.strokeWidth;
+                if (f.domainMin)
+                    json << ", \"domain_min\": " << *f.domainMin;
+                if (f.domainMax)
+                    json << ", \"domain_max\": " << *f.domainMax;
+                json << '}';
+            }
+            json << "], \"intro\": {\"kind\": \""
+                 << (g.intro.kind == GraphIntroKind::Draw ? "draw" : "none")
+                 << "\", \"frames\": " << g.intro.frames << "}}";
+        }
         if (clip.kind == TimelineClipKind::EquationSequence) {
             const auto& sequence = clip.equationSequence;
             auto quoted = [&](const std::string& s) { json << '"' << escapeJson(s) << '"'; };

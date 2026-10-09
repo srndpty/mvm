@@ -118,6 +118,11 @@ typedef struct {
     void* progress_opaque;
     /* 非0なら Matroska / PCM で音声を非圧縮出力する。0なら MP4 / AAC。 */
     int lossless_audio;
+    /* 通常 layer 合成後、encoder の色変換前の RGBA8 を検査する。非0は失敗で公開しない。
+     * render worker から呼ぶため、呼び出し側は同期を行う。画素の所有権は渡さない。 */
+    int (*rgba_callback)(long long frame, const unsigned char* rgba, int width, int height,
+                         void* opaque);
+    void* rgba_opaque;
 } MvmExportSpec;
 
 typedef struct {

@@ -2,6 +2,8 @@
 #include "app/preview/test_window_mode.h"
 #include "app/text_raster.h"
 #include "mvm_controller.h"
+#include "preview_engine/preview_engine_internal.h"
+#include "project/graph_edit.h"
 #include "project/project_json.h"
 #include "project/subtitles.h"
 #include "timeline_wheel_filter.h"
@@ -41,7 +43,8 @@ bool pump(const std::function<bool()>& done) {
 }
 
 int main(int argc, char** argv) {
-    const bool native = argc == 2 && std::string_view(argv[1]) == "--native";
+    const std::string_view mode = argc == 2 ? argv[1] : "";
+    const bool native = mode.starts_with("--native");
     if (!native)
         qputenv("QT_QPA_PLATFORM", "offscreen");
     QQuickWindow::setGraphicsApi(native ? QSGRendererInterface::Direct3D11
@@ -55,6 +58,23 @@ int main(int argc, char** argv) {
         project.subtitles.emplace();
         project.subtitles->cues = {{"first", 5, 15, "最初の字幕", {}},
                                    {"next", 30, 50, "次の字幕", {}}};
+        if (mode != "--native") {
+            require(mvm::project::addGraph(project, "unrelated", {"f"}, "寄与しない Graph",
+                                           {mvm::project::TrackKind::Video, 0}, 100)
+                        .success,
+                    "寄与しない Graph の追加");
+            auto& graph = project.timelineClips.back();
+            if (mode == "--native-disabled") {
+                graph.timelineStartFrame = 0;
+                graph.enabled = false;
+            } else if (mode == "--native-hidden") {
+                graph.timelineStartFrame = 0;
+                project.videoTracks[0].muted = true;
+            } else if (mode == "--native-absent") {
+                graph.timelineStartFrame = 0;
+                graph.graph.functions[0].expression = "x+";
+            }
+        }
         const auto path = std::filesystem::path(temp.filePath("native.mvm").toStdWString());
         require(mvm::project::saveProjectJson(project, path).success, "字幕だけのProject保存");
         MvmController controller(path, {}, project);
@@ -70,6 +90,10 @@ int main(int argc, char** argv) {
             pump([&] { return controller.previewReady() && controller.previewPresentedLatest(); }),
             "字幕だけのnativeプレビュー初期化");
         const auto before = controller.previewEngineForTest()->telemetry().presentedFrameCount;
+        const auto initialSeeks = mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(
+                                      *controller.previewEngineForTest())
+                                      .seekRequestCount;
+        require(initialSeeks == 1, "字幕 native preview の初期 seek は厳密に一回");
         QElapsedTimer timer;
         timer.start();
         while (timer.elapsed() < 300) {
@@ -78,6 +102,19 @@ int main(int argc, char** argv) {
         }
         require(controller.previewEngineForTest()->telemetry().presentedFrameCount == before,
                 "字幕だけの初期seekを繰り返さない");
+        // 現在 frame に寄与しない cache の通知を初期化後にも明示的に届ける。
+        Q_EMIT controller.graphRastersForTest().changed();
+        timer.restart();
+        while (timer.elapsed() < 300) {
+            QGuiApplication::processEvents();
+            QThread::msleep(2);
+        }
+        require(controller.previewEngineForTest()->telemetry().presentedFrameCount == before,
+                "mapping に Graph が無い cache 通知は seek を増やさない");
+        require(mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(
+                    *controller.previewEngineForTest())
+                        .seekRequestCount == initialSeeks,
+                "寄与しない cache 通知は seek request 自体も増やさない");
         for (const auto [frame, layers] :
              {std::pair{4, 0}, {5, 1}, {14, 1}, {15, 0}, {29, 0}, {30, 1}, {49, 1}}) {
             require(controller.seekTimelineFrame(frame) &&
