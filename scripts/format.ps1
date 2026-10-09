@@ -2,6 +2,10 @@
 .SYNOPSIS
     C/C++ ソースを clang-format で整形する。
 
+.DESCRIPTION
+    clang-format は scripts/clang-format.requirements.txt で版を固定したものだけを使う。
+    MSYS2 の clang-format は rolling 更新で版が変わり、CI と整形結果が食い違うため使わない。
+
 .PARAMETER Check
     整形せず、差分があるかだけを検査する (lint / CI 用)。
     差分があれば exit 1。
@@ -12,22 +16,28 @@
 #>
 [CmdletBinding()]
 param(
-    [switch]$Check,
-    [string]$Ucrt64 = 'C:\msys64\ucrt64'
+    [switch]$Check
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $RepoRoot     = Split-Path -Parent $PSScriptRoot
-$ClangFormat  = Join-Path $Ucrt64 'bin\clang-format.exe'
+. (Join-Path $PSScriptRoot 'lib\clang-format.ps1')
+$tool         = Get-MvmClangFormat -RepoRoot $RepoRoot
+$ClangFormat  = $tool.Exe
 
-if (-not (Test-Path $ClangFormat)) {
+if (-not (Test-Path -LiteralPath $ClangFormat)) {
     throw @"
-clang-format が見つかりません: $ClangFormat
+固定版の clang-format $($tool.Version) がありません: $ClangFormat
 
-    pwsh scripts/bootstrap-msys2.ps1
+    pwsh scripts/install-clang-format.ps1
 "@
+}
+# 固定と違う版で整形・検査しない。版ごとに結果が違い、CI と食い違う。
+$actualVersion = & $ClangFormat --version
+if ("$actualVersion" -notmatch "clang-format version $([regex]::Escape($tool.Version))(\s|$)") {
+    throw "clang-format の版が固定と違います: $actualVersion (固定: $($tool.Version))"
 }
 
 # 対象は自分たちが書いたコードだけ。build と third_party は含めない。
@@ -43,7 +53,7 @@ if (-not $targets) {
     exit 0
 }
 
-Write-Host "clang-format: $((& $ClangFormat --version))"
+Write-Host "clang-format: $actualVersion"
 Write-Host "対象: $($targets.Count) ファイル"
 
 if ($Check) {

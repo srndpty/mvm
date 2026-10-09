@@ -123,12 +123,25 @@ FFmpeg / ffprobe は `C:\msys64\ucrt64\bin` のものだけを使う。
 
 ```powershell
 pwsh scripts/bootstrap-msys2.ps1     # 依存導入
+pwsh scripts/install-clang-format.ps1  # 固定版の clang-format を build/tools へ導入
 pwsh scripts/build.ps1               # ビルド (PATH を整えて cmake を呼ぶ)
 pwsh scripts/test.ps1                # ビルド + CTest (release/debug)
 pwsh scripts/format.ps1              # clang-format 適用
 pwsh scripts/lint.ps1                # 整形差分と静的検査
 pwsh scripts/coverage.ps1            # カバレッジ
 ```
+
+### CI と開発機の版を一致させる
+
+CI は MSYS2 の最新を取らず、`docs/deps-lock.txt` の版を `scripts/install-locked-deps.ps1` で
+入れる。導入後の UCRT64 パッケージ集合が lock と完全一致しなければ失敗する。
+依存を足す・上げるときは、開発機で導入して lock と `third_party/pkgs` を更新してから CI に反映する。
+CI の YAML に MSYS2 のパッケージを直接書き足さない (最新が入り、lock とずれる)。
+
+lint の道具も版を固定する。clang-format は `scripts/clang-format.requirements.txt` (版と wheel の
+SHA256)、PSScriptAnalyzer は `scripts/PSScriptAnalyzer.version`。MSYS2 の clang-format は使わない
+(版ごとに整形結果が違い、22.1.8 で通る lint が CI の 23.1.3 で落ちた)。
+CI だけの道具 (ccache) は lock に入れず、版と SHA256 を固定した公式 binary を使う。
 
 通常の開発作業では、次の repo-local な短い入口を推奨する。これらは上記の
 正式スクリプトをそのまま呼び出す front-end であり、詳細な option が必要な場合は

@@ -18,7 +18,6 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Ucrt64 = 'C:\msys64\ucrt64',
     # 走査対象を差し替える。lint 自身の negative test で使う。
     # 指定時は clang-format と PSScriptAnalyzer をスキップし、
     # ソース検査だけを行う。
@@ -44,7 +43,7 @@ function Write-Section([string]$Name) {
 # --- 1. 整形 ---------------------------------------------------------------
 if (-not $Path) {
     Write-Section 'clang-format'
-    & (Join-Path $PSScriptRoot 'format.ps1') -Check -Ucrt64 $Ucrt64
+    & (Join-Path $PSScriptRoot 'format.ps1') -Check
     if ($LASTEXITCODE -ne 0) { $failed += 'clang-format' }
 }
 

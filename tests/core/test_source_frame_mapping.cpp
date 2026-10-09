@@ -61,7 +61,7 @@ void inverseIsConsistent() {
             {{25, 1}, {60, 1}},    {{50, 1}, {60, 1}}, {{24000, 1001}, {60, 1}},
             {{120, 1}, {60, 1}},   {{30, 1}, {60, 1}}, {{60, 1}, {30000, 1001}},
             {{3000, 73}, {60, 1}}, // 30fps 素材の 73% 相当
-        };
+    };
     for (const auto& [source, output] : rates) {
         for (std::int64_t p = 0; p < 500; ++p) {
             const auto frame = mvm::core::sourceFrameAtOutputPosition(p, source, output);
