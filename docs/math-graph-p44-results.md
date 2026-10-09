@@ -1,6 +1,6 @@
 # P4-4 の検証結果
 
-基準 HEAD: `39f8995371db625907f1ce9c13ed56bf248a668b`。stableGraph / graphMemo の契約範囲は HEAD と文字完全一致。追跡済みの歴史的 Graph / EquationSequence 文書に差分はない。
+基準 HEAD: `ff85b31d676d753c857aa2e343c9dc110085770d`。stableGraph / graphMemo の契約範囲は HEAD と文字完全一致。追跡済みの歴史的 Graph / EquationSequence 文書に差分はない。
 
 P4-4 の判定はこの生結果と設計文書で確認する。P4-5 は開始せず、コミット・push は行わない。
 
@@ -10,6 +10,7 @@ P4-4 の判定はこの生結果と設計文書で確認する。P4-5 は開始�
 Final-Focused と Final-Regressions の `graph_editor_controller` 失敗は、その後の試験修正より前の source である。通常 release は修正後の試験をビルドして通過した。
 最初の BuildIndependent は Escape で拒否 draft を現在の確定値へ戻す修正より前の QML である。BuildIndependent-02 は最終 QML で 1084 件を通過した。
 Final-Mutations は CP932 コンソールのリダイレクトが UTF-8 の失敗文を崩し、assertion 文字列の照合だけが不成立だった。試験は終了コード 8 で該当拒否が失敗している。Final-Mutations-02 は UTF-8 で捕捉し、6 件すべてを検出して source を復元した。
+閉鎖確認の Closure-Focused は 4/4、Closure-Regressions は 26/26。先行の失敗した Focused と Regressions は残す。P4-5 は GO、未着手。
 
 |取得|終了コード|生結果の集計|証拠|
 |---|---:|---|---|
@@ -23,6 +24,8 @@ Final-Mutations は CP932 コンソールのリダイレクトが UTF-8 の失�
 |math-p44-20261009-065842-Real|未記録|build・初期化・終了のログを参照|[生証拠](../build/math-p44-20261009-065842-Real/)|
 |math-p44-20261009-065930-Real|1|UI 84 検査、失敗 1 / 原寸全画素比較 5 frame、失敗 0|[生証拠](../build/math-p44-20261009-065930-Real/)|
 |math-p44-20261009-070130-Real|0|UI 86 検査、失敗 0 / 原寸全画素比較 5 frame、失敗 0|[生証拠](../build/math-p44-20261009-070130-Real/)|
+|math-p44-20261009-Closure-Focused|0|ctest.log: 4 件中 0 失敗|[生証拠](../build/math-p44-20261009-Closure-Focused/)|
+|math-p44-20261009-Closure-Regressions|0,0,0,0,0,0,0,0,0,0,0,0,0|regressions.log: 26 件中 0 失敗|[生証拠](../build/math-p44-20261009-Closure-Regressions/)|
 |math-p44-20261009-Final-BuildIndependent|0|independent.log: 1084 件中 0 失敗|[生証拠](../build/math-p44-20261009-Final-BuildIndependent/)|
 |math-p44-20261009-Final-BuildIndependent-02|0|independent.log: 1084 件中 0 失敗|[生証拠](../build/math-p44-20261009-Final-BuildIndependent-02/)|
 |math-p44-20261009-Final-Focused|8|ctest.log: 4 件中 1 失敗|[生証拠](../build/math-p44-20261009-Final-Focused/)|

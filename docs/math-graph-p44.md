@@ -50,6 +50,12 @@ pwsh scripts/math-p44-mutations.ps1 -EvidenceDirectory build/<新規 directory>
 Basic と Windows style の QML 試験は `failOnWarning` を維持し、通常／狭い／低い／両方の
 各寸法で必要な操作と最下部へ到達できることを検査する。
 共通のカスタム入力部品三種は native style の未対応カスタマイズを避けるため Basic を明示する。
+製品は QML を読む前に style を Basic に固定しているので、この import は製品の寸法・色・
+focus・キーボードを変えない。Windows style の Button / CheckBox / TextField は
+background・contentItem・indicator の差し替えを拒否するため、試験が Windows を選んでも
+この三部品だけは Basic のまま高さ 31 / 30 / 34 と独自の focus 枠を保つ。
+CheckBox と Button の起動キーは Space、TextField の確定は Enter である。
+Button は Enter では起動しない。
 
 製品受け入れは `Main.qml` の実メニューとキー・クリック入力から関数を作る。
 保存した同じ Project を原寸 native surface で描き、検証済み RGBA PNG に独立の整数式で
@@ -77,8 +83,18 @@ Undo/Redo と安定した関数 ID、保存と再読込、Draw 途中の trim/sp
 
 最初の BuildIndependent は Escape 修正前の QML なので、最終 QML の独立 gate には数えない。
 Final-Mutations は照合用ログの文字化けであり、製品の拒否が消えた証拠ではない。
-製品の apps / src / tests は release、Final-Real、BuildIndependent-02 と SHA256 が一致する。
-その後に変えたのは、変異ログを UTF-8 で残す script と結果を再計算する script だけで、Lint-02 が検査した。
+Lint-02 の時点では、製品の apps / src は release と SHA256 が一致し、差分は変異ログの
+UTF-8 捕捉と結果再計算の script だけだった。閉鎖確認では draft の QML 試験だけを足し、
+その source で Focused と Regressions を取り直した。
+
+未確定の不正 draft は、関数の切り替え、clip の切り替え、Undo/Redo に相当する
+revision の差し替えをまたいでも、別の関数や clip の確定値へ書かれない。
+Escape は focus 中の欄を、その時点の Project 値へ戻す。
+
+閉鎖確認の最終 source は Focused 4/4（`build/math-p44-20261009-Closure-Focused`）と
+Regressions 26/26（`build/math-p44-20261009-Closure-Regressions`）。
+先行の失敗した Focused / Regressions は残す。Graph の意味、schema22、renderer、
+cache、composition 再利用は変更していない。P4-4 は PASS/CLOSED のまま、P4-5 は GO、未着手。
 
 P4-5 へ残すもの: H.264 / video export、schema 23、新しい式構文、adaptive sampling、
 renderer の変更、静止 artifact の物理共有、Graph の新しい transition、任意の Python / Manim script、

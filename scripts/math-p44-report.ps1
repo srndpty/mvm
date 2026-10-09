@@ -16,7 +16,7 @@ $currentReuse = [regex]::Match($currentController, $reusePattern)
 if (-not $originalReuse.Success -or -not $currentReuse.Success -or $originalReuse.Value -cne $currentReuse.Value) {
     throw '既存の Graph composition 再利用契約が一致しません'
 }
-& $gitExe -C $repoRoot diff --exit-code -- 'docs/math-graph-p*.md' 'docs/math-equation-sequence-p*.md' | Out-Null
+& $gitExe -C $repoRoot diff --exit-code -- 'docs/math-graph-p*.md' 'docs/math-equation-sequence-p*.md' ':(exclude)docs/math-graph-p44.md' ':(exclude)docs/math-graph-p44-results.md' | Out-Null
 if ($LASTEXITCODE -ne 0) { throw '歴史的な結果文書が変更されています' }
 $lines = [System.Collections.Generic.List[string]]::new()
 $lines.Add('# P4-4 の検証結果')
@@ -31,6 +31,7 @@ $lines.Add('初回の再起動失敗がこの同じ原因だったかは過去 r
 $lines.Add('Final-Focused と Final-Regressions の `graph_editor_controller` 失敗は、その後の試験修正より前の source である。通常 release は修正後の試験をビルドして通過した。')
 $lines.Add('最初の BuildIndependent は Escape で拒否 draft を現在の確定値へ戻す修正より前の QML である。BuildIndependent-02 は最終 QML で 1084 件を通過した。')
 $lines.Add('Final-Mutations は CP932 コンソールのリダイレクトが UTF-8 の失敗文を崩し、assertion 文字列の照合だけが不成立だった。試験は終了コード 8 で該当拒否が失敗している。Final-Mutations-02 は UTF-8 で捕捉し、6 件すべてを検出して source を復元した。')
+$lines.Add('閉鎖確認の Closure-Focused は 4/4、Closure-Regressions は 26/26。先行の失敗した Focused と Regressions は残す。P4-5 は GO、未着手。')
 $lines.Add('')
 $lines.Add('|取得|終了コード|生結果の集計|証拠|')
 $lines.Add('|---|---:|---|---|')
