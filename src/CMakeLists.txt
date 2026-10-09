@@ -165,10 +165,11 @@ add_library(mvm::math_clip_render ALIAS mvm_math_clip_render)
 # 正規名へ rename する順序だけを担う。MLT の呼び出しは mvm::mlt に閉じる。
 add_library(mvm_timeline_export STATIC
     app/timeline_export.cpp
+    app/graph_export.cpp
 )
 target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_timeline_export
-    PUBLIC mvm::project mvm::equation_sequence_compile
+    PUBLIC mvm::project mvm::equation_sequence_compile mvm::graph_render_compile
     PRIVATE mvm::core mvm::mlt mvm::text_raster mvm::math_clip_render mvm_still_image
         mvm::warnings)
 add_library(mvm::timeline_export ALIAS mvm_timeline_export)

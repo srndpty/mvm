@@ -24,6 +24,54 @@ static void set_err(char* err, size_t n, const char* fmt, ...) {
     va_end(ap);
 }
 
+typedef struct {
+    const MvmExportSpec* spec;
+    volatile LONG rejected;
+    volatile LONG observed;
+} ExportRgbaAudit;
+
+/* 最終 producer に付ける。Graph の staging や preview の画素で合成を追認しない。 */
+static int export_rgba_image(mlt_frame frame, uint8_t** image, mlt_image_format* format, int* width,
+                             int* height, int writable) {
+    ExportRgbaAudit* audit = mlt_frame_pop_service(frame);
+    const mlt_image_format requested = *format;
+    *format = mlt_image_rgba;
+    int status = mlt_frame_get_image(frame, image, format, width, height, writable);
+    if (status || !*image || *format != mlt_image_rgba || *width != audit->spec->width ||
+        *height != audit->spec->height) {
+        InterlockedExchange(&audit->rejected, 1);
+        return status ? status : 1;
+    }
+    InterlockedIncrement(&audit->observed);
+    if (audit->spec->rgba_callback(mlt_frame_get_position(frame), *image, *width, *height,
+                                   audit->spec->rgba_opaque)) {
+        InterlockedExchange(&audit->rejected, 1);
+        return 1;
+    }
+    if (requested != mlt_image_none && requested != mlt_image_rgba && frame->convert_image)
+        return frame->convert_image(frame, image, format, requested);
+    return 0;
+}
+
+static mlt_frame export_rgba_process(mlt_filter filter, mlt_frame frame) {
+    mlt_frame_push_service(frame, filter->child);
+    mlt_frame_push_get_image(frame, export_rgba_image);
+    return frame;
+}
+
+static int attach_rgba_audit(mlt_producer output, ExportRgbaAudit* audit) {
+    if (!audit->spec->rgba_callback)
+        return 0;
+    mlt_filter filter = mlt_filter_new();
+    if (!filter)
+        return 1;
+    filter->child = audit;
+    filter->process = export_rgba_process;
+    const int status = mlt_service_attach(MLT_PRODUCER_SERVICE(output), filter);
+    mlt_filter_close(filter);
+    return status;
+}
+
 static int export_cancel_requested(const MvmExportSpec* spec, mlt_consumer consumer,
                                    long long total) {
     if (!spec->progress_callback)
@@ -656,6 +704,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     mlt_producer pp = NULL;
     long long total = 0;
     int cancelled = 0;
+    ExportRgbaAudit audit = {spec, 0, 0};
 
     if (!mvm_mlt_runtime_is_ready()) {
         set_err(err, err_size, "MLT が初期化されていません");
@@ -853,6 +902,10 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     /* 出力範囲を明示する。設定しないと consumer がどこまで書くのかが曖昧になる。 */
     mlt_producer_set_in_and_out(pp, 0, (mlt_position)(total - 1));
     mlt_producer_seek(pp, 0);
+    if (attach_rgba_audit(pp, &audit)) {
+        set_err(err, err_size, "encoder 直前の RGBA 検査を接続できません");
+        goto fail;
+    }
 
     /* --- consumer ---------------------------------------------------------- */
     consumer = mlt_factory_consumer(profile, "avformat", out_path);
@@ -905,6 +958,10 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     consumer = NULL;
 
     /* --- 出力の検証 -------------------------------------------------------- */
+    if (spec->rgba_callback && (audit.rejected || audit.observed < total)) {
+        set_err(err, err_size, "encoder 直前の RGBA 検査が失敗または不足しました");
+        goto fail;
+    }
     {
         unsigned long long size = 0;
         if (!file_size_utf8(out_path, &size)) {
@@ -1005,6 +1062,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     long long* cursors = NULL;
     mlt_producer v1_background = NULL;
     int failed = MVM_EXPORT_FAILED;
+    ExportRgbaAudit audit = {spec, 0, 0};
 
     if (out)
         memset(out, 0, sizeof(*out));
@@ -1331,6 +1389,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         }
         mlt_producer_set_in_and_out(output, 0, (mlt_position)(total_duration - 1));
         mlt_producer_seek(output, 0);
+        if (attach_rgba_audit(output, &audit)) {
+            set_err(err, err_size, "encoder 直前の RGBA 検査を接続できません");
+            goto cleanup;
+        }
         consumer = mlt_factory_consumer(profile, "avformat", out_path);
         if (!consumer) {
             set_err(err, err_size, "avformat consumerを作れません");
@@ -1370,6 +1432,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     mlt_consumer_stop(consumer);
     mlt_consumer_close(consumer);
     consumer = NULL;
+    if (spec->rgba_callback && (audit.rejected || audit.observed < total_duration)) {
+        set_err(err, err_size, "encoder 直前の RGBA 検査が失敗または不足しました");
+        goto cleanup;
+    }
     {
         unsigned long long size = 0;
         MvmMltProbeResult probe;

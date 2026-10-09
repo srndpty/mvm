@@ -190,13 +190,6 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
 TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
                                          const TimelineExportRequest& request) {
     TimelineExportPlan plan;
-    for (const auto& clip : project.timelineClips) {
-        if (clip.enabled && clip.kind == project::TimelineClipKind::Graph &&
-            project::isTrackOutputEnabled(project, clip.track)) {
-            plan.error = "Graph の書き出しは未対応です: " + clip.name;
-            return plan;
-        }
-    }
     if (request.width <= 0 || request.height <= 0 || request.fpsNum <= 0 || request.fpsDen <= 0 ||
         request.videoCrf < 0 || request.videoCrf > 51 || request.fpsNum != project.timelineFpsNum ||
         request.fpsDen != project.timelineFpsDen) {
@@ -212,9 +205,29 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             if (clip.enabled && hasEquationOuterTransition(project, clip))
                 plan.equationReadiness.failure =
                     EquationExportFailure::UnsupportedTimelineTransition;
+        for (const auto& clip : project.timelineClips)
+            if (clip.enabled && clip.kind == project::TimelineClipKind::Graph &&
+                project::isTrackOutputEnabled(project, clip.track) &&
+                std::any_of(project.timelineTransitions.begin(), project.timelineTransitions.end(),
+                            [&](const auto& transition) {
+                                return transition.outgoingClipId == clip.id ||
+                                       transition.incomingClipId == clip.id;
+                            }))
+                plan.graphs.readiness = {GraphExportFailure::UnsupportedTransition, valid.error};
         return plan;
     }
-    bool mathBaseOverlay = false;
+    plan.graphs = prepareGraphExport(project, request.width, request.height, 0, valid.totalFrames,
+                                     request.graphEnvironment,
+                                     [&] { return request.progress && request.progress(0, 0); });
+    if (!plan.graphs.readiness.ready()) {
+        plan.error = plan.graphs.readiness.detail;
+        plan.cancelled = plan.graphs.readiness.failure == GraphExportFailure::Cancelled;
+        return plan;
+    }
+    bool mathBaseOverlay = std::any_of(
+        project.timelineClips.begin(), project.timelineClips.end(), [&](const auto& clip) {
+            return clip.track.index == 0 && plan.graphs.clips.contains(clip.id);
+        });
     for (const auto& clip : project.timelineClips) {
         if (!clip.enabled || clip.kind != project::TimelineClipKind::EquationSequence ||
             !project::isTrackOutputEnabled(project, clip.track))
@@ -395,7 +408,8 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         mapped.audio = clip.track.kind == project::TrackKind::Audio;
         mapped.still = project::isStillClipKind(clip.kind);
         mapped.equationSequence = clip.kind == project::TimelineClipKind::EquationSequence;
-        if (mapped.equationSequence) {
+        mapped.graph = clip.kind == project::TimelineClipKind::Graph;
+        if (mapped.equationSequence || mapped.graph) {
             mapped.still = true;
             plan.backend = TimelineExportResult::Backend::Tractor;
         }
@@ -451,7 +465,7 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         };
         const std::int64_t localOffset =
             clip.timelineStartFrame - segment->original.timelineStartFrame;
-        if (mapped.equationSequence) {
+        if (mapped.equationSequence || mapped.graph) {
             mapped.producerInFrame = 0;
             mapped.producerOutFrame = duration.frame;
             mapped.tailPaddingFrames = 0;
@@ -589,6 +603,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
         result.cancelled = plan.cancelled;
         result.error = plan.error;
         result.equationReadiness = plan.equationReadiness;
+        result.graphReadiness = plan.graphs.readiness;
         return result;
     }
 
@@ -643,6 +658,47 @@ TimelineExportResult exportTimeline(const project::Project& project,
         if (index >= project.timelineClips.size()) {
             result.error = "書き出し計画の clip 番号が範囲外です";
             return result;
+        }
+        if (planned.graph) {
+            const auto mappingIndex = static_cast<std::size_t>(&planned - plan.clips.data());
+            for (std::int64_t frame = 0; frame < planned.timelineDurationFrames; ++frame) {
+                if (request.progress && request.progress(0, plan.totalDurationFrames)) {
+                    result.cancelled = true;
+                    result.graphReadiness = {GraphExportFailure::Cancelled,
+                                             "Graph の staging を取消しました"};
+                    result.error = result.graphReadiness.detail;
+                    return result;
+                }
+                const auto outputFrame = planned.timelineStartFrame + frame;
+                const auto loaded =
+                    loadGraphExportFrame(plan.graphs, planned.renderClip.id, outputFrame,
+                                         request.graphEnvironment.cancel);
+                result.graphReadiness = loaded.readiness;
+                if (!loaded.readiness.ready()) {
+                    result.error = loaded.readiness.detail;
+                    result.cancelled = loaded.readiness.failure == GraphExportFailure::Cancelled;
+                    return result;
+                }
+                if (request.graphFrameObserver)
+                    request.graphFrameObserver(planned.renderClip.id, outputFrame, *loaded.raster);
+                const auto& rgba = loaded.raster->rgba;
+                const QImage image(rgba.data(), request.width, request.height, request.width * 4,
+                                   QImage::Format_RGBA8888);
+                std::string staged;
+                if (!stagePng(image,
+                              QStringLiteral("%1-graph-%2.png")
+                                  .arg(mappingIndex)
+                                  .arg(frame, 5, 10, QLatin1Char('0')),
+                              staged)) {
+                    result.graphReadiness = {GraphExportFailure::PublicationFailure, result.error};
+                    return result;
+                }
+            }
+            const auto pattern = QString::number(mappingIndex) + QStringLiteral("-graph-%05d.png");
+            transformPaths.emplace(
+                mappingIndex,
+                pathToUtf8(std::filesystem::path(stillStaging->filePath(pattern).toStdWString())));
+            continue;
         }
         if (planned.equationSequence) {
             const auto mappingIndex = static_cast<std::size_t>(&planned - plan.clips.data());
@@ -906,13 +962,14 @@ TimelineExportResult exportTimeline(const project::Project& project,
         MvmExportClip mapped{};
         mapped.path =
             planned.subtitle ? subtitlePaths.at(planned.subtitle->id).c_str()
-            : !planned.mathTransformId.empty() || planned.equationSequence
+            : !planned.mathTransformId.empty() || planned.equationSequence || planned.graph
                 ? transformPaths.at(static_cast<std::size_t>(&planned - plan.clips.data())).c_str()
             : planned.mathWrite ? writePaths.at(index).c_str()
                                 : clipPaths.at(index).c_str();
-        mapped.is_image_sequence =
-            planned.mathWrite || !planned.mathTransformId.empty() || planned.equationSequence ? 1
-                                                                                              : 0;
+        mapped.is_image_sequence = planned.mathWrite || !planned.mathTransformId.empty() ||
+                                           planned.equationSequence || planned.graph
+                                       ? 1
+                                       : 0;
         mapped.source_fps_num = clip.sourceFpsNum;
         mapped.source_fps_den = clip.sourceFpsDen;
         mapped.source_frame_count = clip.sourceFrameCount;
@@ -999,6 +1056,13 @@ TimelineExportResult exportTimeline(const project::Project& project,
             },
         .progress_opaque = const_cast<TimelineExportRequest*>(&request),
         .lossless_audio = request.losslessAudio ? 1 : 0,
+        .rgba_callback = request.encoderFrameValidator
+            ? +[](long long frame, const unsigned char* rgba, int width, int height, void* opaque) {
+                const auto* inputRequest = static_cast<const TimelineExportRequest*>(opaque);
+                return inputRequest->encoderFrameValidator(frame, rgba, width, height) ? 0 : 1;
+              }
+            : nullptr,
+        .rgba_opaque = const_cast<TimelineExportRequest*>(&request),
     };
 
     // 一時ファイルへ書き、検証を通ってから正規名へ rename する。
@@ -1021,13 +1085,27 @@ TimelineExportResult exportTimeline(const project::Project& project,
         std::filesystem::remove(temporaryPath, pathError);
         result.error = error[0] ? error : "書き出しに失敗しました";
         result.cancelled = exportStatus == MVM_EXPORT_CANCELLED;
+        if (!plan.graphs.clips.empty())
+            result.graphReadiness = {result.cancelled ? GraphExportFailure::Cancelled
+                                                      : GraphExportFailure::EncoderFailure,
+                                     result.error};
+        return result;
+    }
+
+    if (request.progress && request.progress(plan.totalDurationFrames, plan.totalDurationFrames)) {
+        std::filesystem::remove(temporaryPath, pathError);
+        result.cancelled = true;
+        result.error = "最終公開前に書き出しを取消しました";
+        result.graphReadiness = {GraphExportFailure::Cancelled, result.error};
         return result;
     }
 
     std::filesystem::rename(temporaryPath, outputPath, pathError);
     if (pathError) {
+        const auto publicationError = pathError.message();
         std::filesystem::remove(temporaryPath, pathError);
-        result.error = "書き出したファイルを正規名へ rename できません: " + pathError.message();
+        result.error = "書き出したファイルを正規名へ rename できません: " + publicationError;
+        result.graphReadiness = {GraphExportFailure::PublicationFailure, result.error};
         return result;
     }
 

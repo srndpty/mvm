@@ -138,7 +138,9 @@
 - [事実] 2026-10-09、P4-4 の閉鎖確認は PASS。共有ダイアログ三部品の Basic 固定は
   製品の Basic style と一致し、未確定 draft は関数・clip・Undo をまたがない。
   最終 source の Focused は 4/4、Regressions は 26/26。P4-5 は GO、未着手。
-- P4-5: GO、未着手。source 範囲と現在 spec を正にした video export、保存再読込、Draw 途中 trim/split の製品 UI 閉鎖。
+- P4-5 は着手済み・HOLD。実装と未達条件は [math-graph-p45.md](math-graph-p45.md)、
+  新規の失敗と検証結果は [math-graph-p45-results.md](math-graph-p45-results.md) に移した。
+  既存 MLT の外側合成と凍結した整数 RGBA oracle の不一致を解決し、製品 UI・全 gate を閉じる必要がある。
 - sampling/1 は有限密度と midpoint の保守的切断であり、任意高周波・標本間だけの特異点の完全検出は
   保証しない。必要時は独立fixtureと新sampling/key versionで精度改善を検証する。
   追加の性能閾値・adaptive sampling・artifact圧縮は製品要求と実測に基づく後続判断とする。

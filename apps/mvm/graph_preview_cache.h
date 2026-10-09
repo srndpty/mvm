@@ -89,6 +89,8 @@ public:
     std::size_t peakBytes() const;
 
     int renderCount() const { return renderCount_; }
+    // GUI thread で値を取得する。export はこの identity から disk を独立に再検証する。
+    std::string exportToolchain() const { return backend_ ? backend_->toolchain : std::string{}; }
 
     std::size_t pendingDecodeCount() const;
     static Reason reasonFor(graph::Failure);

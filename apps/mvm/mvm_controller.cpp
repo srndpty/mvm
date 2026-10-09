@@ -9283,6 +9283,16 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
     request.burnSubtitles = burnSubtitles_;
     request.renderThreads = 4;
     request.encoderThreads = 0;
+    request.graphEnvironment.cache = mathCacheDirectory().parent_path().parent_path() / L"graph" /
+                                     projectPath_.filename();
+    request.graphEnvironment.toolchain = graphRasters_ ? graphRasters_->exportToolchain() : "";
+    request.graphEnvironment.cancel = &exportCancelRequested_;
+    if (projectLockHeld_)
+        request.graphEnvironment.preflight =
+            [python = manimExecutablePath_.parent_path() / L"python.exe"](
+                const std::filesystem::path& work, const std::atomic<bool>* cancel) {
+                return manim::preflightGraph(python, MVM_GRAPH_BACKEND_SCRIPT, work, cancel);
+            };
     for (const auto& clip : project_.timelineClips) {
         if (clip.kind != project::TimelineClipKind::EquationSequence || !clip.enabled ||
             !project::isTrackOutputEnabled(project_, clip.track))

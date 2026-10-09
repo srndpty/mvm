@@ -800,6 +800,17 @@ target_link_libraries(mvm_test_graph_numeric PRIVATE mvm::graph_numeric mvm::war
 mvm_add_test(graph_numeric COMMAND mvm_test_graph_numeric PROPERTIES TIMEOUT 120)
 
 add_executable(mvm_test_graph_render core/test_graph_render.cpp)
+add_executable(mvm_test_graph_export harness/test_graph_export.cpp)
+target_link_libraries(mvm_test_graph_export PRIVATE mvm::timeline_export mvm::manim mvm::mlt Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_test_graph_export PRIVATE ${MVM_MLT_PATH_DEFS})
+mvm_add_test(graph_export_focused
+    COMMAND ${MVM_PWSH} -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/harness/test_graph_export.ps1"
+        -Executable "$<TARGET_FILE:mvm_test_graph_export>" -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}"
+    PROPERTIES TIMEOUT 120)
+mvm_add_test(graph_export_encoder_oracle
+    COMMAND ${MVM_PWSH} -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/harness/test_graph_export.ps1"
+        -Executable "$<TARGET_FILE:mvm_test_graph_export>" -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}" -Encode
+    PROPERTIES TIMEOUT 120)
 add_executable(mvm_test_graph_preview_cache harness/test_graph_preview_cache.cpp)
 target_link_libraries(mvm_test_graph_preview_cache PRIVATE mvm::math_raster_cache mvm::warnings)
 mvm_add_test(graph_preview_cache COMMAND mvm_test_graph_preview_cache "${CMAKE_CURRENT_BINARY_DIR}" PROPERTIES TIMEOUT 120)
