@@ -58,6 +58,16 @@ Phase 1 で追加した層:
 | `src/media/math`  | 数式 renderer の backend 中立な契約と、出力 raster への配置 | `src/util`。**Manim・Project・Qt は不可**       |
 | `src/media/manim` | Manim の外部 process との唯一の接点 (backend の実装)      | `src/util`、`src/media/math`。Qt は不可         |
 
+Graph clip で追加した層:
+
+| 層                      | 責務                                                        | 依存してよいもの                                   |
+| ----------------------- | ----------------------------------------------------------- | -------------------------------------------------- |
+| `src/media/graph`       | Graph の数値評価・描画契約 (`GraphBackend`)・artifact の検証 | `src/util`。**Manim・Project・Qt は不可**          |
+| `src/media/graph_manim` | Graph 契約の Manim backend (外部 Python の起動)             | `src/util`、`src/media/graph`。`src/media/manim` は不可 |
+
+Manim 層は Graph を知らない。Graph の backend を Manim 層へ置くと、数式の利用者すべてへ
+Graph への依存が伝播する。
+
 素材種別の判定は `apps/mvm/media_import.cpp` の `probeMediaFile` に一本化している。
 画像の画素は preview と書き出しの両方がこの層の decoder から得る (Qt の画像 reader を使わない)。
 

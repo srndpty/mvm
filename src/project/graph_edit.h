@@ -8,6 +8,9 @@ TimelineEditResult editGraph(Project&, const std::string& clipId,
                              const std::function<bool(GraphClipData&, std::string&)>&);
 TimelineEditResult addGraph(Project&, std::string clipId, GraphFunctionId, std::string name,
                             TrackRef, std::int64_t start);
+// 作成メニューの入口。文字・数式と同じく、start で空いている映像 track へ置く (placeStillClipAt)。
+TimelineEditResult placeNewGraph(Project&, std::string clipId, GraphFunctionId, std::string name,
+                                 std::int64_t start);
 bool copyGraphClip(const TimelineClip&, TimelineClip&, const std::function<std::string()>&,
                    std::string& error);
 TimelineEditResult setGraphSourceDuration(Project&, const std::string& clipId, std::int64_t frames);

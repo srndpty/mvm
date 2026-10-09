@@ -178,8 +178,8 @@ void matrix(Evidence& e, const std::string& name, std::vector<test::Pixel> sourc
     request.graphEnvironment.toolchain = "P4-5.1 固定試験 backend";
     request.graphEnvironment.preflight =
         [sources, draw](const auto&,
-                        const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
-        return manim::GraphBackend{
+                        const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
+        return graph::GraphBackend{
             "P4-5.1 固定試験 backend",
             [sources, draw](const graph::RenderRequest& r,
                             const std::atomic<bool>*) -> graph::RenderResult {
@@ -341,8 +341,8 @@ void spatialEffects(Evidence& e) {
         request.graphEnvironment.cache = e.root / (name + "-cache");
         request.graphEnvironment.toolchain = "空間効果の固定入力";
         request.graphEnvironment.preflight =
-            [input](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
-            return manim::GraphBackend{"空間効果の固定入力",
+            [input](const auto&, const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
+            return graph::GraphBackend{"空間効果の固定入力",
                                        [input](const graph::RenderRequest& r,
                                                const std::atomic<bool>*) -> graph::RenderResult {
                                            if (!graph::writeRgba(r.job / "static.png", input))

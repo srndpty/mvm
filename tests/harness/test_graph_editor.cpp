@@ -168,6 +168,37 @@ int main(int argc, char** argv) {
           "削除前の欄から別の Graph を編集しない");
     check(controller.undoLastEdit() && !controller.selectedGraphClip().isEmpty(),
           "削除 Undo で選択と Graph を戻す");
+    // 選択中の clip が再生ヘッドに掛かっていても、作成メニューはその track へ重ねず、
+    // 文字・数式と同じく空いている映像 track へ置く。
+    {
+        const auto project = controller.projectForTest();
+        const auto selectedId = controller.selectedGraphClip().value("clipId").toString();
+        const auto selected =
+            std::find_if(project.timelineClips.begin(), project.timelineClips.end(),
+                         [&](const auto& clip) { return clip.id == selectedId.toStdString(); });
+        const auto active = mvm::project::activeClipsAt(project, mvm::project::TrackKind::Video,
+                                                        controller.playheadFrame());
+        const bool overlapping =
+            selected != project.timelineClips.end() &&
+            selected->track.index < static_cast<int>(active.size()) &&
+            active[static_cast<std::size_t>(selected->track.index)] == &*selected;
+        check(overlapping, "前提: 選択中の Graph が再生ヘッドに掛かっている");
+        const auto undoBefore = controller.undoDepthForTest();
+        check(controller.createGraphClipFromUi(),
+              "選択中の clip と重なる位置でも Graph を作成する");
+        const auto created = controller.projectForTest();
+        const auto createdId = controller.selectedGraphClip().value("clipId").toString();
+        const auto placed =
+            std::find_if(created.timelineClips.begin(), created.timelineClips.end(),
+                         [&](const auto& clip) { return clip.id == createdId.toStdString(); });
+        check(controller.undoDepthForTest() == undoBefore + 1 &&
+                  created.timelineClips.size() == project.timelineClips.size() + 1 &&
+                  placed != created.timelineClips.end() && createdId != selectedId &&
+                  placed->track.kind == mvm::project::TrackKind::Video && overlapping &&
+                  placed->track.index > selected->track.index &&
+                  placed->timelineStartFrame == controller.playheadFrame(),
+              "作成した Graph は再生ヘッドの位置で、使用中より上の空き映像 track に置く");
+    }
     controller.shutdown();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return checks > 0 && failures == 0 ? 0 : 1;

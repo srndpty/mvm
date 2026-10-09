@@ -98,9 +98,9 @@ void GraphPreviewCache::startPreflight() {
                 if (closed_ || generation != generation_)
                     return;
                 checking_ = false;
-                available_ = std::holds_alternative<manim::GraphBackend>(result);
+                available_ = std::holds_alternative<graph::GraphBackend>(result);
                 if (available_)
-                    backend_ = std::get<manim::GraphBackend>(std::move(result));
+                    backend_ = std::get<graph::GraphBackend>(std::move(result));
                 if (available_) {
                     auto waiting = std::move(waitingIdentity_);
                     waitingIdentity_.clear();
@@ -504,6 +504,32 @@ void GraphPreviewCache::resetSession() {
 }
 
 void GraphPreviewCache::refreshBackend() {
+    if (closed_)
+        return;
+    // pump は Unrequested だけを選ぶ。backend の一時停止や renderer の失敗で Failed になった
+    // record を戻さないと、依存を直して backend を再確認しても描き直されない。
+    // 式そのものから決まる失敗は backend を直しても結果が同じなので戻さない。
+    for (auto& record : records_) {
+        if (record.status.job != Job::Failed)
+            continue;
+        switch (record.status.reason) {
+        case Reason::InvalidGraph:
+        case Reason::InvalidExpression:
+        case Reason::UnsupportedExpression:
+        case Reason::NoFiniteSamples:
+        case Reason::UnsupportedTransition:
+            continue;
+        default:
+            break;
+        }
+        record.status.job = Job::Unrequested;
+        record.status.reason = Reason::ArtifactMissing;
+        record.status.message.clear();
+        record.status.artifact = ArtifactState::Unknown;
+        record.ticket = ++ticket_;
+    }
     startPreflight();
+    pump();
+    Q_EMIT changed();
 }
 } // namespace mvm::app

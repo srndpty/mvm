@@ -946,7 +946,8 @@ public:
         const std::string& clipId,
         const std::function<bool(project::EquationSequenceClipData&, std::string&)>& edit);
     Q_INVOKABLE bool redoLastEdit();
-    bool createGraphClip(std::int64_t start, project::TrackRef track);
+    // track を省略すると、作成メニューと同じく start で空いている映像 track へ置く。
+    bool createGraphClip(std::int64_t start, std::optional<project::TrackRef> track = std::nullopt);
     // QML の編集は表示 snapshot の authority を明示し、古い欄からの確定を拒否する。
     Q_PROPERTY(QVariantMap selectedGraphClip READ selectedGraphClip NOTIFY stateChanged)
     QVariantMap selectedGraphClip() const;

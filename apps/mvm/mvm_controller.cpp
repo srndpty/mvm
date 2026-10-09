@@ -17,6 +17,7 @@
 #include "core/timecode.h"
 #include "equation_sequence_editor.h"
 #include "image_raster_cache.h"
+#include "media/graph_manim/graph_manim_backend.h"
 #include "media/manim/manim_math_tex.h"
 #include "media_file_filters.h"
 #include "media_import.h"
@@ -465,7 +466,7 @@ MvmController::MvmController(std::filesystem::path projectPath,
     graphRasters_ = std::make_unique<GraphPreviewCache>(
         [python = manimExecutablePath_.parent_path() / L"python.exe"](
             const std::filesystem::path& work, const std::atomic<bool>* cancel) {
-            return manim::preflightGraph(python, MVM_GRAPH_BACKEND_SCRIPT, work, cancel);
+            return graph_manim::preflightGraph(python, MVM_GRAPH_BACKEND_SCRIPT, work, cancel);
         });
     connect(graphRasters_.get(), &GraphPreviewCache::changed, this, [this] {
         if (shutdownStarted_)
@@ -8147,12 +8148,13 @@ GraphPreviewCache::Status MvmController::graphPreviewStatus(const std::string& c
     return ready;
 }
 
-bool MvmController::createGraphClip(std::int64_t start, project::TrackRef track) {
+bool MvmController::createGraphClip(std::int64_t start, std::optional<project::TrackRef> track) {
     if (busy_ || !pauseTimeline())
         return false;
     auto candidate = project_;
     const auto result =
-        project::addGraph(candidate, newClipId(), {newClipId()}, "グラフ", track, start);
+        track ? project::addGraph(candidate, newClipId(), {newClipId()}, "グラフ", *track, start)
+              : project::placeNewGraph(candidate, newClipId(), {newClipId()}, "グラフ", start);
     if (!result.success) {
         setStatus(QString::fromStdString(result.error));
         return false;
@@ -8166,11 +8168,9 @@ bool MvmController::createGraphClip(std::int64_t start, project::TrackRef track)
 }
 
 bool MvmController::createGraphClipFromUi() {
-    project::TrackRef track{project::TrackKind::Video, 0};
-    if (currentClipIndex_ >= 0 &&
-        currentClipIndex_ < static_cast<int>(project_.timelineClips.size()))
-        track = project_.timelineClips[static_cast<std::size_t>(currentClipIndex_)].track;
-    return createGraphClip(playheadFrame_, track);
+    // 選択中の clip の track は使わない。再生ヘッドがその clip の中なら重なり、音声 clip なら
+    // 種別が違って拒否される。文字・数式と同じ空き映像 track の規則で置く。
+    return createGraphClip(playheadFrame_);
 }
 
 QVariantMap MvmController::selectedGraphClip() const {
@@ -9291,7 +9291,7 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
         request.graphEnvironment.preflight =
             [python = manimExecutablePath_.parent_path() / L"python.exe"](
                 const std::filesystem::path& work, const std::atomic<bool>* cancel) {
-                return manim::preflightGraph(python, MVM_GRAPH_BACKEND_SCRIPT, work, cancel);
+                return graph_manim::preflightGraph(python, MVM_GRAPH_BACKEND_SCRIPT, work, cancel);
             };
     for (const auto& clip : project_.timelineClips) {
         if (clip.kind != project::TimelineClipKind::EquationSequence || !clip.enabled ||

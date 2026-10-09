@@ -824,7 +824,7 @@ mvm_add_test(graph_export_encoder_oracle
 add_executable(mvm_test_graph_preview_cache harness/test_graph_preview_cache.cpp)
 target_link_libraries(mvm_test_graph_preview_cache PRIVATE mvm::math_raster_cache mvm::warnings)
 mvm_add_test(graph_preview_cache COMMAND mvm_test_graph_preview_cache "${CMAKE_CURRENT_BINARY_DIR}" PROPERTIES TIMEOUT 120)
-target_link_libraries(mvm_test_graph_render PRIVATE mvm::graph_render_compile mvm::manim mvm::warnings)
+target_link_libraries(mvm_test_graph_render PRIVATE mvm::graph_render_compile mvm::graph_manim mvm::warnings)
 mvm_add_test(graph_render_presentation COMMAND mvm_test_graph_render PROPERTIES TIMEOUT 120)
 mvm_add_test(graph_render_artifact
     COMMAND ${MVM_PWSH} -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/harness/test_graph_artifact.ps1"

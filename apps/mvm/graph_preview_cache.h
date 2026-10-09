@@ -2,7 +2,7 @@
 #define MVM_APPS_GRAPH_PREVIEW_CACHE_H
 
 #include "graph_preview_animation.h"
-#include "media/manim/manim_graph.h"
+#include "media/graph/graph_render.h"
 #include "preview_engine/preview_types.h"
 
 #include <map>
@@ -68,7 +68,7 @@ public:
         double artifactReadyMs = 0, decodeMs = 0;
     };
 
-    using Preflight = std::function<std::variant<manim::GraphBackend, graph::Error>(
+    using Preflight = std::function<std::variant<graph::GraphBackend, graph::Error>(
         const std::filesystem::path&, const std::atomic<bool>*)>;
     explicit GraphPreviewCache(Preflight, QObject* parent = nullptr);
     ~GraphPreviewCache() override;
@@ -131,7 +131,7 @@ private:
     void publishPresentations();
     void requestDecoded(const graph::GraphRenderSpec&, std::int64_t, bool prefetch);
     Preflight preflight_;
-    std::optional<manim::GraphBackend> backend_;
+    std::optional<graph::GraphBackend> backend_;
     bool available_ = false, checking_ = false, authorized_ = false, closed_ = false;
     bool preflightAttempted_ = false;
     int activeRenders_ = 0, activeDecodes_ = 0;

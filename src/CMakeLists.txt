@@ -101,24 +101,30 @@ add_library(mvm::equation_sequence_compile ALIAS mvm_equation_sequence_compile)
 # 依存の向きは manim -> math (中立な契約は manim を知らない)。
 add_library(mvm_manim STATIC
     media/manim/manim_fingerprint.cpp
-    media/manim/manim_graph.cpp
     media/manim/manim_equation_sequence.cpp
     media/manim/manim_math_tex.cpp
     media/manim/manim_renderer.cpp
 )
 target_include_directories(mvm_manim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_manim PUBLIC mvm::util mvm::math PRIVATE mvm::warnings ole32)
-target_link_libraries(mvm_manim PUBLIC mvm::graph_render)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS media/graph/graph_numeric.cpp media/graph/graph_numeric.h media/graph/graph_render.cpp media/graph/graph_render.h app/graph_render_compile.cpp media/manim/manim_graph.cpp)
+add_library(mvm::manim ALIAS mvm_manim)
+
+# --- Graph の Manim backend -------------------------------------------------
+# Graph の契約 (media/graph) を外部の Python で実装する。Manim 層 (mvm::manim) には
+# 依存せず、Manim 層も Graph を知らない。依存の向きは graph_manim -> graph。
+add_library(mvm_graph_manim STATIC media/graph_manim/graph_manim_backend.cpp)
+target_include_directories(mvm_graph_manim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_graph_manim PUBLIC mvm::util mvm::graph_render PRIVATE mvm::warnings)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS media/graph/graph_numeric.cpp media/graph/graph_numeric.h media/graph/graph_render.cpp media/graph/graph_render.h app/graph_render_compile.cpp media/graph_manim/graph_manim_backend.cpp)
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/graph/graph_numeric.cpp" MVM_GRAPH_NUMERIC_SOURCE_SHA)
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/graph/graph_numeric.h" MVM_GRAPH_NUMERIC_HEADER_SHA)
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/graph/graph_render.cpp" MVM_GRAPH_PRESENTATION_SHA)
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/graph/graph_render.h" MVM_GRAPH_PRESENTATION_HEADER_SHA)
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/app/graph_render_compile.cpp" MVM_GRAPH_COMPILE_SHA)
-file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/manim/manim_graph.cpp" MVM_GRAPH_ADAPTER_SHA)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/media/graph_manim/graph_manim_backend.cpp" MVM_GRAPH_ADAPTER_SHA)
 string(SHA256 MVM_GRAPH_NUMERIC_SHA "${MVM_GRAPH_NUMERIC_SOURCE_SHA}:${MVM_GRAPH_NUMERIC_HEADER_SHA}:${MVM_GRAPH_PRESENTATION_SHA}:${MVM_GRAPH_PRESENTATION_HEADER_SHA}:${MVM_GRAPH_COMPILE_SHA}:${MVM_GRAPH_ADAPTER_SHA}:${CMAKE_CXX_FLAGS}:${CMAKE_CXX_FLAGS_RELEASE}")
-target_compile_definitions(mvm_manim PRIVATE MVM_GRAPH_BUILD_ID="${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}-${CMAKE_BUILD_TYPE}-${MVM_GRAPH_NUMERIC_SHA}")
-add_library(mvm::manim ALIAS mvm_manim)
+target_compile_definitions(mvm_graph_manim PRIVATE MVM_GRAPH_BUILD_ID="${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}-${CMAKE_BUILD_TYPE}-${MVM_GRAPH_NUMERIC_SHA}")
+add_library(mvm::graph_manim ALIAS mvm_graph_manim)
 
 # --- M2: Manim clip orchestration ------------------------------------------
 # QtやPreviewEngineを含めず、render・fingerprint・Project保存の順序だけを担う。

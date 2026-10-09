@@ -2154,7 +2154,8 @@ void testGraphHistory() {
     auto captured = std::make_shared<CapturedExport>();
     auto controller = makeController(path, initial, captured);
     const auto depth = controller->undoDepthForTest();
-    check(controller->createGraphClip(0, {project::TrackKind::Video, 0}), "Graph 作成");
+    check(controller->createGraphClip(0, project::TrackRef{project::TrackKind::Video, 0}),
+          "Graph 作成");
     const auto created = controller->projectForTest();
     check(created.timelineClips.size() == 1 && controller->undoDepthForTest() == depth + 1,
           "Graph 作成は Undo 一回");

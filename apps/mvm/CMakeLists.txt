@@ -12,7 +12,7 @@ add_library(mvm_math_raster_cache STATIC math_raster_cache.cpp math_equation_seq
 set_target_properties(mvm_math_raster_cache PROPERTIES AUTOMOC ON)
 target_include_directories(mvm_math_raster_cache PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_math_raster_cache
-    PUBLIC mvm::math mvm::still_image mvm::equation_sequence_compile mvm::graph_render_compile mvm::manim mvm::preview_engine Qt6::Core
+    PUBLIC mvm::math mvm::still_image mvm::equation_sequence_compile mvm::graph_render_compile mvm::manim mvm::graph_manim mvm::preview_engine Qt6::Core
     # 変形の backend の PNG は静止の mask と同じ decoder (loadMathCoverage) で読む。
     PRIVATE mvm::math_clip_render mvm::util mvm::warnings)
 add_library(mvm::math_raster_cache ALIAS mvm_math_raster_cache)

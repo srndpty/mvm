@@ -123,10 +123,10 @@ graph::RenderResult fake(const graph::RenderRequest& request, const std::atomic<
 void residency(const std::filesystem::path& root) {
     std::atomic<int> calls{0};
     std::atomic<bool> available{true};
-    Cache cache([&](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
+    Cache cache([&](const auto&, const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
         if (!available)
             return graph::Error{graph::Failure::BackendUnavailable, 0, "試験で停止"};
-        return manim::GraphBackend{"test-identity", [&](const auto& request, const auto* cancel) {
+        return graph::GraphBackend{"test-identity", [&](const auto& request, const auto* cancel) {
                                        ++calls;
                                        return fake(request, cancel);
                                    }};
@@ -228,7 +228,7 @@ void residency(const std::filesystem::path& root) {
               cache.frames(b).empty(),
           "backend 不在で missing key は透明");
     Cache unidentified(
-        [](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
+        [](const auto&, const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
             return graph::Error{graph::Failure::BackendUnavailable, 0, "identity 不明"};
         });
     unidentified.setAuthority(root, false);
@@ -238,12 +238,58 @@ void residency(const std::filesystem::path& root) {
     cache.shutdown();
 }
 
+// backend の一時的な失敗で Failed になった Graph は、refreshBackend の後に描き直す。
+// 式から決まる失敗は backend を直しても同じなので、再要求しない。
+void retryAfterBackendRecovery(const std::filesystem::path& root) {
+    const auto transient = spec(0, "x^2+1");
+    const auto deterministic = spec(0, "x^3");
+    std::atomic<int> calls{0};
+    std::atomic<bool> broken{true};
+    Cache cache([&](const auto&, const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
+        return graph::GraphBackend{
+            "retry-identity", [&](const auto& request, const auto* cancel) -> graph::RenderResult {
+                ++calls;
+                if (request.spec.curves[0].ast == deterministic.curves[0].ast)
+                    return graph::Error{graph::Failure::InvalidExpression, 0, "試験の式の失敗"};
+                if (broken)
+                    return graph::Error{graph::Failure::RendererFailure, 0, "試験の一時的な失敗"};
+                return fake(request, cancel);
+            }};
+    });
+    cache.setAuthority(root, true);
+    cache.request(transient);
+    cache.request(deterministic);
+    check(wait([&] {
+              return cache.status(transient, 0).job == Cache::Job::Failed &&
+                     cache.status(deterministic, 0).job == Cache::Job::Failed;
+          }) &&
+              cache.status(transient, 0).reason == Cache::Reason::RendererFailure &&
+              cache.status(deterministic, 0).reason == Cache::Reason::InvalidExpression,
+          "前提: 一時的な失敗と式から決まる失敗");
+    const int before = calls;
+    broken = false;
+    cache.refreshBackend();
+    // preflight 中は pump しないので、戻した直後の状態を同期的に観測できる。
+    check(cache.status(transient, 0).job != Cache::Job::Failed &&
+              cache.status(deterministic, 0).job == Cache::Job::Failed,
+          "refreshBackend は一時的な失敗だけを再要求へ戻す");
+    check(wait([&] {
+              return cache.status(transient, 0).job == Cache::Job::Ready &&
+                     cache.status(transient, 0).artifact == Cache::ArtifactState::Validated;
+          }),
+          "backend 復旧後に一時的に失敗した Graph を描き直す");
+    check(calls == before + 1 && cache.status(deterministic, 0).job == Cache::Job::Failed &&
+              cache.status(deterministic, 0).reason == Cache::Reason::InvalidExpression,
+          "式から決まる失敗は renderer を呼び直さない");
+    cache.shutdown();
+}
+
 void shutdownLifetime(const std::filesystem::path& root) {
     std::promise<void> entered;
     auto started = entered.get_future();
     std::atomic<bool> cancelled{false};
-    Cache cache([&](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
-        return manim::GraphBackend{
+    Cache cache([&](const auto&, const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
+        return graph::GraphBackend{
             "shutdown-identity", [&](const auto&, const auto* cancel) {
                 entered.set_value();
                 while (!cancel->load())
@@ -266,8 +312,8 @@ void shutdownLifetime(const std::filesystem::path& root) {
 }
 
 void mappedPixels(const std::filesystem::path& root) {
-    Cache cache([](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
-        return manim::GraphBackend{"mapping-identity", fake};
+    Cache cache([](const auto&, const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
+        return graph::GraphBackend{"mapping-identity", fake};
     });
     cache.setAuthority(root, true);
     auto project = project::createDefaultProject();
@@ -324,8 +370,8 @@ void stale(const std::filesystem::path& root) {
     std::promise<void> entered, release;
     auto barrier = release.get_future().share();
     std::atomic<bool> first{true};
-    Cache cache([&](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
-        return manim::GraphBackend{"test-stale", [&](const auto& request, const auto* cancel) {
+    Cache cache([&](const auto&, const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
+        return graph::GraphBackend{"test-stale", [&](const auto& request, const auto* cancel) {
                                        if (first.exchange(false)) {
                                            entered.set_value();
                                            barrier.wait();
@@ -362,8 +408,8 @@ void stale(const std::filesystem::path& root) {
 }
 
 void corrupt(const std::filesystem::path& root) {
-    Cache cache([](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
-        return manim::GraphBackend{"test-corrupt", fake};
+    Cache cache([](const auto&, const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
+        return graph::GraphBackend{"test-corrupt", fake};
     });
     const auto s = spec(3);
     cache.setAuthority(root, true);
@@ -400,8 +446,8 @@ void corrupt(const std::filesystem::path& root) {
 }
 
 void pixelMismatch(const std::filesystem::path& root) {
-    Cache cache([](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
-        return manim::GraphBackend{"test-pixel", fake};
+    Cache cache([](const auto&, const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
+        return graph::GraphBackend{"test-pixel", fake};
     });
     const auto s = spec(1);
     cache.setAuthority(root, true);
@@ -444,6 +490,7 @@ int main(int argc, char** argv) {
     stale(root / "stale");
     corrupt(root / "corrupt");
     pixelMismatch(root / "pixel");
+    retryAfterBackendRecovery(root / "retry");
     shutdownLifetime(root / "shutdown");
     mappedPixels(root / "mapping");
     return failures ? 1 : 0;

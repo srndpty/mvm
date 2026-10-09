@@ -2,7 +2,7 @@
 #define MVM_APP_GRAPH_EXPORT_H
 
 #include "app/graph_render_compile.h"
-#include "media/manim/manim_graph.h"
+#include "media/graph/graph_render.h"
 #include "project/graph_edit.h"
 
 #include <map>
@@ -41,7 +41,7 @@ struct GraphExportReadiness {
 struct GraphExportEnvironment {
     std::filesystem::path cache;
     std::string toolchain;
-    std::function<std::variant<manim::GraphBackend, graph::Error>(const std::filesystem::path&,
+    std::function<std::variant<graph::GraphBackend, graph::Error>(const std::filesystem::path&,
                                                                   const std::atomic<bool>*)>
         preflight;
     const std::atomic<bool>* cancel = nullptr;

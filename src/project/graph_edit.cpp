@@ -29,8 +29,9 @@ TimelineEditResult editGraph(Project& project, const std::string& id,
     return result;
 }
 
-TimelineEditResult addGraph(Project& project, std::string id, GraphFunctionId function,
-                            std::string name, TrackRef track, std::int64_t start) {
+namespace {
+TimelineClip newGraphClip(const Project& project, std::string id, GraphFunctionId function,
+                          std::string name) {
     TimelineClip clip;
     clip.kind = TimelineClipKind::Graph;
     clip.id = std::move(id);
@@ -40,7 +41,21 @@ TimelineEditResult addGraph(Project& project, std::string id, GraphFunctionId fu
     clip.sourceFpsDen = project.timelineFpsDen;
     clip.sourceFrameCount = defaultStillClipFrames(project.timelineFpsNum, project.timelineFpsDen);
     clip.sourceOutFrame = clip.sourceFrameCount;
-    return placeTimelineClipAt(project, std::move(clip), track, start);
+    return clip;
+}
+} // namespace
+
+TimelineEditResult addGraph(Project& project, std::string id, GraphFunctionId function,
+                            std::string name, TrackRef track, std::int64_t start) {
+    return placeTimelineClipAt(
+        project, newGraphClip(project, std::move(id), std::move(function), std::move(name)), track,
+        start);
+}
+
+TimelineEditResult placeNewGraph(Project& project, std::string id, GraphFunctionId function,
+                                 std::string name, std::int64_t start) {
+    return placeStillClipAt(
+        project, newGraphClip(project, std::move(id), std::move(function), std::move(name)), start);
 }
 
 bool copyGraphClip(const TimelineClip& source, TimelineClip& copy,

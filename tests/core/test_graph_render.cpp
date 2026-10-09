@@ -1,5 +1,5 @@
 #include "app/graph_render_compile.h"
-#include "media/manim/manim_graph.h"
+#include "media/graph_manim/graph_manim_backend.h"
 
 #include <algorithm>
 #include <array>
@@ -639,12 +639,12 @@ void artifacts(const std::filesystem::path& root, bool responsivenessOnly = fals
 void real(const std::filesystem::path& root, const std::filesystem::path& python,
           const std::filesystem::path& script, const std::string& mode = {}) {
     using namespace mvm::graph;
-    auto preflight = mvm::manim::preflightGraph(python, script, root / "preflight");
+    auto preflight = mvm::graph_manim::preflightGraph(python, script, root / "preflight");
     if (auto* error = std::get_if<Error>(&preflight)) {
         check(false, error->message.c_str());
         return;
     }
-    const auto backend = std::get<mvm::manim::GraphBackend>(preflight);
+    const auto backend = std::get<mvm::graph::GraphBackend>(preflight);
     std::ofstream report(root / "measurements.tsv");
     report << "条件\t幅\t高さ\t指定線幅\t画素線幅\n";
     int index = 0;

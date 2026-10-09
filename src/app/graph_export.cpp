@@ -120,7 +120,7 @@ GraphExportLedger prepareGraphExport(const project::Project& project, int width,
         return reject(failed(GraphExportFailure::ArtifactMissing, "Graph の cache が未指定です"));
     // 確認済み identity があれば backend 不在でも検証できる。manifest 自体から期待値を捏造しない。
     std::string toolchain = env.toolchain;
-    std::optional<manim::GraphBackend> backend;
+    std::optional<graph::GraphBackend> backend;
     const auto work =
         env.cache /
         (".export-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -133,7 +133,7 @@ GraphExportLedger prepareGraphExport(const project::Project& project, int width,
         auto result = env.preflight(work / "preflight", env.cancel);
         if (const auto* reason = std::get_if<graph::Error>(&result))
             return graphExportError(*reason);
-        backend = std::get<manim::GraphBackend>(std::move(result));
+        backend = std::get<graph::GraphBackend>(std::move(result));
         if (backend->toolchain.empty() || (!toolchain.empty() && toolchain != backend->toolchain))
             return failed(GraphExportFailure::ProvenanceMismatch,
                           "Graph の toolchain が一致しません");

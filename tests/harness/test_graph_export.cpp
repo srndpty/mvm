@@ -76,9 +76,9 @@ void run(const std::filesystem::path& root) {
     env.cancel = &cancel;
     env.preflight =
         [&](const std::filesystem::path&,
-            const std::atomic<bool>*) -> std::variant<manim::GraphBackend, graph::Error> {
+            const std::atomic<bool>*) -> std::variant<graph::GraphBackend, graph::Error> {
         ++preparations;
-        return manim::GraphBackend{env.toolchain, [&](const auto& request, const auto* flag) {
+        return graph::GraphBackend{env.toolchain, [&](const auto& request, const auto* flag) {
                                        ++renders;
                                        return render(request, flag);
                                    }};
@@ -284,9 +284,9 @@ void encode(const std::filesystem::path& root) {
     request.graphEnvironment.toolchain = "独立 encoder 試験";
     std::atomic<int> backendCalls{0};
     request.graphEnvironment.preflight =
-        [&](const auto&, const auto*) -> std::variant<manim::GraphBackend, graph::Error> {
+        [&](const auto&, const auto*) -> std::variant<graph::GraphBackend, graph::Error> {
         ++backendCalls;
-        return manim::GraphBackend{"独立 encoder 試験", render};
+        return graph::GraphBackend{"独立 encoder 試験", render};
     };
     std::mutex mutex;
     std::set<std::int64_t> observed;

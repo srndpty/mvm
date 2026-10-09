@@ -1,4 +1,4 @@
-#include "media/manim/manim_graph.h"
+#include "media/graph_manim/graph_manim_backend.h"
 
 #include "util/mvm_process.h"
 
@@ -6,7 +6,7 @@
 #include <fstream>
 #include <sstream>
 
-namespace mvm::manim {
+namespace mvm::graph_manim {
 namespace {
 struct Stop {
     const std::atomic<bool>* cancel;
@@ -72,10 +72,10 @@ graph::RenderResult run(const std::filesystem::path& python, const std::filesyst
 }
 } // namespace
 
-std::variant<GraphBackend, graph::Error> preflightGraph(const std::filesystem::path& python,
-                                                        const std::filesystem::path& script,
-                                                        const std::filesystem::path& work,
-                                                        const std::atomic<bool>* cancel) {
+std::variant<graph::GraphBackend, graph::Error> preflightGraph(const std::filesystem::path& python,
+                                                               const std::filesystem::path& script,
+                                                               const std::filesystem::path& work,
+                                                               const std::atomic<bool>* cancel) {
     std::error_code ec;
     if (!std::filesystem::create_directories(work, ec) || ec)
         return graph::Error{graph::Failure::BackendUnavailable, 0,
@@ -94,7 +94,7 @@ std::variant<GraphBackend, graph::Error> preflightGraph(const std::filesystem::p
         return graph::Error{graph::Failure::BackendUnavailable, 0, "backend template を読めません"};
     fingerprint +=
         "template_sha256=" + graph::digest(source) + "\nnumeric_build=" + MVM_GRAPH_BUILD_ID + "\n";
-    GraphBackend backend;
+    graph::GraphBackend backend;
     backend.toolchain = fingerprint;
     backend.render = [python, script, source,
                       fingerprint](const graph::RenderRequest& request,
@@ -172,4 +172,4 @@ std::variant<GraphBackend, graph::Error> preflightGraph(const std::filesystem::p
     };
     return backend;
 }
-} // namespace mvm::manim
+} // namespace mvm::graph_manim

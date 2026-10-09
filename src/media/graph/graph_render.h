@@ -122,6 +122,13 @@ struct RenderRequest {
 using RenderResult = std::variant<std::monostate, Error>;
 using GraphRenderer = std::function<RenderResult(const RenderRequest&, const std::atomic<bool>*)>;
 
+// backend 中立な契約。preflight を通った backend の識別 (cache key に入る) と描画関数。
+// 実装 (Manim) は src/media/graph_manim にあり、この層は backend を知らない。
+struct GraphBackend {
+    std::string toolchain;
+    GraphRenderer render;
+};
+
 struct Artifact {
     std::filesystem::path directory;
     std::string staticIdentity, drawIdentity;
