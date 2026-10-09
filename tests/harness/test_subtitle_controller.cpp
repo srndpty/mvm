@@ -424,14 +424,14 @@ int main(int argc, char** argv) {
                         internal->property("boundsMovement").toInt() == 0,
                     "ダイアログの内部スクロールも端で止まる");
             if (std::string_view(name) == "subtitleTranscribeDialog") {
-                auto* mode =
+                auto* applyMode =
                     panel->findChild<QQuickItem*>(QStringLiteral("transcriptionApplyMode"));
                 auto* footer = qvariant_cast<QQuickItem*>(dialog->property("footer"));
-                require(mode && footer, "候補の適用方法をフッターに表示する");
-                const auto modePosition = mode->mapToItem(footer, QPointF());
+                require(applyMode && footer, "候補の適用方法をフッターに表示する");
+                const auto modePosition = applyMode->mapToItem(footer, QPointF());
                 require(modePosition.x() >= 0 && modePosition.y() >= 0 &&
-                            modePosition.x() + mode->width() <= footer->width() &&
-                            modePosition.y() + mode->height() <= footer->height(),
+                            modePosition.x() + applyMode->width() <= footer->width() &&
+                            modePosition.y() + applyMode->height() <= footer->height(),
                         "適用方法の選択欄がフッターの内側に収まる");
             }
             view.grabWindow().save(QStringLiteral("%1-%2x%3.png")
@@ -618,14 +618,14 @@ int main(int argc, char** argv) {
                     "素材の時刻と大きさを控える");
             LARGE_INTEGER middle{};
             middle.QuadPart = size.QuadPart / 2;
-            char byte = 0;
+            char middleByte = 0;
             DWORD done = 0;
             require(SetFilePointerEx(handle, middle, nullptr, FILE_BEGIN) &&
-                        ReadFile(handle, &byte, 1, &done, nullptr) && done == 1,
+                        ReadFile(handle, &middleByte, 1, &done, nullptr) && done == 1,
                     "中央の 1 byte を読む");
-            byte = static_cast<char>(byte ^ 0x5a);
+            middleByte = static_cast<char>(middleByte ^ 0x5a);
             require(SetFilePointerEx(handle, middle, nullptr, FILE_BEGIN) &&
-                        WriteFile(handle, &byte, 1, &done, nullptr) && done == 1 &&
+                        WriteFile(handle, &middleByte, 1, &done, nullptr) && done == 1 &&
                         SetFileTime(handle, &created, &accessed, &written),
                     "中央の 1 byte を書き換えて更新時刻を元へ戻す");
             CloseHandle(handle);

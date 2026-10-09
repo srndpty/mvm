@@ -800,8 +800,8 @@ QString partId(Session& s, const QString& label) {
 bool addPart(Session& s, const std::string& text, const QString& label, bool last = false) {
     const auto source = s.view().value("state").toMap().value("source").toString();
     const auto needle = QString::fromStdString(text);
-    const int at = last ? source.lastIndexOf(needle) : source.indexOf(needle);
-    if (at < 0 || !s.selectSource(at, at + needle.size()))
+    const auto at = last ? source.lastIndexOf(needle) : source.indexOf(needle);
+    if (at < 0 || !s.selectSource(static_cast<int>(at), static_cast<int>(at + needle.size())))
         return false;
     auto* field = s.find(QStringLiteral("equationPartLabelField"));
     if (!field || !s.reach(field))
@@ -2266,7 +2266,7 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
             // P4-5 補遺: shutdown 済みの session を閉じ、保存した同じ Project を再起動して、
             // encoder が実際に frame を処理している最中の shutdown を検査する。
             const auto beforeRestart = s->project().timelineClips;
-            const auto background = s->observation->graphBackground;
+            const auto graphBackground = s->observation->graphBackground;
             s->close();
             const auto reopened = project::loadProjectJson(path);
             check(reopened.success && reopened.project.timelineClips == beforeRestart,
@@ -2276,7 +2276,7 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
                 return 4;
             // 同じ Project の既知 RGB 実動画を背景にした独立 oracle を引き継ぐ。artifact は
             // 製品の書き出しが disk から検証し、最初の encoder frame を全画素で比較する。
-            s->observation->graphBackground = background;
+            s->observation->graphBackground = graphBackground;
             exportProduct(directory / L"graph-active-shutdown.mp4", false, true, 3);
         }
     }

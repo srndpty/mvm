@@ -281,8 +281,11 @@ ApplicationWindow {
             leftPadding: 11
             rightPadding: 11
             font.pixelSize: 12
+            // title の "&X" は Alt+X で開く mnemonic (MenuBarItem が shortcut として登録する)。
+            // 表示では括弧の中の文字で示すので "&" だけを消す。
             contentItem: Label {
-                text: barItem.text
+                objectName: "menuBarItemLabel"
+                text: barItem.text.replace("&", "")
                 color: barItem.highlighted ? "#ffffff" : "#d4d7dc"
                 font: barItem.font
                 verticalAlignment: Text.AlignVCenter
@@ -293,7 +296,8 @@ ApplicationWindow {
             }
         }
         CompactMenu {
-            title: "ファイル"
+            objectName: "fileMenu"
+            title: "ファイル(&F)"
             CompactMenuItem {
                 text: "新規プロジェクト"
                 enabled: !root.mvmController.busy
@@ -362,7 +366,7 @@ ApplicationWindow {
         }
         CompactMenu {
             objectName: "editMenu"
-            title: "編集"
+            title: "編集(&E)"
             CompactMenuItem {
                 action: undoAction
             }
@@ -404,7 +408,9 @@ ApplicationWindow {
             }
         }
         CompactMenu {
-            title: "再生"
+            objectName: "playbackMenu"
+            // P はプロジェクトが使うので、Playback の L にする。
+            title: "再生(&L)"
             // 実行は Shortcut "Space" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {
                 text: (root.mvmController.playing ? "一時停止" : "再生") + "\tSpace"
@@ -466,17 +472,19 @@ ApplicationWindow {
             CompactMenuSeparator {}
             CompactMenuItem {
                 text: "前の編集点へ\t↑"
-                enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
+                // 字幕・マーカーだけでも編集点になる。条件は jumpToEditPoint と同じにする。
+                enabled: !root.mvmController.busy && root.mvmController.navigationTimelineFrames > 0
                 onTriggered: root.mvmController.jumpToEditPoint(-1)
             }
             CompactMenuItem {
                 text: "次の編集点へ\t↓"
-                enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
+                enabled: !root.mvmController.busy && root.mvmController.navigationTimelineFrames > 0
                 onTriggered: root.mvmController.jumpToEditPoint(1)
             }
         }
         CompactMenu {
-            title: "プロジェクト"
+            objectName: "projectMenu"
+            title: "プロジェクト(&P)"
             CompactMenuItem {
                 text: "プロジェクト設定"
                 enabled: !root.mvmController.busy

@@ -279,10 +279,11 @@ void testValidation() {
     clipOf(p, "B").effects.rotationDegrees = 5;
     check(failsWith(p, "位置・拡大・回転"), "回転の違う両端を拒否する");
     p = control;
-    for (auto* clip : {&clipOf(p, "A"), &clipOf(p, "B")}) {
-        clip->effects.positionXPercent = 10;
-        clip->effects.scaleXPercent = clip->effects.scaleYPercent = 80;
-        clip->effects.opacityPercent = 50;
+    for (const std::string id : {"A", "B"}) {
+        auto& clip = clipOf(p, id);
+        clip.effects.positionXPercent = 10;
+        clip.effects.scaleXPercent = clip.effects.scaleYPercent = 80;
+        clip.effects.opacityPercent = 50;
     }
     check(valid(p), "両端で等しい位置・拡大・不透明度は通る");
     p = control;

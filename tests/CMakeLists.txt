@@ -20,6 +20,13 @@ add_test(NAME build_cached_toolchain_guard
         -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/cached-toolchain-guard")
 set_tests_properties(build_cached_toolchain_guard PROPERTIES TIMEOUT 30)
 
+add_test(NAME build_stall_watchdog_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/test-build-watchdog.ps1"
+        -Library "${CMAKE_SOURCE_DIR}/scripts/lib/build-watchdog.ps1"
+        -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/build-watchdog")
+set_tests_properties(build_stall_watchdog_contract PROPERTIES TIMEOUT 120)
+
 add_test(NAME ctest_daily_selection_contract
     COMMAND "${MVM_PWSH}" -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/test-ctest-selection.ps1"

@@ -380,7 +380,7 @@ void testSourceEditing() {
     document.setPlainText(QString::fromStdString(f->data().states[0].equation.source));
     editor.beginSourceEdit(&document);
     type(document, 0, QStringLiteral("("));
-    type(document, document.toPlainText().size(), QStringLiteral(")"));
+    type(document, static_cast<int>(document.toPlainText().size()), QStringLiteral(")"));
     result = editor.commitSourceEdit(document.toPlainText());
     check(result.value("ok").toBool() &&
               f->data().states[0].parts[0].binding.status == project::BindingStatus::Bound,
@@ -417,7 +417,7 @@ void testSourceEditing() {
     // 拒否 (空の式) は Project を変えず、session を保つ (修正して確定できる)。
     document.setPlainText(QString::fromStdString(f->data().states[0].equation.source));
     editor.beginSourceEdit(&document);
-    erase(document, 0, document.toPlainText().size());
+    erase(document, 0, static_cast<int>(document.toPlainText().size()));
     result = editor.commitSourceEdit(document.toPlainText());
     check(!result.value("ok").toBool() && !result.value("discarded").toBool() &&
               f->project() == beforeCancel && editor.sourceEditActive(),
@@ -431,7 +431,7 @@ void testSourceEditing() {
     f->controller->undoLastEdit(); // y=1 を戻す
     expectOneUndo(*f, "Invalid の部分式の修復", [&] {
         const auto now = QString::fromStdString(f->data().states[0].equation.source);
-        const auto at = now.indexOf(QStringLiteral("bQc"));
+        const auto at = static_cast<int>(now.indexOf(QStringLiteral("bQc")));
         return editor.rebindSelectedPart(at, at + 3, now);
     });
     check(f->data().states[0].parts[0].id.value == partId.toStdString() &&
@@ -512,7 +512,7 @@ void testPartsAndRepair() {
     expectRejected(*f, "未確定の入力がある",
                    [&] { return editor.addPart(0, 1, source + QStringLiteral("x"), QString()); });
     expectRejected(*f, "終端の外", [&] { return editor.addPart(0, 99, source, QString()); });
-    const auto denominator = source.indexOf(QStringLiteral("d"));
+    const auto denominator = static_cast<int>(source.indexOf(QStringLiteral("d")));
     expectOneUndo(*f, "分母の部分式", [&] {
         return editor.addPart(denominator, denominator + 1, source, QStringLiteral("分母"));
     });

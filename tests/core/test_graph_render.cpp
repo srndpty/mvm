@@ -551,15 +551,15 @@ void artifacts(const std::filesystem::path& root, bool responsivenessOnly = fals
         const auto current = retrying.supersede();
         const auto prefix = "retry-control-" + std::to_string(mode);
         const auto cachePath = root / (prefix + "-cache");
-        RenderRequest first{s, "test-authority", root / (prefix + "-first")};
+        RenderRequest retried{s, "test-authority", root / (prefix + "-first")};
         std::atomic<bool> stop{false}, observed{false};
-        std::promise<void> entered, releaseRetry;
-        auto enteredFuture = entered.get_future();
+        std::promise<void> retryEntry, releaseRetry;
+        auto enteredFuture = retryEntry.get_future();
         auto barrier = releaseRetry.get_future().share();
         std::unique_ptr<std::ifstream> lockFile;
         auto task = std::async(std::launch::async, [&] {
             return retrying.generate(
-                first, cachePath, current, fake, &stop, [&](PublicationStage stage) {
+                retried, cachePath, current, fake, &stop, [&](PublicationStage stage) {
                     if (stage == PublicationStage::Validate)
                         for (const auto& entry : std::filesystem::directory_iterator(cachePath))
                             if (entry.path().filename().string().starts_with(".pending-")) {
@@ -568,7 +568,7 @@ void artifacts(const std::filesystem::path& root, bool responsivenessOnly = fals
                                 break;
                             }
                     if (stage == PublicationStage::RenameRetry && !observed.exchange(true)) {
-                        entered.set_value();
+                        retryEntry.set_value();
                         barrier.wait();
                     }
                 });
@@ -590,9 +590,9 @@ void artifacts(const std::filesystem::path& root, bool responsivenessOnly = fals
                     const auto result = retrying.generate(
                         competing, cachePath, current,
                         [&](const auto& candidate, const auto* flag) -> RenderResult {
-                            auto result = fake(candidate, flag);
-                            if (std::holds_alternative<Error>(result))
-                                return result;
+                            auto faked = fake(candidate, flag);
+                            if (std::holds_alternative<Error>(faked))
+                                return faked;
                             auto pixels = readRgba(candidate.job / "static.png", 64, 36);
                             auto* raster = std::get_if<Raster>(&pixels);
                             if (!raster)

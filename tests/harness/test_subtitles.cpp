@@ -287,7 +287,7 @@ int main(int argc, char** argv) {
         const auto rightClip = moved.subtitles->cues[1].linkClipId;
         const auto rightIndex =
             static_cast<int>(std::find_if(moved.timelineClips.begin(), moved.timelineClips.end(),
-                                          [&](const auto& clip) { return clip.id == rightClip; }) -
+                                          [&](const auto& item) { return item.id == rightClip; }) -
                              moved.timelineClips.begin());
         require(deleteTimelineClip(moved, rightIndex).success &&
                     moved.subtitles->cues.size() == 2 && moved.subtitles->cues[0].id == "a" &&
@@ -318,9 +318,9 @@ int main(int argc, char** argv) {
                                  {"b", 70, 90, "後", "voice"},
                                  {"free", 300, 330, "手入力", {}}};
         require(validateTimeline(media).success, "音声に合わせる字幕の対照群");
-        const auto cue = [](const Project& project, const char* id) -> const SubtitleCue* {
+        const auto cue = [](const Project& project, const char* cueId) -> const SubtitleCue* {
             for (const auto& c : project.subtitles->cues)
-                if (c.id == id)
+                if (c.id == cueId)
                     return &c;
             return nullptr;
         };
@@ -386,8 +386,8 @@ int main(int argc, char** argv) {
                         .success,
                     "フレーム保持の挿入");
             const auto rightClip = std::find_if(
-                held.timelineClips.begin(), held.timelineClips.end(), [](const auto& clip) {
-                    return clip.id != "voice" && !clip.frameHold && clip.timelineStartFrame == 70;
+                held.timelineClips.begin(), held.timelineClips.end(), [](const auto& item) {
+                    return item.id != "voice" && !item.frameHold && item.timelineStartFrame == 70;
                 });
             require(rightClip != held.timelineClips.end(), "保持の右側の clip");
             require(cue(held, "after")->startFrame == 80 && cue(held, "after")->endFrame == 90 &&
@@ -410,8 +410,8 @@ int main(int argc, char** argv) {
                                        {"right", 100, 110, "右", "voice"}};
             require(editTimelineTime(rippled, 80, 20, 0).success, "全トラックの時間削除");
             const auto rightPiece = std::find_if(
-                rippled.timelineClips.begin(), rippled.timelineClips.end(), [](const auto& clip) {
-                    return clip.id != "voice" && clip.timelineStartFrame == 80;
+                rippled.timelineClips.begin(), rippled.timelineClips.end(), [](const auto& item) {
+                    return item.id != "voice" && item.timelineStartFrame == 80;
                 });
             require(rightPiece != rippled.timelineClips.end() &&
                         cue(rippled, "right")->startFrame == 80 &&
@@ -426,7 +426,7 @@ int main(int argc, char** argv) {
             auto withoutRight = rippled;
             const auto rightIndex = static_cast<int>(
                 std::find_if(withoutRight.timelineClips.begin(), withoutRight.timelineClips.end(),
-                             [&](const auto& clip) { return clip.id == rightId; }) -
+                             [&](const auto& item) { return item.id == rightId; }) -
                 withoutRight.timelineClips.begin());
             require(deleteTimelineClip(withoutRight, rightIndex).success &&
                         !cue(withoutRight, "right") && cue(withoutRight, "left"),
@@ -449,9 +449,9 @@ int main(int argc, char** argv) {
                         .success,
                     "別トラックのリップルトリム");
             const auto trimmedRight = std::find_if(
-                trimmed.timelineClips.begin(), trimmed.timelineClips.end(), [](const auto& clip) {
-                    return clip.id != "voice" && clip.id != "other" &&
-                           clip.timelineStartFrame == 80;
+                trimmed.timelineClips.begin(), trimmed.timelineClips.end(), [](const auto& item) {
+                    return item.id != "voice" && item.id != "other" &&
+                           item.timelineStartFrame == 80;
                 });
             require(
                 trimmedRight != trimmed.timelineClips.end() && cue(trimmed, "right") &&
@@ -459,10 +459,10 @@ int main(int argc, char** argv) {
                     cue(trimmed, "right")->linkClipId == trimmedRight->id,
                 "別トラックのリップルトリムで二分した clip の右側の字幕を残し、右側へリンクする");
             const auto trimmedRightId = trimmedRight->id;
-            const auto indexOf = [](const Project& project, const std::string& id) {
+            const auto indexOf = [](const Project& project, const std::string& clipId) {
                 return static_cast<int>(
                     std::find_if(project.timelineClips.begin(), project.timelineClips.end(),
-                                 [&](const auto& clip) { return clip.id == id; }) -
+                                 [&](const auto& item) { return item.id == clipId; }) -
                     project.timelineClips.begin());
             };
             auto trimmedWithoutLeft = trimmed;

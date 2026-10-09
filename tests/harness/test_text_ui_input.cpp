@@ -2040,6 +2040,28 @@ int main(int argc, char** argv) {
             check(
                 pumpUntil([&] { return !window->property("timelineWheelBlocked").toBool(); }, 3000),
                 "ダイアログを閉じてもタイムラインのホイールが無効です");
+            // メニューバーは Alt+英字 1 文字で開く。表示には "&" を出さない。
+            {
+                const auto labels =
+                    window->findChildren<QQuickItem*>(QStringLiteral("menuBarItemLabel"));
+                bool plain = labels.size() == 4;
+                for (auto* label : labels)
+                    plain = plain && !label->property("text").toString().contains(u'&');
+                check(plain, "メニューバーの見出しに & が表示されています");
+                const std::pair<Qt::Key, const char*> menus[] = {{Qt::Key_F, "fileMenu"},
+                                                                 {Qt::Key_E, "editMenu"},
+                                                                 {Qt::Key_L, "playbackMenu"},
+                                                                 {Qt::Key_P, "projectMenu"}};
+                for (const auto& [key, name] : menus) {
+                    auto* menu = window->findChild<QObject*>(QString::fromLatin1(name));
+                    const auto opened = [&] { return menu && menu->property("opened").toBool(); };
+                    check(menu && !opened(), "前提: メニューが閉じていません");
+                    QTest::keyClick(window, key, Qt::AltModifier);
+                    check(pumpUntil(opened, 3000), "Alt+英字でメニューが開きません");
+                    QTest::keyClick(window, Qt::Key_Escape);
+                    check(pumpUntil([&] { return !opened(); }, 3000), "Esc でメニューが閉じません");
+                }
+            }
             // 起動直後は初回 seek の完了待ちで Seeking のことがある。受理されるまで再試行する。
             // seek の要求は毎回 stateChanged を出すので、間隔を空けて再試行する。
             const auto seekAccepted = [&] {
@@ -2260,7 +2282,7 @@ int main(int argc, char** argv) {
                                    .arg(i / 60, 2, 10, QChar('0'))
                                    .arg(i % 60, 2, 10, QChar('0'));
                     QFile file(directory.filePath(QStringLiteral("perf.srt")));
-                    file.open(QIODevice::WriteOnly);
+                    check(file.open(QIODevice::WriteOnly), "前提: 計測用の SRT を書けません");
                     file.write(srt.toUtf8());
                     file.close();
                     QElapsedTimer t;
@@ -2336,7 +2358,7 @@ int main(int argc, char** argv) {
                 // S1 の字幕も clip と同じく、Alt+ドラッグで複製し、選択をまとめて動かす。
                 {
                     QFile srt(directory.filePath(QStringLiteral("drag.srt")));
-                    srt.open(QIODevice::WriteOnly);
+                    check(srt.open(QIODevice::WriteOnly), "前提: 字幕の SRT を書けません");
                     srt.write(QStringLiteral("1\n00:00:00,000 --> 00:00:00,500\n一つ目\n\n"
                                              "2\n00:00:01,000 --> 00:00:01,500\n二つ目\n")
                                   .toUtf8());
@@ -2345,7 +2367,7 @@ int main(int argc, char** argv) {
                     // 戻せなかったら後段の検査を汚さないよう、この場面の失敗としてここで止める。
                     const auto depthBefore = controller.undoDepthForTest();
                     const auto projectBefore = controller.projectForTest();
-                    const auto playheadBefore = controller.playheadFrame();
+                    const auto subtitlePlayheadBefore = controller.playheadFrame();
                     const auto selectedClips = [&] {
                         QStringList ids;
                         auto* clips = controller.timelineModel();
@@ -2441,7 +2463,7 @@ int main(int argc, char** argv) {
                         }
                         pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
                     }
-                    controller.seekTimelineFrame(playheadBefore);
+                    controller.seekTimelineFrame(subtitlePlayheadBefore);
                     pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
                     const bool sameProject = controller.projectForTest() == projectBefore;
                     const bool sameClips = selectedClips() == clipsBefore;
@@ -2450,9 +2472,9 @@ int main(int argc, char** argv) {
                                 restored ? "成功" : "失敗", sameProject ? "一致" : "不一致",
                                 sameClips ? "一致" : "不一致",
                                 static_cast<long long>(controller.playheadFrame()),
-                                static_cast<long long>(playheadBefore));
+                                static_cast<long long>(subtitlePlayheadBefore));
                     if (!(restored && controller.undoDepthForTest() == depthBefore && sameProject &&
-                          sameClips && controller.playheadFrame() == playheadBefore &&
+                          sameClips && controller.playheadFrame() == subtitlePlayheadBefore &&
                           controller.selectedSubtitleIds().isEmpty())) {
                         // 後段の文字ツールなどの検査を汚さないよう、ここで止める。
                         check(false, "字幕の場面の後で履歴・Project・選択・再生位置を"

@@ -614,8 +614,8 @@ void testMathTransformEditing(const QTemporaryDir& temp,
         request.outputPath = temp.filePath("transform.mp4").toStdWString();
         request.width = loaded.project.outputWidth;
         request.height = loaded.project.outputHeight;
-        request.fpsNum = loaded.project.timelineFpsNum;
-        request.fpsDen = loaded.project.timelineFpsDen;
+        request.fpsNum = static_cast<int>(loaded.project.timelineFpsNum);
+        request.fpsDen = static_cast<int>(loaded.project.timelineFpsDen);
         const auto plan = mvm::app::mapTimelineExportPlan(loaded.project, request);
         check(!plan.error.empty() && plan.error.find("数式の変形") != std::string::npos,
               "出力する変形のある書き出しは拒否する: " + plan.error);

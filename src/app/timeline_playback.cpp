@@ -92,6 +92,12 @@ PlaybackFrameResult adjacentTimelineEditPoint(const project::Project& project,
         return result;
     }
     std::optional<std::int64_t> nearest;
+    const auto consider = [&](std::int64_t edge) {
+        if (direction > 0 && edge > playheadFrame && (!nearest || edge < *nearest))
+            nearest = edge;
+        if (direction < 0 && edge < playheadFrame && (!nearest || edge > *nearest))
+            nearest = edge;
+    };
     for (const auto& clip : project.timelineClips) {
         const auto duration = project::timelineClipDuration(project, clip);
         if (!duration.success || duration.frame <= 0 || clip.timelineStartFrame < 0 ||
@@ -99,13 +105,18 @@ PlaybackFrameResult adjacentTimelineEditPoint(const project::Project& project,
             result.error = duration.success ? "clipの編集点が不正です" : duration.error;
             return result;
         }
-        const std::int64_t edges[2] = {
-            clip.timelineStartFrame, std::min(clip.timelineStartFrame + duration.frame, lastFrame)};
-        for (const auto edge : edges) {
-            if (direction > 0 && edge > playheadFrame && (!nearest || edge < *nearest))
-                nearest = edge;
-            if (direction < 0 && edge < playheadFrame && (!nearest || edge > *nearest))
-                nearest = edge;
+        consider(clip.timelineStartFrame);
+        consider(std::min(clip.timelineStartFrame + duration.frame, lastFrame));
+    }
+    // 字幕の切れ目も clip と同じ編集点として扱う (端のトリム位置へ playhead を合わせるため)。
+    if (project.subtitles) {
+        for (const auto& cue : project.subtitles->cues) {
+            if (cue.startFrame < 0 || cue.endFrame <= cue.startFrame) {
+                result.error = "字幕の編集点が不正です";
+                return result;
+            }
+            consider(cue.startFrame);
+            consider(std::min(cue.endFrame, lastFrame));
         }
     }
     for (const auto marker : project.timelineMarkers) {
@@ -113,10 +124,7 @@ PlaybackFrameResult adjacentTimelineEditPoint(const project::Project& project,
             result.error = "マーカーの編集点が不正です";
             return result;
         }
-        if (direction > 0 && marker > playheadFrame && (!nearest || marker < *nearest))
-            nearest = marker;
-        if (direction < 0 && marker < playheadFrame && (!nearest || marker > *nearest))
-            nearest = marker;
+        consider(marker);
     }
     if (!nearest) {
         result.error = direction > 0 ? "次の編集点はありません" : "前の編集点はありません";

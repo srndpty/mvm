@@ -384,16 +384,18 @@ void writeScenario(const std::filesystem::path& root, const mvm::math::MathRende
         const auto& image = decoded.image;
         sameSize = sameSize && image.width == staticImage.image.width &&
                    image.height == staticImage.image.height;
+        const auto alphaAt = [&](int x, int y) {
+            return image.rgba[(static_cast<std::size_t>(y) * static_cast<std::size_t>(image.width) +
+                               static_cast<std::size_t>(x)) *
+                                  4 +
+                              3];
+        };
         for (int x = 0; x < image.width; ++x)
             for (const int y : {0, image.height - 1})
-                edgesClear =
-                    edgesClear &&
-                    image.rgba[(static_cast<std::size_t>(y) * image.width + x) * 4 + 3] == 0;
+                edgesClear = edgesClear && alphaAt(x, y) == 0;
         for (int y = 0; y < image.height; ++y)
             for (const int x : {0, image.width - 1})
-                edgesClear =
-                    edgesClear &&
-                    image.rgba[(static_cast<std::size_t>(y) * image.width + x) * 4 + 3] == 0;
+                edgesClear = edgesClear && alphaAt(x, y) == 0;
         for (std::size_t at = 0; at + 3 < image.rgba.size(); at += 4)
             if (image.rgba[at + 3] == 255)
                 opaqueWhite = opaqueWhite && image.rgba[at] == 255 && image.rgba[at + 1] == 255 &&

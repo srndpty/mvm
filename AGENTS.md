@@ -675,6 +675,19 @@ repo-scoped PID、CPU time、child compiler、`.ninja_log` 更新時刻を根拠
 
 ### Codex sandbox の既知制約
 
+**ビルドを伴うコマンドは、最初から sandbox 外 (承認付きの実行) で起動する。sandbox 内で
+試してから切り替えない。** 対象は `scripts/build.ps1`・`scripts/test.ps1`・`dev.ps1` の
+`build` / `test` / `run` / `gui`・`cmake` (configure と `--build`)・`ninja`・`ctest`。
+sandbox 内では毎回同じ形で止まることが分かっており、試す価値が無い。試すと、待つ・診断する・
+止める・外で再実行する、の往復で毎回時間を失ってきた。読み取りだけの診断
+(`build-diagnostics.ps1`・`ninja -n`) は sandbox 内でよい。
+
+それでも sandbox 内で起動してしまった場合は、`scripts/build.ps1` が CPU 時間・子 process・
+`.ninja_log` の停止を 180 秒 (`-StallSeconds`) で検知し、起動した tree だけを止めて
+`BUILD_STALLED` で失敗する (`scripts/lib/build-watchdog.ps1`)。この失敗を見たら原因を
+再調査せず、同じコマンドを sandbox 外で 1 回実行する。`BUILD_STALLED` を tool の timeout と
+取り違えて待ち続けない。
+
 この開発環境では、sandbox 内から CMake/Ninja を実行した場合に、
 Ninja 自体は起動するが child compiler (`g++` / `cc1plus`) が起動せず停止する事例を確認済み。
 

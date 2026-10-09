@@ -1539,10 +1539,10 @@ void testTimelineTransitions(const std::filesystem::path& root) {
               "トランジションと無効clipがJSONを往復しません");
         if (serialized.success) {
             auto missing = serialized.json;
-            const auto at = missing.find("\"frames_after_cut\": 30");
-            check(at != std::string::npos, "frames_after_cut が出力されません");
-            if (at != std::string::npos) {
-                missing.erase(at, std::string("\"frames_after_cut\": 30").size());
+            const auto cutAt = missing.find("\"frames_after_cut\": 30");
+            check(cutAt != std::string::npos, "frames_after_cut が出力されません");
+            if (cutAt != std::string::npos) {
+                missing.erase(cutAt, std::string("\"frames_after_cut\": 30").size());
                 // 直前の ", " が残るので JSON としても壊れる。どちらでも読み込みは失敗する。
                 check(!mvm::project::parseProjectJsonText(missing, path).success,
                       "frames_after_cut の無いトランジションを受理しました");

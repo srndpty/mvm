@@ -455,11 +455,11 @@ struct FakeMathBackend {
                                 return cancelled;
                             }
                         }
-                        auto result = fakeRenderTransform(request, loader, cancel, transformGate,
-                                                          transformHeld);
-                        if (result.status == math::MathRenderStatus::Ok)
+                        auto rendered = fakeRenderTransform(request, loader, cancel, transformGate,
+                                                            transformHeld);
+                        if (rendered.status == math::MathRenderStatus::Ok)
                             transformLog->record("transform:" + target);
-                        return result;
+                        return rendered;
                     };
             }
             result.backend.render = [renders, started, slow, staticGate,
