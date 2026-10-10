@@ -154,13 +154,15 @@ function Test-EditActionGuard([string]$source) {
                    [regex]::Escape($entry.Key) + '"[^{}]*enabled:[^\n]*!root\.keyboardFocusTakesKeys' +
                    '[^{}]*onTriggered:\s*' + [regex]::Escape($entry.Call)
         if ($source -notmatch $pattern) { return $false }
-        if (-not $source.Contains('CompactMenuItem { action: ' + $entry.Id + ' }')) { return $false }
+        # メニューのアクセスキー (mnemonic) は付いていてもよい。
+        $menuItem = 'CompactMenuItem \{ action: ' + [regex]::Escape($entry.Id) + '(; mnemonic: "[A-Z]")? \}'
+        if ($source -notmatch $menuItem) { return $false }
     }
     return $true
 }
 if (-not (Test-EditActionGuard $qml) -or
     (Test-EditActionGuard ($qml -replace '(?s)(id: selectAllClipsAction.*?enabled: [^\n]*?) && !root\.keyboardFocusTakesKeys', '$1')) -or
-    (Test-EditActionGuard $qml.Replace('CompactMenuItem { action: splitAtPlayheadAction }', ''))) {
+    (Test-EditActionGuard ($qml -replace 'CompactMenuItem \{ action: splitAtPlayheadAction(; mnemonic: "[A-Z]")? \}', ''))) {
     throw '編集ショートカットの Action が文字入力中の focus を除外していないか、メニューに出ていません'
 }
 

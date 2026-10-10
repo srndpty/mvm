@@ -300,30 +300,37 @@ ApplicationWindow {
             title: "ファイル(&F)"
             CompactMenuItem {
                 text: "新規プロジェクト"
+                mnemonic: "N"
                 enabled: !root.mvmController.busy
                 onTriggered: root.requestProjectAction("new")
             }
             CompactMenuItem {
                 action: openProjectAction
+                mnemonic: "O"
             }
             CompactMenuItem {
                 action: closeProjectAction
+                mnemonic: "C"
             }
             CompactMenuSeparator {}
             CompactMenuItem {
                 action: saveProjectAction
+                mnemonic: "S"
             }
             CompactMenuItem {
                 action: saveProjectAsAction
+                mnemonic: "A"
             }
             CompactMenuSeparator {}
             CompactMenuItem {
                 text: "メディアを追加"
+                mnemonic: "I"
                 enabled: !root.mvmController.busy
                 onTriggered: mediaDialog.open()
             }
             CompactMenuItem {
                 text: "Manim script clip…"
+                mnemonic: "M"
                 visible: !root.mvmController.hasManimAsset
                 enabled: root.mvmController.previewReady && !root.mvmController.busy
                 onTriggered: scriptDialog.open()
@@ -331,6 +338,7 @@ ApplicationWindow {
             CompactMenuItem {
                 objectName: "addMathClipMenuItem"
                 text: "数式 clip を追加"
+                mnemonic: "Q"
                 enabled: !root.mvmController.busy
                 onTriggered: {
                     if (root.mvmController.createMathClip("ax^2 + bx + c = 0")) {
@@ -342,6 +350,7 @@ ApplicationWindow {
             CompactMenuItem {
                 objectName: "addEquationSequenceMenuItem"
                 text: "数式 sequence を追加"
+                mnemonic: "U"
                 enabled: !root.mvmController.busy
                 onTriggered: {
                     if (root.mvmController.createEquationSequenceClip("ax^2 + bx + c = 0")) {
@@ -353,6 +362,7 @@ ApplicationWindow {
             CompactMenuItem {
                 objectName: "addGraphClipMenuItem"
                 text: "グラフ clip を追加"
+                mnemonic: "G"
                 enabled: !root.mvmController.busy
                 onTriggered: {
                     if (root.mvmController.createGraphClipFromUi())
@@ -362,6 +372,7 @@ ApplicationWindow {
             CompactMenuSeparator {}
             CompactMenuItem {
                 action: exportMediaAction
+                mnemonic: "E"
             }
         }
         CompactMenu {
@@ -369,40 +380,45 @@ ApplicationWindow {
             title: "編集(&E)"
             CompactMenuItem {
                 action: undoAction
+                mnemonic: "U"
             }
             CompactMenuItem {
                 action: redoAction
+                mnemonic: "R"
             }
             CompactMenuSeparator {}
-            CompactMenuItem { action: copyClipsAction }
-            CompactMenuItem { action: cutClipsAction }
-            CompactMenuItem { action: pasteClipsAction }
-            CompactMenuItem { action: duplicateClipsAction }
-            CompactMenuItem { action: speedDurationAction }
+            CompactMenuItem { action: copyClipsAction; mnemonic: "C" }
+            CompactMenuItem { action: cutClipsAction; mnemonic: "T" }
+            CompactMenuItem { action: pasteClipsAction; mnemonic: "P" }
+            CompactMenuItem { action: duplicateClipsAction; mnemonic: "D" }
+            CompactMenuItem { action: speedDurationAction; mnemonic: "S" }
             CompactMenuItem {
                 objectName: "autoAudioMenuItem"
                 text: "自動音量調整…"
+                mnemonic: "A"
                 enabled: !root.mvmController.busy
                 onTriggered: autoAudioDialog.open()
             }
             CompactMenuSeparator {}
-            CompactMenuItem { action: splitAtPlayheadAction }
-            CompactMenuItem { action: splitAllTracksAction }
-            CompactMenuItem { action: selectAllClipsAction }
+            CompactMenuItem { action: splitAtPlayheadAction; mnemonic: "K" }
+            CompactMenuItem { action: splitAllTracksAction; mnemonic: "H" }
+            CompactMenuItem { action: selectAllClipsAction; mnemonic: "L" }
             CompactMenuSeparator {}
-            CompactMenuItem { action: volumeUpAction }
-            CompactMenuItem { action: volumeDownAction }
-            CompactMenuItem { action: toggleClipEnabledAction }
-            CompactMenuItem { action: defaultTransitionAction }
+            CompactMenuItem { action: volumeUpAction; mnemonic: "V" }
+            CompactMenuItem { action: volumeDownAction; mnemonic: "W" }
+            CompactMenuItem { action: toggleClipEnabledAction; mnemonic: "E" }
+            CompactMenuItem { action: defaultTransitionAction; mnemonic: "F" }
             CompactMenuItem {
                 objectName: "mathTransformMenuItem"
                 action: mathTransformAction
+                mnemonic: "M"
             }
             CompactMenuSeparator {}
             // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {
                 text: (root.mvmController.selectedTransitionId !== "" ? "トランジションを削除"
                                                                       : "クリップを削除") + "\tDelete"
+                mnemonic: "X"
                 enabled: root.mvmController.canDeleteSelection
                 onTriggered: root.mvmController.deleteSelection()
             }
@@ -414,6 +430,7 @@ ApplicationWindow {
             // 実行は Shortcut "Space" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {
                 text: (root.mvmController.playing ? "一時停止" : "再生") + "\tSpace"
+                mnemonic: "P"
                 enabled: !root.mvmController.busy
                          && (root.mvmController.playing || root.mvmController.canPlay)
                 onTriggered: {
@@ -424,60 +441,69 @@ ApplicationWindow {
                 }
             }
             CompactMenuSeparator {}
-            CompactMenuItem { action: addMarkerAction }
-            CompactMenuItem { action: nextMarkerAction }
-            CompactMenuItem { action: previousMarkerAction }
-            CompactMenuItem { action: markInAction }
-            CompactMenuItem { action: markOutAction }
-            CompactMenuItem { action: jumpInAction }
-            CompactMenuItem { action: jumpOutAction }
-            CompactMenuItem { action: clearInOutAction }
+            CompactMenuItem { action: addMarkerAction; mnemonic: "M" }
+            CompactMenuItem { action: nextMarkerAction; mnemonic: "N" }
+            CompactMenuItem { action: previousMarkerAction; mnemonic: "B" }
+            CompactMenuItem { action: markInAction; mnemonic: "I" }
+            CompactMenuItem { action: markOutAction; mnemonic: "O" }
+            CompactMenuItem { action: jumpInAction; mnemonic: "G" }
+            CompactMenuItem { action: jumpOutAction; mnemonic: "H" }
+            CompactMenuItem { action: clearInOutAction; mnemonic: "X" }
             CompactMenuSeparator {}
             CompactMenuItem {
                 text: "左へシャトル\tJ"
+                mnemonic: "J"
                 enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
                 onTriggered: root.mvmController.shuttleLeft()
             }
             CompactMenuItem {
                 text: "停止\tK"
+                mnemonic: "K"
                 enabled: root.mvmController.playing
                 onTriggered: root.mvmController.pauseTimeline()
             }
             CompactMenuItem {
                 text: "右へシャトル\tL"
+                mnemonic: "L"
                 enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
                 onTriggered: root.mvmController.shuttleRight()
             }
             CompactMenuSeparator {}
             CompactMenuItem {
                 text: "1フレーム前へ\t←"
+                mnemonic: "Z"
                 enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
                 onTriggered: root.mvmController.stepTimelineFrames(-1)
             }
             CompactMenuItem {
                 text: "1フレーム先へ\t→"
+                mnemonic: "C"
                 enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
                 onTriggered: root.mvmController.stepTimelineFrames(1)
             }
             CompactMenuItem {
                 text: "5フレーム前へ\tShift+←"
+                mnemonic: "A"
                 enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
                 onTriggered: root.mvmController.stepTimelineFrames(-5)
             }
             CompactMenuItem {
                 text: "5フレーム先へ\tShift+→"
+                mnemonic: "S"
                 enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
                 onTriggered: root.mvmController.stepTimelineFrames(5)
             }
             CompactMenuSeparator {}
             CompactMenuItem {
                 text: "前の編集点へ\t↑"
+                mnemonic: "U"
                 // 字幕・マーカーだけでも編集点になる。条件は jumpToEditPoint と同じにする。
                 enabled: !root.mvmController.busy && root.mvmController.navigationTimelineFrames > 0
                 onTriggered: root.mvmController.jumpToEditPoint(-1)
             }
             CompactMenuItem {
                 text: "次の編集点へ\t↓"
+                mnemonic: "D"
                 enabled: !root.mvmController.busy && root.mvmController.navigationTimelineFrames > 0
                 onTriggered: root.mvmController.jumpToEditPoint(1)
             }
@@ -487,6 +513,7 @@ ApplicationWindow {
             title: "プロジェクト(&P)"
             CompactMenuItem {
                 text: "プロジェクト設定"
+                mnemonic: "S"
                 enabled: !root.mvmController.busy
                 onTriggered: root.openProjectSettingsDialog()
             }

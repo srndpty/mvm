@@ -10,6 +10,27 @@ MenuItem {
             return parts[1];
         return action && action.shortcut ? String(action.shortcut) : "";
     }
+    // Windows のアクセスキー。menu が開いている間、英字 1 文字 (Alt を押したままでもよい) で
+    // この項目を選ぶ。同じ menu の中で重ねない。menu が開いている間は menu の外の shortcut を
+    // Qt が止めるので、menubar の Alt+英字とは衝突しない。
+    property string mnemonic: ""
+    readonly property string label: {
+        const base = text.split("\t")[0];
+        if (mnemonic.length === 0)
+            return base;
+        // 「…」で終わる項目は Windows の慣習どおり、その前に (X) を置く。
+        const tail = base.match(/(…|\.\.\.)$/);
+        return tail ? base.slice(0, -tail[0].length) + "(" + mnemonic + ")" + tail[0]
+                    : base + "(" + mnemonic + ")";
+    }
+
+    Shortcut {
+        sequences: item.mnemonic.length === 1 ? [item.mnemonic, "Alt+" + item.mnemonic] : []
+        enabled: item.mnemonic.length === 1 && item.enabled && item.visible && item.menu !== null
+                 && item.menu.opened
+        // 実際のクリックと同じ経路 (action の実行・menu を閉じる) を通す。
+        onActivated: item.click()
+    }
 
     implicitWidth: Math.max(206, contentItem.implicitWidth + leftPadding + rightPadding)
     implicitHeight: 27
@@ -21,7 +42,7 @@ MenuItem {
         spacing: 20
         Label {
             Layout.fillWidth: true
-            text: item.text.split("\t")[0]
+            text: item.label
             color: item.enabled ? "#f0f1f3" : "#85888f"
             font: item.font
             elide: Text.ElideRight

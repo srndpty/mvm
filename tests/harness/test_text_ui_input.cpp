@@ -8,6 +8,7 @@
 //   入力欄の編集中は timeline の shortcut (Ctrl+C/V/D, M, I, O) が効かない
 // を確かめる。IME の変換確定は OS の入力方式が要るのでここでは扱わない
 // (docs/premiere-like-editing.md の手動確認手順を参照)。
+#include "alt_repeat_filter.h"
 #include "app/preview/preview_engine_rhi_item.h"
 #include "app/preview/test_window_mode.h"
 #include "app/text_raster.h"
@@ -42,6 +43,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSet>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
@@ -1985,6 +1987,7 @@ int main(int argc, char** argv) {
             return 3;
         }
         window->installEventFilter(new mvm::app::FocusReleaseFilter(window));
+        window->installEventFilter(new mvm::app::AltRepeatFilter(window));
         controller.attachPreview(surface);
         mvm::test::tracePreview(controller, window, "text-input");
         // どの経路で抜けても controller.shutdown() を通す。通さずに破棄すると
@@ -2060,6 +2063,25 @@ int main(int argc, char** argv) {
                     check(pumpUntil(opened, 3000), "Alt+英字でメニューが開きません");
                     QTest::keyClick(window, Qt::Key_Escape);
                     check(pumpUntil([&] { return !opened(); }, 3000), "Esc でメニューが閉じません");
+                    // 項目のアクセスキーは全項目にあり、同じメニューの中で重ならない。
+                    int items = 0;
+                    QSet<QString> letters;
+                    bool distinct = menu != nullptr;
+                    for (int i = 0; menu && i < menu->property("count").toInt(); ++i) {
+                        QQuickItem* item = nullptr;
+                        QMetaObject::invokeMethod(menu, "itemAt", Q_RETURN_ARG(QQuickItem*, item),
+                                                  Q_ARG(int, i));
+                        if (!item || !item->property("mnemonic").isValid())
+                            continue; // 区切り線
+                        ++items;
+                        const auto letter = item->property("mnemonic").toString();
+                        distinct = distinct && letter.size() == 1 && !letters.contains(letter) &&
+                                   item->property("label").toString().contains(
+                                       QStringLiteral("(%1)").arg(letter));
+                        letters.insert(letter);
+                    }
+                    check(distinct && items > 0,
+                          "メニュー項目のアクセスキーが欠けているか重なっています");
                 }
             }
             // 起動直後は初回 seek の完了待ちで Seeking のことがある。受理されるまで再試行する。
@@ -2080,6 +2102,61 @@ int main(int argc, char** argv) {
             }
             pump(300);
             check(controller.previewVideoAtPlayhead(), "前提: playhead に映像がありません");
+
+            // メニュー項目のアクセスキー: Alt を押したまま 再生(L) → 次の編集点へ(D)、
+            // Alt なしの 前の編集点へ(U)。seek は初回 seek
+            // の完了後でないと受理されないので、ここで試す。
+            {
+                auto* playback = window->findChild<QObject*>(QStringLiteral("playbackMenu"));
+                const auto playbackOpened = [&] {
+                    return playback && playback->property("opened").toBool();
+                };
+                // 利用者が Alt を押したままにする操作を、そのままの event 列で送る。QTest::keyClick
+                // は キーごとに Alt
+                // を押し直すので、押したままの操作とは別物になる。押したままの間、 Windows は Alt
+                // の自動反復を送る。
+                const auto send = [&](QEvent::Type type, int key, Qt::KeyboardModifiers modifiers,
+                                      bool repeat = false) {
+                    QWindowSystemInterface::handleKeyEvent<
+                        QWindowSystemInterface::SynchronousDelivery>(window, type, key, modifiers,
+                                                                     QString(), repeat);
+                    pump(30);
+                };
+                const auto choose = [&](Qt::Key key, bool holdAlt) {
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    send(QEvent::KeyPress, Qt::Key_Alt, Qt::AltModifier);
+                    send(QEvent::KeyPress, Qt::Key_L, Qt::AltModifier);
+                    send(QEvent::KeyRelease, Qt::Key_L, Qt::AltModifier);
+                    if (!holdAlt)
+                        send(QEvent::KeyRelease, Qt::Key_Alt, Qt::NoModifier);
+                    check(pumpUntil(playbackOpened, 3000), "前提: 再生メニューが開きません");
+                    const auto modifiers = holdAlt ? Qt::AltModifier : Qt::NoModifier;
+                    for (int i = 0; holdAlt && i < 3; ++i)
+                        send(QEvent::KeyPress, Qt::Key_Alt, Qt::AltModifier, true);
+                    send(QEvent::KeyPress, key, modifiers);
+                    send(QEvent::KeyRelease, key, modifiers);
+                    if (holdAlt)
+                        send(QEvent::KeyRelease, Qt::Key_Alt, Qt::NoModifier);
+                    return pumpUntil([&] { return !playbackOpened(); }, 3000);
+                };
+                const auto start = controller.playheadFrame();
+                // 映像 clip (0〜120) の終端は timeline の最終 frame へ丸められる。
+                check(choose(Qt::Key_D, true) && controller.playheadFrame() == 119,
+                      "Alt+L → Alt+D で次の編集点へ移動しません");
+                check(choose(Qt::Key_U, false) && controller.playheadFrame() == 0,
+                      "メニューを開いたあと U だけで前の編集点へ移動しません");
+                // メニューが閉じている間は、項目のアクセスキーが効かない。
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                QTest::keyClick(window, Qt::Key_D, Qt::AltModifier);
+                pump(300);
+                check(controller.playheadFrame() == 0, "閉じたメニューの項目が Alt+D で動きました");
+                if (!seekAccepted()) {
+                    std::fprintf(stderr, "FAIL: 映像のある frame (%lld) へ戻せません\n",
+                                 static_cast<long long>(start));
+                    return 3;
+                }
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+            }
 
             // 0. 枠のドラッグのように effect を続けて変えると、先の変更の seek が終わる前に次が
             //    来る。途中の変更は捨ててよいが、最後の値 (C) は必ず preview に出る。
