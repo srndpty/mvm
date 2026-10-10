@@ -1632,10 +1632,38 @@ struct PreviewWindowHarness {
 };
 
 int nativeTransformPlayback() {
+    // 診断は試験側だけに置く。単調時計と thread ID で worker と GUI の境界を照合する。
+    const auto traceStart = std::chrono::steady_clock::now();
+    const bool tracing = qEnvironmentVariableIsSet("MVM_TEST_TRANSFORM_TRACE");
+    const auto trace = [traceStart, tracing](const char* stage) {
+        if (!tracing)
+            return;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - traceStart)
+                                 .count();
+        std::fprintf(stderr, "変形診断: 経過 %lld ms、thread %p、%s\n",
+                     static_cast<long long>(elapsed), QThread::currentThreadId(), stage);
+    };
     QTemporaryDir temp;
     check(temp.isValid(), "native 変形: 作業フォルダー");
     auto captured = std::make_shared<CapturedExport>();
     FakeMathBackend backend;
+    auto preflight = backend.preflight();
+    const auto tracedPreflight = [preflight, trace](const std::filesystem::path& work,
+                                                    const std::atomic<bool>* cancel) {
+        trace("backend 確認開始");
+        auto result = preflight(work, cancel);
+        const auto render = result.backend.renderTransform;
+        result.backend.renderTransform = [render, trace](const auto& request, const auto& loader,
+                                                         const std::atomic<bool>* cancelled) {
+            trace("変形 worker 描画開始");
+            auto rendered = render(request, loader, cancelled);
+            trace("変形 worker 描画終了");
+            return rendered;
+        };
+        trace("backend 確認終了");
+        return result;
+    };
     const auto path = std::filesystem::path(temp.filePath("native transform.mvm").toStdWString());
     constexpr std::int64_t kStart = kTransformCut - 60;
     constexpr std::int64_t kFrames = 180;
@@ -1646,17 +1674,40 @@ int nativeTransformPlayback() {
     PreviewWindowHarness harness;
     harness.attach(*controller);
     check(pump([&] { return controller->previewReady(); }), "native 変形: preview の初期化");
-    controller->setMathPreflightForTest(backend.preflight());
+    controller->mathRastersForTest().setBeforeTransformPublishForTest(
+        [trace](const std::filesystem::path&) {
+            trace("変形 worker 検証終了・provenance 公開直前");
+            // 診断の対照群: disk 公開だけを遅らせ、元の検査が失敗することを確かめる。
+            if (qEnvironmentVariableIsSet("MVM_TEST_TRANSFORM_DELAY_PUBLISH"))
+                std::this_thread::sleep_for(std::chrono::milliseconds(10500));
+            trace("変形 worker provenance 公開へ進む");
+        });
+    controller->setMathPreflightForTest(tracedPreflight);
     check(pump([&] {
               return controller->mathRastersForTest().backendState() ==
                      mvm::app::MathRasterCache::BackendState::Available;
           }),
           "native 変形: 偽の backend が使える");
     // 選択は 1 回だけ (選び直すたびに preview を組み直させない)。状態は cache の結果で更新される。
-    check(controller->selectTransition(QStringLiteral("t1")) && pump([&] {
-              return transitionValue(*controller, "transformState") == QStringLiteral("ready");
-          }),
-          "native 変形: 変形が disk に揃う");
+    trace("GUI 選択・disk 待機開始");
+    QString lastState;
+    const bool selected = controller->selectTransition(QStringLiteral("t1"));
+    const bool diskReady =
+        selected && pump([&] {
+            const auto current = transitionValue(*controller, "transformState");
+            if (current != lastState) {
+                lastState = current;
+                trace(qUtf8Printable(QStringLiteral("GUI disk 状態: ") + current));
+            }
+            return transitionValue(*controller, "transformState") == QStringLiteral("ready");
+        });
+    trace("GUI disk 待機終了");
+    if (tracing || !diskReady)
+        std::fprintf(stderr, "変形診断: 選択 %d、disk 待機 %d、状態 '%s'、理由 '%s'、描画開始 %d\n",
+                     int(selected), int(diskReady), qUtf8Printable(lastState),
+                     qUtf8Printable(transitionValue(*controller, "transformMessage")),
+                     backend.transformRenders->load());
+    check(diskReady, "native 変形: 変形が disk に揃う");
     auto observation = std::make_shared<TransformObservation>();
     controller->setMathTransformObserverForTest(
         [observation](const std::string& transitionId, const std::string& clipId,

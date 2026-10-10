@@ -473,6 +473,11 @@ set_tests_properties(m7b_4_controller_export_lifecycle PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     COST 40
     TIMEOUT 120)
+add_test(NAME m7b_4_selection_identity
+    COMMAND mvm_test_controller_export --selection-identity
+            ${CMAKE_BINARY_DIR}/tests/selection-identity)
+set_tests_properties(m7b_4_selection_identity PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 30)
 
 # シャトル音声の sample 対応 (速度・逆順・clip 範囲・mute・重なり・素材 offset)。
 # 素材 sample の供給元を差し替えるので WASAPI も decoder も要らない。
