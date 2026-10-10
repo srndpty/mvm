@@ -1,5 +1,39 @@
 # 数式変形の release flake 調査
 
+## レビューで判明した観測の修正（2026-10-10）
+
+[事実] 旧 observer は backend-start の frame に -1、backend-end に出力 frame 数を
+記録していた。集計の組は thread・frame・stage なので、旧集計には backend 区間が無く、
+開始だけが incomplete_stages に残っていた。旧 raw log と集計は保存し、描画時間の根拠には
+使わない。start/end の識別値を -1 に揃え、Ready では backend の成功区間がちょうど一つ
+あることも集計で検査する。識別値の不一致・end の欠落を拒否する負の対照を追加した。
+
+[事実] 固定 cohort は追跡対象の `tests/fixtures/math-preparation-cohort.json` に保存した。
+歴史的 artifact の試験名 277 件を保持し、CTest の数値 ID は選択に使わない。
+別の集合は `-CohortPath` で明示的に指定できる。schema・空集合・重複・対象試験の欠落を
+検査し、実際の CTest 集合と manifest が完全一致しなければ実行を止める。
+前回の LastTest が無い初回 build でも開始でき、不在を証拠へ記録する。
+
+[事実] tracked manifest を使った baseline と固定 3 回の 8 並列 cohort は通過し、
+各 run の backend 区間が集計された。
+[修正後の原ログ・source/runtime と段階集計](../build/math-preparation-20261010-203713-605-Concurrent/preparation-summary.md)。
+この source snapshot は初回 LastTest 不在の扱いを追加する前の runner を保存している。
+
+[事実] メニュー項目の WindowShortcut を廃止し、CompactMenu の項目一覧で
+ShortcutOverride を受理してからキーイベントを処理するようにした。
+Alt を保持したメニューバー操作でも、開いた一覧へ Qt 内の focus を移す。
+実 window の GUI 回帰で M/I/O の通常・Alt 保持、File の Alt+E と Edit 見出しの競合、
+既存の編集・Esc・非アクティブ化を検査した。File 項目は OS dialog を開かず dispatch を
+観測するため、その検査中だけ Action を外し、終了後に戻している。
+`build/review76-focus.log` と LastTest は成功、途中の失敗は
+`build/review76-targeted.log` と LastTest に保存した。構築時の失敗も上書きしていない。
+cohort/backend 段階会計の正負対照は `math_preparation_tools_contract`、
+lint の結果は `build/review76-lint-verified.log` に保存した。
+[事実] 最終 runner の isolated baseline と準備対照 11 件も通過し、
+[修正後の対照ログと段階集計](../build/math-preparation-20261010-204403-006-Focused/preparation-summary.md)
+へ保存した。このレビュー対応では GUI・tools・準備の対象試験と固定 cohort を実行した。
+以下の通常 release 1507 件の記録は、レビュー修正前の候補で実行した歴史的 gate である。
+
 ## 準備契約の修正（2026-10-10）
 
 [事実] 最終候補は準備対照 11 件、記録済み 277 件の cohort を 8 並列で固定 3 回、

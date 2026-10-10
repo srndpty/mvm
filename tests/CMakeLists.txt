@@ -4298,6 +4298,10 @@ foreach(_control backend-stall decode-fail persist-fail publish-stall publish-fa
 endforeach()
 mvm_add_test(math_transform_preparation_wait_contract
     COMMAND mvm_test_math_controller --preparation-wait-contract PROPERTIES TIMEOUT 30)
+add_test(NAME math_preparation_tools_contract
+    COMMAND pwsh -NoProfile -File "${CMAKE_SOURCE_DIR}/tests/harness/test-math-preparation-tools.ps1"
+        -Scratch "${CMAKE_BINARY_DIR}/tests/math-preparation-tools")
+set_tests_properties(math_preparation_tools_contract PROPERTIES TIMEOUT 30)
 # P3-4: Equation Sequence の product preview (偽の backend)。既定は GPU なしの controller の契約、
 # --native は実 D3D11 の preview と product compositor の readback。
 qt_add_executable(mvm_test_equation_preview_controller

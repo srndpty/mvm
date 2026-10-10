@@ -2160,6 +2160,53 @@ int main(int argc, char** argv) {
                 };
 
                 const auto start = controller.playheadFrame();
+                // 既存の単一キー Action と重なるアクセスキーも、項目だけを 1 回実行する。
+                const auto beforeAccessKeys = controller.undoDepthForTest();
+                for (const auto key : {Qt::Key_M, Qt::Key_I, Qt::Key_O}) {
+                    const auto triggered =
+                        spyOn(playback, QString(QChar(static_cast<char16_t>(key))));
+                    check(triggered && triggered->isValid(),
+                          "前提: 再生メニュー項目を観測できません");
+                    for (const bool holdAlt : {false, true}) {
+                        const int before = triggered ? triggered->count() : 0;
+                        const bool chosen = choose(playback, Qt::Key_L, key, holdAlt);
+                        if (!chosen || !triggered || triggered->count() != before + 1)
+                            std::fprintf(stderr,
+                                         "アクセスキー診断: key=%d Alt保持=%d 選択=%d 発火=%d\n",
+                                         int(key), int(holdAlt), int(chosen),
+                                         triggered ? triggered->count() - before : -1);
+                        check(chosen && triggered && triggered->count() == before + 1,
+                              "M/I/O のアクセスキーが競合するか、項目を 1 回ちょうど実行しません");
+                    }
+                }
+                while (controller.undoDepthForTest() > beforeAccessKeys) {
+                    if (!controller.undoLastEdit()) {
+                        check(false, "前提: アクセスキー試験の変更を戻せません");
+                        break;
+                    }
+                }
+                // File の Alt+E と Edit 見出しの Alt+E の競合を検査する。
+                // 書き出し先の OS dialog は出さず、項目の dispatch を直接観測する。
+                auto* fileMenu = window->findChild<QObject*>(QStringLiteral("fileMenu"));
+                QQuickItem* exportItem = nullptr;
+                for (int i = 0; fileMenu && i < fileMenu->property("count").toInt(); ++i) {
+                    QQuickItem* candidate = nullptr;
+                    QMetaObject::invokeMethod(fileMenu, "itemAt",
+                                              Q_RETURN_ARG(QQuickItem*, candidate), Q_ARG(int, i));
+                    if (candidate && candidate->property("mnemonic").toString() == "E")
+                        exportItem = candidate;
+                }
+                check(exportItem, "前提: 書き出しメニュー項目がありません");
+                if (exportItem) {
+                    const auto action = exportItem->property("action");
+                    check(exportItem->setProperty("action", QVariant(action.metaType(), nullptr)),
+                          "前提: 書き出し先 dialog の起動を分離できません");
+                    const QSignalSpy exported(exportItem, SIGNAL(triggered()));
+                    check(choose(fileMenu, Qt::Key_F, Qt::Key_E, true) && exported.count() == 1 &&
+                              !isOpen(edit),
+                          "Alt+F → Alt+E が Edit 見出しと競合するか、項目を 1 回だけ実行しません");
+                    exportItem->setProperty("action", action);
+                }
                 // 映像 clip (0〜120) の終端は timeline の最終 frame へ丸められる。
                 check(choose(playback, Qt::Key_L, Qt::Key_D, true) &&
                           controller.playheadFrame() == 119,

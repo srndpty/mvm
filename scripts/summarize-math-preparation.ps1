@@ -73,6 +73,10 @@ foreach ($file in Get-ChildItem $EvidenceDirectory -Filter '*.log') {
         if ($testName -eq 'math_transform_preparation_delayed' -and
             ($null -eq $waitUs -or $waitUs -le 10000000)) { throw '旧閾値を超える正常完了の対照になっていません' }
         if ($ready.Count -eq 1) {
+            if (!$stageTotals.ContainsKey('backend') -or $stageTotals.backend.count -ne 1 -or
+                $stageTotals.backend.failures -ne 0 -or @($started.Keys | Where-Object { $_ -match '/backend$' }).Count -ne 0) {
+                throw "Ready の backend 区間会計が不正です: $($file.Name)/$testId"
+            }
             foreach ($stage in @('decode', 'extract', 'persist', 'hash', 'manifest-frame')) {
                 if (!$stageTotals.ContainsKey($stage) -or $stageTotals[$stage].count -ne 180 -or $stageTotals[$stage].failures -ne 0) {
                     throw "Ready の段階会計が不正です: $($file.Name)/$testId/$stage"

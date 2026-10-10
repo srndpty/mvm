@@ -913,7 +913,7 @@ TransformOutcome renderTransformJob(const TransformJob& job, const std::atomic<b
     observeTransform(job, "backend-start", request.jobDirectory);
     const auto rendered = job.backend.renderTransform(request, loadMathCoverage, cancel);
     observeTransform(job, "backend-end", request.jobDirectory,
-                     static_cast<std::int64_t>(rendered.frames.size()), 0,
+                       -1, 0,
                      rendered.status == math::MathRenderStatus::Ok);
     const auto cleanup = [&] {
         std::error_code ignored;

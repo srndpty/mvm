@@ -589,7 +589,7 @@ ApplicationWindow {
     }
     // メニューバーのメニューは開いている間 focus を持つが、文字を入力する場所ではない。ここで
     // 入力中と見なすと、編集メニューの Action (編集点を追加など) が開いた自分のメニューの中で
-    // 無効になる。メニューの外の shortcut は、開いている間 Qt が止めるので奪われない。
+    // 無効になる。項目のアクセスキーは CompactMenu が ShortcutOverride で受理する。
     readonly property bool menuBarMenuOpen: {
         for (let i = 0; i < root.menuBar.count; ++i) {
             if (root.menuBar.menuAt(i).opened)
