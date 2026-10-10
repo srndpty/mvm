@@ -193,6 +193,39 @@ void testShuttleClockAndEditPoints() {
     project.timelineMarkers = {201};
     check(!adjacentTimelineEditPoint(project, 0, 1, 200).success, "範囲外のマーカーを受理しました");
     project = threeClips();
+    check(adjacentTimelineEditPoint(project, 60, 1, 179).frame == 120,
+          "字幕の無い対照で次の編集点が違います");
+    project.subtitles.emplace();
+    project.subtitles->cues = {{"a", 70, 80, "前", {}}, {"b", 100, 200, "後", {}}};
+    check(adjacentTimelineEditPoint(project, 60, 1, 179).frame == 70 &&
+              adjacentTimelineEditPoint(project, 70, 1, 179).frame == 80 &&
+              adjacentTimelineEditPoint(project, 80, 1, 179).frame == 100 &&
+              adjacentTimelineEditPoint(project, 100, -1, 179).frame == 80 &&
+              adjacentTimelineEditPoint(project, 60, -1, 179).frame == 0,
+          "字幕の開始・終了を編集点として探索できません");
+    check(adjacentTimelineEditPoint(project, 120, 1, 179).frame == 179 &&
+              !adjacentTimelineEditPoint(project, 179, 1, 179).success,
+          "末尾を越える字幕の終了を末尾へ丸めません");
+    // lastFrame より先で始まる字幕も、結果を範囲の外へ出さない。全位置・両方向で確かめる。
+    project.subtitles->cues = {{"a", 70, 80, "前", {}}, {"far", 250, 300, "先", {}}};
+    check(adjacentTimelineEditPoint(project, 120, 1, 179).frame == 179,
+          "lastFrame より先の字幕の開始を末尾へ丸めません");
+    bool inRange = true;
+    int compared = 0;
+    for (std::int64_t at = 0; at <= 179; ++at)
+        for (const int direction : {-1, 1}) {
+            const auto point = adjacentTimelineEditPoint(project, at, direction, 179);
+            if (!point.success)
+                continue;
+            ++compared;
+            inRange = inRange && point.frame >= 0 && point.frame <= 179 &&
+                      (direction > 0 ? point.frame > at : point.frame < at);
+        }
+    check(inRange && compared >= 300, "字幕の編集点が timeline の範囲外を返しました");
+    project.subtitles->cues = {{"bad", 70, 70, "空", {}}};
+    check(!adjacentTimelineEditPoint(project, 60, 1, 179).success,
+          "不正な字幕の編集点を黙って飛ばしました");
+    project = threeClips();
     project.timelineClips[0].sourceOutFrame = 0;
     check(!adjacentTimelineEditPoint(project, 30, 1, 179).success,
           "不正clipの編集点を黙って飛ばしました");

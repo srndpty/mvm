@@ -132,6 +132,33 @@ int main(int argc, char** argv) {
         require(pump([&] { return controller.playheadFrame() >= 40; }),
                 "字幕と空白区間を通して再生が進む");
         require(controller.pauseTimeline(), "字幕再生を停止");
+        // clip の無い字幕だけの timeline でも ↑↓ は字幕の切れ目で止まり、最後の字幕の終了は
+        // 最終 frame に丸める (timeline の尺は最後の字幕の終了まで)。
+        if (mode == "--native") {
+            const auto jumpAll = [&](int direction) {
+                std::vector<qint64> visited;
+                for (int step = 0; step < 10; ++step) {
+                    require(pump([&] { return controller.previewPresentedLatest(); }),
+                            "編集点の移動前の提示");
+                    const auto from = controller.playheadFrame();
+                    if (!controller.jumpToEditPoint(direction)) {
+                        require(controller.playheadFrame() == from,
+                                "編集点が無いときは再生位置を動かさない");
+                        break;
+                    }
+                    visited.push_back(controller.playheadFrame());
+                }
+                return visited;
+            };
+            require(pump([&] { return controller.previewPresentedLatest(); }) &&
+                        controller.seekTimelineFrame(0),
+                    "編集点の探索の開始位置");
+            require(controller.totalTimelineFrames() == 50 &&
+                        jumpAll(1) == std::vector<qint64>{5, 15, 30, 49},
+                    "字幕の切れ目を次の編集点として範囲内で辿る");
+            require(jumpAll(-1) == std::vector<qint64>{30, 15, 5},
+                    "字幕の切れ目を前の編集点として辿る");
+        }
         controller.shutdown();
         std::puts("字幕だけのnative表示境界と再生の検査に合格しました");
         return 0;
@@ -424,14 +451,14 @@ int main(int argc, char** argv) {
                         internal->property("boundsMovement").toInt() == 0,
                     "ダイアログの内部スクロールも端で止まる");
             if (std::string_view(name) == "subtitleTranscribeDialog") {
-                auto* mode =
+                auto* applyMode =
                     panel->findChild<QQuickItem*>(QStringLiteral("transcriptionApplyMode"));
                 auto* footer = qvariant_cast<QQuickItem*>(dialog->property("footer"));
-                require(mode && footer, "候補の適用方法をフッターに表示する");
-                const auto modePosition = mode->mapToItem(footer, QPointF());
+                require(applyMode && footer, "候補の適用方法をフッターに表示する");
+                const auto modePosition = applyMode->mapToItem(footer, QPointF());
                 require(modePosition.x() >= 0 && modePosition.y() >= 0 &&
-                            modePosition.x() + mode->width() <= footer->width() &&
-                            modePosition.y() + mode->height() <= footer->height(),
+                            modePosition.x() + applyMode->width() <= footer->width() &&
+                            modePosition.y() + applyMode->height() <= footer->height(),
                         "適用方法の選択欄がフッターの内側に収まる");
             }
             view.grabWindow().save(QStringLiteral("%1-%2x%3.png")
@@ -618,14 +645,14 @@ int main(int argc, char** argv) {
                     "素材の時刻と大きさを控える");
             LARGE_INTEGER middle{};
             middle.QuadPart = size.QuadPart / 2;
-            char byte = 0;
+            char middleByte = 0;
             DWORD done = 0;
             require(SetFilePointerEx(handle, middle, nullptr, FILE_BEGIN) &&
-                        ReadFile(handle, &byte, 1, &done, nullptr) && done == 1,
+                        ReadFile(handle, &middleByte, 1, &done, nullptr) && done == 1,
                     "中央の 1 byte を読む");
-            byte = static_cast<char>(byte ^ 0x5a);
+            middleByte = static_cast<char>(middleByte ^ 0x5a);
             require(SetFilePointerEx(handle, middle, nullptr, FILE_BEGIN) &&
-                        WriteFile(handle, &byte, 1, &done, nullptr) && done == 1 &&
+                        WriteFile(handle, &middleByte, 1, &done, nullptr) && done == 1 &&
                         SetFileTime(handle, &created, &accessed, &written),
                     "中央の 1 byte を書き換えて更新時刻を元へ戻す");
             CloseHandle(handle);

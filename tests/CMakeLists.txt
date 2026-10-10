@@ -20,6 +20,13 @@ add_test(NAME build_cached_toolchain_guard
         -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/cached-toolchain-guard")
 set_tests_properties(build_cached_toolchain_guard PROPERTIES TIMEOUT 30)
 
+add_test(NAME build_stall_watchdog_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/test-build-watchdog.ps1"
+        -Library "${CMAKE_SOURCE_DIR}/scripts/lib/build-watchdog.ps1"
+        -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/build-watchdog")
+set_tests_properties(build_stall_watchdog_contract PROPERTIES TIMEOUT 120)
+
 add_test(NAME ctest_daily_selection_contract
     COMMAND "${MVM_PWSH}" -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/test-ctest-selection.ps1"
@@ -466,6 +473,11 @@ set_tests_properties(m7b_4_controller_export_lifecycle PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     COST 40
     TIMEOUT 120)
+add_test(NAME m7b_4_selection_identity
+    COMMAND mvm_test_controller_export --selection-identity
+            ${CMAKE_BINARY_DIR}/tests/selection-identity)
+set_tests_properties(m7b_4_selection_identity PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 30)
 
 # シャトル音声の sample 対応 (速度・逆順・clip 範囲・mute・重なり・素材 offset)。
 # 素材 sample の供給元を差し替えるので WASAPI も decoder も要らない。
@@ -4276,6 +4288,20 @@ add_test(NAME math_transform_native_playback COMMAND mvm_test_math_controller --
 set_tests_properties(math_transform_native_playback PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+foreach(_control backend-stall decode-fail persist-fail publish-stall publish-fail
+        lost-notification missing corrupt wrong-frame delayed)
+    add_test(NAME math_transform_preparation_${_control}
+        COMMAND mvm_test_math_controller --native-transform-control ${_control})
+    set_tests_properties(math_transform_preparation_${_control} PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+endforeach()
+mvm_add_test(math_transform_preparation_wait_contract
+    COMMAND mvm_test_math_controller --preparation-wait-contract PROPERTIES TIMEOUT 30)
+add_test(NAME math_preparation_tools_contract
+    COMMAND pwsh -NoProfile -File "${CMAKE_SOURCE_DIR}/tests/harness/test-math-preparation-tools.ps1"
+        -Scratch "${CMAKE_BINARY_DIR}/tests/math-preparation-tools")
+set_tests_properties(math_preparation_tools_contract PROPERTIES TIMEOUT 30)
 # P3-4: Equation Sequence の product preview (偽の backend)。既定は GPU なしの controller の契約、
 # --native は実 D3D11 の preview と product compositor の readback。
 qt_add_executable(mvm_test_equation_preview_controller

@@ -962,6 +962,15 @@ const TimelinePreviewPlan& MvmController::previewPlan() const {
 }
 
 void MvmController::refreshTimelineModel(PlaybackInvalidation invalidation) {
+    // project_ が替わった直後の current clip の index は、前の clip 列を指したままのことがある
+    // (呼び出し側が後で付け直す)。下の model の通知で QML が keyframeChannels などを同期的に
+    // 読むので、通知より前に範囲外の index を無効にする。最後の clip を削除した直後に、空の
+    // clip 列を index 0 で読んでいた (debug の範囲検査で停止)。
+    if (currentClipIndex_ >= static_cast<int>(project_.timelineClips.size())) {
+        currentClipIndex_ = -1;
+        currentClipName_.clear();
+        currentClipPath_.clear();
+    }
     refreshAudioMixerModel();
     if (invalidation == PlaybackInvalidation::Mixer)
         return;
@@ -1141,9 +1150,14 @@ bool MvmController::commitProjectEdit(project::Project candidate, const QString&
     // 1 つ複製しない)。
     // currentClipId() は project_ を読むので、移す前に取る。
     std::string currentId = currentClipId();
-    UndoEntry undo{std::move(project_), selectedClipIds_, std::move(currentId), playheadFrame_,
+    UndoEntry undo{std::move(project_), selectedClipIds_, currentId, playheadFrame_,
                    currentRevision_};
     project_ = std::move(candidate);
+    // clip 列の前方が消えると、範囲内の旧 index でも別 ID を指す。同期的な model 通知より
+    // 前に ID から付け直し、inspector が別の clip の property を読むことを防ぐ。
+    const int currentIndex = indexOfClipId(project_.timelineClips, currentId);
+    if (currentClipIndex_ != currentIndex)
+        setCurrentClipSelection(currentIndex);
     refreshAudioInputAuthority(true);
     pushUndoEntry(std::move(undo));
     currentRevision_ = nextRevision_++;
@@ -8422,9 +8436,9 @@ bool MvmController::stepEditHistory(std::vector<UndoEntry>& from, std::vector<Un
         if (indexOfClipId(project_.timelineClips, id) >= 0)
             selectedClipIds_.push_back(id);
     }
+    setCurrentClipSelection(indexOfClipId(project_.timelineClips, previousCurrentClipId));
     refreshTimelineModel();
     scheduleRecoveryAutosave();
-    setCurrentClipSelection(indexOfClipId(project_.timelineClips, previousCurrentClipId));
 
     pendingVideoPath_.reset();
     pendingClipName_.clear();

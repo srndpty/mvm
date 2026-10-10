@@ -750,6 +750,8 @@ TransformOutcome transformReady(MathTransformArtifact artifact) {
 
 // worker が 1 件の変形に使う値 (起動の時点で固定する)。
 struct TransformJob {
+    MathRasterCache::TransformPreparationObserver observer;
+    bool suppressCompletionForTest = false;
     std::filesystem::path directory;
     std::filesystem::path jobs;
     QString key;
@@ -765,6 +767,35 @@ struct TransformJob {
     std::shared_ptr<std::mutex> publishGate;
     std::function<void(const std::filesystem::path&)> beforePublish;
 };
+
+void observeTransform(const TransformJob& job, const char* stage,
+                      const std::filesystem::path& path = {}, std::int64_t frame = -1,
+                      std::uint64_t bytes = 0, bool success = true) {
+    if (job.observer)
+        job.observer({stage, path, frame, bytes, success});
+}
+
+bool writeTransformObserved(const TransformJob& job, const std::filesystem::path& path,
+                            const std::string& bytes, std::string& error, std::int64_t frame) {
+    if (!job.observer)
+        return writeAtomically(path, bytes, error);
+    struct Context {
+        const TransformJob& job;
+        const std::filesystem::path& path;
+        std::int64_t frame;
+        std::uint64_t bytes;
+    } context{job, path, frame, bytes.size()};
+    char buffer[512] = {};
+    const auto observer = [](void* opaque, int stage, int success) {
+        const auto& ctx = *static_cast<Context*>(opaque);
+        const char* names[] = {"flush-start", "flush-end", "rename-start", "rename-end"};
+        observeTransform(ctx.job, names[stage], ctx.path, ctx.frame, ctx.bytes, success != 0);
+    };
+    const int code = mvm_atomic_write_file_observed(path.c_str(), bytes.data(), bytes.size(),
+                                                   buffer, sizeof(buffer), observer, &context);
+    error = buffer;
+    return code == 0;
+}
 
 TransformExpectation expectationFor(const TransformJob& job) {
     TransformExpectation expect;
@@ -799,9 +830,12 @@ enum class DiskLoad { Ready, Missing, Cancelled };
 DiskLoad loadTransformArtifact(const TransformJob& job, const std::atomic<bool>* cancel,
                                MathTransformArtifact& artifact, bool removeInvalid = true) {
     const auto provenancePath = transformProvenancePath(job.directory, job.key);
+    observeTransform(job, "manifest-start", provenancePath, job.spec.frames);
     const std::string text = readFile(provenancePath);
-    if (text.empty())
+    if (text.empty()) {
+        observeTransform(job, "manifest-missing", provenancePath, job.spec.frames, 0, false);
         return DiskLoad::Missing; // 確定の印が無い: 途中で止まった (または未作成)
+    }
     const auto expect = expectationFor(job);
     TransformProvenance parsed;
     bool valid = parseTransformProvenance(text, parsed);
@@ -827,6 +861,7 @@ DiskLoad loadTransformArtifact(const TransformJob& job, const std::atomic<bool>*
         for (std::size_t index = 0; valid && index < artifact.frames.size(); ++index) {
             if (cancel->load())
                 return DiskLoad::Cancelled;
+            observeTransform(job, "manifest-frame-start", artifact.frames[index], static_cast<std::int64_t>(index));
             valid = readExactly(artifact.frames[index], parsed.frameBytes[index], bytes) &&
                     sha256Hex(bytes.data(), bytes.size()) == artifact.frameSha256[index];
             // frame 0 は今の変形前の静止と、記録した端点の位置で全画素一致する。
@@ -834,8 +869,10 @@ DiskLoad loadTransformArtifact(const TransformJob& job, const std::atomic<bool>*
                 valid = math::mathEndpointDifference(
                             {artifact.width, artifact.height, bytes}, job.sourceStatic,
                             artifact.sourceX, artifact.sourceY) == 0;
+            observeTransform(job, "manifest-frame-end", artifact.frames[index], static_cast<std::int64_t>(index), bytes.size(), valid);
         }
     }
+    observeTransform(job, "manifest-end", provenancePath, job.spec.frames, text.size(), valid);
     if (valid)
         return DiskLoad::Ready;
     if (removeInvalid &&
@@ -873,7 +910,11 @@ TransformOutcome renderTransformJob(const TransformJob& job, const std::atomic<b
         return transformFailed(math::MathRenderStatus::Failed,
                                "数式の作業 directory を作成できません: " + error.message());
     // backend の PNG は静止の mask と同じ decoder (loadMathCoverage) で読む。
+    observeTransform(job, "backend-start", request.jobDirectory);
     const auto rendered = job.backend.renderTransform(request, loadMathCoverage, cancel);
+    observeTransform(job, "backend-end", request.jobDirectory,
+                       -1, 0,
+                     rendered.status == math::MathRenderStatus::Ok);
     const auto cleanup = [&] {
         std::error_code ignored;
         util::removeTree(request.jobDirectory, ignored);
@@ -944,6 +985,7 @@ TransformOutcome renderTransformJob(const TransformJob& job, const std::atomic<b
 
     std::vector<std::uint8_t> cropped(static_cast<std::size_t>(frameBytes));
     for (std::size_t index = 0; index < rendered.frames.size(); ++index) {
+        const auto frameIndex = static_cast<std::int64_t>(index);
         if (cancel->load()) {
             // provenance が無いので、書きかけの frame は使われない (権限を失った後は消さない)。
             cleanup();
@@ -952,10 +994,14 @@ TransformOutcome renderTransformJob(const TransformJob& job, const std::atomic<b
         const std::string name = "変形の frame " + std::to_string(index);
         math::MathCoverage canvas;
         std::string loadError;
-        if (!loadMathCoverage(rendered.frames[index], canvas, loadError))
+        observeTransform(job, "decode-start", rendered.frames[index], frameIndex);
+        const bool decoded = loadMathCoverage(rendered.frames[index], canvas, loadError);
+        observeTransform(job, "decode-end", rendered.frames[index], frameIndex, canvas.alpha.size(), decoded);
+        if (!decoded)
             return fail(name + " を読めません: " + loadError);
         if (canvas.width != rendered.canvasWidth || canvas.height != rendered.canvasHeight)
             return fail(name + " の大きさが canvas と違います");
+        observeTransform(job, "extract-start", rendered.frames[index], frameIndex);
         // artifact の矩形の外に被覆があれば、切り出すと画素を失う。黙って切らない。
         const math::MathRect bounds = math::mathCoverageBounds(canvas);
         if (!bounds.empty() && math::mathRectUnion(bounds, rect) != rect)
@@ -975,11 +1021,18 @@ TransformOutcome renderTransformJob(const TransformJob& job, const std::atomic<b
                             "(違う画素 " +
                             std::to_string(different) + ")");
         }
+        observeTransform(job, "extract-end", rendered.frames[index], frameIndex, cropped.size());
         std::string writeError;
-        if (!writeAtomically(frames / transformFrameName(index),
-                             std::string(cropped.begin(), cropped.end()), writeError))
+        const auto framePath = frames / transformFrameName(index);
+        observeTransform(job, "persist-start", framePath, frameIndex, cropped.size());
+        const bool persisted = writeTransformObserved(job, framePath,
+                             std::string(cropped.begin(), cropped.end()), writeError, frameIndex);
+        observeTransform(job, "persist-end", framePath, frameIndex, cropped.size(), persisted);
+        if (!persisted)
             return fail("変形の連番を cache へ保存できません: " + writeError);
+        observeTransform(job, "hash-start", framePath, frameIndex, cropped.size());
         p.frameSha256[index] = sha256Hex(cropped.data(), cropped.size());
+        observeTransform(job, "hash-end", framePath, frameIndex, cropped.size(), !p.frameSha256[index].empty());
         if (p.frameSha256[index].empty())
             return fail("変形の frame の SHA-256 を計算できません");
     }
@@ -988,13 +1041,15 @@ TransformOutcome renderTransformJob(const TransformJob& job, const std::atomic<b
         job.beforePublish(provenancePath);
     std::string writeError;
     bool written = false;
+    observeTransform(job, "provenance-start", provenancePath, job.spec.frames);
     if (!underGate(job, cancel, [&] {
             written =
-                writeAtomically(provenancePath, transformProvenanceText(p), writeError);
+                writeTransformObserved(job, provenancePath, transformProvenanceText(p), writeError, -1);
         })) {
         cleanup();
         return transformCancelled();
     }
+    observeTransform(job, "provenance-end", provenancePath, job.spec.frames, 0, written);
     if (!written)
         return fail("変形の provenance を cache へ保存できません: " + writeError);
     cleanup();
@@ -1848,6 +1903,8 @@ bool MathRasterCache::advanceTransform(const QString& key) {
     job.targetStaticKey = keyFor(spec.target).toStdString();
     job.publishGate = publishGate_;
     job.beforePublish = beforeTransformPublish_;
+    job.observer = transformPreparationObserver_;
+    job.suppressCompletionForTest = suppressTransformCompletionForTest_;
     record->launched = true;
     record->ticket = nextTicket_++;
     record->cancel = std::make_shared<std::atomic<bool>>(false);
@@ -1856,7 +1913,12 @@ bool MathRasterCache::advanceTransform(const QString& key) {
         if (cancel->load())
             return;
         TransformOutcome outcome = renderTransformJob(job, cancel.get());
+        observeTransform(job, outcome.cancelled ? "worker-cancelled" :
+                             outcome.entry.state == State::Ready ? "worker-ready" : "worker-error",
+                         {}, job.spec.frames, 0, outcome.entry.state == State::Ready);
         if (outcome.cancelled)
+            return;
+        if (job.suppressCompletionForTest)
             return;
         QMetaObject::invokeMethod(
             this,
@@ -1911,6 +1973,7 @@ MathRasterCache::readyTransformForExport(const math::MathTransformSpec& spec) co
     if (!source || !target)
         return std::nullopt;
     TransformJob job;
+    job.observer = transformPreparationObserver_;
     job.directory = cacheDirectory_;
     job.key = transformKeyFor(spec);
     job.spec = spec;

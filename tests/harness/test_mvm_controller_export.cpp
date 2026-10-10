@@ -16,6 +16,7 @@
 #include <future>
 #include <mutex>
 #include <stdexcept>
+#include <string_view>
 #include <system_error>
 #include <thread>
 
@@ -386,6 +387,90 @@ void testUndo(const std::filesystem::path& path) {
     check(controller.undoLastEdit() && controller.videoTrackCount() == 3 &&
               controller.audioTrackCount() == 1,
           "新しい編集のUndoが編集Aの後へ戻りません");
+}
+
+// 最後の clip を削除したとき、model の通知 (QML はここで controller の property を同期的に読む) の
+// 時点で current clip が消えた clip を指していない。指していると keyframeChannels が空の clip 列を
+// index 0 で読み、debug の範囲検査で停止した (release では未定義動作)。
+void testDeleteLastClipNotification(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "削除試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    controller.selectTimelineClips({QStringLiteral("video")});
+    check(controller.currentClipName() == QStringLiteral("video") &&
+              !controller.keyframeChannels().isEmpty(),
+          "前提: 削除する clip が current になっていません");
+    int notifications = 0;
+    bool consistent = true;
+    const auto observe = [&] {
+        ++notifications;
+        // QML と同じく、通知の中で current clip に依存する property を読む。
+        const auto channels = controller.keyframeChannels();
+        consistent = consistent && (controller.clipCount() > 0 ||
+                                    (controller.currentClipName().isEmpty() && channels.isEmpty()));
+    };
+    auto* model = controller.timelineModel();
+    const auto reset = QObject::connect(model, &QAbstractItemModel::modelReset, observe);
+    const auto removed = QObject::connect(model, &QAbstractItemModel::rowsRemoved, observe);
+    check(controller.deleteSelection() && controller.clipCount() == 0,
+          "最後の clip を削除できません");
+    QObject::disconnect(reset);
+    QObject::disconnect(removed);
+    check(notifications > 0, "前提: 削除で clip の model が通知しませんでした");
+    check(consistent, "削除の通知の時点で current clip が消えた clip を指しています");
+    check(controller.undoLastEdit() && controller.clipCount() == 1, "削除を戻せません");
+}
+
+// 選択 clip より前の要素が消えても、同じ ID が inspector の対象であり続ける。
+// 後ろにも clip を置き、範囲内だが別 ID を指す index を検出する。
+void testDeleteBeforeSelectionIdentity(const std::filesystem::path& path) {
+    auto initial = videoProject();
+    auto selected = initial.timelineClips.front();
+    selected.id = selected.name = "selected";
+    selected.track.index = 1;
+    auto trailing = selected;
+    trailing.id = trailing.name = "trailing";
+    trailing.timelineStartFrame = 120;
+    initial.timelineClips.push_back(selected);
+    initial.timelineClips.push_back(trailing);
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "選択 ID 試験の初期 Project を保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    controller.selectTimelineClips({QStringLiteral("selected")});
+    check(controller.currentClipIndex() == 1 && controller.currentClipName() == "selected",
+          "前提: 中央の clip を選択できません");
+    int notifications = 0;
+    bool consistent = true;
+    const auto observe = [&] {
+        ++notifications;
+        const auto project = controller.projectForTest();
+        const int index = controller.currentClipIndex();
+        consistent =
+            consistent && index >= 0 && index < static_cast<int>(project.timelineClips.size()) &&
+            project.timelineClips[static_cast<std::size_t>(index)].id == "selected" &&
+            controller.currentClipName() == "selected" && !controller.keyframeChannels().isEmpty();
+    };
+    auto* model = controller.timelineModel();
+    const auto reset = QObject::connect(model, &QAbstractItemModel::modelReset, observe);
+    const auto removed = QObject::connect(model, &QAbstractItemModel::rowsRemoved, observe);
+    check(controller.moveTimelineClip(QStringLiteral("selected"), QStringLiteral("video"), 0, 0,
+                                      true) &&
+              controller.clipCount() == 2,
+          "上書きで選択より前の clip を削除できません");
+    check(notifications > 0, "前提: clip 削除の model 通知を観測していません");
+    check(consistent, "削除通知の時点で選択 ID と inspector の対象が食い違っています");
+    check(controller.currentClipName() == "selected" && controller.currentClipIndex() == 0,
+          "前の clip の削除で選択対象が別の ID へ移りました");
+    check(controller.undoLastEdit() && controller.currentClipName() == "selected" &&
+              controller.currentClipIndex() == 1,
+          "Undo で選択 ID と元の index が戻りません");
+    check(controller.redoLastEdit() && controller.currentClipName() == "selected" &&
+              controller.currentClipIndex() == 0,
+          "Redo で選択 ID と削除後の index が戻りません");
+    QObject::disconnect(reset);
+    QObject::disconnect(removed);
+    check(consistent, "Undo / Redo の通知中に選択 ID と inspector の対象が食い違っています");
 }
 
 void testClipboardAndMarks(const std::filesystem::path& path) {
@@ -2621,6 +2706,12 @@ void testPreviewTransform(const std::filesystem::path& path) {
 
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
+    if (argc == 3 && std::string_view(argv[1]) == "--selection-identity") {
+        const std::filesystem::path focusedDirectory(argv[2]);
+        std::filesystem::create_directories(focusedDirectory);
+        testDeleteBeforeSelectionIdentity(focusedDirectory / L"selection-identity.mvm");
+        return failures == 0 ? 0 : 1;
+    }
     if (argc != 3)
         return 2;
     const std::filesystem::path directory = std::filesystem::path(argv[1]);
@@ -2638,6 +2729,8 @@ int main(int argc, char** argv) {
     testShutdown(directory / L"shutdown-finished.mvm", true);
     testThreadFailure(directory / L"thread-failure.mvm");
     testUndo(directory / L"undo.mvm");
+    testDeleteLastClipNotification(directory / L"delete-last.mvm");
+    testDeleteBeforeSelectionIdentity(directory / L"delete-before-selection.mvm");
     testClipboardAndMarks(directory / L"clipboard-marks.mvm");
     testClipboardAcrossProject(directory / L"clipboard-source.mvm");
     testClipboardAcrossFps(directory / L"clipboard-fps-source.mvm");

@@ -13,6 +13,12 @@ static void set_error(char* error, size_t error_size, const char* operation, DWO
 
 int mvm_atomic_write_file(const wchar_t* target_path, const void* data, size_t size, char* error,
                           size_t error_size) {
+    return mvm_atomic_write_file_observed(target_path, data, size, error, error_size, NULL, NULL);
+}
+
+int mvm_atomic_write_file_observed(const wchar_t* target_path, const void* data, size_t size,
+                                   char* error, size_t error_size,
+                                   mvm_atomic_write_observer observer, void* context) {
     if (!target_path || !*target_path || (!data && size > 0)) {
         set_error(error, error_size, "atomic writeの引数検査", ERROR_INVALID_PARAMETER);
         return 1;
@@ -49,10 +55,14 @@ int mvm_atomic_write_file(const wchar_t* target_path, const void* data, size_t s
         cursor += written;
         remaining -= written;
     }
+    if (observer)
+        observer(context, 0, !failed);
     if (!failed && !FlushFileBuffers(file)) {
         set_error(error, error_size, "一時fileのflush", GetLastError());
         failed = 1;
     }
+    if (observer)
+        observer(context, 1, !failed);
     if (!CloseHandle(file) && !failed) {
         set_error(error, error_size, "一時fileのclose", GetLastError());
         failed = 1;
@@ -71,6 +81,8 @@ int mvm_atomic_write_file(const wchar_t* target_path, const void* data, size_t s
     // 失敗する (実測: std::ifstream で開いているだけで error 5)。短い間の競合なので待って
     // 置換し直す。開かれ続けている、または本当に権限が無い場合は約 2 秒で失敗を返す。
     BOOL replaced = FALSE;
+    if (observer)
+        observer(context, 2, 1);
     DWORD code = ERROR_SUCCESS;
     for (int attempt = 0; attempt < 40; ++attempt) {
         replaced =
@@ -83,6 +95,8 @@ int mvm_atomic_write_file(const wchar_t* target_path, const void* data, size_t s
             break;
         Sleep(50);
     }
+    if (observer)
+        observer(context, 3, replaced != FALSE);
     if (!replaced) {
         DeleteFileW(temporary);
         set_error(error, error_size, "Project fileのatomic置換", code);

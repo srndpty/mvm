@@ -1,4 +1,5 @@
 #include "app/preview/preview_engine_rhi_item.h"
+#include "alt_repeat_filter.h"
 #include "focus_release_filter.h"
 #include "timeline_wheel_filter.h"
 #include "media/mlt/mvm_mlt_runtime.h"
@@ -157,6 +158,7 @@ int main(int argc, char** argv) {
     TimelineWheelEventFilter timelineWheelFilter(window, timelinePanel);
     window->installEventFilter(&timelineWheelFilter);
     window->installEventFilter(new mvm::app::FocusReleaseFilter(window));
+    window->installEventFilter(new mvm::app::AltRepeatFilter(window));
     controller.attachPreview(surface);
 
     QObject::connect(&application, &QCoreApplication::aboutToQuit, &controller,

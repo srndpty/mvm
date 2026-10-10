@@ -74,7 +74,8 @@ int main(int argc, char** argv) {
             maxDifference = std::max(maxDifference, std::abs(samples[i] - full[48000 + i]));
         std::printf("区間 3〜4 秒: seek=%d、デコード %lld / 全体 %lld サンプル、最大差 %g\n",
                     seekedStats.seeked, static_cast<long long>(seekedStats.decodedSamples),
-                    static_cast<long long>(fromStart.decodedSamples), maxDifference);
+                    static_cast<long long>(fromStart.decodedSamples),
+                    static_cast<double>(maxDifference));
         require(seekedStats.seeked && samples.size() == 16000 &&
                     seekedStats.decodedSamples < fromStart.decodedSamples * 3 / 4,
                 "後半の区間は seek し、先頭からはデコードしない");
@@ -103,7 +104,8 @@ int main(int argc, char** argv) {
                 std::max(videoDifference, std::abs(videoPart[i] - videoWhole[48000 + i]));
         std::printf("動画 3〜4 秒: seek=%d、デコード %lld / 全体 %lld、最大差 %g\n",
                     videoSeek.seeked, static_cast<long long>(videoSeek.decodedSamples),
-                    static_cast<long long>(videoFull.decodedSamples), videoDifference);
+                    static_cast<long long>(videoFull.decodedSamples),
+                    static_cast<double>(videoDifference));
         require(videoSeek.seeked && videoSeek.decodedSamples < videoFull.decodedSamples * 3 / 4 &&
                     videoDifference < 1e-4F,
                 "動画も seek して、先頭から読んだ場合と同じ位置のサンプルになる");

@@ -27,6 +27,12 @@
     preset と toolchain の署名、および cache の設定が一致すれば明示的な configure を省く。
     Ninja が必要時に再 configure する。
 
+.PARAMETER StallSeconds
+    起動した cmake の Job Object の CPU 時間・子 process・.ninja_log がこの秒数の間どれも
+    進まなければ、その job だけを止めて BUILD_STALLED で失敗する (scripts/lib/build-watchdog.ps1)。
+    0 で検知を無効にする (job による所有と、終了時の残留 process の停止は続く)。
+    長い compile・link は CPU 時間が進むので止めない。
+
 .EXAMPLE
     pwsh scripts/build.ps1
     pwsh scripts/build.ps1 -Preset ucrt64-debug -Clean
@@ -41,12 +47,14 @@ param(
     [switch]$ReuseConfigure,
     [string]$Target,
     [string]$WhisperRoot = 'C:\msys64\ucrt64',
-    [string]$Ucrt64 = 'C:\msys64\ucrt64'
+    [string]$Ucrt64 = 'C:\msys64\ucrt64',
+    [ValidateRange(0, 86400)][int]$StallSeconds = 180
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'lib\cmake-toolchain.ps1')
+. (Join-Path $PSScriptRoot 'lib\build-watchdog.ps1')
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $CMake    = Join-Path $Ucrt64 'bin\cmake.exe'
@@ -74,6 +82,24 @@ if ($Clean -and (Test-Path $BuildDir)) {
     Remove-Item -Recurse -Force $BuildDir
 }
 
+# 呼び出し側 (test.ps1) は $LASTEXITCODE を見るので、& で呼んだときと同じく設定する。
+function Invoke-WatchedCMake([string[]]$Arguments, [string]$Step, [int]$Stall) {
+    $run = Invoke-MvmWatchedProcess -FilePath $CMake -ArgumentList $Arguments `
+        -ProgressFile (Join-Path $BuildDir '.ninja_log') -StallSeconds $Stall
+    if ($run.Stalled) {
+        $global:LASTEXITCODE = 1
+        throw @"
+$Step が停止しました。
+$($run.Report)
+このスクリプトが起動した cmake の Job Object (その子孫だけを含む) を終了しました。
+Codex sandbox の既知制約 (AGENTS.md) と同じ症状です。source・.ninja_deps / .ninja_log・
+build directory を変更せず、同じコマンドを sandbox 外で 1 回実行してください。
+sandbox 外でも再現した場合だけ、AGENTS.md の recovery escalation に従ってください。
+"@
+    }
+    $global:LASTEXITCODE = $run.ExitCode
+}
+
 Push-Location $RepoRoot
 try {
     $cachePath = Join-Path $BuildDir 'CMakeCache.txt'
@@ -91,7 +117,8 @@ try {
         Write-Host "`n--- configure は既存 cache を使用 ---" -ForegroundColor Yellow
     } else {
         Write-Host "`n--- configure ---" -ForegroundColor Yellow
-        & $CMake --preset $Preset @toolchainArguments
+        Invoke-WatchedCMake -Arguments (@('--preset', $Preset) + $toolchainArguments) -Step 'configure' `
+            -Stall $StallSeconds
         if ($LASTEXITCODE -ne 0) { throw "configure に失敗しました (exit $LASTEXITCODE)" }
         Assert-MvmCachedToolchain -CachePath $cachePath `
             -PresetsPath (Join-Path $RepoRoot 'CMakePresets.json') -Preset $Preset `
@@ -107,7 +134,7 @@ try {
     Write-Host "`n--- build ---" -ForegroundColor Yellow
     $buildArguments = @('--build','--preset',$Preset)
     if ($Target) { $buildArguments += @('--target',$Target) }
-    & $CMake @buildArguments
+    Invoke-WatchedCMake -Arguments $buildArguments -Step 'build' -Stall $StallSeconds
     if ($LASTEXITCODE -ne 0) { throw "build に失敗しました (exit $LASTEXITCODE)" }
 
     Write-Host "`n完了。成果物:" -ForegroundColor Green

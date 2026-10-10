@@ -520,7 +520,8 @@ int main(int argc, char** argv) {
             const MvmExportOpacityKeyframe invalidKeys[] = {{1, 1.0}, // local 0を意図的に欠落させる
                                                             {9, 1.0}};
             invalid.opacity_keyframes = invalidKeys;
-            const MvmExportSpec invalidSpec{320, 240, 60, 1, 23, 10000, 4, 0, nullptr, nullptr, 0};
+            const MvmExportSpec invalidSpec{320, 240,     60,      1, 23,      10000,  4,
+                                            0,   nullptr, nullptr, 0, nullptr, nullptr};
             char invalidError[512] = {};
             const auto invalidOutput = testDirectory / L"m7b-invalid-key.mp4";
             check(mvm_mlt_export_two_track(&invalid, 1, 10, &invalidSpec,
@@ -962,7 +963,8 @@ int main(int argc, char** argv) {
 
         const PaddingCase cases[] = {{L"padding-v1-effects.mp4", {v1Effect}},
                                      {L"padding-v2-crop.mp4", {v1Plain, v2Crop}}};
-        const MvmExportSpec paddingSpec{320, 240, 60, 1, 23, 60000, 4, 0, nullptr, nullptr, 0};
+        const MvmExportSpec paddingSpec{320, 240,     60,      1, 23,      60000,  4,
+                                        0,   nullptr, nullptr, 0, nullptr, nullptr};
         for (const auto& paddingCase : cases) {
             const auto output = testDirectory / paddingCase.name;
             char paddingError[512] = {};
@@ -1356,7 +1358,8 @@ int main(int argc, char** argv) {
         badPan.is_audio = 1;
         badPan.mixer_pan = 2;
         badPan.timeline_duration_frames = 60;
-        const MvmExportSpec badSpec{320, 240, 60, 1, 23, 10000, 4, 0, nullptr, nullptr, 0};
+        const MvmExportSpec badSpec{320, 240,     60,      1, 23,      10000,  4,
+                                    0,   nullptr, nullptr, 0, nullptr, nullptr};
         char badError[512]{};
         const auto badOutput = testDirectory / L"invalid-mixer-pan.mp4";
         check(mvm_mlt_export_two_track(&badPan, 1, 60, &badSpec, toUtf8(badOutput).c_str(), nullptr,
