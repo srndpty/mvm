@@ -388,6 +388,39 @@ void testUndo(const std::filesystem::path& path) {
           "新しい編集のUndoが編集Aの後へ戻りません");
 }
 
+// 最後の clip を削除したとき、model の通知 (QML はここで controller の property を同期的に読む) の
+// 時点で current clip が消えた clip を指していない。指していると keyframeChannels が空の clip 列を
+// index 0 で読み、debug の範囲検査で停止した (release では未定義動作)。
+void testDeleteLastClipNotification(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "削除試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    controller.selectTimelineClips({QStringLiteral("video")});
+    check(controller.currentClipName() == QStringLiteral("video") &&
+              !controller.keyframeChannels().isEmpty(),
+          "前提: 削除する clip が current になっていません");
+    int notifications = 0;
+    bool consistent = true;
+    const auto observe = [&] {
+        ++notifications;
+        // QML と同じく、通知の中で current clip に依存する property を読む。
+        const auto channels = controller.keyframeChannels();
+        consistent = consistent && (controller.clipCount() > 0 ||
+                                    (controller.currentClipName().isEmpty() && channels.isEmpty()));
+    };
+    auto* model = controller.timelineModel();
+    const auto reset = QObject::connect(model, &QAbstractItemModel::modelReset, observe);
+    const auto removed = QObject::connect(model, &QAbstractItemModel::rowsRemoved, observe);
+    check(controller.deleteSelection() && controller.clipCount() == 0,
+          "最後の clip を削除できません");
+    QObject::disconnect(reset);
+    QObject::disconnect(removed);
+    check(notifications > 0, "前提: 削除で clip の model が通知しませんでした");
+    check(consistent, "削除の通知の時点で current clip が消えた clip を指しています");
+    check(controller.undoLastEdit() && controller.clipCount() == 1, "削除を戻せません");
+}
+
 void testClipboardAndMarks(const std::filesystem::path& path) {
     auto initial = videoProject();
     const auto media = path.parent_path() / L"clipboard-fixture.mp4";
@@ -2638,6 +2671,7 @@ int main(int argc, char** argv) {
     testShutdown(directory / L"shutdown-finished.mvm", true);
     testThreadFailure(directory / L"thread-failure.mvm");
     testUndo(directory / L"undo.mvm");
+    testDeleteLastClipNotification(directory / L"delete-last.mvm");
     testClipboardAndMarks(directory / L"clipboard-marks.mvm");
     testClipboardAcrossProject(directory / L"clipboard-source.mvm");
     testClipboardAcrossFps(directory / L"clipboard-fps-source.mvm");

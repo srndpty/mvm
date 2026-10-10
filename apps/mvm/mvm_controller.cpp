@@ -962,6 +962,15 @@ const TimelinePreviewPlan& MvmController::previewPlan() const {
 }
 
 void MvmController::refreshTimelineModel(PlaybackInvalidation invalidation) {
+    // project_ が替わった直後の current clip の index は、前の clip 列を指したままのことがある
+    // (呼び出し側が後で付け直す)。下の model の通知で QML が keyframeChannels などを同期的に
+    // 読むので、通知より前に範囲外の index を無効にする。最後の clip を削除した直後に、空の
+    // clip 列を index 0 で読んでいた (debug の範囲検査で停止)。
+    if (currentClipIndex_ >= static_cast<int>(project_.timelineClips.size())) {
+        currentClipIndex_ = -1;
+        currentClipName_.clear();
+        currentClipPath_.clear();
+    }
     refreshAudioMixerModel();
     if (invalidation == PlaybackInvalidation::Mixer)
         return;

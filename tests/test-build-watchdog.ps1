@@ -28,7 +28,10 @@ function Alive([int]$Id) { [bool](Get-Process -Id $Id -ErrorAction SilentlyConti
 $watch = @{ StallSeconds = 4; PollMilliseconds = 250 }
 function Run([string]$Script, [hashtable]$Extra = @{}) {
     $elapsed = [Diagnostics.Stopwatch]::StartNew()
-    $result = Invoke-MvmWatchedProcess -FilePath $pwshPath @watch @Extra -ArgumentList @(
+    # Extra は既定 ($watch) を上書きする (同じ引数を 2 回 splat すると束縛で失敗する)。
+    $options = $watch.Clone()
+    foreach ($key in $Extra.Keys) { $options[$key] = $Extra[$key] }
+    $result = Invoke-MvmWatchedProcess -FilePath $pwshPath @options -ArgumentList @(
         '-NoProfile', '-EncodedCommand', (Encode $Script))
     $result | Add-Member -NotePropertyName Seconds -NotePropertyValue $elapsed.Elapsed.TotalSeconds
     return $result
@@ -105,6 +108,63 @@ Set-Content -LiteralPath $echoScript -Encoding utf8NoBOM -Value (
 $quoted = Invoke-MvmWatchedProcess -FilePath $pwshPath @watch -ArgumentList @(
     '-NoProfile', '-File', $echoScript, 'a b "c" d\')
 Check ($quoted.ExitCode -eq 0 -and (Get-Content -LiteralPath $echoFile) -eq 'a b "c" d\') '空白・引用符・末尾の \ を含む引数を壊さない'
+
+# 10. Win32 API の失敗 (試験用の注入点で起こす)。どれも例外になり、API 名と Win32 エラー番号を
+#     示し、起動した process を job の外へ残さない (所有しない process で続けない)。
+$childFile = Join-Path $OutputDir 'child.pid'
+$spawnChild = "(Start-Process -FilePath '$pwshPath' -NoNewWindow -PassThru -ArgumentList " +
+    "'-NoProfile','-Command','Start-Sleep -Seconds 120').Id | Set-Content -LiteralPath '$childFile'; " +
+    'Start-Sleep -Seconds 120'
+foreach ($case in @(
+        @{ Api = 'ResumeThread'; Script = 'Start-Sleep -Seconds 120'; Child = $false }
+        @{ Api = 'WaitForSingleObject'; Script = $spawnChild; Child = $true }
+        @{ Api = 'TerminateJobObject'; Script = $spawnChild; Child = $true }
+        @{ Api = 'GetExitCodeProcess'; Script = 'exit 0'; Child = $false }
+        # 進行の観測 (CPU 時間・process 数) の失敗。値なしとして判定を続けず、例外にする。
+        @{ Api = 'QueryInformationJobObject'; Script = $spawnChild; Child = $true })) {
+    Remove-Item -LiteralPath $childFile -ErrorAction SilentlyContinue
+    $message = ''
+    $returned = $null
+    [Mvm.BuildJob]::InjectedError = 1117
+    # WaitForSingleObject は子が起動してから失敗させる (最初の待機の後に注入する)。
+    if ($case.Api -ne 'WaitForSingleObject') { [Mvm.BuildJob]::InjectFailure = $case.Api }
+    try {
+        if ($case.Api -eq 'WaitForSingleObject') {
+            $job = [Mvm.BuildJob]::Start($pwshPath, [string[]]@('-NoProfile', '-EncodedCommand', (Encode $case.Script)),
+                $OutputDir)
+            try {
+                for ($i = 0; $i -lt 100 -and -not (Test-Path -LiteralPath $childFile); $i++) {
+                    [void]$job.WaitForExit(100)
+                }
+                [Mvm.BuildJob]::InjectFailure = 'WaitForSingleObject'
+                [void]$job.WaitForExit(100)
+            } finally { $job.Dispose() }
+        } elseif ($case.Api -eq 'QueryInformationJobObject') {
+            # 最初の観測で失敗させる。子が起動し終えてから観測するよう、最初の観測を遅らせる。
+            $returned = Run $case.Script @{ PollMilliseconds = 3000 }
+        } else {
+            $returned = Run $case.Script
+        }
+    } catch {
+        $message = $_.Exception.ToString()
+    } finally {
+        [Mvm.BuildJob]::InjectFailure = $null
+    }
+    Start-Sleep -Milliseconds 500
+    $rootId = [Mvm.BuildJob]::LastProcessId
+    $childId = if (Test-Path -LiteralPath $childFile) { [int](Get-Content -LiteralPath $childFile) } else { 0 }
+    Check ($null -eq $returned -and $message -match [regex]::Escape($case.Api) -and $message -match 'Win32 エラー 1117') `
+        "$($case.Api) の失敗を API 名と Win32 エラー番号つきの例外にする"
+    Check ($rootId -gt 0 -and -not (Alive $rootId)) "$($case.Api) の失敗の後に起動した process が残らない"
+    if ($case.Child) {
+        Check ($childId -gt 0 -and -not (Alive $childId)) "$($case.Api) の失敗の後に子 process が残らない"
+    }
+}
+# 注入は 1 回で解除され、後の実行に影響しない。
+$after = Run 'exit 0'
+# PowerShell は .NET の string へ代入した $null を "" にするので、空も「注入なし」とみなす。
+Check (-not $after.Stalled -and $after.ExitCode -eq 0 -and [string]::IsNullOrEmpty([Mvm.BuildJob]::InjectFailure)) `
+    "注入は後の実行に残らない (stalled=$($after.Stalled) exit=$($after.ExitCode) inject=[$([Mvm.BuildJob]::InjectFailure)])"
 
 if ($failures -ne 0) { Write-Host "build watchdog: $failures 件失敗"; exit 1 }
 Write-Host 'build watchdog: PASS'

@@ -92,10 +92,36 @@ public sealed class BuildJob : IDisposable {
     const int STARTF_USESTDHANDLES = 0x100;
     const uint DUPLICATE_SAME_ACCESS = 0x2;
 
+    const uint WAIT_OBJECT_0 = 0, WAIT_TIMEOUT = 0x102, WAIT_FAILED = 0xFFFFFFFF;
+
     IntPtr job, process;
     public int ProcessId { get; private set; }
+    // 失敗の後でも、試験が「起動した process が残っていない」ことを確かめられるように残す。
+    public static int LastProcessId { get; private set; }
+
+    // 試験専用の注入点。API 名を入れると、その API を呼ばずに InjectedError で失敗したものとして
+    // 扱う (1 回で解除)。製品の経路では常に null。
+    public static string InjectFailure;
+    public static int InjectedError = 1117; // ERROR_IO_DEVICE
 
     BuildJob() {}
+
+    static bool Injected(string api) {
+        if (InjectFailure != api) return false;
+        InjectFailure = null;
+        return true;
+    }
+    static Win32Exception Failure(string api, int error) {
+        return new Win32Exception(error, api + " が失敗しました (Win32 エラー " + error + ": " +
+                                         new Win32Exception(error).Message + ")");
+    }
+
+    // 失敗の後始末。job を閉じると KILL_ON_JOB_CLOSE で中の process も止まる。job 単位の停止を
+    // 先に試し、それが失敗しても handle を閉じることで止める (所有の外へ process を残さない)。
+    void Abandon() {
+        if (job != IntPtr.Zero) TerminateJobObject(job, 1);
+        Dispose();
+    }
 
     // 引数を CommandLineToArgvW の規則で 1 本の command line にする。
     static string Quote(string argument) {
@@ -124,14 +150,15 @@ public sealed class BuildJob : IDisposable {
 
     public static BuildJob Start(string file, string[] arguments, string workingDirectory) {
         var self = new BuildJob();
+        LastProcessId = 0;
         self.job = CreateJobObjectW(IntPtr.Zero, null);
-        if (self.job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateJobObject");
+        if (self.job == IntPtr.Zero) throw Failure("CreateJobObject", Marshal.GetLastWin32Error());
         var limit = new EXTENDED_LIMIT();
         limit.Basic.LimitFlags = KILL_ON_JOB_CLOSE;
         if (!SetInformationJobObject(self.job, 9, ref limit, Marshal.SizeOf(limit))) {
             int error = Marshal.GetLastWin32Error();
             self.Dispose();
-            throw new Win32Exception(error, "SetInformationJobObject");
+            throw Failure("SetInformationJobObject", error);
         }
         var line = new StringBuilder(Quote(file));
         foreach (var argument in arguments) line.Append(' ').Append(Quote(argument));
@@ -148,37 +175,65 @@ public sealed class BuildJob : IDisposable {
                                       workingDirectory, ref si, out pi);
         int createError = Marshal.GetLastWin32Error();
         foreach (var handle in owned) CloseHandle(handle);
-        if (!created) { self.Dispose(); throw new Win32Exception(createError, "CreateProcess: " + file); }
+        if (!created) { self.Dispose(); throw Failure("CreateProcess (" + file + ")", createError); }
+        LastProcessId = pi.dwProcessId;
         if (!AssignProcessToJobObject(self.job, pi.hProcess)) {
+            // job に入っていないので、job を閉じても止まらない。一時停止のまま個別に止める。
             int error = Marshal.GetLastWin32Error();
             TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 5000);
             CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
             self.Dispose();
-            throw new Win32Exception(error, "AssignProcessToJobObject");
+            throw Failure("AssignProcessToJobObject", error);
         }
         self.process = pi.hProcess;
         self.ProcessId = pi.dwProcessId;
-        ResumeThread(pi.hThread);
+        // 0xFFFFFFFF が失敗。process は job の中で一時停止のままなので、job ごと止める。
+        bool injected = Injected("ResumeThread");
+        uint resumed = injected ? uint.MaxValue : ResumeThread(pi.hThread);
+        int resumeError = injected ? InjectedError : Marshal.GetLastWin32Error();
         CloseHandle(pi.hThread);
+        if (resumed == uint.MaxValue) {
+            self.Abandon();
+            throw Failure("ResumeThread", resumeError);
+        }
         return self;
     }
 
-    public bool WaitForExit(int milliseconds) { return WaitForSingleObject(process, (uint)milliseconds) == 0; }
+    // 時間内に終われば true、時間切れなら false。待機そのものの失敗は例外にする (終了扱いにしない)。
+    public bool WaitForExit(int milliseconds) {
+        bool injected = Injected("WaitForSingleObject");
+        uint result = injected ? WAIT_FAILED : WaitForSingleObject(process, (uint)milliseconds);
+        int error = injected ? InjectedError : Marshal.GetLastWin32Error();
+        if (result == WAIT_OBJECT_0) return true;
+        if (result == WAIT_TIMEOUT) return false;
+        // WAIT_ABANDONED など、process の handle では起きないはずの値も失敗として扱う。
+        throw Failure("WaitForSingleObject", result == WAIT_FAILED ? error : unchecked((int)result));
+    }
 
-    public int ExitCode {
-        get { uint code; GetExitCodeProcess(process, out code); return unchecked((int)code); }
+    // 失敗を例外で返す値は property にしない。PowerShell は property の getter の例外を握りつぶし
+    // $null を返すので (実測)、失敗が「値なし」に化ける。method の例外はそのまま伝わる。
+    public int GetExitCode() {
+        bool injected = Injected("GetExitCodeProcess");
+        uint code = 0;
+        bool ok = !injected && GetExitCodeProcess(process, out code);
+        if (!ok) throw Failure("GetExitCodeProcess", injected ? InjectedError : Marshal.GetLastWin32Error());
+        return unchecked((int)code);
     }
 
     BASIC_ACCOUNTING Accounting() {
-        BASIC_ACCOUNTING info;
-        if (!QueryInformationJobObject(job, 1, out info, Marshal.SizeOf(typeof(BASIC_ACCOUNTING)), IntPtr.Zero))
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "QueryInformationJobObject");
+        BASIC_ACCOUNTING info = new BASIC_ACCOUNTING();
+        bool injected = Injected("QueryInformationJobObject");
+        if (injected || !QueryInformationJobObject(job, 1, out info, Marshal.SizeOf(typeof(BASIC_ACCOUNTING)), IntPtr.Zero))
+            throw Failure("QueryInformationJobObject", injected ? InjectedError : Marshal.GetLastWin32Error());
         return info;
     }
     // 終了した process の分も含む累計 (秒)。
-    public double CpuSeconds { get { var a = Accounting(); return (a.TotalUserTime + a.TotalKernelTime) / 1e7; } }
-    public uint TotalProcesses { get { return Accounting().TotalProcesses; } }
-    public uint ActiveProcesses { get { return Accounting().ActiveProcesses; } }
+    // { CPU 時間の累計 (秒), 作成した process の総数, 生きている process の数 } を同じ時点で返す。
+    public double[] Sample() {
+        var a = Accounting();
+        return new double[] { (a.TotalUserTime + a.TotalKernelTime) / 1e7, a.TotalProcesses, a.ActiveProcesses };
+    }
 
     public int[] ProcessIds() {
         const int capacity = 4096;
@@ -186,7 +241,7 @@ public sealed class BuildJob : IDisposable {
         IntPtr buffer = Marshal.AllocHGlobal(size);
         try {
             if (!QueryInformationJobObject(job, 3, buffer, size, IntPtr.Zero))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "QueryInformationJobObject");
+                throw Failure("QueryInformationJobObject", Marshal.GetLastWin32Error());
             int count = Marshal.ReadInt32(buffer, 4);
             var ids = new int[count];
             for (int i = 0; i < count; i++) ids[i] = (int)Marshal.ReadIntPtr(buffer, 8 + i * IntPtr.Size).ToInt64();
@@ -195,9 +250,13 @@ public sealed class BuildJob : IDisposable {
     }
 
     // job の全 process を止め、生きている process が 0 になるまで待つ。0 にならなければ false。
+    // 停止の要求や待機そのものが失敗したら例外にする (呼び出し側の Dispose が job を閉じて止める)。
     public bool Terminate(int timeoutMilliseconds) {
-        TerminateJobObject(job, 1);
-        WaitForSingleObject(process, (uint)timeoutMilliseconds);
+        bool injected = Injected("TerminateJobObject");
+        bool terminated = !injected && TerminateJobObject(job, 1);
+        if (!terminated)
+            throw Failure("TerminateJobObject", injected ? InjectedError : Marshal.GetLastWin32Error());
+        WaitForExit(timeoutMilliseconds);
         var watch = System.Diagnostics.Stopwatch.StartNew();
         while (Accounting().ActiveProcesses != 0) {
             if (watch.ElapsedMilliseconds > timeoutMilliseconds) return false;
@@ -222,10 +281,11 @@ function Get-MvmBuildProgressSample {
         $item = Get-Item -LiteralPath $ProgressFile
         $file = "$($item.LastWriteTimeUtc.Ticks):$($item.Length)"
     }
+    $counts = $Job.Sample()
     [pscustomobject]@{
-        CpuSeconds = $Job.CpuSeconds
-        TotalProcesses = $Job.TotalProcesses
-        ActiveProcesses = $Job.ActiveProcesses
+        CpuSeconds = $counts[0]
+        TotalProcesses = $counts[1]
+        ActiveProcesses = $counts[2]
         File = $file
     }
 }
@@ -290,7 +350,7 @@ function Invoke-MvmWatchedProcess {
             }
         }
         [pscustomobject]@{
-            ExitCode = $job.ExitCode; Stalled = $false; Report = ''; ProcessIds = @(); Terminated = $true
+            ExitCode = $job.GetExitCode(); Stalled = $false; Report = ''; ProcessIds = @(); Terminated = $true
         }
     } finally {
         # KILL_ON_JOB_CLOSE: 根の process が終わった後に残った子孫もここで止まる。
