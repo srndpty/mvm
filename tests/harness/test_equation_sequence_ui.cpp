@@ -33,9 +33,11 @@
 #include "test_window_focus.h"
 #include "waveform_cache.h"
 
+#include <windows.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -135,8 +137,36 @@ struct Session {
         int exportMismatches = 0;
         bool graphExport = false;
         std::set<std::int64_t> graphComparedFrames;
+
+        struct EncoderEvent {
+            long long ordinal;
+            long long qpc;
+            unsigned long thread;
+            std::int64_t frame;
+            const char* stage;
+        };
+
+        std::atomic<long long> encoderOrdinal{0};
+        std::vector<EncoderEvent> encoderEvents;
+        std::int64_t exportDomainEnd = 0;
+        std::condition_variable encoderOrder;
+        bool frameOneValidated = false;
+
+        EncoderEvent encoderEvent(const char* stage, std::int64_t frame) {
+            const auto ordinal = encoderOrdinal.fetch_add(1);
+            LARGE_INTEGER qpc;
+            QueryPerformanceCounter(&qpc);
+            return {ordinal, qpc.QuadPart, GetCurrentThreadId(), frame, stage};
+        }
+
+        void recordEncoder(const char* stage, std::int64_t frame) {
+            const auto event = encoderEvent(stage, frame);
+            std::lock_guard lock(mutex);
+            encoderEvents.push_back(event);
+        }
+
         mvm::test::Pixel graphBackground{0, 0, 0, 255};
-        // P4-5 補遺: 最初の encoder frame で worker を止め、製品の shutdown が出す取消を
+        // P4-5 補遺: 検査済み encoder frame で worker を止め、製品の shutdown が出す取消を
         // その場で観測する。exporting() や出力の不在だけを取消の証拠にしない。
         bool holdFirstEncoderFrame = false;
         std::atomic<bool> barrierReached{false};
@@ -554,6 +584,11 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
         [observation = s->observation](const project::Project& project,
                                        const mvm::app::TimelineExportRequest& request) {
             auto observed = request;
+            const auto domain = project::timelineEndFrame(project);
+            {
+                std::lock_guard lock(observation->mutex);
+                observation->exportDomainEnd = domain.success ? domain.frame : -1;
+            }
             if (observation->graphExport) {
                 observed.timeoutMs = 30000;
                 observed.graphFrameObserver = [observation, project,
@@ -634,12 +669,29 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
                                                   cancel = request.graphEnvironment.cancel](
                                                      std::int64_t frame, const std::uint8_t* actual,
                                                      int width, int height) {
+                    observation->recordEncoder("validator-enter", frame);
+                    struct ReturnObservation {
+                        std::shared_ptr<Session::Observation> observation;
+                        std::int64_t frame;
+                        ~ReturnObservation() {
+                            observation->recordEncoder("validator-return", frame);
+                        }
+                    } returned{observation, frame};
                     std::unique_lock lock(observation->mutex);
+                    // 順序対照: frame 0 の検査を frame 1 の検査完了まで待たせる。
+                    // 時間で順序を推測せず、通知で同期する。期限は壊れた対照を終了させるだけ。
+                    if (frame == 0 && qEnvironmentVariableIsSet("MVM_P45_FRAME1_FIRST") &&
+                        !observation->encoderOrder.wait_for(lock, std::chrono::seconds(10), [&] {
+                            return observation->frameOneValidated &&
+                                   (!observation->holdFirstEncoderFrame ||
+                                    observation->barrierReached.load(std::memory_order_acquire));
+                        }))
+                        return false;
                     const auto found = observation->exportExpected.find(frame);
                     if (found == observation->exportExpected.end() ||
                         found->second.size() != static_cast<std::size_t>(width * height * 4))
                         return false;
-                    // 最初の encoder frame を独立 oracle で検証した後、lock を外して encoder を
+                    // 任意の encoder frame を独立 oracle で検証した後、lock を外して encoder を
                     // 保持する。解放条件は、製品の取消 flag を encoder の完了待ち loop が
                     // progress で受け取ったことだけで、待機時間を合否に使わない。期限は変異で
                     // 取消が来ない場合に試験を終わらせるためで、consumer の timeout より短い。
@@ -650,8 +702,13 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
                         observation->barrierFrame = frame;
                         observation->barrierFrameValid = valid;
                         observation->barrierThread = std::this_thread::get_id();
-                        lock.unlock();
+                        // 選出・記録・公開は同じ mutex 区間に置く。公開前に lock を外すと、
+                        // 並行 callback が保持対象を上書きできる。
+                        observation->encoderEvents.push_back(
+                            observation->encoderEvent("barrier-acquire", frame));
                         observation->barrierReached.store(true, std::memory_order_release);
+                        observation->encoderOrder.notify_all();
+                        lock.unlock();
                         const auto deadline =
                             std::chrono::steady_clock::now() + std::chrono::seconds(10);
                         while (
@@ -685,6 +742,10 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
                                 actual[at + channel] != expected[channel];
                         }
                     }
+                    if (frame == 1) {
+                        observation->frameOneValidated = true;
+                        observation->encoderOrder.notify_all();
+                    }
                     return holdAtBarrier(observation->exportMismatches == 0);
                 };
             }
@@ -713,7 +774,11 @@ std::unique_ptr<Session> open(const std::filesystem::path& path, const project::
                         return cancelled;
                     };
             }
-            auto exported = mvm::app::exportTimeline(project, observed);
+            // 負例: runner は戻るが encoder は開始しない。出力不在だけでは通過させない。
+            auto exported = observation->holdFirstEncoderFrame &&
+                                    qEnvironmentVariableIsSet("MVM_P45_NO_ENCODER")
+                                ? mvm::app::TimelineExportResult{}
+                                : mvm::app::exportTimeline(project, observed);
             {
                 std::lock_guard lock(observation->mutex);
                 observation->runnerSuccess = exported.success;
@@ -1782,6 +1847,9 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
             s->observation->graphExport = oracle;
             s->observation->exportExpected.clear();
             s->observation->graphComparedFrames.clear();
+            s->observation->encoderEvents.clear();
+            s->observation->encoderOrdinal.store(0);
+            s->observation->frameOneValidated = false;
             s->observation->exportCompared = s->observation->exportMismatches = 0;
             s->observation->holdFirstEncoderFrame = stopMode == 3;
             s->observation->barrierReached.store(false);
@@ -1812,7 +1880,13 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
             QTest::mouseClick(s->window, Qt::LeftButton, {}, s->center(button));
         bool exportStarted = s->controller->exporting();
         if (stopMode != 0 && !exportStarted)
-            exportStarted = pumpUntil([&] { return s->controller->exporting(); }, 15000);
+            exportStarted =
+                pumpUntil(
+                    [&] {
+                        return s->controller->exporting() || s->observation->runnerReturned.load();
+                    },
+                    15000) &&
+                s->controller->exporting();
         check(button && (stopMode == 0 ? exportStarted || !expectedSuccess : exportStarted),
               "P4-5: 製品の書き出すボタン");
         if (stopMode == 1 && exportStarted) {
@@ -1821,14 +1895,19 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
         }
         if (stopMode == 2 && exportStarted)
             s->controller->shutdown();
-        // stopMode 3: 最初の encoder frame で保持した worker に対して、controller を所有する
+        // stopMode 3: 検査済み encoder frame で保持した worker に対して、controller を所有する
         // thread から製品の shutdown を呼ぶ。
         bool activeShutdownProven = false;
         QJsonObject activeShutdown;
         if (stopMode == 3) {
-            const bool reached =
-                exportStarted &&
-                pumpUntil([&] { return s->observation->barrierReached.load(); }, 60000);
+            const bool reached = exportStarted &&
+                                 pumpUntil(
+                                     [&] {
+                                         return s->observation->barrierReached.load() ||
+                                                s->observation->runnerReturned.load();
+                                     },
+                                     60000) &&
+                                 s->observation->barrierReached.load();
             bool frameValid = false;
             std::int64_t frame = -1;
             bool workerThread = false;
@@ -1841,8 +1920,9 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
                                s->observation->barrierThread != std::this_thread::get_id();
                 preflight = s->observation->preflightConfigured;
             }
-            check(reached && frame == 0 && frameValid && preflight && workerThread,
-                  "P4-5 補遺: preflight と compile を通り、独立 oracle で一致した最初の encoder "
+            const bool frameInDomain = duration.success && frame >= 0 && frame < duration.frame;
+            check(reached && frameInDomain && frameValid && preflight && workerThread,
+                  "P4-5 補遺: preflight と compile を通り、独立 oracle で一致した実際の encoder "
                   "frame で worker を保持する");
             const bool ownerThread = QThread::currentThread() == s->controller->thread();
             const bool heldBeforeShutdown = reached && !s->observation->barrierReleased.load() &&
@@ -1890,7 +1970,7 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
                 s->controller->statusText() == statusAtShutdown && failureNotifications == 0;
             check(reached && noStaleCompletion,
                   "P4-5 補遺: shutdown 後に stale な完了通知を出さない");
-            activeShutdownProven = reached && frame == 0 && frameValid && preflight &&
+            activeShutdownProven = reached && frameInDomain && frameValid && preflight &&
                                    workerThread && ownerThread && heldBeforeShutdown &&
                                    cancelObserved && runnerCancelled && !runnerSuccess &&
                                    graphCancelled && lifetimeResolved && noStaleCompletion;
@@ -1943,6 +2023,20 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
                                  {"outputExists", std::filesystem::exists(output)},
                                  {"stopProven", stopProven},
                                  {"status", s->controller->statusText()}};
+        {
+            std::lock_guard lock(s->observation->mutex);
+            QJsonArray events;
+            for (const auto& event : s->observation->encoderEvents)
+                events.append(QJsonObject{{"ordinal", static_cast<qint64>(event.ordinal)},
+                                          {"qpc", static_cast<qint64>(event.qpc)},
+                                          {"thread", static_cast<qint64>(event.thread)},
+                                          {"frame", static_cast<qint64>(event.frame)},
+                                          {"stage", QString::fromLatin1(event.stage)}});
+            exportResult.insert("encoderEvents", events);
+            exportResult.insert("exportDomainBegin", 0);
+            exportResult.insert("exportDomainEnd",
+                                static_cast<qint64>(s->observation->exportDomainEnd));
+        }
         if (stopMode != 0) {
             QJsonArray observed;
             for (const auto& text : observedStatuses)
@@ -1981,9 +2075,16 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
         }
         if (oracle) {
             std::lock_guard lock(s->observation->mutex);
+            bool fullDomain =
+                duration.success && duration.frame > 0 &&
+                s->observation->graphComparedFrames.size() ==
+                    static_cast<std::size_t>(duration.frame) &&
+                s->observation->exportExpected.size() == static_cast<std::size_t>(duration.frame);
+            for (std::int64_t frame = 0; fullDomain && frame < duration.frame; ++frame)
+                fullDomain = s->observation->graphComparedFrames.contains(frame) &&
+                             s->observation->exportExpected.contains(frame);
             check(s->observation->exportCompared > 3 && s->observation->exportMismatches == 0 &&
-                      s->observation->graphComparedFrames.size() ==
-                          s->observation->exportExpected.size(),
+                      fullDomain,
                   "P4-5: 実 artifact の全出力 frame を独立 MLT 7.36.1 oracle と完全比較");
             std::fprintf(stderr, "P4-5: 比較 frame=%d staged=%zu 不一致 channel=%d\n",
                          s->observation->exportCompared, s->observation->exportExpected.size(),
@@ -2271,7 +2372,32 @@ int runGraphAuthoringUi(const std::filesystem::path& directory, const std::files
             const auto reopened = project::loadProjectJson(path);
             check(reopened.success && reopened.project.timelineClips == beforeRestart,
                   "P4-5 補遺: 保存した Project を再起動して開く");
-            s = open(path, reopened.project);
+            auto activeProject = reopened.project;
+            auto activePath = path;
+            // preview の FFV1 decoder 拒否を分離する対照。domain・既知 RGB・Graph・音声・
+            // 字幕は同じで、背景だけを元の静止 PNG にする。
+            if (qEnvironmentVariableIsSet("MVM_P45_ACTIVE_IMAGE")) {
+                for (auto& item : activeProject.mediaItems)
+                    if (item.mediaPath == video) {
+                        item.kind = project::MediaKind::Image;
+                        item.mediaPath = backgroundPath;
+                        item.fpsNum = 0;
+                        item.fpsDen = 1;
+                        item.frameCount = 0;
+                    }
+                for (auto& clip : activeProject.timelineClips)
+                    if (clip.kind == project::TimelineClipKind::Video && clip.mediaPath == video) {
+                        clip.kind = project::TimelineClipKind::Image;
+                        clip.mediaPath = backgroundPath;
+                    }
+                activePath = directory / L"active-image.mvm";
+                const auto imageSaved = project::saveProjectJson(activeProject, activePath);
+                check(imageSaved.success,
+                      "P4-5 順序対照: 同じ frame domain の静止背景を保存する: " + imageSaved.error);
+                if (!imageSaved.success)
+                    return 4;
+            }
+            s = open(activePath, activeProject);
             if (!s)
                 return 4;
             // 同じ Project の既知 RGB 実動画を背景にした独立 oracle を引き継ぐ。artifact は
