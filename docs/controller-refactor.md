@@ -74,3 +74,52 @@ source の行数は空行を含めて本体 10108 行から 6563 行。
 初回の全体ビルドで、共通化時に独立した素材モデル・shuttle・scrub 試験のソースを除いた
 誤りを検出し、その定義を復元した。修正前のビルド失敗は
 `build/controller-refactor-final-both.log` に保持し、最終ゲートの結果とは区別する。
+
+## 保存・復旧・ロックの追加分離
+
+保存・読み込み・復旧・ファイルロックの 31 メンバー実装と、復旧キューの内部型を
+`mvm_controller_project_io.cpp` へ移した。単独で使う `atomicSaveProject` も移動先の
+匿名 namespace に置いた。共有済みの path 変換と clip 検索は detail の実装を使う。
+Project の確定 (`adoptProject`)、Undo、動画設定変更、コンストラクター、shutdown は本体に
+残す。復旧の worker・キュー・タイマーを含む状態所有と終了時の完了待機は変更していない。
+
+[事実] 追加分離の基準 HEAD は `8c3740ed617291be4b3e4a1c5f3eda9786cc97f9`、作業ツリーは clean。
+本体は空行込みで 6563 行から 5834 行、移動先は 751 行。
+本体にあった 198 メンバー関数の本文を移動前後で比較し、追加・欠落・変更は無かった。
+復旧の内部型と保存 helper も文字列で一致した。公開ヘッダーは変更していない。
+
+既存の保存・復旧・ロック試験 19 ケースを `test_mvm_controller_project_io.cpp` へ移し、
+`controller_project_io` として登録した。Project fixture・判定・event 待機は
+`test_mvm_controller_fixture.h` を共有する。書き出し・編集などの既存ケースは元の試験に残した。
+試験本体 59 関数と main からの 61 呼び出しは移動前後で維持した。
+復旧の待機上限は今回の基準 source にあった 20 秒のままであり、過去の 4 秒の失敗を
+解決済みとする変更は今回行っていない。
+
+共通 CMake 一覧に移動先を追加し、製品と全 controller 利用試験が同じ定義を使う。
+既存の keyframe/subtitle 検証 target には、移した試験をビルドできるよう新 target を追加した。
+UI 契約試験は移動先を直接読み、外部変更検査の実装・ロックの削除フラグ・source 全体の
+欠落を拒否する負例も確認する。変異対象はすべて確認し、今回動かした関数を対象にする
+既存の変異スクリプトは無かった。現行の調査 snapshot には新しい実装・試験・fixture と
+試験 binary を追加し、過去の snapshot と結果は保持した。
+
+[事実] 変更前 2/2 件、実装移動後 2/2 件、試験分離後 3/3 件の関連 CTest が通過した。
+通常試験の登録は 1508 件から 1509 件になった。比較結果・元 source・各段階のログは
+`build/controller-project-io/` に保存した。比較記録は `comparison.json` と
+`test-comparison.json`、各段階の試験結果は `baseline-test.log`、`move-test.log`、
+`split-test.log`。最終 lint は `lint-final.log` で通過した。
+
+最終ゲートは `pwsh scripts/test.ps1 -Preset both` で実行した。
+以下は `final-both.log` の種別別集計から生成した結果。
+
+| ビルド | 種別 | 登録 | 実行 | 通過 | 失敗 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| ucrt64-release | 通常 | 1509 | 1509 | 1509 | 0 |
+| ucrt64-debug | 通常 非依存 | 1086 | 0 | 0 | 0 |
+| ucrt64-debug | 通常 依存 | 423 | 423 | 423 | 0 |
+
+ビルド種別に依存しない試験は release で実行済みなので debug では省略した。
+performance / stability は除外した。両ビルドの LastTest は
+`final-release-lasttest.log` と `final-debug-lasttest.log`、集計は `final-summary.json` に保持した。
+最終ゲート中の実装・ビルド定義・検査 source の hash は `source-state.json` と全件一致し、
+release / debug の dry build に未コンパイル・未リンクの差分は無かった。
+コミットは行っていない。

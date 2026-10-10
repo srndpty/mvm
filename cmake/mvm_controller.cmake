@@ -9,6 +9,7 @@ set(MVM_CONTROLLER_SOURCES
     "${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller_export.cpp"
     "${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller_effects.cpp"
     "${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller_media.cpp"
+    "${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller_project_io.cpp"
     "${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller_timeline_edit.cpp"
     "${CMAKE_SOURCE_DIR}/apps/mvm/equation_sequence_editor.cpp"
     "${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp"

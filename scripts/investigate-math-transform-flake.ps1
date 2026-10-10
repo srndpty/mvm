@@ -26,9 +26,12 @@ $records | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $destination 'histor
 New-Item -ItemType Directory -Path (Join-Path $destination 'sources') | Out-Null
 foreach ($source in @('tests/harness/test_math_controller.cpp', 'tests/harness/math_fake_backend.h',
                       'tests/harness/test_mvm_controller_export.cpp', 'apps/mvm/mvm_controller.cpp',
+                      'tests/harness/test_mvm_controller_project_io.cpp',
+                      'tests/harness/test_mvm_controller_fixture.h',
                       'apps/mvm/mvm_controller_detail.h', 'apps/mvm/mvm_controller_detail.cpp',
                       'apps/mvm/mvm_controller_export.cpp', 'apps/mvm/mvm_controller_effects.cpp',
                       'apps/mvm/mvm_controller_media.cpp', 'apps/mvm/mvm_controller_timeline_edit.cpp',
+                      'apps/mvm/mvm_controller_project_io.cpp',
                       'cmake/mvm_controller.cmake',
                       'apps/mvm/math_raster_cache.cpp', 'tests/CMakeLists.txt', 'scripts/test.ps1',
                       'scripts/investigate-math-transform-flake.ps1')) {
@@ -75,7 +78,8 @@ $env:MVM_TEST_TRANSFORM_TRACE = '1'
 try {
     $testMetadata = & $ctest --test-dir $build --show-only=json-v1
     $testMetadata | Set-Content (Join-Path $destination 'ctest-tests.json') -Encoding utf8
-    foreach ($binary in @('mvm_test_math_controller.exe', 'mvm_test_controller_export.exe')) {
+    foreach ($binary in @('mvm_test_math_controller.exe', 'mvm_test_controller_export.exe',
+                          'mvm_test_controller_project_io.exe')) {
         Get-FileHash (Join-Path $build "bin/$binary") | ConvertTo-Json |
             Set-Content (Join-Path $destination "$binary.hash.json")
     }

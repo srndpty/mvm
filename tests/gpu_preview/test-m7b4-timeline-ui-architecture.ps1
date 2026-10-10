@@ -12,7 +12,8 @@ $compactSeparator = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\app
 # 分割後の実装も契約の検査対象にする。欠損したファイルは読み込みで失敗する。
 $controller = (@('mvm_controller.cpp', 'mvm_controller_export.cpp',
                   'mvm_controller_effects.cpp', 'mvm_controller_media.cpp',
-                  'mvm_controller_timeline_edit.cpp', 'mvm_controller_detail.cpp') | ForEach-Object {
+                  'mvm_controller_timeline_edit.cpp', 'mvm_controller_project_io.cpp',
+                  'mvm_controller_detail.cpp') | ForEach-Object {
     Get-Content -LiteralPath (Join-Path $PSScriptRoot "../../apps/mvm/$_") -Raw
 }) -join "`n"
 $controllerHeader = Get-Content -LiteralPath $controllerHeaderPath -Raw
@@ -592,15 +593,25 @@ if (-not (Test-SelectedEffectTarget $controller) -or
     throw '選択中のクリップをエフェクト対象に維持する契約がありません'
 }
 
-foreach ($needle in @('FILE_FLAG_DELETE_ON_CLOSE',
-                      'ERROR_SHARING_VIOLATION',
-                      'RecoveryWriter(project::saveProjectRecovery)',
-                      'project::classifyRecovery(',
-                      'savedCanonicalSha256_',
-                      'canonicalBaseMatchesDisk(')) {
-    if (-not $controller.Contains($needle)) {
-        throw "Project lockまたはrecovery照合の契約がありません: $needle"
+function Test-ProjectIoContract([string]$source) {
+    foreach ($needle in @('FILE_FLAG_DELETE_ON_CLOSE',
+                          'ERROR_SHARING_VIOLATION',
+                          'RecoveryWriter(project::saveProjectRecovery)',
+                          'project::classifyRecovery(',
+                          'savedCanonicalSha256_',
+                          'bool MvmController::canonicalBaseMatchesDisk(')) {
+        if (-not $source.Contains($needle)) {
+            return $false
+        }
     }
+    return $true
+}
+$projectIo = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../apps/mvm/mvm_controller_project_io.cpp') -Raw
+if (-not (Test-ProjectIoContract $projectIo) -or
+    (Test-ProjectIoContract $projectIo.Replace('bool MvmController::canonicalBaseMatchesDisk(', 'bool missingCanonicalBase(')) -or
+    (Test-ProjectIoContract $projectIo.Replace('FILE_FLAG_DELETE_ON_CLOSE', 'missingDeleteOnClose')) -or
+    (Test-ProjectIoContract '')) {
+    throw 'Project lockまたはrecovery照合の契約がありません'
 }
 foreach ($needle in @('currentRevision_ = nextRevision_++;',
                       'savedRevision_ = currentRevision_;')) {

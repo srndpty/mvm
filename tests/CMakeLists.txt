@@ -341,6 +341,13 @@ qt_add_executable(mvm_test_controller_export
 target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_controller_export PRIVATE ${MVM_CONTROLLER_LIBRARIES})
 target_compile_definitions(mvm_test_controller_export PRIVATE ${MVM_MLT_PATH_DEFS})
+
+qt_add_executable(mvm_test_controller_project_io
+    harness/test_mvm_controller_project_io.cpp
+    ${MVM_CONTROLLER_SOURCES})
+target_include_directories(mvm_test_controller_project_io PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_controller_project_io PRIVATE ${MVM_CONTROLLER_LIBRARIES})
+target_compile_definitions(mvm_test_controller_project_io PRIVATE ${MVM_MLT_PATH_DEFS})
 # 映像 clip の無い timeline を controller 経由で 1x 再生し、音声が鳴ること。
 # 実 GPU と audio endpoint を使うので workstation label を付ける。
 qt_add_executable(mvm_test_sourceless_timeline_playback
@@ -426,6 +433,13 @@ add_test(NAME m7b_4_selection_identity
             ${CMAKE_BINARY_DIR}/tests/selection-identity)
 set_tests_properties(m7b_4_selection_identity PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 30)
+
+add_test(NAME controller_project_io
+    COMMAND mvm_test_controller_project_io ${CMAKE_BINARY_DIR}/tests/controller-project-io)
+set_tests_properties(controller_project_io PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    COST 30
+    TIMEOUT 120)
 
 # シャトル音声の sample 対応 (速度・逆順・clip 範囲・mute・重なり・素材 offset)。
 # 素材 sample の供給元を差し替えるので WASAPI も decoder も要らない。
@@ -4143,6 +4157,7 @@ set_tests_properties(audio_mixer_product_ui PROPERTIES
 # モーションの変更を最小の関連ターゲットで検証する入口。
 add_custom_target(mvm_keyframe_validation DEPENDS
     mvm mvm_test_clip_effects mvm_test_timeline_edit mvm_test_controller_export
+    mvm_test_controller_project_io
     mvm_test_timeline_export mvm_test_timeline_export_mapping mvm_test_timeline_preview_mapping
     mvm_test_timeline_clip_model mvm_test_text_clip mvm_test_preview_engine mvm_test_text_preview_parity mvm_test_image_preview_parity)
 
@@ -4162,6 +4177,7 @@ set_tests_properties(subtitles_contract PROPERTIES LABELS workstation)
 
 add_custom_target(mvm_subtitle_validation DEPENDS
     mvm mvm_test_subtitles mvm_test_timeline_edit mvm_test_controller_export
+    mvm_test_controller_project_io
     mvm_test_timeline_export mvm_test_timeline_export_mapping mvm_test_timeline_preview_mapping
     mvm_test_clip_effects mvm_test_project_manim mvm_test_media_bin mvm_test_two_track_project
     mvm_test_text_clip mvm_test_text_ui_input mvm_test_transition_preview mvm_p5c_preview_smoke)
