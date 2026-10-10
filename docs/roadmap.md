@@ -4,6 +4,12 @@
 
 ## controller の保守性
 
+- [事実] 分割後の P4-5 変異互換検査で、未変異の初回 Real 基準が期待 frame 0 に対して
+  frame 1 を保持し、前提と停止の総合判定の 2 assertion が失敗した。取消・join は成立し、
+  status には FFV1 の D3D11VA preview エラーがあった。同じ source の追加取得は通過したが、
+  原因は未特定。[初回 FAIL・後続 PASS と変異検証](controller-mutation-compatibility.md) を保持し、
+  再発時の調査対象とする。今回の変異互換確認を Real 受入の反復安定性の保証にしない。
+
 - [事実] 責務別の実装分割後も、`MvmController` が再生・提示・数式 cache・Undo・保存の
   状態を所有している。分割の境界と検証は [実装記録](controller-refactor.md)。
   状態所有まで分離する追加整理は、具体的な変更要求と回帰検証の負担を基に判断する。

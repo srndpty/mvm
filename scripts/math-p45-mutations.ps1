@@ -1,6 +1,6 @@
 # P4-5 の authority 境界だけを変異させ、実 assertion と source 復元を検査する。
 [CmdletBinding()]
-param([string]$EvidenceDirectory)
+param([string]$EvidenceDirectory, [string[]]$CaseName)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -37,6 +37,14 @@ $cases = @(
     @{ name = 'reciprocal-normalization'; file = 'tests/harness/mlt_rgba_oracle.h'; before = 'const double sourceAlpha = binary32(binary32(binary32(opacity) * reciprocal) * source[3]);'; after = 'const double sourceAlpha = binary32(binary32(source[3] / 255.0) * binary32(opacity));'; target = 'mvm_test_graph_composition'; test = 'graph_composition_oracle'; assertion = 'alpha 112 の定数逆数演算を直接除算へ置き換えない' },
     @{ name = 'stale-completion'; file = 'apps/mvm/mvm_controller_export.cpp'; before = "if (shutdownStarted_)`n                            return;`n                        finishTimelineExport"; after = "if (false)`n                            return;`n                        finishTimelineExport"; target = 'mvm_test_controller_export'; test = 'm7b_4_controller_export_lifecycle'; assertion = 'shutdown 後の stale 完了結果を公開通知へ流してはいけません' }
 )
+if ($CaseName) {
+    foreach ($name in $CaseName) {
+        if (@($cases | Where-Object { $_.name -eq $name }).Count -ne 1) {
+            throw "変異ケースが一つではありません: $name"
+        }
+    }
+    $cases = @($cases | Where-Object { $_.name -in $CaseName })
+}
 $records = [System.Collections.Generic.List[object]]::new()
 function Invoke-Test {
     param([string]$Name, [string]$TestName)
@@ -44,9 +52,11 @@ function Invoke-Test {
         Tee-Object -FilePath (Join-Path $evidenceRoot ($Name + '.log')) | ForEach-Object { Write-Host $_ }
     return $LASTEXITCODE
 }
+. (Join-Path $PSScriptRoot 'lib/test-display-lease.ps1')
+$lease = Start-MvmTestDisplayLease
 Push-Location $repoRoot
 try {
-    Write-Host '【操作可】変異は各一箇所に限定し、finally で元の byte 列を復元します。'
+    Write-Host '【操作可】変異は各一箇所に限定し、finally で元の byte 列を復元します。表示電源の前提を保持し、GUI 試験は背面・入力透過です。'
     foreach ($case in $cases) {
         $file = Join-Path $repoRoot $case.file
         $originalBytes = [IO.File]::ReadAllBytes($file)
@@ -85,6 +95,10 @@ try {
             if ($record.restoredTestExit -ne 0) { throw '復元後の試験に失敗しました' }
         }
     }
-} finally { Pop-Location }
+    $lease.AssertValid()
+} finally {
+    Pop-Location
+    $lease.Dispose()
+}
 @{ count = $records.Count; detected = @($records | Where-Object { $_.detected }).Count; restored = @($records | Where-Object { $_.restored }).Count } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceRoot 'result.json') -Encoding utf8NoBOM

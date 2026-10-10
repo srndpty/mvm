@@ -123,3 +123,10 @@ performance / stability は除外した。両ビルドの LastTest は
 最終ゲート中の実装・ビルド定義・検査 source の hash は `source-state.json` と全件一致し、
 release / debug の dry build に未コンパイル・未リンクの差分は無かった。
 コミットは行っていない。
+
+## 分割後の変異互換検査
+
+P4-5 の active-shutdown 2 ケースと通常 stale-completion 1 ケースを最終分割 source で
+実行した。全ケースでビルド成功・狙った assertion の失敗・元 byte 列と SHA-256 の復元・
+復元後試験の通過を確認した。初回 Real 基準の未特定の FAIL も保持している。
+[実行結果と source の来歴](controller-mutation-compatibility.md) を参照。
