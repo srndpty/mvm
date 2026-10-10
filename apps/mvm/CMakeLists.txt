@@ -18,22 +18,12 @@ target_link_libraries(mvm_math_raster_cache
 add_library(mvm::math_raster_cache ALIAS mvm_math_raster_cache)
 target_compile_definitions(mvm_math_raster_cache PUBLIC MVM_GRAPH_BACKEND_SCRIPT="${CMAKE_SOURCE_DIR}/src/media/manim/graph_backend.py")
 
+include(${CMAKE_SOURCE_DIR}/cmake/mvm_controller.cmake)
+
 qt_add_executable(mvm
+    ${MVM_CONTROLLER_SOURCES}
     main.cpp
-    image_raster_cache.cpp
-    media_bin_model.cpp
-    media_import.cpp
     press_focus.cpp
-    subtitle_controller.cpp
-    mvm_controller.cpp
-    equation_sequence_editor.cpp
-    shuttle_audio_mix.cpp
-    shuttle_audio_playback.cpp
-    clip_sample_reader.cpp
-    scrub_audio_grain.cpp
-    scrub_audio_playback.cpp
-    timeline_clip_model.cpp
-    track_model.cpp
     trim_cursor.cpp
     waveform_cache.cpp
     waveform_view.cpp
@@ -106,28 +96,7 @@ qt_add_qml_module(mvm
 
 target_include_directories(mvm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm PRIVATE
-    mvm::core
-    mvm::audio_adjustment
-    mvm::project
-    mvm::util
-    mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
-    mvm::equation_sequence_compile
-    mvm::timeline_playback
-    mvm::timeline_preview_mapping
-    mvm::timeline_export
-    mvm::text_raster
-    mvm::audio_waveform
-    mvm::still_image
-    mvm::mlt
-    mvm::preview_engine
-    mvm::audio_preview
-    mvm::preview_qt
-    Qt6::Core
-    Qt6::Gui
-    Qt6::Qml
-    Qt6::Quick
-    Qt6::QuickControls2
-    mvm::warnings
+    ${MVM_CONTROLLER_LIBRARIES} mvm::text_raster mvm::audio_waveform
 )
 
 # MLT の module / data directory は推測させず build 時に確定した値を埋め込む。
@@ -142,23 +111,11 @@ set_target_properties(mvm PROPERTIES WIN32_EXECUTABLE OFF)
 # IME の変換確定は扱わない (手動確認)。
 find_package(Qt6 REQUIRED COMPONENTS Test QuickTest)
 qt_add_executable(mvm_test_text_ui_input
+    ${MVM_CONTROLLER_SOURCES}
     ${CMAKE_SOURCE_DIR}/tests/harness/test_text_ui_input.cpp
     ${CMAKE_SOURCE_DIR}/tests/harness/test_equation_sequence_ui.cpp
     ${CMAKE_SOURCE_DIR}/tests/harness/math_p28_acceptance.cpp
-    image_raster_cache.cpp
-    media_bin_model.cpp
-    media_import.cpp
     press_focus.cpp
-    subtitle_controller.cpp
-    mvm_controller.cpp
-    equation_sequence_editor.cpp
-    shuttle_audio_mix.cpp
-    shuttle_audio_playback.cpp
-    clip_sample_reader.cpp
-    scrub_audio_grain.cpp
-    scrub_audio_playback.cpp
-    timeline_clip_model.cpp
-    track_model.cpp
     trim_cursor.cpp
     waveform_cache.cpp
     waveform_view.cpp
@@ -222,14 +179,7 @@ qt_add_qml_module(mvm_test_text_ui_input
 )
 target_include_directories(mvm_test_text_ui_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_test_text_ui_input PRIVATE
-    mvm::audio_adjustment
-    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
-    mvm::equation_sequence_compile
-    mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
-    mvm::text_raster mvm::audio_waveform mvm::still_image mvm::mlt mvm::preview_engine
-    mvm::audio_preview
-    mvm::preview_qt Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Test
-    mvm::warnings)
+    ${MVM_CONTROLLER_LIBRARIES} mvm::text_raster mvm::audio_waveform Qt6::Test)
 # 試験の window を OS の前面にせずにフォーカスを持たせるため、QPA の
 # QWindowSystemInterface を使う (tests/harness/test_window_focus.h)。この試験だけ。
 target_link_libraries(mvm_test_text_ui_input PRIVATE Qt6::GuiPrivate Qt6::QuickTest)

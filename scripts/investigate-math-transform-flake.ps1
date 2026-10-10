@@ -26,10 +26,17 @@ $records | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $destination 'histor
 New-Item -ItemType Directory -Path (Join-Path $destination 'sources') | Out-Null
 foreach ($source in @('tests/harness/test_math_controller.cpp', 'tests/harness/math_fake_backend.h',
                       'tests/harness/test_mvm_controller_export.cpp', 'apps/mvm/mvm_controller.cpp',
+                      'apps/mvm/mvm_controller_detail.h', 'apps/mvm/mvm_controller_detail.cpp',
+                      'apps/mvm/mvm_controller_export.cpp', 'apps/mvm/mvm_controller_effects.cpp',
+                      'apps/mvm/mvm_controller_media.cpp', 'apps/mvm/mvm_controller_timeline_edit.cpp',
+                      'cmake/mvm_controller.cmake',
                       'apps/mvm/math_raster_cache.cpp', 'tests/CMakeLists.txt', 'scripts/test.ps1',
                       'scripts/investigate-math-transform-flake.ps1')) {
     Copy-Item -LiteralPath (Join-Path $repo $source) -Destination (Join-Path $destination 'sources')
 }
+# tests の CMakeLists.txt と同名なので、製品側の定義は別名で保存する。
+Copy-Item -LiteralPath (Join-Path $repo 'apps/mvm/CMakeLists.txt') `
+    -Destination (Join-Path $destination 'sources/apps-mvm-CMakeLists.txt')
 # console は完了順なので、Start/完了の区間から同時に active だった集合を復元する。
 $active = @{}
 $cohort = @{}

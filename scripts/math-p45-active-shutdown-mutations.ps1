@@ -35,7 +35,7 @@ Copy-Item -LiteralPath $baselinePath -Destination (Join-Path $evidenceRoot 'base
     Set-Content -LiteralPath (Join-Path $evidenceRoot 'baseline.json') -Encoding utf8NoBOM
 $cases = @(
     @{ name = 'shutdown-cancel-bypass'; file = 'apps/mvm/mvm_controller.cpp'; before = "settleRecoveryWrite();`n    exportCancelRequested_.store(true, std::memory_order_release);"; after = 'settleRecoveryWrite();'; assertion = 'P4-5 補遺: encoder の保持中に shutdown の取消を完了待ち loop が観測し、join で寿命を解決する' },
-    @{ name = 'active-stale-completion'; file = 'apps/mvm/mvm_controller.cpp'; before = "if (shutdownStarted_)`n                            return;`n                        finishTimelineExport"; after = "if (false)`n                            return;`n                        finishTimelineExport"; assertion = 'P4-5 補遺: shutdown 後に stale な完了通知を出さない' }
+    @{ name = 'active-stale-completion'; file = 'apps/mvm/mvm_controller_export.cpp'; before = "if (shutdownStarted_)`n                            return;`n                        finishTimelineExport"; after = "if (false)`n                            return;`n                        finishTimelineExport"; assertion = 'P4-5 補遺: shutdown 後に stale な完了通知を出さない' }
 )
 $records = [System.Collections.Generic.List[object]]::new()
 function Invoke-Product {

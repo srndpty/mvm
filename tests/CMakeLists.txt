@@ -1,6 +1,8 @@
 # Phase 0 の検証ハーネスとテスト。
 # 性能最適化はここでは行わない (S7 以降)。
 
+include(${CMAKE_SOURCE_DIR}/cmake/mvm_controller.cmake)
+
 find_package(PkgConfig REQUIRED)
 find_package(Git REQUIRED)
 pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
@@ -335,54 +337,18 @@ set_tests_properties(m7b_4_media_import_content_probe PROPERTIES
 
 qt_add_executable(mvm_test_controller_export
     harness/test_mvm_controller_export.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/subtitle_controller.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/equation_sequence_editor.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_grain.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_playback.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
+    ${MVM_CONTROLLER_SOURCES})
 target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
-target_link_libraries(mvm_test_controller_export PRIVATE
-    mvm::audio_adjustment
-    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
-    mvm::equation_sequence_compile
-    mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
-    mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
-    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
+target_link_libraries(mvm_test_controller_export PRIVATE ${MVM_CONTROLLER_LIBRARIES})
 target_compile_definitions(mvm_test_controller_export PRIVATE ${MVM_MLT_PATH_DEFS})
 # 映像 clip の無い timeline を controller 経由で 1x 再生し、音声が鳴ること。
 # 実 GPU と audio endpoint を使うので workstation label を付ける。
 qt_add_executable(mvm_test_sourceless_timeline_playback
     harness/test_sourceless_timeline_playback.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/subtitle_controller.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/equation_sequence_editor.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_grain.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_playback.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
+    ${MVM_CONTROLLER_SOURCES})
 target_include_directories(mvm_test_sourceless_timeline_playback PRIVATE
     ${CMAKE_SOURCE_DIR}/apps/mvm)
-target_link_libraries(mvm_test_sourceless_timeline_playback PRIVATE
-    mvm::audio_adjustment
-    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
-    mvm::equation_sequence_compile
-    mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
-    mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
-    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
+target_link_libraries(mvm_test_sourceless_timeline_playback PRIVATE ${MVM_CONTROLLER_LIBRARIES})
 target_compile_definitions(mvm_test_sourceless_timeline_playback PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_sourceless_timeline_playback PROPERTIES WIN32_EXECUTABLE OFF)
 add_test(NAME sourceless_timeline_playback
@@ -397,28 +363,10 @@ set_tests_properties(sourceless_timeline_playback PROPERTIES
 # トランジションの preview (同じ素材の decode source を 2 つ重ねる)。実 window と GPU を使う。
 qt_add_executable(mvm_test_transition_preview
     harness/test_transition_preview.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/subtitle_controller.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/equation_sequence_editor.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_grain.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_playback.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
+    ${MVM_CONTROLLER_SOURCES})
 target_include_directories(mvm_test_transition_preview PRIVATE
     ${CMAKE_SOURCE_DIR}/apps/mvm)
-target_link_libraries(mvm_test_transition_preview PRIVATE
-    mvm::audio_adjustment
-    mvm::core mvm::project mvm::util mvm::transcribe mvm::manim_clip_workflow mvm::math_raster_cache mvm::math_clip_render
-    mvm::equation_sequence_compile
-    mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
-    mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
-    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
+target_link_libraries(mvm_test_transition_preview PRIVATE ${MVM_CONTROLLER_LIBRARIES})
 target_compile_definitions(mvm_test_transition_preview PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_transition_preview PROPERTIES WIN32_EXECUTABLE OFF)
 add_test(NAME transition_preview
@@ -4233,14 +4181,11 @@ add_test(NAME transcribe_negative_contract COMMAND mvm_test_transcribe
 set_tests_properties(transcribe_negative_contract PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
 add_dependencies(mvm_subtitle_validation mvm_test_transcribe mvm_test_transcribe_model_reader)
 
-get_target_property(_subtitle_controller_sources mvm_test_controller_export SOURCES)
-list(FILTER _subtitle_controller_sources EXCLUDE REGEX "test_mvm_controller_export.cpp$|autogen")
-qt_add_executable(mvm_test_subtitle_controller harness/test_subtitle_controller.cpp ${_subtitle_controller_sources})
+qt_add_executable(mvm_test_subtitle_controller harness/test_subtitle_controller.cpp ${MVM_CONTROLLER_SOURCES})
 target_include_directories(mvm_test_subtitle_controller PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
-get_target_property(_subtitle_controller_libraries mvm_test_controller_export LINK_LIBRARIES)
-qt_add_executable(mvm_test_audio_adjustment harness/test_audio_adjustment.cpp ${_subtitle_controller_sources})
+qt_add_executable(mvm_test_audio_adjustment harness/test_audio_adjustment.cpp ${MVM_CONTROLLER_SOURCES})
 target_include_directories(mvm_test_audio_adjustment PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
-target_link_libraries(mvm_test_audio_adjustment PRIVATE ${_subtitle_controller_libraries})
+target_link_libraries(mvm_test_audio_adjustment PRIVATE ${MVM_CONTROLLER_LIBRARIES})
 target_compile_definitions(mvm_test_audio_adjustment PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_AUDIO_ADJUSTMENT_FFMPEG="${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
     MVM_AUDIO_ADJUSTMENT_UI_DIR="${CMAKE_SOURCE_DIR}/apps/mvm")
@@ -4257,18 +4202,18 @@ set_tests_properties(audio_adjustment_audition PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120 LABELS workstation)
 # 数式 clip を controller 経由で検査する (偽の backend、GPU なし)。
 qt_add_executable(mvm_test_math_controller harness/test_math_controller.cpp
-    ${_subtitle_controller_sources})
+    ${MVM_CONTROLLER_SOURCES})
 target_include_directories(mvm_test_math_controller PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
-target_link_libraries(mvm_test_math_controller PRIVATE ${_subtitle_controller_libraries})
+target_link_libraries(mvm_test_math_controller PRIVATE ${MVM_CONTROLLER_LIBRARIES})
 target_compile_definitions(mvm_test_math_controller PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_math_controller PROPERTIES WIN32_EXECUTABLE OFF)
 mvm_add_test(math_controller_focused COMMAND mvm_test_math_controller PROPERTIES TIMEOUT 120)
 mvm_add_test(graph_controller_history COMMAND mvm_test_math_controller --graph-domain
     PROPERTIES TIMEOUT 120)
 qt_add_executable(mvm_test_graph_native_preview harness/test_graph_native_preview.cpp
-    ${_subtitle_controller_sources})
+    ${MVM_CONTROLLER_SOURCES})
 target_include_directories(mvm_test_graph_native_preview PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
-target_link_libraries(mvm_test_graph_native_preview PRIVATE ${_subtitle_controller_libraries})
+target_link_libraries(mvm_test_graph_native_preview PRIVATE ${MVM_CONTROLLER_LIBRARIES})
 target_compile_definitions(mvm_test_graph_native_preview PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_graph_native_preview PROPERTIES WIN32_EXECUTABLE OFF)
 # 再利用した composition の時間依存効果を、seek 無しの実 D3D11 描画で比較する。
@@ -4305,27 +4250,27 @@ set_tests_properties(math_preparation_tools_contract PROPERTIES TIMEOUT 30)
 # P3-4: Equation Sequence の product preview (偽の backend)。既定は GPU なしの controller の契約、
 # --native は実 D3D11 の preview と product compositor の readback。
 qt_add_executable(mvm_test_equation_preview_controller
-    harness/test_equation_preview_controller.cpp ${_subtitle_controller_sources})
+    harness/test_equation_preview_controller.cpp ${MVM_CONTROLLER_SOURCES})
 target_include_directories(mvm_test_equation_preview_controller PRIVATE
     ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_equation_preview_controller PRIVATE
-    ${_subtitle_controller_libraries} mvm::gpu_preview)
+    ${MVM_CONTROLLER_LIBRARIES} mvm::gpu_preview)
 target_compile_definitions(mvm_test_equation_preview_controller PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_equation_preview_controller PROPERTIES WIN32_EXECUTABLE OFF)
 mvm_add_test(math_equation_sequence_preview_controller
     COMMAND mvm_test_equation_preview_controller PROPERTIES TIMEOUT 180)
 # P3-5: EquationSequence の authoring controller (偽の backend、GPU なし)。
-qt_add_executable(mvm_test_graph_editor harness/test_graph_editor.cpp ${_subtitle_controller_sources})
+qt_add_executable(mvm_test_graph_editor harness/test_graph_editor.cpp ${MVM_CONTROLLER_SOURCES})
 target_include_directories(mvm_test_graph_editor PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
-target_link_libraries(mvm_test_graph_editor PRIVATE ${_subtitle_controller_libraries})
+target_link_libraries(mvm_test_graph_editor PRIVATE ${MVM_CONTROLLER_LIBRARIES})
 target_compile_definitions(mvm_test_graph_editor PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_graph_editor PROPERTIES WIN32_EXECUTABLE OFF)
 mvm_add_test(graph_editor_controller COMMAND mvm_test_graph_editor PROPERTIES TIMEOUT 180)
 qt_add_executable(mvm_test_equation_sequence_editor
-    harness/test_equation_sequence_editor.cpp ${_subtitle_controller_sources})
+    harness/test_equation_sequence_editor.cpp ${MVM_CONTROLLER_SOURCES})
 target_include_directories(mvm_test_equation_sequence_editor PRIVATE
     ${CMAKE_SOURCE_DIR}/apps/mvm)
-target_link_libraries(mvm_test_equation_sequence_editor PRIVATE ${_subtitle_controller_libraries})
+target_link_libraries(mvm_test_equation_sequence_editor PRIVATE ${MVM_CONTROLLER_LIBRARIES})
 target_compile_definitions(mvm_test_equation_sequence_editor PRIVATE ${MVM_MLT_PATH_DEFS})
 set_target_properties(mvm_test_equation_sequence_editor PROPERTIES WIN32_EXECUTABLE OFF)
 mvm_add_test(math_equation_sequence_editor_controller
@@ -4336,7 +4281,7 @@ add_test(NAME math_equation_sequence_native_preview
 set_tests_properties(math_equation_sequence_native_preview PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
-target_link_libraries(mvm_test_subtitle_controller PRIVATE ${_subtitle_controller_libraries})
+target_link_libraries(mvm_test_subtitle_controller PRIVATE ${MVM_CONTROLLER_LIBRARIES})
 target_compile_definitions(mvm_test_subtitle_controller PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_SUBTITLE_PANEL_QML="${CMAKE_SOURCE_DIR}/apps/mvm/SubtitlePanel.qml"
     MVM_SUBTITLE_TEST_AUDIO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav")

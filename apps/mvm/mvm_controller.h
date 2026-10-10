@@ -532,29 +532,9 @@ public:
 
     Q_INVOKABLE void clearMasterAudioClip();
 
-    double effectPositionX() const;
-    double effectPositionY() const;
-    double effectScaleX() const;
-    double effectScaleY() const;
-    double effectRotation() const;
-    double effectOpacity() const;
-    double effectCropLeft() const;
-    double effectCropTop() const;
-    double effectCropRight() const;
-    double effectCropBottom() const;
-    qint64 effectFadeIn() const;
-    qint64 effectFadeOut() const;
-
     Q_INVOKABLE bool generateManimClip(const QUrl& scriptUrl, const QString& sceneName);
     Q_INVOKABLE bool regenerateManimClip();
     Q_INVOKABLE bool addManimToTimeline();
-    Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
-    Q_INVOKABLE bool addAudioClip(const QUrl& fileUrl);
-    // 画像を再生ヘッドの位置へ、最上位の clip より上の空いた映像 track に 5 秒で置く。
-    Q_INVOKABLE bool addImageClip(const QUrl& fileUrl);
-    // 素材の種別を内容で判定し、動画・音声・画像のどれかとして timeline へ置く。
-    // メニューのダイアログと timeline への drop はここを通る。拡張子は見ない。
-    Q_INVOKABLE bool addMediaFileToTimeline(const QUrl& fileUrl);
     using TranscriptionRunner =
         std::function<transcribe::Result(const transcribe::Request&, const std::atomic<bool>*)>;
 
@@ -821,6 +801,7 @@ public:
     Q_INVOKABLE bool shuttleRight();
     Q_INVOKABLE bool stepTimelineFrames(int delta);
     Q_INVOKABLE bool jumpToEditPoint(int direction);
+    // タイムラインの構造編集 (mvm_controller_timeline_edit.cpp)。
     // 以下の編集は linked=true ならリンク相手にも同じ編集を適用する (Premiere の
     // リンクされた選択)。QML は Alt を押しながらの操作で linked=false を渡す。
     Q_INVOKABLE bool moveTimelineClip(const QString& clipId, const QString& trackKind,
@@ -916,11 +897,6 @@ public:
     // 1 回が 1 undo。置いた変形を選ぶ。model が断れば理由を status と selectedEditPoint の
     // mathTransformRejection に出し、Project・Undo を変えない (Blend で代用しない)。
     Q_INVOKABLE bool applyMathTransform();
-    Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
-                                           qint64 requestedFrame, double value) const;
-    Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,
-                                   qint64 requestedFrame, double value);
-    Q_INVOKABLE bool deleteClipKey(const QString& clipId, qint64 frame);
     // direction は "forward" / "backward"。trackKind が空なら全 track。
     Q_INVOKABLE bool selectClipsFromFrame(qint64 frame, const QString& direction,
                                           const QString& trackKind, int trackIndex);
@@ -960,14 +936,31 @@ public:
     bool setGraphDuration(const std::string& clipId, std::int64_t sourceFrames);
     bool editGraphData(const std::string& clipId,
                        const std::function<bool(project::GraphClipData&, std::string&)>& edit);
+    // 書き出しの開始・進捗・取消 (mvm_controller_export.cpp)。
     Q_INVOKABLE QVariantMap exportSettingsSummary() const;
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
     Q_INVOKABLE bool exportTimelineWithQuality(const QUrl& outputUrl, const QString& quality);
     Q_INVOKABLE void cancelTimelineExport();
-    // effect の 1 値だけを更新する。
-    //   commit=false : Project を書き換えず、preview だけを ephemeral な override で
-    //                  追従させる (drag 中)。
-    //   commit=true  : override を確定して Project transaction にする。
+
+    // エフェクトとキーフレーム (mvm_controller_effects.cpp)。
+    double effectPositionX() const;
+    double effectPositionY() const;
+    double effectScaleX() const;
+    double effectScaleY() const;
+    double effectRotation() const;
+    double effectOpacity() const;
+    double effectCropLeft() const;
+    double effectCropTop() const;
+    double effectCropRight() const;
+    double effectCropBottom() const;
+    qint64 effectFadeIn() const;
+    qint64 effectFadeOut() const;
+
+    Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
+                                           qint64 requestedFrame, double value) const;
+    Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,
+                                   qint64 requestedFrame, double value);
+    Q_INVOKABLE bool deleteClipKey(const QString& clipId, qint64 frame);
     Q_PROPERTY(QVariantList keyframeChannels READ keyframeChannels NOTIFY stateChanged)
     QVariantList keyframeChannels() const;
     Q_INVOKABLE bool editEffectKey(const QString& name, qint64 from, qint64 to, double value,
@@ -984,6 +977,10 @@ public:
     Q_INVOKABLE bool setEffectInterpolation(const QString& name, qint64 frame, int interpolation);
     Q_INVOKABLE bool seekEffectKey(const QString& name, int direction);
     Q_INVOKABLE bool seekEffectFrame(qint64 localFrame, bool scrub = false);
+    // effect の 1 値だけを更新する。
+    //   commit=false : Project を書き換えず、preview だけを ephemeral な override で
+    //                  追従させる (drag 中)。
+    //   commit=true  : override を確定して Project transaction にする。
     Q_INVOKABLE bool setEffectValue(const QString& key, double value, bool commit);
     // 複数の項目 ({"positionX": 10, "scaleX": 120} など) を 1 つの変更として適用する。
     // commit なら 1 つの undo、そうでなければ preview だけを更新する。
@@ -994,6 +991,15 @@ public:
                                          bool commit);
     // drag が release されずに終わった場合に override を捨てる。
     Q_INVOKABLE bool cancelEffectPreview();
+
+    // 素材の取り込みと配置 (mvm_controller_media.cpp)。
+    Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
+    Q_INVOKABLE bool addAudioClip(const QUrl& fileUrl);
+    // 画像を再生ヘッドの位置へ、最上位の clip より上の空いた映像 track に 5 秒で置く。
+    Q_INVOKABLE bool addImageClip(const QUrl& fileUrl);
+    // 素材の種別を内容で判定し、動画・音声・画像のどれかとして timeline へ置く。
+    // メニューのダイアログと timeline への drop はここを通る。拡張子は見ない。
+    Q_INVOKABLE bool addMediaFileToTimeline(const QUrl& fileUrl);
 
     // プロジェクトパネル (素材とフォルダ)。folderId が空なら root。
     // 読み込みは timeline へ置かずに bin へ登録するだけ。1 回の呼び出しが 1 undo になる。

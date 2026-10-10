@@ -1,6 +1,5 @@
 $ErrorActionPreference = 'Stop'
 $qmlPath = Join-Path $PSScriptRoot '..\..\apps\mvm\Main.qml'
-$controllerPath = Join-Path $PSScriptRoot '..\..\apps\mvm\mvm_controller.cpp'
 $controllerHeaderPath = Join-Path $PSScriptRoot '..\..\apps\mvm\mvm_controller.h'
 $mainPath = Join-Path $PSScriptRoot '..\..\apps\mvm\main.cpp'
 $previewItemPath = Join-Path $PSScriptRoot '..\..\src\app\preview\preview_engine_rhi_item.cpp'
@@ -10,7 +9,12 @@ $projectPanel = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mv
 $compactMenu = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\CompactMenu.qml') -Raw
 $compactItem = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\CompactMenuItem.qml') -Raw
 $compactSeparator = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\CompactMenuSeparator.qml') -Raw
-$controller = Get-Content -LiteralPath $controllerPath -Raw
+# 分割後の実装も契約の検査対象にする。欠損したファイルは読み込みで失敗する。
+$controller = (@('mvm_controller.cpp', 'mvm_controller_export.cpp',
+                  'mvm_controller_effects.cpp', 'mvm_controller_media.cpp',
+                  'mvm_controller_timeline_edit.cpp', 'mvm_controller_detail.cpp') | ForEach-Object {
+    Get-Content -LiteralPath (Join-Path $PSScriptRoot "../../apps/mvm/$_") -Raw
+}) -join "`n"
 $controllerHeader = Get-Content -LiteralPath $controllerHeaderPath -Raw
 $main = Get-Content -LiteralPath $mainPath -Raw
 $previewItem = Get-Content -LiteralPath $previewItemPath -Raw
@@ -33,6 +37,8 @@ function Test-SpeedHoldUiContract([string]$qmlSource, [string]$controllerSource,
            $headerSource.Contains('applyClipSpeedDuration(')
 }
 if (-not (Test-SpeedHoldUiContract $qml $controller $controllerHeader) -or
+    (Test-SpeedHoldUiContract $qml ($controller.Replace('MvmController::insertFrameHoldAtPlayhead(', 'removedFrameHold(')) $controllerHeader) -or
+    (Test-SpeedHoldUiContract $qml ($controller.Replace('MvmController::applyClipSpeedDuration(', 'removedSpeedDuration(')) $controllerHeader) -or
     (Test-SpeedHoldUiContract ($qml.Replace('shortcut: "Ctrl+R"', 'shortcut: "Ctrl+Alt+R"')) $controller $controllerHeader) -or
     (Test-SpeedHoldUiContract ($qml.Replace('root.mvmController.insertFrameHoldAtPlayhead(clipItem.clipId)', '')) $controller $controllerHeader) -or
     (Test-SpeedHoldUiContract ($qml.Replace('&& root.mvmController.playheadFrame > clipItem.timelineStartFrame', '')) $controller $controllerHeader) -or
