@@ -206,6 +206,22 @@ void testShuttleClockAndEditPoints() {
     check(adjacentTimelineEditPoint(project, 120, 1, 179).frame == 179 &&
               !adjacentTimelineEditPoint(project, 179, 1, 179).success,
           "末尾を越える字幕の終了を末尾へ丸めません");
+    // lastFrame より先で始まる字幕も、結果を範囲の外へ出さない。全位置・両方向で確かめる。
+    project.subtitles->cues = {{"a", 70, 80, "前", {}}, {"far", 250, 300, "先", {}}};
+    check(adjacentTimelineEditPoint(project, 120, 1, 179).frame == 179,
+          "lastFrame より先の字幕の開始を末尾へ丸めません");
+    bool inRange = true;
+    int compared = 0;
+    for (std::int64_t at = 0; at <= 179; ++at)
+        for (const int direction : {-1, 1}) {
+            const auto point = adjacentTimelineEditPoint(project, at, direction, 179);
+            if (!point.success)
+                continue;
+            ++compared;
+            inRange = inRange && point.frame >= 0 && point.frame <= 179 &&
+                      (direction > 0 ? point.frame > at : point.frame < at);
+        }
+    check(inRange && compared >= 300, "字幕の編集点が timeline の範囲外を返しました");
     project.subtitles->cues = {{"bad", 70, 70, "空", {}}};
     check(!adjacentTimelineEditPoint(project, 60, 1, 179).success,
           "不正な字幕の編集点を黙って飛ばしました");

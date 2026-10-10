@@ -683,10 +683,16 @@ sandbox 内では毎回同じ形で止まることが分かっており、試す
 (`build-diagnostics.ps1`・`ninja -n`) は sandbox 内でよい。
 
 それでも sandbox 内で起動してしまった場合は、`scripts/build.ps1` が CPU 時間・子 process・
-`.ninja_log` の停止を 180 秒 (`-StallSeconds`) で検知し、起動した tree だけを止めて
-`BUILD_STALLED` で失敗する (`scripts/lib/build-watchdog.ps1`)。この失敗を見たら原因を
+`.ninja_log` の停止を 180 秒 (`-StallSeconds`) で検知し、起動した cmake の Job Object だけを
+止めて `BUILD_STALLED` で失敗する (`scripts/lib/build-watchdog.ps1`)。この失敗を見たら原因を
 再調査せず、同じコマンドを sandbox 外で 1 回実行する。`BUILD_STALLED` を tool の timeout と
 取り違えて待ち続けない。
+
+`build.ps1` が起動した cmake とその子孫 (親が先に終わった孤児を含む) は、起動前から同じ job に
+入る。停止も、`build.ps1` の終了 (正常・失敗・Ctrl+C) 時の残留 process の後始末も job 単位で行い、
+PID や process 名で探さない。したがって `build.ps1` 経由のビルドでは、残留 process を手で
+止める必要は無い。job を作れない環境では `build.ps1` は明確なエラーで失敗する (job 無しで
+動かす代替経路は持たない)。
 
 この開発環境では、sandbox 内から CMake/Ninja を実行した場合に、
 Ninja 自体は起動するが child compiler (`g++` / `cc1plus`) が起動せず停止する事例を確認済み。

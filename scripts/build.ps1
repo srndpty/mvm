@@ -28,9 +28,10 @@
     Ninja が必要時に再 configure する。
 
 .PARAMETER StallSeconds
-    起動した cmake の process tree の CPU 時間・子 process・.ninja_log がこの秒数の間どれも
-    進まなければ、その tree だけを止めて BUILD_STALLED で失敗する (scripts/lib/build-watchdog.ps1)。
-    0 で無効。長い compile・link は CPU 時間が進むので止めない。
+    起動した cmake の Job Object の CPU 時間・子 process・.ninja_log がこの秒数の間どれも
+    進まなければ、その job だけを止めて BUILD_STALLED で失敗する (scripts/lib/build-watchdog.ps1)。
+    0 で検知を無効にする (job による所有と、終了時の残留 process の停止は続く)。
+    長い compile・link は CPU 時間が進むので止めない。
 
 .EXAMPLE
     pwsh scripts/build.ps1
@@ -90,7 +91,7 @@ function Invoke-WatchedCMake([string[]]$Arguments, [string]$Step, [int]$Stall) {
         throw @"
 $Step が停止しました。
 $($run.Report)
-上の tree (このスクリプトが起動した PID) だけを終了しました。
+このスクリプトが起動した cmake の Job Object (その子孫だけを含む) を終了しました。
 Codex sandbox の既知制約 (AGENTS.md) と同じ症状です。source・.ninja_deps / .ninja_log・
 build directory を変更せず、同じコマンドを sandbox 外で 1 回実行してください。
 sandbox 外でも再現した場合だけ、AGENTS.md の recovery escalation に従ってください。

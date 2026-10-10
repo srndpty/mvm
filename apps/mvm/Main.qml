@@ -587,7 +587,27 @@ ApplicationWindow {
         enabled: !root.keyboardFocusTakesKeys && !root.mvmController.busy && !root.mvmController.playing
         onActivated: keyframeInspector.navigateKey(1)
     }
+    // メニューバーのメニューは開いている間 focus を持つが、文字を入力する場所ではない。ここで
+    // 入力中と見なすと、編集メニューの Action (編集点を追加など) が開いた自分のメニューの中で
+    // 無効になる。メニューの外の shortcut は、開いている間 Qt が止めるので奪われない。
+    readonly property bool menuBarMenuOpen: {
+        for (let i = 0; i < root.menuBar.count; ++i) {
+            if (root.menuBar.menuAt(i).opened)
+                return true;
+        }
+        return false;
+    }
+    // Windows のメニューと同じく、window が非アクティブになったら開いているメニューを閉じる。
+    // 開いたまま残すと、戻ってきた後の最初のキーがアクセスキーとして項目を選んでしまう。
+    onActiveChanged: {
+        if (active)
+            return;
+        for (let i = 0; i < root.menuBar.count; ++i)
+            root.menuBar.menuAt(i).close();
+    }
     readonly property bool keyboardFocusTakesKeys: {
+        if (root.menuBarMenuOpen)
+            return false;
         const item = root.activeFocusItem;
         if (item instanceof TextInput || item instanceof TextEdit || item instanceof ComboBox
                 || item instanceof SpinBox)

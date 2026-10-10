@@ -45,6 +45,7 @@
 #include <QQuickWindow>
 #include <QSet>
 #include <QSettings>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -2103,18 +2104,17 @@ int main(int argc, char** argv) {
             pump(300);
             check(controller.previewVideoAtPlayhead(), "前提: playhead に映像がありません");
 
-            // メニュー項目のアクセスキー: Alt を押したまま 再生(L) → 次の編集点へ(D)、
-            // Alt なしの 前の編集点へ(U)。seek は初回 seek
+            // メニュー項目のアクセスキー。seek は初回 seek
             // の完了後でないと受理されないので、ここで試す。
             {
                 auto* playback = window->findChild<QObject*>(QStringLiteral("playbackMenu"));
-                const auto playbackOpened = [&] {
-                    return playback && playback->property("opened").toBool();
+                auto* edit = window->findChild<QObject*>(QStringLiteral("editMenu"));
+                const auto isOpen = [](QObject* menu) {
+                    return menu && menu->property("opened").toBool();
                 };
-                // 利用者が Alt を押したままにする操作を、そのままの event 列で送る。QTest::keyClick
-                // は キーごとに Alt
-                // を押し直すので、押したままの操作とは別物になる。押したままの間、 Windows は Alt
-                // の自動反復を送る。
+                // 利用者が Alt を押したままにする操作を、そのままの event 列で送る。
+                // QTest::keyClick はキーごとに Alt を押し直すので、押したままの操作とは別物になる。
+                // 押したままの間、Windows は Alt の自動反復を送る。
                 const auto send = [&](QEvent::Type type, int key, Qt::KeyboardModifiers modifiers,
                                       bool repeat = false) {
                     QWindowSystemInterface::handleKeyEvent<
@@ -2122,28 +2122,50 @@ int main(int argc, char** argv) {
                                                                      QString(), repeat);
                     pump(30);
                 };
-                const auto choose = [&](Qt::Key key, bool holdAlt) {
+                const auto openMenu = [&](QObject* menu, Qt::Key menuKey, bool holdAlt) {
                     pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
                     send(QEvent::KeyPress, Qt::Key_Alt, Qt::AltModifier);
-                    send(QEvent::KeyPress, Qt::Key_L, Qt::AltModifier);
-                    send(QEvent::KeyRelease, Qt::Key_L, Qt::AltModifier);
+                    send(QEvent::KeyPress, menuKey, Qt::AltModifier);
+                    send(QEvent::KeyRelease, menuKey, Qt::AltModifier);
                     if (!holdAlt)
                         send(QEvent::KeyRelease, Qt::Key_Alt, Qt::NoModifier);
-                    check(pumpUntil(playbackOpened, 3000), "前提: 再生メニューが開きません");
+                    return pumpUntil([&] { return isOpen(menu); }, 3000);
+                };
+                // repeats: 項目のキーを押したままにしたときの自動反復の回数。
+                const auto choose = [&](QObject* menu, Qt::Key menuKey, Qt::Key key, bool holdAlt,
+                                        int repeats = 0) {
+                    check(openMenu(menu, menuKey, holdAlt), "前提: メニューが開きません");
                     const auto modifiers = holdAlt ? Qt::AltModifier : Qt::NoModifier;
                     for (int i = 0; holdAlt && i < 3; ++i)
                         send(QEvent::KeyPress, Qt::Key_Alt, Qt::AltModifier, true);
                     send(QEvent::KeyPress, key, modifiers);
+                    for (int i = 0; i < repeats; ++i)
+                        send(QEvent::KeyPress, key, modifiers, true);
                     send(QEvent::KeyRelease, key, modifiers);
                     if (holdAlt)
                         send(QEvent::KeyRelease, Qt::Key_Alt, Qt::NoModifier);
-                    return pumpUntil([&] { return !playbackOpened(); }, 3000);
+                    return pumpUntil([&] { return !isOpen(menu); }, 3000);
                 };
+                // 項目の triggered を数える。1 回の操作で 2 回発火していないかを直接見る。
+                const auto spyOn = [&](QObject* menu, const QString& mnemonic) {
+                    std::unique_ptr<QSignalSpy> spy;
+                    for (int i = 0; menu && !spy && i < menu->property("count").toInt(); ++i) {
+                        QQuickItem* item = nullptr;
+                        QMetaObject::invokeMethod(menu, "itemAt", Q_RETURN_ARG(QQuickItem*, item),
+                                                  Q_ARG(int, i));
+                        if (item && item->property("mnemonic").toString() == mnemonic)
+                            spy = std::make_unique<QSignalSpy>(item, SIGNAL(triggered()));
+                    }
+                    return spy;
+                };
+
                 const auto start = controller.playheadFrame();
                 // 映像 clip (0〜120) の終端は timeline の最終 frame へ丸められる。
-                check(choose(Qt::Key_D, true) && controller.playheadFrame() == 119,
+                check(choose(playback, Qt::Key_L, Qt::Key_D, true) &&
+                          controller.playheadFrame() == 119,
                       "Alt+L → Alt+D で次の編集点へ移動しません");
-                check(choose(Qt::Key_U, false) && controller.playheadFrame() == 0,
+                check(choose(playback, Qt::Key_L, Qt::Key_U, false) &&
+                          controller.playheadFrame() == 0,
                       "メニューを開いたあと U だけで前の編集点へ移動しません");
                 // メニューが閉じている間は、項目のアクセスキーが効かない。
                 pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
@@ -2155,6 +2177,85 @@ int main(int argc, char** argv) {
                                  static_cast<long long>(start));
                     return 3;
                 }
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+
+                // 編集メニュー: 1 回の選択で Project の変更と Undo の記録がちょうど 1
+                // 回ずつ起きる。 分割 (K)・元に戻す (U)・削除 (X) の triggered を数え、履歴の深さと
+                // Project を比べる。
+                const auto original = controller.projectForTest();
+                const auto originalDepth = controller.undoDepthForTest();
+                const auto split = spyOn(edit, QStringLiteral("K"));
+                const auto undo = spyOn(edit, QStringLiteral("U"));
+                const auto remove = spyOn(edit, QStringLiteral("X"));
+                check(split && undo && remove && split->isValid() && undo->isValid() &&
+                          remove->isValid(),
+                      "前提: 編集メニューの 分割・元に戻す・削除 の項目がありません");
+                // 先に 1 つ履歴を作る。元に戻すが 2
+                // 回発火すると、この記録まで戻るので深さで分かる。
+                check(controller.addTimelineMarker(), "前提: マーカーを追加できません");
+                const auto marked = controller.projectForTest();
+                const auto markedDepth = controller.undoDepthForTest();
+                const auto unchanged = [&] {
+                    return controller.undoDepthForTest() == markedDepth &&
+                           controller.projectForTest() == marked;
+                };
+                if (split && undo && remove) {
+                    controller.selectTimelineClips({QStringLiteral("video")});
+                    // Alt を押したまま E → K。K は押したままにして自動反復も送る。
+                    check(choose(edit, Qt::Key_E, Qt::Key_K, true, 2) && split->count() == 1 &&
+                              controller.undoDepthForTest() == markedDepth + 1 &&
+                              controller.clipCount() == 2,
+                          "Alt+E → Alt+K (自動反復あり) の分割が 1 回ちょうどになりません");
+                    check(choose(edit, Qt::Key_E, Qt::Key_U, false) && undo->count() == 1 &&
+                              unchanged(),
+                          "Alt+E → U の元に戻すが 1 回ちょうどになりません");
+                    controller.selectTimelineClips({QStringLiteral("video")});
+                    check(choose(edit, Qt::Key_E, Qt::Key_X, true) && remove->count() == 1 &&
+                              controller.undoDepthForTest() == markedDepth + 1 &&
+                              controller.clipCount() == 0,
+                          "Alt+E → Alt+X の削除が 1 回ちょうどになりません");
+                    check(controller.undoLastEdit() && unchanged(), "前提: 削除を戻せません");
+
+                    // Esc で閉じた後は、項目のキーを押しても何も起きない。
+                    controller.selectTimelineClips({QStringLiteral("video")});
+                    check(openMenu(edit, Qt::Key_E, false), "前提: 編集メニューが開きません");
+                    send(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+                    send(QEvent::KeyRelease, Qt::Key_Escape, Qt::NoModifier);
+                    check(pumpUntil([&] { return !isOpen(edit); }, 3000), "Esc で閉じません");
+                    for (const auto modifiers : {Qt::NoModifier, Qt::AltModifier}) {
+                        send(QEvent::KeyPress, Qt::Key_K, modifiers);
+                        send(QEvent::KeyRelease, Qt::Key_K, modifiers);
+                    }
+                    pump(300);
+                    check(split->count() == 1 && unchanged(),
+                          "閉じた編集メニューの項目が K / Alt+K で動きました");
+
+                    // 開いたまま window
+                    // が非アクティブになったら閉じ、戻った後のキーで項目を選ばない。
+                    check(openMenu(edit, Qt::Key_E, false), "前提: 編集メニューが開きません");
+                    QWindowSystemInterface::handleFocusWindowChanged<
+                        QWindowSystemInterface::SynchronousDelivery>(nullptr,
+                                                                     Qt::ActiveWindowFocusReason);
+                    pump(300);
+                    const bool closedOnDeactivate = !isOpen(edit);
+                    const bool refocused = mvm::test::focusWithoutForeground(window);
+                    // この非アクティブ化は試験が意図して起こしたもの。外からの妨害ではない。
+                    activationLost = false;
+                    send(QEvent::KeyPress, Qt::Key_K, Qt::NoModifier);
+                    send(QEvent::KeyRelease, Qt::Key_K, Qt::NoModifier);
+                    pump(300);
+                    check(refocused, "前提: window へ focus を戻せません");
+                    check(
+                        closedOnDeactivate && split->count() == 1 && unchanged(),
+                        "非アクティブになっても編集メニューが閉じず、戻った後に K で分割しました");
+                    if (isOpen(edit))
+                        QMetaObject::invokeMethod(edit, "close");
+                }
+                // マーカーも戻し、この場面の前と同じ Project・履歴にする。
+                check(controller.undoLastEdit() && controller.undoDepthForTest() == originalDepth &&
+                          controller.projectForTest() == original,
+                      "編集メニューの場面の後で Project・履歴を戻せません");
+                controller.selectTimelineClips({});
                 pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
             }
 

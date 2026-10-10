@@ -115,7 +115,9 @@ PlaybackFrameResult adjacentTimelineEditPoint(const project::Project& project,
                 result.error = "字幕の編集点が不正です";
                 return result;
             }
-            consider(cue.startFrame);
+            // lastFrame より先で始まる字幕の開始も lastFrame へ丸める。丸めないと、playhead が
+            // lastFrame にあるときの前方の探索が範囲外の開始を返す。
+            consider(std::min(cue.startFrame, lastFrame));
             consider(std::min(cue.endFrame, lastFrame));
         }
     }
