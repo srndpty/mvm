@@ -26,6 +26,9 @@ Copy-Item -LiteralPath $baselinePath -Destination (Join-Path $evidenceRoot 'base
 @{ directory = $baseline.FullName; sourceSha256 = $baselineState.sourceSha256 } | ConvertTo-Json |
     Set-Content -LiteralPath (Join-Path $evidenceRoot 'baseline.json') -Encoding utf8NoBOM
 $cases = @(
+    @{ name = 'missing-output-frame'; file = 'src/media/mlt/mvm_mlt_export.c'; before = 'mlt_producer_set_in_and_out(output, 0, (mlt_position)(total_duration - 1));'; after = 'mlt_producer_set_in_and_out(output, 0, (mlt_position)(total_duration - 2));'; target = 'mvm_test_graph_export'; test = 'graph_export_encoder_oracle'; assertion = 'H.264 と encoder 直前の全 frame／全画素 oracle' },
+    @{ name = 'absent-rgba-validator'; file = 'src/app/timeline_export.cpp'; before = '.rgba_callback = request.encoderFrameValidator'; after = '.rgba_callback = false'; target = 'mvm_test_graph_export'; test = 'graph_export_encoder_oracle'; assertion = 'H.264 と encoder 直前の全 frame／全画素 oracle' },
+    @{ name = 'inaccurate-rgba-validator'; file = 'src/app/timeline_export.cpp'; before = 'return inputRequest->encoderFrameValidator(frame, rgba, width, height) ? 0 : 1;'; after = 'return inputRequest->encoderFrameValidator(frame + 1, rgba, width, height) ? 0 : 1;'; target = 'mvm_test_graph_export'; test = 'graph_export_encoder_oracle'; assertion = 'H.264 と encoder 直前の全 frame／全画素 oracle' },
     @{ name = 'visible-intersection'; file = 'src/app/graph_export.cpp'; before = 'if (first >= last)'; after = 'if (false)'; target = 'mvm_test_graph_export'; test = 'graph_export_focused'; assertion = '画面外の不正式を compile しない' },
     @{ name = 'decoded-integrity'; file = 'src/app/graph_export.cpp'; before = 'if (hash != artifact.pixelHashes[hashIndex])'; after = 'if (false)'; target = 'mvm_test_graph_export'; test = 'graph_export_focused'; assertion = '検証後の画素変更を SHA で拒否する' },
     @{ name = 'source-frame'; file = 'src/app/graph_export.cpp'; before = 'const auto index = frame->artifactFrame;'; after = 'const auto index = frame->artifactFrame < 0 ? -1 : (frame->artifactFrame + 1) % package.spec.drawFrames;'; target = 'mvm_test_graph_export'; test = 'graph_export_focused'; assertion = 'Draw／端点を混同せず straight alpha を保持する' },
@@ -80,7 +83,8 @@ try {
             if ($LASTEXITCODE -ne 0) { throw 'build 失敗は変異検出に数えません' }
             $record.testExit = Invoke-Test $case.name $case.test
             $body = Get-Content -LiteralPath (Join-Path $evidenceRoot ($case.name + '.log')) -Raw
-            $record.detected = $record.testExit -eq 8 -and $body.Contains($case.assertion) -and $body -notmatch 'SEGFAULT|Timeout|Access violation|Exception'
+            $failurePattern = '(?m)^(?:FAIL: |失敗: )' + [regex]::Escape($case.assertion)
+            $record.detected = $record.testExit -eq 8 -and [regex]::IsMatch($body, $failurePattern) -and $body -notmatch 'SEGFAULT|Timeout|Access violation|Exception'
             if (-not $record.detected) { throw "目的の assertion で検出できません: $($case.name)" }
         } finally {
             [IO.File]::WriteAllBytes($file, $originalBytes)
