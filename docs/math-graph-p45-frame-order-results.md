@@ -56,7 +56,9 @@ runner の終了を待機解除条件に使うので、無関係な timeout で�
 
 ## 保持する FAIL と制限
 
-元の初回 Real FAIL は未解決の発生経路として保持する。後続 PASS で解決済みにしない。
+調査は CLOSED。frame 0 を最初の callback／保持対象とする前提と barrier の選出・公開の
+競合は FIXED。正確な全 domain coverage と独立 RGBA oracle の検査は維持する。
+元の初回 Real FAIL は HISTORICAL UNKNOWN として保持し、後続 PASS で解決済みにしない。
 通知で検査順を固定した旧 assertion の対照も、前提と停止判定の二つの FAIL を保持した。
 最初の静止背景対照は素材台帳と clip の不整合で保存 assertion が失敗した。
 原因を修正した fixture の検証は上表のとおり通過したが、旧 FAIL は残す。

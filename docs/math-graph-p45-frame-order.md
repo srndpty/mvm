@@ -1,5 +1,21 @@
 # P4-5 Real の frame 1 保持を調査する
 
+## 最終状態：CLOSED
+
+必要な focused・Real・変異・回帰 gate の通過を確認し、今回の調査を完了した。
+
+| 対象 | 状態 |
+| --- | --- |
+| 最初の callback／保持対象が frame 0 であるという試験の前提 | FIXED |
+| barrier の選出・記録と公開の間の競合 | FIXED |
+| 成功 export の正確な全 frame domain coverage と独立 RGBA oracle | 維持 |
+| 元の初回 Real FAIL の直接の発生経路 | HISTORICAL UNKNOWN |
+
+元の FAIL は後続 PASS によって解決済みとはしない。全 FAIL/PASS と source・runtime の
+来歴は保持する。この調査で現行製品の未解決の欠落・mapping 不一致は確認されていない。
+履歴 run の原因未特定は、現在の製品欠陥を示す証拠とは区別する。
+今回の完了整理は文書だけを変更し、製品・ビルド構成の変更や release 全件の再実行は行わない。
+
 ## 契約と判断
 
 成功した製品 export は、timeline の整数 frame domain 全体について source mapping、
@@ -82,10 +98,10 @@ domain は worker に渡された Project の `timelineEndFrame` から取得す
 元の初回 FAIL には MLT 要求・callback 進入・所有者選出の時系列がない。
 その run の frame 0 がいつ要求／検査されたか、自然な worker 順序変動と harness の
 公開前競合のどちらで frame 1 が保持されたかは、後続の PASS からは確定できない。
-元の run の厳密な発生経路は E（未解決）として保持する。
+元の run の厳密な発生経路は HISTORICAL UNKNOWN として保持する。
 
 一方、B の順序保証がないことと C の harness authority／公開区間の問題は、source と
-対照に基づき修正する。観測した成功 export に A の欠落・mapping 不一致はない。
+対照に基づき修正済み（FIXED）である。観測した成功 export に A の欠落・mapping 不一致はない。
 これは元の取消 run に production 欠落が絶対になかったという証明ではない。
 FFV1 preview エラーと export 順序差の因果は別に扱い、再実行の成功で解決済みにしない。
 
