@@ -16,6 +16,7 @@
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
 #include "math_fake_backend.h"
+#include "math_preparation_wait.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/equation_sequence_edit.h"
@@ -1631,39 +1632,11 @@ struct PreviewWindowHarness {
     }
 };
 
-int nativeTransformPlayback() {
-    // 診断は試験側だけに置く。単調時計と thread ID で worker と GUI の境界を照合する。
-    const auto traceStart = std::chrono::steady_clock::now();
-    const bool tracing = qEnvironmentVariableIsSet("MVM_TEST_TRANSFORM_TRACE");
-    const auto trace = [traceStart, tracing](const char* stage) {
-        if (!tracing)
-            return;
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 std::chrono::steady_clock::now() - traceStart)
-                                 .count();
-        std::fprintf(stderr, "変形診断: 経過 %lld ms、thread %p、%s\n",
-                     static_cast<long long>(elapsed), QThread::currentThreadId(), stage);
-    };
+int nativeTransformPlayback(std::string control = {}) {
     QTemporaryDir temp;
     check(temp.isValid(), "native 変形: 作業フォルダー");
     auto captured = std::make_shared<CapturedExport>();
     FakeMathBackend backend;
-    auto preflight = backend.preflight();
-    const auto tracedPreflight = [preflight, trace](const std::filesystem::path& work,
-                                                    const std::atomic<bool>* cancel) {
-        trace("backend 確認開始");
-        auto result = preflight(work, cancel);
-        const auto render = result.backend.renderTransform;
-        result.backend.renderTransform = [render, trace](const auto& request, const auto& loader,
-                                                         const std::atomic<bool>* cancelled) {
-            trace("変形 worker 描画開始");
-            auto rendered = render(request, loader, cancelled);
-            trace("変形 worker 描画終了");
-            return rendered;
-        };
-        trace("backend 確認終了");
-        return result;
-    };
     const auto path = std::filesystem::path(temp.filePath("native transform.mvm").toStdWString());
     constexpr std::int64_t kStart = kTransformCut - 60;
     constexpr std::int64_t kFrames = 180;
@@ -1674,40 +1647,60 @@ int nativeTransformPlayback() {
     PreviewWindowHarness harness;
     harness.attach(*controller);
     check(pump([&] { return controller->previewReady(); }), "native 変形: preview の初期化");
-    controller->mathRastersForTest().setBeforeTransformPublishForTest(
-        [trace](const std::filesystem::path&) {
-            trace("変形 worker 検証終了・provenance 公開直前");
-            // 診断の対照群: disk 公開だけを遅らせ、元の検査が失敗することを確かめる。
-            if (qEnvironmentVariableIsSet("MVM_TEST_TRANSFORM_DELAY_PUBLISH"))
-                std::this_thread::sleep_for(std::chrono::milliseconds(10500));
-            trace("変形 worker provenance 公開へ進む");
-        });
-    controller->setMathPreflightForTest(tracedPreflight);
+    if (qEnvironmentVariableIsSet("MVM_TEST_TRANSFORM_DELAY_PUBLISH"))
+        control = "delayed";
+    auto preparation = std::make_shared<mvm::test::PreparationTrace>();
+    controller->mathRastersForTest().setTransformPreparationObserverForTest(
+        mvm::test::preparationObserver(preparation, control), control == "lost-notification");
+    controller->setMathPreflightForTest(backend.preflight());
     check(pump([&] {
               return controller->mathRastersForTest().backendState() ==
                      mvm::app::MathRasterCache::BackendState::Available;
           }),
           "native 変形: 偽の backend が使える");
     // 選択は 1 回だけ (選び直すたびに preview を組み直させない)。状態は cache の結果で更新される。
-    trace("GUI 選択・disk 待機開始");
-    QString lastState;
+    preparation->record({"wait-start"});
     const bool selected = controller->selectTransition(QStringLiteral("t1"));
-    const bool diskReady =
-        selected && pump([&] {
-            const auto current = transitionValue(*controller, "transformState");
-            if (current != lastState) {
-                lastState = current;
-                trace(qUtf8Printable(QStringLiteral("GUI disk 状態: ") + current));
-            }
-            return transitionValue(*controller, "transformState") == QStringLiteral("ready");
-        });
-    trace("GUI disk 待機終了");
-    if (tracing || !diskReady)
-        std::fprintf(stderr, "変形診断: 選択 %d、disk 待機 %d、状態 '%s'、理由 '%s'、描画開始 %d\n",
-                     int(selected), int(diskReady), qUtf8Printable(lastState),
-                     qUtf8Printable(transitionValue(*controller, "transformMessage")),
-                     backend.transformRenders->load());
+    check(selected, "準備: 変形を選択できる");
+    const auto prepared = mvm::test::waitForPreparation(
+        *preparation,
+        [&] { return transitionValue(*controller, "transformState") == QStringLiteral("ready"); },
+        !control.empty() && control != "delayed");
+    if (prepared == mvm::test::PreparationResult::Ready)
+        preparation->record({"gui-ready", {}, kFrames});
+    std::fprintf(stderr, "準備結果: outcome=%d control=%s\n", int(prepared), control.c_str());
+    if (!control.empty() && control != "delayed" && control != "wrong-frame") {
+        const auto expected = control == "backend-stall" || control == "publish-stall"
+                                  ? mvm::test::PreparationResult::Stalled
+                              : control == "lost-notification"
+                                  ? mvm::test::PreparationResult::NotificationLost
+                                  : mvm::test::PreparationResult::Error;
+        check(prepared == expected, "故障注入: 意図した準備段階の失敗を検出する");
+        // 注入で停止した worker は、cancel を設定してから gate を解放する。
+        controller->mathRastersForTest().cancelPendingAnimations();
+        preparation->unblock();
+        controller->shutdown();
+        preparation->dump();
+        return failures == 0 ? 0 : 1;
+    }
+    const bool diskReady = prepared == mvm::test::PreparationResult::Ready;
     check(diskReady, "native 変形: 変形が disk に揃う");
+    if (!diskReady) {
+        preparation->unblock();
+        controller->shutdown();
+        preparation->dump();
+        return 1;
+    }
+    const auto preparationSpec = mvm::app::mathTransformSpecFor(
+        initial.timelineTransitions.front(), initial.timelineClips[0], initial.timelineClips[1]);
+    check(preparationSpec &&
+              controller->mathRastersForTest().readyTransformForExport(*preparationSpec),
+          "準備: 公開された provenance と必須 frame の hash を製品の検査で照合する");
+    if (control == "delayed") {
+        std::lock_guard lock(preparation->mutex);
+        check(preparation->completed - preparation->start > std::chrono::seconds(10),
+              "対照: 正しい準備が旧 10 秒閾値を超えた");
+    }
     auto observation = std::make_shared<TransformObservation>();
     controller->setMathTransformObserverForTest(
         [observation](const std::string& transitionId, const std::string& clipId,
@@ -1742,6 +1735,14 @@ int nativeTransformPlayback() {
     std::fprintf(stderr, "1: 記録 %zu 件 (変形 %zu 件)、変形の最小の frame %lld\n", first.size(),
                  firstShown.size(), static_cast<long long>(firstMin));
     check(!firstShown.empty() && firstMin <= kStart + 2, "1: 区間の先頭から変形を見せる");
+    if (control == "wrong-frame" && !firstShown.empty()) {
+        auto wrong = first;
+        for (auto& item : wrong)
+            if (std::get<2>(item) >= 0)
+                ++std::get<2>(item);
+        check(!transformTimelineAuthoritative(wrong, kStart, kFrames),
+              "故障注入: 間違った source frame を oracle が検出する");
+    }
     check(transformTimelineAuthoritative(first, kStart, kFrames),
           "1: 変形の frame = 出力 frame - 区間の先頭 (区間の外は静止)");
     check(clipsSeen(firstShown) == std::set<std::string>{"A", "B"},
@@ -1809,6 +1810,7 @@ int nativeTransformPlayback() {
               QStringLiteral("ready"),
           "3: disk の変形は ready のまま");
     controller->shutdown();
+    preparation->dump();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;
 }
@@ -2516,6 +2518,30 @@ void testEquationSequenceHistory() {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--preparation-wait-contract") {
+        QCoreApplication app(argc, argv);
+        mvm::test::PreparationTrace progressing;
+        QTimer timer;
+        QObject::connect(&timer, &QTimer::timeout, [&] { progressing.record({"advancing"}); });
+        timer.start(1);
+        check(mvm::test::waitForPreparation(
+                  progressing, [] { return false; }, false, std::chrono::milliseconds(100)) ==
+                  mvm::test::PreparationResult::SafetyCap,
+              "進捗が続いても全体の安全上限で終了する");
+        timer.stop();
+        mvm::test::PreparationTrace cancelled;
+        cancelled.record({"worker-cancelled"});
+        check(mvm::test::waitForPreparation(cancelled, [] { return false; }) ==
+                  mvm::test::PreparationResult::Cancelled,
+              "取消を成功・停止と混同しない");
+        return failures == 0 ? 0 : 1;
+    }
+    if (argc == 3 && std::string_view(argv[1]) == "--native-transform-control") {
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+        QQuickStyle::setStyle(QStringLiteral("Basic"));
+        QGuiApplication app(argc, argv);
+        return nativeTransformPlayback(argv[2]);
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--native-write") {
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
         QQuickStyle::setStyle(QStringLiteral("Basic"));

@@ -1,5 +1,101 @@
 # 数式変形の release flake 調査
 
+## 準備契約の修正（2026-10-10）
+
+[事実] 最終候補は準備対照 11 件、記録済み 277 件の cohort を 8 並列で固定 3 回、
+通常 release 1507 件（BuildIndependent 1085 件を含む）と lint を通過した。
+全件 gate の原ログ・LastTest・metadata・source hash と、cohort に対する runtime hash の
+一致は [最終 gate の生成記録](../build/math-preparation-final-20261010-201738-108/validation.md) に保存した。
+今回の修正を解決済みの記録へ移し、roadmap の未解決項目を除いた。
+
+[事実] 以下の旧調査を保存したまま、準備と再生の検査を分離した。
+旧 `pump` の既定 10000 ms は artifact が正しいかではなく、準備がその時間内に終わるかを
+判定していた。準備完了時間について製品の契約は無く、再生の契約へこの上限を持ち込むのが
+誤りだった。historical FAIL の個々の decode / I/O / OS scheduling の寄与は依然として未確定。
+
+[事実] 製品の decode・矩形検査・端点検査・frame 保存・SHA-256・provenance の順序は維持した。
+`MathRasterCache::setTransformPreparationObserverForTest` と atomic write の観測付き入口は、
+試験が明示的に設定したときだけ記録する。通常の入口は observer が空の同じ処理へ委譲する。
+製品の描画・cache 方式・flush / rename retry の挙動は変更していない。
+
+[事実] 試験は backend 描画、PNG decode、frame の切り出し・端点検査、frame cache 保存、
+flush、rename、hash、manifest 照合、provenance 公開、worker 完了、GUI Ready を観測する。
+単調時計・thread ID・thread CPU 時間の取得可否・frame・bytes・段階の成否をメモリに蓄積し、
+worker と再生を終えた後にログへ出す。CPU 時間は Windows の thread accounting の粒度を持つ。
+保存全体の時間は flush / rename の時間を含むので、親段階と子段階を足し合わせない。
+
+### 有限の準備待機
+
+- 実際に検証・保存された worker の Ready と、controller の GUI Ready の両方を要求する。
+  状態を Ready へ書き換えず、公開後は製品の export 用検査で provenance と必須 frame の
+  hash を再照合してから playback assertion を評価する。
+- GUI は `QEventLoop` / `QTimer` で event を処理する。sleep で準備を同期しない。
+- 15 秒無進捗なら `Stalled`、全体 60 秒なら `SafetyCap` とする。この二つは試験の停止防止で、
+  製品の速度要件ではない。各 frame の実作業の開始・終了が進捗になり、長くても進んでいる
+  準備は旧 10 秒を超えたことだけでは失敗しない。進捗を無限に送り続けても全体上限を回避できない。
+- worker の typed error / cancellation は `Error` / `Cancelled` とし、Ready と混同しない。
+- worker 完了後、GUI Ready が 2 秒の診断区間内に届かなければ `NotificationLost`。
+  public な準備結果を待つ状態と、worker が戻っていない状態を区別する。
+- 故障注入で意図的に gate を閉じた場合だけ、無進捗の観測区間を 500 ms に短縮する。
+  注入 worker は cancel を設定してから gate を解放し、shutdown で join する。
+  通常条件の安全区間と playback の既存 `pump` / CTest timeout は変えない。
+
+失敗時は typed outcome と最後まで進んだ段階・frame・成否を記録する。
+準備の前提が成立しなければ再生結果として成功にしない。
+
+### 対照と保存証拠
+
+[事実] `math_transform_preparation_*` は次を検査する。
+
+| 条件 | 期待する検出 |
+| --- | --- |
+| backend の開始境界で停止 | Stalled、その後 cancel / join |
+| PNG decode 失敗、必須 PNG の欠損・破損 | 対象 frame の decode-end が失敗し worker-error |
+| frame cache 保存失敗 | 対象 frame の persist-end が失敗し worker-error |
+| provenance 公開停止 | Stalled、その後 cancel / join |
+| provenance の atomic 置換失敗 | provenance-end が失敗し worker-error |
+| worker 完了後の GUI 通知を試験用に抑止 | worker-ready があるが GUI Ready が無く NotificationLost |
+| 誤った source frame | 実 native 再生の観測を一つずらした mutation を既存 timeline oracle が拒否 |
+| 公開を条件変数の時刻境界で遅らせる | 旧 10 秒を実際に超え、正しい準備と全 native playback assertion が成功 |
+| 進捗が続くが完了しない待機 | SafetyCap。取消も独立して Cancelled を検査 |
+
+故障対照の PASS は期待する状態を明示的に照合した結果であり、任意の非 0 終了を合格にしない。
+集計でも対象段階・対象 frame の失敗を照合し、別の I/O 失敗などを mutation の検出と数えない。
+既存 `math_raster_cache_focused` の provenance 不完全・世代変更・公開取消・hash / size / 欠損 frame
+の拒否も保持する。既存 Math / EquationSequence / Graph と native の seek・mask・layer・frame・
+pixel の assertion は削除も緩和もしていない。
+
+最終候補の固定 cohort は isolated baseline を先に確認し、記録済み集合を 8 並列で 3 回実行した。
+全 run を保存し、PASS まで retry する選別はしていない。通常の display 電源 lease を取得した。
+歴史的な workload の集合と並列数を合わせた再実行であり、過去の OS scheduling の厳密な replay
+ではない。
+
+- [最終候補の baseline / cohort と段階集計](../build/math-preparation-20261010-195132-089-Concurrent/preparation-summary.md)
+- [最終候補の故障対照と長い正常準備](../build/math-preparation-20261010-195403-329-Focused/preparation-summary.md)
+- 各 directory の `source-hashes.json`、`sources/`、`source.patch`、`runtime-hashes.json`、
+  CMake cache、CTest metadata、raw log、LastTest が source/runtime provenance を記録する。
+- 通常 release gate は `build/math-preparation-release-gate.log`、lint は `build/math-preparation-lint-final.log`。
+
+時間は上記の raw log から `scripts/summarize-math-preparation.ps1` が再計算する。
+各成功 run で decode・切り出し・保存・hash・公開後の manifest frame 照合の件数と成否を検査し、
+対象 0 件や Ready なのに frame 検査が抜けた記録は集計を失敗にする。
+[事実] 集計の対照として、正常ログのコピーから frame 1 の hash-end 観測だけを除いた。
+正常コピーは成功し、欠損コピーは Ready の段階会計エラーで失敗した。原ログは変更していない。
+保存先は `build/math-preparation-summary-controls/`。
+
+```text
+【操作可】通常の背面 GUI 試験です。PC 操作を続けられます。
+```
+
+```powershell
+pwsh scripts/build.ps1 -Preset ucrt64-release -Target mvm_test_math_controller
+pwsh scripts/verify-math-preparation.ps1 -Mode Focused
+pwsh scripts/verify-math-preparation.ps1 -Mode Concurrent
+pwsh scripts/test.ps1 -Preset ucrt64-release -Group All -Jobs 8
+```
+
+## 旧調査（準備契約の修正前）
+
 ## 結論
 
 [事実] `math_transform_native_playback` の初回 FAIL と同じ assertion を、保存ログから復元した

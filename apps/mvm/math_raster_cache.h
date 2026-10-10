@@ -262,6 +262,20 @@ public:
     ResidentSequence residentTransform(const math::MathTransformSpec& spec);
     ResidentSequence transformResidencyOf(const math::MathTransformSpec& spec) const;
     int transformRecordCount() const { return static_cast<int>(transforms_.size()); }
+    // 空なら追加の時計取得・記録を行わない。観測は worker/GUI の呼び出し元で実行する。
+    struct TransformPreparationEvent {
+        std::string stage;
+        std::filesystem::path path;
+        std::int64_t frame = -1;
+        std::uint64_t bytes = 0;
+        bool success = true;
+    };
+    using TransformPreparationObserver = std::function<void(const TransformPreparationEvent&)>;
+    void setTransformPreparationObserverForTest(TransformPreparationObserver observer,
+                                               bool suppressCompletion = false) {
+        transformPreparationObserver_ = std::move(observer);
+        suppressTransformCompletionForTest_ = suppressCompletion;
+    }
     // 試験用: 変形の provenance を書く直前に (worker の thread で) 呼ぶ。引数は provenance の path。
     void setBeforeTransformPublishForTest(
         std::function<void(const std::filesystem::path& provenance)> hook) {
@@ -516,6 +530,8 @@ private:
     // 古い世代の結果が確定することはない。
     std::shared_ptr<std::mutex> publishGate_ = std::make_shared<std::mutex>();
     std::function<void(const std::filesystem::path&)> beforeTransformPublish_;
+    TransformPreparationObserver transformPreparationObserver_;
+    bool suppressTransformCompletionForTest_ = false;
     QHash<QString, EquationSequenceRecord> equationSequences_;
     std::function<void(const std::filesystem::path&)> beforeEquationSequencePublish_;
     // preview 用の mask の読み込みは描画 (Manim) と別の worker で行う (長い描画を待たない)。

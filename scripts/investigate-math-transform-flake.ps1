@@ -60,6 +60,8 @@ if ($cohort.Count -eq 0 -or $events.Count -eq 0) { throw '初回 FAIL の同時�
 Write-Host "証拠の保存先: $destination"
 if (!$Run) { exit 0 }
 Write-Host '【操作可】通常の背面 GUI 試験です。PC 操作を続けられます。'
+. (Join-Path $PSScriptRoot 'lib/test-display-lease.ps1')
+$displayLease = Start-MvmTestDisplayLease
 $ctest = 'C:/msys64/ucrt64/bin/ctest.exe'
 $build = Join-Path $repo 'build/ucrt64-release'
 $env:MVM_TEST_TRANSFORM_TRACE = '1'
@@ -73,6 +75,7 @@ try {
     $pattern = '^(' + (($cohort.Values | Sort-Object) -join '|') + ')$'
     $results = @()
     foreach ($case in @('isolated', 'parallel-1', 'parallel-2', 'parallel-3', 'delayed-publish', 'selection')) {
+        $displayLease.AssertValid()
         $filter = if ($case -like 'parallel-*') { $pattern }
                   elseif ($case -eq 'selection') { '^m7b_4_selection_identity$' }
                   else { '^math_transform_native_playback$' }
@@ -86,17 +89,18 @@ try {
         $results | ConvertTo-Json | Set-Content (Join-Path $destination 'results.json')
         Write-Host "$case : exit $code"
     }
-    $negativeLog = Get-Content (Join-Path $destination 'delayed-publish.log') -Raw
-    if ($results[4].exit_code -ne 8 -or
-        $negativeLog -notmatch 'FAIL: native 変形: 変形が disk に揃う' -or
-        $negativeLog -notmatch '26 検査中 1 件失敗') {
-        throw '公開遅延の対照実験が意図した検査だけで失敗していません'
+    $positiveLog = Get-Content (Join-Path $destination 'delayed-publish.log') -Raw
+    if ($results[4].exit_code -ne 0 -or
+        $positiveLog -notmatch '準備結果: outcome=0 control=delayed' -or
+        $positiveLog -match 'FAIL:') {
+        throw '公開遅延の対照実験が正しい準備完了と再生を確認していません'
     }
     & (Join-Path $PSScriptRoot 'summarize-math-transform-flake.ps1') -EvidenceDirectory $destination
-    if (@($results | Where-Object { $_.case -ne 'delayed-publish' -and $_.exit_code -ne 0 }).Count -gt 0) {
+    if (@($results | Where-Object { $_.exit_code -ne 0 }).Count -gt 0) {
         throw "通常条件で FAIL を記録しました: $destination/results.json"
     }
 } finally {
+    $displayLease.Dispose()
     Remove-Item Env:MVM_TEST_TRANSFORM_TRACE -ErrorAction SilentlyContinue
     Remove-Item Env:MVM_TEST_TRANSFORM_DELAY_PUBLISH -ErrorAction SilentlyContinue
 }

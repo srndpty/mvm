@@ -44,14 +44,6 @@
 
 ## 数式 clip
 
-- [事実] `math_transform_native_playback` の release 初回 FAIL と同じ disk 準備の
-  待機期限超過を、同時実行群の並列実験で再現した。描画終了後の連番検証・frame cache
-  書き込み区間が期限を超え、公開後の再生検査は通る。調査と保存証拠は
-  [release flake 調査](math-transform-release-flake.md)。
-  [未検証] 準備段階の decode・atomic 保存・OS scheduling の寄与は未分離。
-  playback 試験の fixture 準備と製品の artifact 健全性検査を保ったまま、負荷による
-  flake をどう除くかは未解決。assertion・timeout の緩和や試験の除外で閉じない。
-
 ### P3: native Equation Sequence と部分式の強調
 
 - P3-0 は設計と製品外 renderer spike のみ。判断と再現手順は

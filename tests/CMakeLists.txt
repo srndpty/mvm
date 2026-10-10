@@ -4288,6 +4288,16 @@ add_test(NAME math_transform_native_playback COMMAND mvm_test_math_controller --
 set_tests_properties(math_transform_native_playback PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+foreach(_control backend-stall decode-fail persist-fail publish-stall publish-fail
+        lost-notification missing corrupt wrong-frame delayed)
+    add_test(NAME math_transform_preparation_${_control}
+        COMMAND mvm_test_math_controller --native-transform-control ${_control})
+    set_tests_properties(math_transform_preparation_${_control} PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 90
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" LABELS workstation)
+endforeach()
+mvm_add_test(math_transform_preparation_wait_contract
+    COMMAND mvm_test_math_controller --preparation-wait-contract PROPERTIES TIMEOUT 30)
 # P3-4: Equation Sequence の product preview (偽の backend)。既定は GPU なしの controller の契約、
 # --native は実 D3D11 の preview と product compositor の readback。
 qt_add_executable(mvm_test_equation_preview_controller
