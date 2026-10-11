@@ -11,6 +11,7 @@
 #include "media/mlt/mvm_mlt_export.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 
+#include <windows.h>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -66,7 +67,61 @@ void requireRejected(const MvmExportClip* clips, int count, long long totalDurat
 
 } // namespace
 
-int main() {
+// timeout_ms の数え方の監査 (修正ではなく、現状の測定)。
+//
+// 書き出しの待ち loop は Sleep(20) の回数に 20 を足して経過時間としている (mvm_mlt_export.c)。
+// loop の 1 回には Sleep(20) の他に進行 callback の時間が入るので、数えた時間は実時間より遅く進む。
+// ここでは進行 callback を 30 ms 眠らせ、timeout_ms = 1000 の書き出しが実時間の何 ms で timeout に
+// なるかを測る。loop は 1000 / 20 = 50 回まわり、1 回は最低 20 + 30 ms かかるので、数え方が
+// このままなら 2500 ms 以上かかる (Sleep は指定より短く戻らない)。
+// 検査の callback を 1 frame 100 ms 眠らせ、300 frame の書き出しが先に終わらないようにする。
+//
+// 終了コード: 0 = 実時間で timeout_ms の 1.5 倍以内に timeout した (契約どおり)
+//             3 = timeout はしたが 1.5 倍より遅かった (現状。数え方がずれている)
+//             1 = timeout にならなかった・別の理由で失敗した (測定として無効)
+int timeoutAccounting() {
+    require(mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) == 0,
+            "MLT runtime を初期化できません");
+    constexpr int kTimeoutMs = 1000;
+    const MvmExportClip clip = videoClip(MVM_CAPACITY_TEST_VIDEO, 0, 300, 0);
+    MvmExportSpec spec{320, 240,     60,      1, 23,      kTimeoutMs, 4,
+                       0,   nullptr, nullptr, 0, nullptr, nullptr,    nullptr};
+    spec.progress_callback = [](long long, long long, void*) {
+        Sleep(30);
+        return 0;
+    };
+    spec.rgba_callback = [](long long, const unsigned char*, int, int, void*) {
+        Sleep(100);
+        return 0;
+    };
+    const std::filesystem::path output =
+        std::filesystem::temp_directory_path() / "mvm-export-timeout-accounting.mp4";
+    std::filesystem::remove(output);
+    const auto outputUtf8 = output.u8string();
+    char error[512] = {};
+    LARGE_INTEGER frequency, begin, end;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&begin);
+    const int status = mvm_mlt_export_two_track(&clip, 1, 300, &spec,
+                                                reinterpret_cast<const char*>(outputUtf8.c_str()),
+                                                nullptr, error, sizeof(error));
+    QueryPerformanceCounter(&end);
+    const double elapsedMs = static_cast<double>(end.QuadPart - begin.QuadPart) * 1000.0 /
+                             static_cast<double>(frequency.QuadPart);
+    std::filesystem::remove(output);
+    mvm_mlt_runtime_shutdown();
+    std::fprintf(stderr, "timeout_ms=%d 実時間=%.0f ms (%.2f 倍) status=%d error=%s\n", kTimeoutMs,
+                 elapsedMs, elapsedMs / kTimeoutMs, status, error);
+    if (status == 0 || std::string(error).find("timeout") == std::string::npos) {
+        std::fprintf(stderr, "FAIL: timeout にならなかったので測定できません\n");
+        return 1;
+    }
+    return elapsedMs <= kTimeoutMs * 1.5 ? 0 : 3;
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "timeout-accounting")
+        return timeoutAccounting();
     require(mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) == 0,
             "MLT runtime を初期化できません");
     const std::filesystem::path output =

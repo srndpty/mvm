@@ -115,6 +115,12 @@
     2〜5 倍になったが、Project 全体では改善が出ず、製品の条件では完了しなかった。完全一致を保てるのは
     左上の原点を動かさない切り出しだけ。製品の経路は切り替えていない。先に、keyframe の文字列化を
     Project の長さから切り離す必要がある。
+  - P2-A の調査（[結果](math-export-p2a.md)）: Project 全体が区間より遅い差の 81〜93% は、MLT が毎 frame
+    行う animation の文字列化だった（実測で確認）。transition を区間ごとに分ける試作は 1320 frame で
+    画素が完全一致し、文字列化も消えたが、transition が増えた分のコストが出て改善が一定しない（HOLD）。
+    次は、transition の数と keyframe の数の釣り合いを測る。
+  - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
+    （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。
 - 専用の編集 UI は未実装。現在の JSON と複数の Math clip を、一つの数式コンテナとして
   選択・段階編集できるようにする。意味のある部品 ID、静止の配置、許可する移動を独立して保存し、

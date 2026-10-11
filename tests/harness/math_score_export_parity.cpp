@@ -13,6 +13,7 @@
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "media/still_image/static_image.h"
 #include "media/still_image/still_image_decoder.h"
+#include "mlt_property_probe.h"
 #include "mlt_rgba_oracle.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
@@ -106,6 +107,16 @@ constexpr Fixture kFixtures[] = {
     {"cmp-region-motion", FixtureKind::Region, 0, 120, 1200, {30, 60, 96}},
     // 実 Project の 88〜91 秒: 分数線の伸縮 (拡縮する layer は切り出しの対象外になる)。
     {"cmp-region-scale", FixtureKind::Region, 0, 180, 5280, {60, 90, 120}},
+    // --- P2-A: keyframe と layer 数を独立に振る。上の fixture は変えない。 ---
+    {"p2-one-480", FixtureKind::Synthetic, 1, 480, 0, {0, 240, 449}},
+    {"p2-one-1920", FixtureKind::Synthetic, 1, 1920, 0, {0, 960, 1889}},
+    {"p2-layers-4-480", FixtureKind::Synthetic, 4, 480, 0, {0, 240, 449}},
+    {"p2-layers-48-480", FixtureKind::Synthetic, 48, 480, 0, {0, 240, 449}},
+    // v4 の前半・中盤・後半の 1 秒。同じ区間を、graph を Project 全体のまま書き出した場合
+    // (v4-full に --range) と比べる。
+    {"p2-window-early", FixtureKind::Region, 0, 60, 1200, {0, 30, 59}},
+    {"p2-window-middle", FixtureKind::Region, 0, 60, 3400, {0, 30, 59}},
+    {"p2-window-late", FixtureKind::Region, 0, 60, 6500, {0, 30, 59}},
 };
 
 enum class Inject { None, DropFrame, RejectFrame, OracleShift, Cancel, CompareCorrupt };
@@ -129,6 +140,15 @@ struct Options {
     // 0 は製品の値のまま。並列度の測定にだけ使う (report に残る)。
     int renderThreads = 0;
     mvm::app::MathLayerStaging mainStaging = mvm::app::MathLayerStaging::FullFrame;
+    // 診断用 (0 が製品の動作)。値を変えずに keyframe の数だけを増やす。
+    int keyframeStride = 0;
+    // 診断用 (count 0 は全体)。graph は Project 全体のまま、この区間だけを書き出す。
+    // parity (独立期待値・復号) は判定しない。
+    std::int64_t rangeFirst = 0, rangeCount = 0;
+    // 試作 (P2-A): 主の書き出しで transition を区間ごとに分ける / 比較の candidate として分ける。
+    bool splitTransitions = false;
+    bool compareSplit = false;
+    int splitFault = 0;    // candidate だけに入れる故障 (比較の対照)
     int capSeconds = 240;  // 書き出し全体の診断上限
     int stallSeconds = 45; // どの counter も進まない時間
     int stackSamples = 2;
@@ -809,7 +829,17 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.capSeconds = std::atoi(value.c_str());
         else if (key == "--stall-seconds")
             options.stallSeconds = std::atoi(value.c_str());
-        else if (key == "--request-timeout-ms")
+        else if (key == "--keyframe-stride")
+            options.keyframeStride = std::atoi(value.c_str());
+        else if (key == "--range") {
+            const auto colon = value.find(':');
+            if (colon == std::string::npos)
+                return false;
+            options.rangeFirst = std::atoll(value.substr(0, colon).c_str());
+            options.rangeCount = std::atoll(value.substr(colon + 1).c_str());
+            if (options.rangeFirst < 0 || options.rangeCount <= 0)
+                return false;
+        } else if (key == "--request-timeout-ms")
             options.requestTimeoutMs = std::atoi(value.c_str());
         else if (key == "--stack-samples")
             options.stackSamples = std::atoi(value.c_str());
@@ -817,8 +847,14 @@ bool parseOptions(int argc, char** argv, Options& options) {
             for (const auto& fixture : kFixtures)
                 if (value == fixture.name)
                     options.fixture = &fixture;
+        } else if (key == "--split-transitions") {
+            options.splitTransitions = value == "1";
+        } else if (key == "--split-fault") {
+            options.splitFault = std::atoi(value.c_str());
         } else if (key == "--compare") {
-            if (value == "bounding-box")
+            if (value == "split-transitions")
+                options.compareSplit = true;
+            else if (value == "bounding-box")
                 options.compare = mvm::app::MathLayerStaging::BoundingBox;
             else if (value == "anchored-box")
                 options.compare = mvm::app::MathLayerStaging::AnchoredBox;
@@ -910,7 +946,14 @@ int main(int argc, char** argv) {
                      static_cast<long long>(fixture.frames));
         return kExitProtocol;
     }
-    const std::int64_t expectedFrames = fixture.frames;
+    if (options.rangeCount > 0 && options.rangeFirst + options.rangeCount > fixture.frames) {
+        std::fprintf(stderr, "--range が fixture の尺を超えています\n");
+        return kExitProtocol;
+    }
+    const bool rangeMode = options.rangeCount > 0;
+    // 区間だけを書き出すとき、以降の frame 番号は区間の先頭を 0 として扱う。
+    const std::int64_t frameBase = rangeMode ? options.rangeFirst : 0;
+    const std::int64_t expectedFrames = rangeMode ? options.rangeCount : fixture.frames;
     const int width = project.outputWidth;
     const int height = project.outputHeight;
     int maxConcurrentMath = 0;
@@ -927,6 +970,13 @@ int main(int argc, char** argv) {
     Observation observation;
     MvmExportObserver observer{};
     observer.mux_trace = 1;
+    const auto applyDiagnosticInputs = [&](MvmExportObserver& target) {
+        target.diagnostic_keyframe_stride = options.keyframeStride;
+        target.diagnostic_first_frame = options.rangeFirst;
+        target.diagnostic_frame_count = options.rangeCount;
+        target.diagnostic_split_transitions = options.splitTransitions ? 1 : 0;
+    };
+    applyDiagnosticInputs(observer);
     std::mutex stageMutex;
     std::vector<std::pair<std::string, long long>> stages;
     std::map<std::string, std::filesystem::path> artifacts;
@@ -942,12 +992,14 @@ int main(int argc, char** argv) {
     // --compare: 同じ process で続けて行う追加の書き出し (candidate と、再現性を見る baseline)。
     struct ExtraRun {
         mvm::app::MathLayerStaging staging = mvm::app::MathLayerStaging::FullFrame;
+        bool split = false;
         MvmExportObserver observer{};
         std::function<bool(std::int64_t, const std::uint8_t*, int, int)> validator;
         mvm::app::TimelineExportResult result;
         long long beginNs = 0, endNs = 0;
         double cpuSeconds = 0.0;
         std::vector<long long> regionPixels; // 切り出して渡した数式 clip ごとの画素数
+        mvm::test::MltPropertyProbe::Snapshot probeBegin, probeEnd;
     };
 
     ExtraRun* extra = nullptr;
@@ -962,6 +1014,11 @@ int main(int argc, char** argv) {
                 // 比較用の追加の書き出し。同じ controller・同じ要求で、layer の渡し方だけを変える。
                 if (options.requestTimeoutMs > 0)
                     input.timeoutMs = options.requestTimeoutMs;
+                applyDiagnosticInputs(extra->observer);
+                if (extra->split) {
+                    extra->observer.diagnostic_split_transitions = 1;
+                    extra->observer.diagnostic_split_fault = options.splitFault;
+                }
                 input.exportObserver = &extra->observer;
                 input.mathLayerStaging = extra->staging;
                 input.mathStagingObserver = [&](const std::string&, int, int, int regionWidth,
@@ -988,8 +1045,9 @@ int main(int argc, char** argv) {
                 std::lock_guard lock(stageMutex);
                 stages.emplace_back(name, mvm_mlt_export_observer_now_ns());
             };
-            input.encoderFrameValidator = [&](std::int64_t frame, const std::uint8_t* rgba,
+            input.encoderFrameValidator = [&](std::int64_t absoluteFrame, const std::uint8_t* rgba,
                                               int frameWidth, int frameHeight) {
+                const std::int64_t frame = absoluteFrame - frameBase;
                 if (frameWidth != width || frameHeight != height || rgba == nullptr) {
                     std::lock_guard lock(observation.mutex);
                     observation.error = "pre-YUV の寸法が Project と違います";
@@ -1006,7 +1064,8 @@ int main(int argc, char** argv) {
                 digestFrame(rgba, bytes, hash, minAlpha);
                 // 比較のときは baseline の全 frame を保持する (ほぼ単色なので圧縮すると小さい)。
                 QByteArray packed;
-                if (options.compare != mvm::app::MathLayerStaging::FullFrame)
+                if (options.compare != mvm::app::MathLayerStaging::FullFrame ||
+                    options.compareSplit)
                     packed = qCompress(rgba, static_cast<qsizetype>(bytes), 1);
                 std::lock_guard lock(observation.mutex);
                 if (!packed.isEmpty())
@@ -1076,6 +1135,16 @@ int main(int argc, char** argv) {
     std::filesystem::remove(outputPath, removeError);
     std::filesystem::remove(temporaryPath, removeError);
 
+    // affine・qtcrop が libmlt から呼ぶ property 取得関数を計時する (file
+    // は変えない。終了時に戻す)。
+    const int probeHooks = mvm::test::MltPropertyProbe::install(L"libmltplus.dll") +
+                           mvm::test::MltPropertyProbe::install(L"libmltqt6.dll");
+
+    struct ProbeGuard {
+        ~ProbeGuard() { mvm::test::MltPropertyProbe::remove(); }
+    } probeGuard;
+
+    const auto probeMainBegin = mvm::test::MltPropertyProbe::snapshot();
     gTapObserver.store(&observer);
     av_log_set_callback(logTap);
 
@@ -1194,6 +1263,7 @@ int main(int argc, char** argv) {
         cancelSent = true;
         cancelWall = seconds(mvm_mlt_export_observer_now_ns());
     }
+    const auto probeMainEnd = mvm::test::MltPropertyProbe::snapshot();
     const long long finishNs = mvm_mlt_export_observer_now_ns();
     const double cpuEnd = processCpuSeconds();
     snapshots.push_back(takeSnapshot());
@@ -1210,7 +1280,8 @@ int main(int argc, char** argv) {
         int left = 0, top = 0, right = 0, bottom = 0;
     };
 
-    const bool comparing = options.compare != mvm::app::MathLayerStaging::FullFrame;
+    const bool comparing =
+        options.compare != mvm::app::MathLayerStaging::FullFrame || options.compareSplit;
     ExtraRun candidateRun, repeatRun;
     std::mutex compareMutex;
     std::set<std::int64_t> candidateSeen, repeatSeen;
@@ -1228,8 +1299,13 @@ int main(int argc, char** argv) {
             return found->second.hash;
         };
         candidateRun.staging = options.compare;
-        candidateRun.validator = [&](std::int64_t frame, const std::uint8_t* rgba, int frameWidth,
-                                     int frameHeight) {
+        candidateRun.split = options.compareSplit;
+        // baseline と同じ渡し方を保つ (比べるのは candidate の 1 点だけ)。
+        if (options.compareSplit)
+            candidateRun.staging = repeatRun.staging = options.mainStaging;
+        candidateRun.validator = [&](std::int64_t absoluteFrame, const std::uint8_t* rgba,
+                                     int frameWidth, int frameHeight) {
+            const std::int64_t frame = absoluteFrame - frameBase;
             std::uint64_t hash = 0;
             int minAlpha = 0;
             const auto expected = baselineHash(frame);
@@ -1285,8 +1361,9 @@ int main(int argc, char** argv) {
                 candidateDifferences[frame] = difference;
             return true;
         };
-        repeatRun.validator = [&](std::int64_t frame, const std::uint8_t* rgba, int frameWidth,
-                                  int frameHeight) {
+        repeatRun.validator = [&](std::int64_t absoluteFrame, const std::uint8_t* rgba,
+                                  int frameWidth, int frameHeight) {
+            const std::int64_t frame = absoluteFrame - frameBase;
             std::uint64_t hash = 0;
             int minAlpha = 0;
             const auto expected = baselineHash(frame);
@@ -1303,6 +1380,7 @@ int main(int argc, char** argv) {
             std::error_code ignored;
             std::filesystem::remove(path, ignored);
             extra = &run;
+            run.probeBegin = mvm::test::MltPropertyProbe::snapshot();
             const double cpuBefore = processCpuSeconds();
             if (controller->exportTimeline(QUrl::fromLocalFile(toQString(path)))) {
                 QElapsedTimer elapsed;
@@ -1318,6 +1396,7 @@ int main(int argc, char** argv) {
                 }
             }
             run.cpuSeconds = processCpuSeconds() - cpuBefore;
+            run.probeEnd = mvm::test::MltPropertyProbe::snapshot();
             extra = nullptr;
             std::filesystem::remove(path, ignored);
         };
@@ -1389,9 +1468,12 @@ int main(int argc, char** argv) {
         if (observation.width != width || observation.height != height)
             fail(QStringLiteral("pre-YUV の寸法が Project と違います"));
 
-        decoded = probeDecoded(options, outputPath, static_cast<int>(project.timelineFpsNum),
-                               static_cast<int>(project.timelineFpsDen));
-        if (!decoded.ran)
+        if (!rangeMode)
+            decoded = probeDecoded(options, outputPath, static_cast<int>(project.timelineFpsNum),
+                                   static_cast<int>(project.timelineFpsDen));
+        if (rangeMode) {
+            // 区間だけの診断。復号と独立期待値の照合は行わない (行っていないことを report に残す)。
+        } else if (!decoded.ran)
             fail(QStringLiteral("復号した H.264 を調べられません: ") + decoded.error);
         else {
             if (decoded.codec != QStringLiteral("h264"))
@@ -1407,6 +1489,8 @@ int main(int argc, char** argv) {
         }
 
         for (const auto frame : fixture.representative) {
+            if (rangeMode)
+                break;
             QJsonObject entry{{QStringLiteral("frame"), static_cast<qint64>(frame)}};
             const auto sample = observation.samples.find(frame);
             if (sample == observation.samples.end()) {
@@ -1458,7 +1542,8 @@ int main(int argc, char** argv) {
             }
             oracleFrames.append(entry);
         }
-        if (oracleApplicable == 0)
+        if (rangeMode) {
+        } else if (oracleApplicable == 0)
             fail(QStringLiteral("独立期待値と比較できた代表 frame がありません"));
         else if (maxConcurrentMath > 0 && oracleInked == 0)
             fail(QStringLiteral("比較した代表 frame に数式の画素がありません (空振り)"));
@@ -1680,9 +1765,13 @@ int main(int argc, char** argv) {
         };
         QJsonObject compare;
         compare.insert(QStringLiteral("candidate"),
-                       options.compare == mvm::app::MathLayerStaging::BoundingBox
+                       options.compareSplit ? QStringLiteral("split-transitions")
+                       : options.compare == mvm::app::MathLayerStaging::BoundingBox
                            ? QStringLiteral("bounding-box")
                            : QStringLiteral("anchored-box"));
+        compare.insert(QStringLiteral("candidate_fault"), options.splitFault);
+        compare.insert(QStringLiteral("candidate_overlay_transitions"),
+                       static_cast<qint64>(candidateRun.observer.overlay_transitions));
         compare.insert(QStringLiteral("ran"), compareRan);
         compare.insert(
             QStringLiteral("baseline"),
@@ -1735,10 +1824,10 @@ int main(int argc, char** argv) {
                 if (clip.kind != TimelineClipKind::Math || !clip.enabled)
                     continue;
                 const auto end = clipEnd(project, clip);
-                if (frame < clip.timelineStartFrame || frame >= end)
+                if (frame + frameBase < clip.timelineStartFrame || frame + frameBase >= end)
                     continue;
                 ++layers;
-                const auto local = frame - clip.timelineStartFrame;
+                const auto local = frame + frameBase - clip.timelineStartFrame;
                 const auto duration = end - clip.timelineStartFrame;
                 const auto at = mvm::project::evaluateClipEffects(clip.effects, local);
                 const auto differs = [&](std::int64_t other) {
@@ -1835,6 +1924,73 @@ int main(int argc, char** argv) {
         compare.insert(QStringLiteral("verdict"), compareVerdict);
         report.insert(QStringLiteral("compare"), compare);
     }
+    // --- property 取得の計時 (P2-A) ----------------------------------------------
+    const auto probeObject = [&](const mvm::test::MltPropertyProbe::Snapshot& begin,
+                                 const mvm::test::MltPropertyProbe::Snapshot& end,
+                                 const MvmExportObserver& observed) {
+        using Probe = mvm::test::MltPropertyProbe;
+        QJsonObject object;
+        double totalSeconds = 0.0;
+        for (int function = 0; function < Probe::FunctionCount; ++function) {
+            QJsonObject names;
+            for (int name = 0; name < Probe::NameCount; ++name) {
+                const auto calls = end.calls[function][name] - begin.calls[function][name];
+                const auto spent =
+                    Probe::seconds(end.ticks[function][name] - begin.ticks[function][name]);
+                totalSeconds += spent;
+                names.insert(QString::fromLatin1(Probe::kNameLabels[name]),
+                             QJsonObject{{QStringLiteral("calls"), static_cast<qint64>(calls)},
+                                         {QStringLiteral("seconds"), spent}});
+            }
+            object.insert(QString::fromLatin1(Probe::kFunctionNames[function]), names);
+        }
+        long long stringTicks = 0;
+        for (const int name : {Probe::Rect, Probe::Rotate, Probe::Shear})
+            stringTicks += end.ticks[Probe::Get][name] - begin.ticks[Probe::Get][name];
+        const double stringSeconds = Probe::seconds(stringTicks);
+        const double composeSeconds = static_cast<double>(observed.image_ns_total) / 1e9;
+        const auto images = observed.points[MVM_EXPORT_OBSERVE_IMAGE_RETURN].count;
+        const long long build = observed.stage_ns[MVM_EXPORT_STAGE_GRAPH_BUILD];
+        const long long start = observed.stage_ns[MVM_EXPORT_STAGE_CONSUMER_START];
+        object.insert(QStringLiteral("all_hooked_seconds"), totalSeconds);
+        // animation の付いた property を文字列で読む呼び出し (この中で animation
+        // 全体が文字列になる)。
+        object.insert(QStringLiteral("animated_string_get_seconds"), stringSeconds);
+        object.insert(QStringLiteral("compose_seconds"), composeSeconds);
+        object.insert(QStringLiteral("animated_string_get_share_of_compose"),
+                      composeSeconds > 0.0 ? stringSeconds / composeSeconds : 0.0);
+        object.insert(QStringLiteral("composited_images"), static_cast<qint64>(images));
+        object.insert(QStringLiteral("compose_ms_per_image"),
+                      images > 0 ? composeSeconds * 1e3 / static_cast<double>(images) : 0.0);
+        object.insert(QStringLiteral("animated_string_get_ms_per_image"),
+                      images > 0 ? stringSeconds * 1e3 / static_cast<double>(images) : 0.0);
+        object.insert(QStringLiteral("graph_build_seconds"),
+                      start > build ? static_cast<double>(start - build) / 1e9 : 0.0);
+        object.insert(QStringLiteral("animation_samples"),
+                      static_cast<qint64>(observed.animation_samples));
+        object.insert(QStringLiteral("animation_keyframes"),
+                      static_cast<qint64>(observed.animation_keyframes));
+        return object;
+    };
+    report.insert(QStringLiteral("property_probe_hooks"), probeHooks);
+    report.insert(QStringLiteral("property_probe_threads"),
+                  mvm::test::MltPropertyProbe::threadCount());
+    report.insert(QStringLiteral("property_probe"),
+                  probeObject(probeMainBegin, probeMainEnd, observer));
+    if (comparing && compareRan) {
+        report.insert(
+            QStringLiteral("property_probe_candidate"),
+            probeObject(candidateRun.probeBegin, candidateRun.probeEnd, candidateRun.observer));
+        report.insert(QStringLiteral("property_probe_baseline_repeat"),
+                      probeObject(repeatRun.probeBegin, repeatRun.probeEnd, repeatRun.observer));
+    }
+    report.insert(QStringLiteral("keyframe_stride"), options.keyframeStride);
+    report.insert(QStringLiteral("split_transitions"), options.splitTransitions);
+    report.insert(QStringLiteral("overlay_transitions"),
+                  static_cast<qint64>(observer.overlay_transitions));
+    report.insert(QStringLiteral("range_first"), static_cast<qint64>(options.rangeFirst));
+    report.insert(QStringLiteral("range_count"), static_cast<qint64>(options.rangeCount));
+    report.insert(QStringLiteral("parity_claimed"), !rangeMode);
     report.insert(QStringLiteral("render_threads_override"), options.renderThreads);
     report.insert(QStringLiteral("main_staging"),
                   options.mainStaging == mvm::app::MathLayerStaging::FullFrame

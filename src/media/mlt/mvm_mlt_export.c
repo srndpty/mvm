@@ -507,16 +507,25 @@ static int source_region_valid(const MvmExportClip* clip, const MvmExportSpec* s
     return 1;
 }
 
-static int crop_key_redundant(const MvmExportClip* clip, int index, double width, double height) {
-    if (index <= 0 || index >= clip->motion_frame_count - 1)
+/* 診断用: 落とせる keyframe の一部をわざと残す (値は変わらない)。製品では常に 0。 */
+static int diagnostic_stride(const MvmExportSpec* spec) {
+    return spec && spec->observer && spec->observer->diagnostic_keyframe_stride > 0
+               ? spec->observer->diagnostic_keyframe_stride
+               : 0;
+}
+
+static int crop_key_redundant(const MvmExportClip* clip, int index, double width, double height,
+                              int stride) {
+    if (index <= 0 || index >= clip->motion_frame_count - 1 || (stride > 0 && index % stride == 0))
         return 0;
     const mlt_rect current = crop_rect_at(clip, index, width, height);
     return same_rect(crop_rect_at(clip, index - 1, width, height), current) &&
            same_rect(current, crop_rect_at(clip, index + 1, width, height));
 }
 
-static int placement_key_redundant(const MvmExportClip* clip, int index) {
-    if (index <= 0 || index >= clip->opacity_keyframe_count - 1)
+static int placement_key_redundant(const MvmExportClip* clip, int index, int stride) {
+    if (index <= 0 || index >= clip->opacity_keyframe_count - 1 ||
+        (stride > 0 && index % stride == 0))
         return 0;
     const mlt_rect current = placement_rect_at(clip, index);
     return same_rect(placement_rect_at(clip, index - 1), current) &&
@@ -524,8 +533,9 @@ static int placement_key_redundant(const MvmExportClip* clip, int index) {
 }
 
 /* 回転と shear。モーションのある clip だけが呼ぶ (opacity key の local_frame は index と同じ)。 */
-static int rotation_key_redundant(const MvmExportClip* clip, int index) {
-    if (index <= 0 || index >= clip->opacity_keyframe_count - 1)
+static int rotation_key_redundant(const MvmExportClip* clip, int index, int stride) {
+    if (index <= 0 || index >= clip->opacity_keyframe_count - 1 ||
+        (stride > 0 && index % stride == 0))
         return 0;
     const MvmExportMotionFrame* frames = clip->motion_frames;
     const long long at = clip->opacity_keyframes[index].local_frame;
@@ -582,7 +592,7 @@ static int attach_export_crop(mlt_profile profile, mlt_producer cut, const MvmEx
             mlt_filter_close(filter);
             return 1;
         }
-        if (crop_key_redundant(clip, index, width, height))
+        if (crop_key_redundant(clip, index, width, height, diagnostic_stride(spec)))
             continue;
         ++crop_keyframes;
         const MvmExportMotionFrame* frame = &clip->motion_frames[index];
@@ -643,7 +653,8 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
             return 1;
         }
         const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[i];
-        if (clip->motion_frame_count > 0 && !rotation_key_redundant(clip, i)) {
+        if (clip->motion_frame_count > 0 &&
+            !rotation_key_redundant(clip, i, diagnostic_stride(spec))) {
             const MvmExportMotionFrame* frame = &clip->motion_frames[key->local_frame];
             keyframes += 2;
             if (mlt_properties_anim_set_double(
@@ -659,7 +670,7 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
                 return 1;
             }
         }
-        if (placement_key_redundant(clip, i))
+        if (placement_key_redundant(clip, i, diagnostic_stride(spec)))
             continue;
         ++keyframes;
         if (mlt_properties_anim_set_rect(props, "transition.rect", placement_rect_at(clip, i),
@@ -741,9 +752,21 @@ static int attach_export_backdrop(mlt_profile profile, mlt_producer cut, const M
     return 0;
 }
 
-static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
-                                       const MvmExportClip* clip, char* err, size_t err_size,
-                                       const MvmExportSpec* spec, int* cancel_status) {
+/* clip の keyframe [first, last] を 1 つの affine transition として植える。通常は clip 全体
+ * (first = 0、last = 末尾)。試作の分割 (下の plant_export_overlay_affine) は区間ごとに呼ぶ。
+ * transition の in は first の frame になり、keyframe の位置は first からの相対になる。 */
+static int plant_export_overlay_segment(mlt_profile profile, mlt_tractor tractor,
+                                        const MvmExportClip* clip, int first, int last, char* err,
+                                        size_t err_size, const MvmExportSpec* spec,
+                                        int* cancel_status) {
+    const long long origin = clip->opacity_keyframes[first].local_frame;
+    const long long span = clip->opacity_keyframes[last].local_frame - origin + 1;
+    /* 分割していないときの animation の長さは従来どおり clip の尺にする。 */
+    const long long length = first == 0 && last == clip->opacity_keyframe_count - 1
+                                 ? clip->timeline_duration_frames
+                                 : span;
+    /* 診断用の故障注入 (比較が効いていることの対照。製品では常に 0)。 */
+    const int fault = spec->observer ? spec->observer->diagnostic_split_fault : 0;
     mlt_transition transition = mlt_factory_transition(profile, "affine", NULL);
     if (!transition) {
         set_err(err, err_size, "必須transition 'affine'を作れません");
@@ -761,11 +784,18 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
     /* M7b-P0実画素結果がauthority。名前からfix_rotate_zへ置換しない。 */
     mlt_properties_set_double(props, "fix_rotate_x", clip->rotation_degrees);
     mlt_properties_set_double(props, "fix_shear_x", clip->shear_degrees);
-    mlt_transition_set_in_and_out(
-        transition, (mlt_position)clip->timeline_start_frame,
-        (mlt_position)(clip->timeline_start_frame + clip->timeline_duration_frames - 1));
+    if (first == 0 && last == clip->opacity_keyframe_count - 1) {
+        /* 製品の経路 (分割なし)。区間は timeline の絶対位置で、clip の尺そのもの。 */
+        mlt_transition_set_in_and_out(
+            transition, (mlt_position)clip->timeline_start_frame,
+            (mlt_position)(clip->timeline_start_frame + clip->timeline_duration_frames - 1));
+    } else {
+        mlt_transition_set_in_and_out(
+            transition, (mlt_position)(clip->timeline_start_frame + origin),
+            (mlt_position)(clip->timeline_start_frame + origin + span - 1));
+    }
     long long keyframes = 0;
-    for (int index = 0; index < clip->opacity_keyframe_count; ++index) {
+    for (int index = first; index <= last; ++index) {
         if (index % 256 == 0 &&
             export_prepare_cancel_requested(spec, cancel_status, clip->timeline_duration_frames,
                                             err, err_size)) {
@@ -773,34 +803,45 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
             return 1;
         }
         const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[index];
-        if (clip->motion_frame_count > 0 && !rotation_key_redundant(clip, index)) {
+        /* 区間の両端は必ず置く (隣の区間の keyframe には頼らない)。 */
+        const int edge = index == first || index == last;
+        long long position = key->local_frame - origin;
+        if (fault == 1 && position + 1 < span)
+            ++position; /* 故障: keyframe の位置を 1 frame ずらす */
+        if (fault == 2 && !edge && (index - first) % 2 == 1)
+            continue; /* 故障: 値の変わる区間の keyframe を 1 つおきに落とす */
+        if (clip->motion_frame_count > 0 &&
+            (edge || !rotation_key_redundant(clip, index, diagnostic_stride(spec)))) {
             const MvmExportMotionFrame* frame = &clip->motion_frames[key->local_frame];
             keyframes += 2;
-            if (mlt_properties_anim_set_double(
-                    props, "fix_rotate_x", frame->rotation_degrees, (mlt_position)key->local_frame,
-                    (mlt_position)clip->timeline_duration_frames, mlt_keyframe_linear) != 0 ||
-                mlt_properties_anim_set_double(
-                    props, "fix_shear_x", frame->shear_degrees, (mlt_position)key->local_frame,
-                    (mlt_position)clip->timeline_duration_frames, mlt_keyframe_linear) != 0) {
+            if (mlt_properties_anim_set_double(props, "fix_rotate_x", frame->rotation_degrees,
+                                               (mlt_position)position, (mlt_position)length,
+                                               mlt_keyframe_linear) != 0 ||
+                mlt_properties_anim_set_double(props, "fix_shear_x", frame->shear_degrees,
+                                               (mlt_position)position, (mlt_position)length,
+                                               mlt_keyframe_linear) != 0) {
                 mlt_transition_close(transition);
                 set_err(err, err_size, "回転モーションを設定できません");
                 return 1;
             }
         }
-        if (placement_key_redundant(clip, index))
+        if (!edge && placement_key_redundant(clip, index, diagnostic_stride(spec)))
             continue;
         ++keyframes;
-        if (mlt_properties_anim_set_rect(
-                props, "rect", placement_rect_at(clip, index), (mlt_position)key->local_frame,
-                (mlt_position)clip->timeline_duration_frames, mlt_keyframe_linear) != 0) {
+        mlt_rect rect = placement_rect_at(clip, index);
+        if (fault == 3)
+            rect.o *= 0.5; /* 故障: 不透明度を半分にする */
+        if (mlt_properties_anim_set_rect(props, "rect", rect, (mlt_position)position,
+                                         (mlt_position)length, mlt_keyframe_linear) != 0) {
             mlt_transition_close(transition);
             set_err(err, err_size, "上位track affine opacity keyframeを設定できません");
             return 1;
         }
     }
-    observe_animation(
-        spec, (long long)clip->opacity_keyframe_count * (clip->motion_frame_count > 0 ? 3 : 1),
-        keyframes);
+    observe_animation(spec, (long long)(last - first + 1) * (clip->motion_frame_count > 0 ? 3 : 1),
+                      keyframes);
+    if (spec->observer)
+        InterlockedIncrement64(&spec->observer->overlay_transitions);
     mlt_transition_set_tracks(transition, 0, clip->video_track);
     if (mlt_field_plant_transition(mlt_tractor_field(tractor), transition, 0, clip->video_track) !=
         0) {
@@ -809,6 +850,73 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
         return 1;
     }
     mlt_transition_close(transition);
+    return 0;
+}
+
+/* 上位 track の clip の配置と不透明度を affine transition として植える。
+ *
+ * 製品は clip ごとに 1 つ。試作 (observer の diagnostic_split_transitions、既定 0)
+ * は、値の変わらない 区間と変わる区間に分けて植える。MLT の affine は毎 frame、その transition の
+ * animation 全体を 文字列へ直すので、1 つの transition が持つ keyframe
+ * を「いま通っている区間」の分だけにする (docs/math-export-p2a.md)。どの frame にもその frame の
+ * keyframe があるか、値の変わらない区間の 中にあるので、評価される値は分けない場合と同じになる。
+ *   - 同じ値が kStaticRun frame 以上続く所を「変わらない区間」にする (keyframe は両端の 2 個)。
+ *   - 残りを「変わる区間」として、kAnimatedRun frame までの長さで区切る。 */
+static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
+                                       const MvmExportClip* clip, char* err, size_t err_size,
+                                       const MvmExportSpec* spec, int* cancel_status) {
+    enum { kStaticRun = 8, kAnimatedRun = 64 };
+
+    const int count = clip->opacity_keyframe_count;
+    int split = spec->observer && spec->observer->diagnostic_split_transitions;
+    /* keyframe が全 frame に並んでいる clip だけを分ける (歯抜けなら従来どおり 1 つ)。 */
+    for (int index = 0; split && index < count; ++index)
+        split = clip->opacity_keyframes[index].local_frame == index;
+    if (!split || count < 2)
+        return plant_export_overlay_segment(profile, tractor, clip, 0, count - 1, err, err_size,
+                                            spec, cancel_status);
+    int first = 0;
+    while (first < count) {
+        /* first から同じ値が続く範囲。 */
+        int same = first;
+        while (
+            same + 1 < count &&
+            same_rect(placement_rect_at(clip, same), placement_rect_at(clip, same + 1)) &&
+            (clip->motion_frame_count == 0 || (clip->motion_frames[same].rotation_degrees ==
+                                                   clip->motion_frames[same + 1].rotation_degrees &&
+                                               clip->motion_frames[same].shear_degrees ==
+                                                   clip->motion_frames[same + 1].shear_degrees)))
+            ++same;
+        int last = same;
+        if (same - first + 1 < kStaticRun) {
+            /* 変わる区間: 長い「変わらない区間」の手前まで、上限の長さで切る。 */
+            last = first;
+            int run = 1;
+            while (last + 1 < count && last - first + 1 < kAnimatedRun) {
+                const int next = last + 1;
+                run = same_rect(placement_rect_at(clip, last), placement_rect_at(clip, next)) &&
+                              (clip->motion_frame_count == 0 ||
+                               (clip->motion_frames[last].rotation_degrees ==
+                                    clip->motion_frames[next].rotation_degrees &&
+                                clip->motion_frames[last].shear_degrees ==
+                                    clip->motion_frames[next].shear_degrees))
+                          ? run + 1
+                          : 1;
+                if (run >= kStaticRun) {
+                    /* 直前の kStaticRun - 1 frame は次の「変わらない区間」へ回す。 */
+                    last = next - kStaticRun;
+                    break;
+                }
+                last = next;
+            }
+            if (last < first)
+                last = first;
+        }
+        if (plant_export_overlay_segment(profile, tractor, clip, first, last, err, err_size, spec,
+                                         cancel_status) != 0)
+            return 1;
+        first = last + 1;
+    }
     return 0;
 }
 
@@ -1332,6 +1440,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     mlt_producer v1_background = NULL;
     int failed = MVM_EXPORT_FAILED;
     ExportRgbaAudit audit = {spec, 0, 0};
+    long long render_frames = total_duration;
 
     if (out)
         memset(out, 0, sizeof(*out));
@@ -1663,6 +1772,18 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         }
         mlt_producer_set_in_and_out(output, 0, (mlt_position)(total_duration - 1));
         mlt_producer_seek(output, 0);
+        if (spec->observer && spec->observer->diagnostic_frame_count != 0) {
+            /* 診断用: graph はそのまま、途中の区間だけを書き出す。 */
+            const long long first = spec->observer->diagnostic_first_frame;
+            const long long count = spec->observer->diagnostic_frame_count;
+            if (first < 0 || count <= 0 || first > total_duration - count) {
+                set_err(err, err_size, "診断用の書き出し区間がProjectの尺に収まりません");
+                goto cleanup;
+            }
+            mlt_producer_set_in_and_out(output, 0, (mlt_position)(first + count - 1));
+            mlt_producer_seek(output, (mlt_position)first);
+            render_frames = count;
+        }
         if (attach_rgba_audit(output, &audit)) {
             set_err(err, err_size, "encoder 直前の RGBA 検査を接続できません");
             goto cleanup;
@@ -1712,7 +1833,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     mlt_consumer_close(consumer);
     consumer = NULL;
     observe_stage(spec, MVM_EXPORT_STAGE_OUTPUT_VERIFY);
-    if (spec->rgba_callback && (audit.rejected || audit.observed < total_duration)) {
+    if (spec->rgba_callback && (audit.rejected || audit.observed < render_frames)) {
         set_err(err, err_size, "encoder 直前の RGBA 検査が失敗または不足しました");
         goto cleanup;
     }

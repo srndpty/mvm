@@ -186,6 +186,25 @@ typedef struct MvmExportObserver {
     /* 入力: 非0なら muxer に packet ごとの debug 記録 (fdebug=ts) を出させる。記録を数えるのは
      * 呼び出し側 (av_log の callback)。出力の内容は変えない。 */
     int mux_trace;
+    /* 入力 (診断用。0 が製品の動作): 値の変わらない区間で落とす keyframe のうち、index がこの値の
+     * 倍数のものを残す。1 なら全 frame を keyframe にする (間引く前と同じ)。残すのは前後と同じ値の
+     * keyframe だけなので、どの frame で評価しても値は変わらない。keyframe の数だけを変えて、
+     * 合成の時間への影響を測るために使う。 */
+    int diagnostic_keyframe_stride;
+    /* 入力 (診断用。count が 0 なら全体): graph は Project 全体のまま、
+     * [diagnostic_first_frame, diagnostic_first_frame + diagnostic_frame_count) だけを書き出す。
+     * tractor 経路だけが受け付ける。出力は Project の書き出しとしては不完全なので、検証用に限る。
+     */
+    long long diagnostic_first_frame;
+    long long diagnostic_frame_count;
+    /* 入力 (試作。0 が製品の動作): 上位 track の clip の affine transition を、値の変わらない区間と
+     * 変わる区間に分けて植える。評価される値は変えない (mvm_mlt_export.c)。 */
+    int diagnostic_split_transitions;
+    /* 入力 (比較の対照用。0 以外は意図的に壊す): 1 = keyframe の位置を 1 frame ずらす、
+     * 2 = keyframe を 1 つおきに落とす、3 = 不透明度を半分にする。 */
+    int diagnostic_split_fault;
+    /* 植えた上位 track の affine transition の数。 */
+    volatile long long overlay_transitions;
 } MvmExportObserver;
 
 /* 単調増加の時刻 (QueryPerformanceCounter、ns)。 */

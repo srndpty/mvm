@@ -156,6 +156,17 @@ target_link_libraries(mvm_test_mlt_export_capacity PRIVATE mvm::mlt mvm::warning
 target_compile_definitions(mvm_test_mlt_export_capacity PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_CAPACITY_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
 add_test(NAME mlt_export_capacity_overflow COMMAND mvm_test_mlt_export_capacity)
+# timeout_ms の数え方の監査。現状は Sleep(20) の回数で数えるので、実時間では timeout_ms より遅く
+# timeout する (終了コード 3)。実時間で数えるよう直したら、期待を 0 に変える。
+# 合否の基準ではなく現状の記録なので、通常の実行から外す (stability)。
+add_test(NAME mlt_export_timeout_accounting_deviation
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 3 -Exe "$<TARGET_FILE:mvm_test_mlt_export_capacity>"
+            -ChildArgs "|timeout-accounting")
+set_tests_properties(mlt_export_timeout_accounting_deviation PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS stability
+    TIMEOUT 120)
 set_tests_properties(mlt_export_capacity_overflow PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)

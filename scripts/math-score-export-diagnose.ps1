@@ -38,7 +38,11 @@ param(
     # none 以外なら、各 fixture を baseline の後に candidate (数式 layer の渡し方の試作) でも書き出し、
     # pre-YUV を全 frame・全画素で比べる。終了コード 0 = 完全一致、13 = 1 階調以内、14 = それ超、
     # 15 = 比較が成立しない。採否の判定には使わない (記録するだけ) ので -Expect any と併用する。
-    [ValidateSet('none', 'bounding-box', 'anchored-box')][string]$Compare = 'none',
+    [ValidateSet('none', 'bounding-box', 'anchored-box', 'split-transitions')][string]$Compare = 'none',
+    # 主の書き出しで transition を区間ごとに分ける (試作。製品の経路ではない)。
+    [switch]$SplitTransitions,
+    # 診断用: graph は Project 全体のまま '先頭:frame数' の区間だけを書き出す (parity は判定しない)。
+    [string]$Range = '',
     # 0 は製品の値 (4) のまま。並列度の測定にだけ使う。
     [int]$RenderThreads = 0,
     # full-frame (製品) 以外は、主の書き出しそのものを試作の渡し方で行う。製品の経路ではない。
@@ -111,6 +115,12 @@ if ($NegativeControls) {
     if ($Compare -ne 'none') {
         # 比較が効いていることの対照: baseline の 1 画素を 2 階調ずらすと「1 階調超」で落ちる。
         $cases += [pscustomobject]@{ name = 'negative-compare-corrupt'; fixture = 'cmp-integer'; inject = 'compare-corrupt'; expected = 14 }
+        if ($Compare -eq 'split-transitions') {
+            # 分割そのものを壊す対照: keyframe の位置ずれ・keyframe の欠落・不透明度の誤り。どれも 1 階調超で落ちる。
+            $cases += [pscustomobject]@{ name = 'negative-split-wrong-mapping'; fixture = 'cmp-region-motion'; inject = 'none'; expected = 14; fault = 1 }
+            $cases += [pscustomobject]@{ name = 'negative-split-skipped-keyframe'; fixture = 'cmp-region-motion'; inject = 'none'; expected = 14; fault = 2 }
+            $cases += [pscustomobject]@{ name = 'negative-split-wrong-alpha'; fixture = 'cmp-region-motion'; inject = 'none'; expected = 14; fault = 3 }
+        }
     }
 }
 if ($cases.Count -eq 0) { throw '実行する fixture がありません' }
@@ -127,6 +137,9 @@ foreach ($case in $cases) {
     if ($RequestTimeoutMs -gt 0) { $arguments += @('--request-timeout-ms', $RequestTimeoutMs) }
     if ($RenderThreads -gt 0) { $arguments += @('--render-threads', $RenderThreads) }
     if ($Staging -ne 'full-frame') { $arguments += @('--staging', $Staging) }
+    if ($SplitTransitions) { $arguments += @('--split-transitions', 1) }
+    if ($Range -ne '') { $arguments += @('--range', $Range) }
+    if ($case.PSObject.Properties.Name -contains 'fault') { $arguments += @('--split-fault', $case.fault) }
     # 既存の negative control (math-1) は比較なしのまま回す。
     if ($Compare -ne 'none' -and ($case.inject -eq 'none' -or $case.inject -eq 'compare-corrupt')) {
         $arguments += @('--compare', $Compare)
@@ -136,7 +149,9 @@ foreach ($case in $cases) {
     $code = $LASTEXITCODE
     $reportPath = Join-Path $caseDirectory "$($case.fixture)-report.json"
     $report = if (Test-Path -LiteralPath $reportPath) { Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json } else { $null }
-    $matched = if ($Expect -eq 'any' -and $case.inject -eq 'none') { $true } else { $code -eq $case.expected }
+    # 故障を入れた対照は、-Expect any でも期待した終了コードと厳密に照合する。
+    $faulted = $case.PSObject.Properties.Name -contains 'fault'
+    $matched = if ($Expect -eq 'any' -and $case.inject -eq 'none' -and -not $faulted) { $true } else { $code -eq $case.expected }
     $rendered = if ($report) { ($report.points | Where-Object point -eq 'image_return').count } else { $null }
     $results += [pscustomobject]@{
         case       = $case.name
