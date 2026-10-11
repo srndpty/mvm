@@ -50,8 +50,8 @@ MvmExportClip videoClip(const char* path, int track, long long producerFrames,
 void requireRejected(const MvmExportClip* clips, int count, long long totalDuration,
                      const std::filesystem::path& output, const char* expected,
                      const char* message) {
-    const MvmExportSpec spec{320, 240,     60,      1, 23,      10000,  4,
-                             0,   nullptr, nullptr, 0, nullptr, nullptr};
+    const MvmExportSpec spec{320, 240,     60,      1, 23,      10000,   4,
+                             0,   nullptr, nullptr, 0, nullptr, nullptr, nullptr};
     char error[512] = {};
     const auto outputUtf8 = output.u8string();
     const int status = mvm_mlt_export_two_track(clips, count, totalDuration, &spec,
@@ -104,6 +104,54 @@ int main() {
         clip.timeline_duration_frames = LLONG_MAX;
         requireRejected(&clip, 1, LLONG_MAX, output, "tractor clip 0のmappingが不正です",
                         "producer 尺と末尾補完の和の overflow を拒否しません");
+    }
+
+    // 4. 全 frame 分の不透明度を渡しても、MLT の animation には値の変わる所だけを置く。
+    //    全 frame を keyframe にすると、affine が毎 frame animation 全体を文字列へ直すので、
+    //    尺の長い clip を重ねた書き出しが進まなくなる (docs/math-semantic-layout.md)。
+    //    0〜19 は 1.0、20〜39 は直線で下げ、40〜59 は 0.5。残るのは 0、19〜40、59 の 24 個。
+    {
+        constexpr int kFrames = 60;
+        MvmExportClip clips[2] = {videoClip(MVM_CAPACITY_TEST_VIDEO, 0, kFrames, 0),
+                                  videoClip(MVM_CAPACITY_TEST_VIDEO, 1, kFrames, 0)};
+        MvmExportOpacityKeyframe keys[kFrames];
+        for (int frame = 0; frame < kFrames; ++frame)
+            keys[frame] = {frame, frame < 20   ? 1.0
+                                  : frame < 40 ? 1.0 - 0.5 * (frame - 19) / 21.0
+                                               : 0.5};
+        clips[1].opacity_keyframes = keys;
+        clips[1].opacity_keyframe_count = kFrames;
+        clips[1].rect_width = 320;
+        clips[1].rect_height = 240;
+        MvmExportObserver observer{};
+        MvmExportSpec spec{320, 240,     60,      1, 23,      60000,   4,
+                           0,   nullptr, nullptr, 0, nullptr, nullptr, nullptr};
+        spec.observer = &observer;
+        const std::filesystem::path reduced =
+            std::filesystem::temp_directory_path() / "mvm-export-keyframe-reduction.mp4";
+        std::filesystem::remove(reduced);
+        const auto reducedUtf8 = reduced.u8string();
+        MvmExportResult result{};
+        char error[512] = {};
+        const int status = mvm_mlt_export_two_track(
+            clips, 2, kFrames, &spec, reinterpret_cast<const char*>(reducedUtf8.c_str()), &result,
+            error, sizeof(error));
+        if (status != 0)
+            std::fprintf(stderr, "status=%d error=%s\n", status, error);
+        require(status == 0 && result.frame_count == kFrames,
+                "keyframe を間引いた書き出しが完了しません");
+        std::fprintf(stderr, "animation: %lld 値 -> %lld keyframe\n",
+                     static_cast<long long>(observer.animation_samples),
+                     static_cast<long long>(observer.animation_keyframes));
+        require(observer.animation_samples == kFrames, "animation へ渡した値の数が違います");
+        require(observer.animation_keyframes == 24,
+                "値の変わらない区間の keyframe を両端だけにしていません");
+        // 観測の境界も 1 回以上通っていること (空振りで数えていない)。
+        require(observer.points[MVM_EXPORT_OBSERVE_IMAGE_RETURN].count >= kFrames &&
+                    observer.points[MVM_EXPORT_OBSERVE_ENCODER_SUBMIT].count == kFrames &&
+                    observer.stage == MVM_EXPORT_STAGE_DONE,
+                "書き出しの観測が全 frame を数えていません");
+        std::filesystem::remove(reduced);
     }
 
     mvm_mlt_runtime_shutdown();

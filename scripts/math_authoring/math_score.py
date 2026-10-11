@@ -235,7 +235,11 @@ def compile_score(score, project):
 
     owned_ids = {clip['id'] for clip in result['timeline_clips']
                  if clip.get('kind') == 'math' and clip_score_owner(clip['id']) == score_id}
-    regenerating = bool(owned_ids) or score_id in ownership
+    # 所有記録が無ければ、以前に足したtrackとマーカーを特定できない。マーカーが0件でも
+    # trackの記録は失われているので、clip IDだけを根拠に推測で再生成しない。
+    require(score_id in ownership or not owned_ids,
+            'この配置の数式はありますが、所有記録が無いため再生成できません')
+    regenerating = score_id in ownership
     for clip_id in preserve_ids:
         require_math(clip_id, '残す')
     for clip_id in replace_ids:
@@ -406,8 +410,6 @@ def compile_score(score, project):
                 overlay['effects']['opacity_percent'], overlay['effects']['opacity_keys'] = curve(
                     highlight_events, 'opacity', begin, duration, lambda opacity: opacity)
                 intervals.append((begin, end, overlay, part + '/highlight'))
-    if score_id not in ownership and owned_ids and result.get('timeline_markers'):
-        raise ScoreError('この配置の数式はありますが、マーカーの所有記録が無いため再生成できません')
     # 同時に見えるclipだけを別trackに置く。元のtrackは空でも残し、番号を詰めない。
     # 再生成では、この配置が以前に足したtrackを使い、同じ名前を重ねて足さない。
     recorded_tracks = list(ownership.get(score_id, {}).get('track_names', []))
@@ -475,8 +477,6 @@ def compile_score(score, project):
             all(type(frame) is int and frame >= 0 for frame in existing_markers) and
             existing_markers == sorted(set(existing_markers)),
             'Projectのマーカーは0以上で、重複せず昇順である必要があります')
-    if score_id not in ownership and owned_ids and existing_markers:
-        raise ScoreError('この配置の数式はありますが、マーカーの所有記録が無いため再生成できません')
     owned_markers = set(ownership.get(score_id, {}).get('marker_frames', []))
     kept_markers = [frame for frame in existing_markers if frame not in owned_markers]
     overlap = sorted(set(generated_markers) & set(kept_markers))

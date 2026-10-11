@@ -12,6 +12,9 @@
 #include <string>
 #include <vector>
 
+// MLT 層の書き出しの観測 (media/mlt/mvm_mlt_export.h)。診断用。
+struct MvmExportObserver;
+
 namespace mvm::app {
 
 // 現在の key の disk artifact を検査した呼び出し側が渡す。preview の常駐状態は含めない。
@@ -57,6 +60,11 @@ struct TimelineExportRequest {
         equationFrameObserver;
     int renderThreads = 4;
     int encoderThreads = 0;
+    // 診断用: MLT 層の各境界の通過回数を記録する。nullptr なら観測しない (製品は nullptr)。
+    MvmExportObserver* exportObserver = nullptr;
+    // 診断用: 段階の境界で呼ぶ ("plan-begin"・"plan-end"・"staging-end"・"encode-end"・
+    // "published")。worker thread から呼ばれる。
+    std::function<void(const char*)> stageObserver;
     // trueを返すとキャンセルする。worker threadから呼ばれる。
     std::function<bool(long long completedFrames, long long totalFrames)> progress;
 };

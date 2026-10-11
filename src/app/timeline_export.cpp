@@ -598,7 +598,13 @@ TimelineExportResult exportTimeline(const project::Project& project,
         result.error = "timeline に clip または字幕がありません";
         return result;
     }
+    const auto stage = [&request](const char* name) {
+        if (request.stageObserver)
+            request.stageObserver(name);
+    };
+    stage("plan-begin");
     auto plan = mapTimelineExportPlan(project, request);
+    stage("plan-end");
     if (!plan.success) {
         result.cancelled = plan.cancelled;
         result.error = plan.error;
@@ -952,6 +958,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
             return result;
         subtitlePaths.emplace(planned.subtitle->id, std::move(path));
     }
+    stage("staging-end");
     std::vector<MvmExportClip> clips;
     clips.reserve(plan.clips.size());
     std::vector<std::vector<MvmExportOpacityKeyframe>> opacityStorage;
@@ -1067,6 +1074,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
               }
             : nullptr,
         .rgba_opaque = const_cast<TimelineExportRequest*>(&request),
+        .observer = request.exportObserver,
     };
 
     // 一時ファイルへ書き、検証を通ってから正規名へ rename する。
@@ -1085,6 +1093,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
             : mvm_mlt_export_two_track(clips.data(), static_cast<int>(clips.size()),
                                        plan.totalDurationFrames, &spec, temporaryUtf8.c_str(),
                                        &exported, error, sizeof(error));
+    stage("encode-end");
     if (exportStatus != MVM_EXPORT_OK) {
         std::filesystem::remove(temporaryPath, pathError);
         result.error = error[0] ? error : "書き出しに失敗しました";
@@ -1113,6 +1122,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
         return result;
     }
 
+    stage("published");
     result.outputPath = outputPath;
     result.frameCount = exported.frame_count;
     result.durationSec = exported.duration_sec;

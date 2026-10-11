@@ -405,6 +405,29 @@ class ScoreTests(unittest.TestCase):
         with self.assertRaisesRegex(score_module.ScoreError, '所有記録'):
             score_module.compile_score(recipe(), first)
 
+    def test_regeneration_without_ownership_is_rejected_even_with_zero_markers(self):
+        # マーカーが残っていなくても、足したtrackの記録が無い再生成は推測になる。
+        first, _ = score_module.compile_score(recipe(), project())
+        generated = [clip['id'] for clip in first['timeline_clips']
+                     if clip['id'].startswith('mvm-math-score:試験:')]
+        self.assertTrue(generated)
+        del first[score_module.OWNERSHIP_KEY]
+        first['timeline_markers'] = []
+        before = copy.deepcopy(first)
+        with self.assertRaisesRegex(score_module.ScoreError, '所有記録'):
+            score_module.compile_score(recipe(), first)
+        self.assertEqual(first, before)
+
+    def test_zero_marker_regeneration_with_ownership_is_still_accepted(self):
+        # 対照群: 上の拒否がマーカー0件そのものではなく、所有記録の欠落で起きることを示す。
+        first, _ = score_module.compile_score(recipe(), project())
+        owned = first[score_module.OWNERSHIP_KEY]['scores']['試験']
+        first['timeline_markers'] = []
+        owned['marker_frames'] = []
+        second, _ = score_module.compile_score(recipe(), first)
+        self.assertEqual(sorted(clip['id'] for clip in second['timeline_clips']),
+                         sorted(clip['id'] for clip in first['timeline_clips']))
+
     def test_generated_track_name_collision_is_rejected(self):
         base = project()
         base['video_tracks'].append(

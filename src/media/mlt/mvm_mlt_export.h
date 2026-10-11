@@ -100,6 +100,86 @@ typedef struct {
     int is_image_sequence;
 } MvmExportClip;
 
+/* --- 書き出しの観測 (診断用) -------------------------------------------------
+ * 「どの段階まで進んだか」を、出力 file の大きさではなく各境界の通過回数で見るために使う。
+ * 呼び出し側が 0 で初期化して MvmExportSpec::observer へ渡す。NULL なら何も記録せず、MLT の
+ * graph にも手を入れない (製品の書き出しは NULL のまま)。
+ * 記録は counter と、上限のある抜き取り (各境界の最初の 4 回と 2 の冪の回) だけ。frame ごとに
+ * I/O や lock をしない。render worker・consumer thread から同時に書くので、読む側は途中の値を
+ * 読むことがある (診断の表示用。合否の判定には書き出しが終わってからの値を使う)。 */
+typedef enum {
+    MVM_EXPORT_OBSERVE_FRAME_REQUEST = 0, /* 最終 producer への frame 要求 (get_frame の入口) */
+    MVM_EXPORT_OBSERVE_FRAME_RETURN,      /* 同、戻り (この時点では画素は未合成) */
+    MVM_EXPORT_OBSERVE_IMAGE_REQUEST,     /* 合成後の画像の要求 (render worker) */
+    MVM_EXPORT_OBSERVE_IMAGE_RETURN,      /* 同、戻り (全 layer の合成が終わった) */
+    MVM_EXPORT_OBSERVE_VALIDATOR_ENTRY,   /* rgba_callback の入口 */
+    MVM_EXPORT_OBSERVE_VALIDATOR_RETURN,
+    MVM_EXPORT_OBSERVE_ENCODER_SUBMIT, /* consumer が encoder へ渡す直前 (consumer-frame-show) */
+    /* 次の 2 つは MLT の外 (FFmpeg) の境界。この層は記録せず、呼び出し側が
+     * mvm_mlt_export_observe で記録する。0 のままなら「未観測」であって「0 件」ではない。 */
+    MVM_EXPORT_OBSERVE_ENCODED_PACKET,
+    MVM_EXPORT_OBSERVE_MUXED_PACKET,
+    MVM_EXPORT_OBSERVE_POINT_COUNT
+} MvmExportObservePoint;
+
+typedef enum {
+    MVM_EXPORT_STAGE_IDLE = 0,
+    MVM_EXPORT_STAGE_GRAPH_BUILD,    /* producer・filter・transition の構築 */
+    MVM_EXPORT_STAGE_CONSUMER_START, /* encoder と muxer の初期化 */
+    MVM_EXPORT_STAGE_RENDER,         /* consumer の完了待ち */
+    MVM_EXPORT_STAGE_CONSUMER_CLOSE, /* encoder の flush と trailer */
+    MVM_EXPORT_STAGE_OUTPUT_VERIFY,  /* 出力 file の probe */
+    MVM_EXPORT_STAGE_DONE,
+    MVM_EXPORT_STAGE_FAILED,
+    MVM_EXPORT_STAGE_COUNT
+} MvmExportStage;
+
+typedef struct {
+    volatile long long count; /* 累計 */
+    volatile long long first_ns;
+    volatile long long first_frame;
+    volatile long first_thread;
+    volatile long long last_ns;
+    volatile long long last_frame;
+    volatile long last_thread;
+} MvmExportObservePointState;
+
+typedef struct {
+    int point;
+    int stage;
+    int cancel_requested;
+    long thread;
+    long long ordinal; /* その境界で何回目か (1 始まり) */
+    long long frame;
+    long long ns;
+} MvmExportObserveSample;
+
+#define MVM_EXPORT_OBSERVE_SAMPLE_CAPACITY 256
+
+typedef struct MvmExportObserver {
+    MvmExportObservePointState points[MVM_EXPORT_OBSERVE_POINT_COUNT];
+    volatile long stage;
+    volatile long long stage_ns[MVM_EXPORT_STAGE_COUNT]; /* 各段階へ入った時刻 (0 は未到達) */
+    volatile long cancel_requested;
+    volatile long long consumer_position; /* 完了待ちの間に読んだ consumer の位置 */
+    volatile long long poll_count;
+    volatile long consumer_stopped;
+    /* animation へ渡された値の数 (clip の frame 数 × 属性数) と、実際に置いた keyframe の数。
+     * 値の変わらない区間は両端だけを置く (mvm_mlt_export.c)。 */
+    volatile long long animation_samples;
+    volatile long long animation_keyframes;
+    volatile long sample_count; /* 採ろうとした数。CAPACITY を超えた分は捨てている */
+    MvmExportObserveSample samples[MVM_EXPORT_OBSERVE_SAMPLE_CAPACITY];
+    /* 入力: 非0なら muxer に packet ごとの debug 記録 (fdebug=ts) を出させる。記録を数えるのは
+     * 呼び出し側 (av_log の callback)。出力の内容は変えない。 */
+    int mux_trace;
+} MvmExportObserver;
+
+/* 単調増加の時刻 (QueryPerformanceCounter、ns)。 */
+long long mvm_mlt_export_observer_now_ns(void);
+/* observer が NULL なら何もしない。どの thread から呼んでもよい。 */
+void mvm_mlt_export_observe(MvmExportObserver* observer, int point, long long frame);
+
 typedef struct {
     /* 呼び出し側が必ず明示する。既定値を推測しない。 */
     int width;
@@ -123,6 +203,8 @@ typedef struct {
     int (*rgba_callback)(long long frame, const unsigned char* rgba, int width, int height,
                          void* opaque);
     void* rgba_opaque;
+    /* 診断用の観測。NULL なら記録しない。 */
+    MvmExportObserver* observer;
 } MvmExportSpec;
 
 typedef struct {
