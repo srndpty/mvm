@@ -21,7 +21,7 @@ namespace mvm::manim {
 
 inline constexpr char kMathTexBackendId[] = "manim-mathtex";
 // script template を変えたら上げる (fingerprint に入り、古い cache を引かなくなる)。
-inline constexpr int kMathTexTemplateVersion = 1;
+inline constexpr int kMathTexTemplateVersion = 2;
 // Write の連番の script。変えたら版を上げる (連番の key だけに入り、静止の cache は変えない)。
 inline constexpr char kMathWriteTemplateId[] = "manim-write";
 inline constexpr int kMathWriteTemplateVersion = 1;

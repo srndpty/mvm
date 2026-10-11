@@ -225,9 +225,9 @@ int main(int argc, char** argv) {
         return 3;
     const auto capabilities = engine->capabilities();
     if (capabilities.configuredMaxActiveVideoSources != 8 ||
-        capabilities.configuredMaxCompositionLayers != 16 ||
+        capabilities.configuredMaxCompositionLayers != 128 ||
         capabilities.duplicateSourceLayersSupported) {
-        std::fprintf(stderr, "P5-E3 capabilityが8/16/duplicate=falseではありません\n");
+        std::fprintf(stderr, "P5-E3 capabilityが8/128/duplicate=falseではありません\n");
         return 3;
     }
 
@@ -453,14 +453,14 @@ int main(int argc, char** argv) {
                 snapshot->layers.push_back({videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
             }
             if (fault == Fault::ExceedLayerCount) {
-                // layer 上限は 16。video source 上限で先に落ちないよう、video 2 本 +
-                // 静止画 15 枚の 17 layer で layer 数だけを超えさせる。
+                // video source の上限を超えずに、静止画で合成 layer の上限だけを超える。
                 auto excessive = std::make_shared<mvm::preview::CompositionSnapshot>(*snapshot);
                 auto still = std::make_shared<mvm::preview::PreviewStillImage>();
                 still->width = 2;
                 still->height = 2;
                 still->rgba.assign(16, 255);
-                for (int index = 0; index < 15; ++index) {
+                for (std::uint32_t index = 0;
+                     index < mvm::preview::kProductMaxCompositionLayers - 1; ++index) {
                     mvm::preview::PreviewCompositionLayer stillLayer;
                     stillLayer.stillImage = still;
                     excessive->layers.push_back(stillLayer);

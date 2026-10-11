@@ -928,10 +928,8 @@ public:
     Q_PROPERTY(QVariantMap selectedGraphClip READ selectedGraphClip NOTIFY stateChanged)
     QVariantMap selectedGraphClip() const;
     Q_INVOKABLE bool createGraphClipFromUi();
-    Q_INVOKABLE QVariantMap editGraphFromUi(const QVariantMap& authority,
-                                            const QString& functionId,
-                                            const QString& operation,
-                                            const QVariantMap& values);
+    Q_INVOKABLE QVariantMap editGraphFromUi(const QVariantMap& authority, const QString& functionId,
+                                            const QString& operation, const QVariantMap& values);
     Q_INVOKABLE QVariantMap graphStatusFromUi(const QString& clipId) const;
     bool setGraphDuration(const std::string& clipId, std::int64_t sourceFrames);
     bool editGraphData(const std::string& clipId,
@@ -1315,6 +1313,8 @@ private:
     const QImage* textRasterImage(int clipIndex, QString& error) const;
     // 文字画像の不透明な画素を囲む矩形。clip ID ごとに 1 度だけ求める。
     QRect textRasterBounds(int clipIndex) const;
+    // 文字・数式の、実際に描いた画像の範囲。準備前は空、再描画中は提示中の範囲。
+    QRect visualRasterBounds(int clipIndex) const;
     // 再生位置で表示される clip か (mute されていない映像 track で、再生位置が範囲内)。
     bool clipVisibleAtPlayhead(int clipIndex) const;
     // 画像・動画の見えている矩形。素材の寸法はプロジェクトパネルの素材から取る。

@@ -247,8 +247,9 @@ void testRequestAndScript() {
               std::string("request.json に所有 ID・revision・label を含めない: ") + forbidden);
     const auto script = manim::manimEquationSequenceScript();
     check(script.find("class MvmEquationSequence") != std::string::npos &&
-              script.find("MathTex(*state[\"segments\"]") != std::string::npos,
-          "状態は MathTex(*segments) で作る");
+              script.find("MathTex(*state[\"segments\"]") != std::string::npos &&
+              script.find("tex_template=MVM_TEX_TEMPLATE") != std::string::npos,
+          "状態は共通 TeX template の MathTex(*segments) で作る");
     check(script.find("TransformMatchingTex") == std::string::npos &&
               script.find("ReplacementTransform(source[i], target[j]") != std::string::npos,
           "対応は mvm の pairs で組み、TransformMatchingTex を使わない");

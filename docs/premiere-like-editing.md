@@ -118,7 +118,7 @@ preview 2 layer / export 2 track / export audio 無しが現在の上限であ�
 上限 (2) と合成する layer の上限を分けた。`configuredMaxCompositionLayers` は 3 になり、
 video source は 2 のままである。layer 3 は measured envelope (layer 2) の外である。
 
-`[事実]` (§17 で更新) 上の上限はすべて引き上げた。現在は preview が video source 8 本・合成 layer 16 枚・
+`[事実]` (§17 で更新) 上の上限はすべて引き上げた。現在は preview が video source 8 本・合成 layer 128 枚・
 audio source 16 本、書き出しは track 数・clip 数とも上限なし、文字はどの映像 track にも置ける。
 この節の 2 / 3 という値と export の制約は当時の記録である。
 
@@ -1156,7 +1156,7 @@ frame 0 / 8 / 15 の書き出しと同じ frame の映像で preview を合成�
 | 軸 | 以前 | 現在 | 定義 |
 | --- | --- | --- | --- |
 | preview で同時に decode する映像 | 2 | 8 | `kProductMaxActiveVideoSources` |
-| preview で同時に合成する layer (映像 + 文字) | 3 | 16 | `kProductMaxCompositionLayers` |
+| preview で同時に合成する layer (映像 + 文字・画像・部分式・字幕) | 3 | 128 | `kProductMaxCompositionLayers` |
 | preview で同時に mix する音声 | 8 | 16 | `kProductMaxActiveAudioSources` |
 | video source の登録 slot | 4 | 17 | 旧 set + 新 set + slip preview 1 本 |
 | 文字を置ける track | V1～V3 | 制限なし | 空きが無ければ上へ track を足す |
@@ -1184,13 +1184,13 @@ frame 0 / 8 / 15 の書き出しと同じ frame の映像で preview を合成�
 - `MeasuredPreviewEnvelope` (60/1 × 映像 2 × layer 2 × 音声 1) は変えていない。configured 値と一致しない
   ので、`matchesMeasuredEnvelope` は以前から false のまま (UI は「未計測」)
 
-検査の更新: `m7b_2_timeline_preview_mapping_focused` は映像 8 本の受理と 9 本目の拒否、映像 8 + 文字 8 の
+初回引き上げ時の検査: `m7b_2_timeline_preview_mapping_focused` は映像 8 本の受理と 9 本目の拒否、映像 8 + 文字 8 の
 16 枚の受理と 17 枚目の拒否を見る。`text_clip_contract` は V1～V3 が埋まったときに V4 を足して置くこと、
 mute した track を飛ばすこと、V4 への移動の受理、V1～V5 映像の上の V6 文字の書き出し (画素)、
 1 frame の clip 70 本を V1～V5 に並べた書き出しを見る。`preview_engine_p5e_exceed_source_count` は
 17 slot を埋めて 18 本目を、`preview_engine_p5e_exceed_layer_count` は 17 layer を拒否させる。
 
-`[事実]` 上限ちょうどの受理と描画は `preview_engine_p5e_capacity_at_limit` (`mvm_p5e_capacity_smoke`)
+`[事実]` 初回引き上げ時の上限ちょうどの受理と描画は `preview_engine_p5e_capacity_at_limit` (`mvm_p5e_capacity_smoke`)
 で固定した。映像 source 8 本 + 静止画 8 枚の 16 layer と音声 source 16 本で再生し、16 layer の
 frame を 30 枚提示する。同じ run で、音声 17 本目の登録、映像 9 本の composition (source 上限)、
 映像 8 + 静止画 9 の composition (layer 上限) を拒否することも見る。実行時間は約 1.6 秒。
@@ -1200,6 +1200,27 @@ frame を 30 枚提示する。同じ run で、音声 17 本目の登録、映�
 thread 1 本と D3D11 の frame pool (`extra_hw_frames = 16`) を持ち、source-set の切り替え中は旧 set と
 新 set が一時的に両方残る。文字 1 枚は 1080p で CPU / GPU それぞれ約 8MiB。4K 素材 8 本では VRAM が
 足りない可能性があり、その場合は値を決め打ちで下げる。
+
+### 17.1 数式の部分式を同時表示するための合成上限更新（2026-10-11）
+
+`[事実]` 解の公式の教材は、意味のある部品ごとに Math clip を持つ。
+連続再生の先読みで合成16枚の固定上限に達して停止したため、合成上限を128枚へ更新した。
+上限は `kProductMaxCompositionLayers` に一本化され、mapping・controllerの字幕追加・engineが参照する。
+映像8本・音声16本の上限と、実測した `MeasuredPreviewEnvelope` は変えていない。
+GPUの製品合成はlayerを順に描画し、16枚の固定配列や同時texture bindingに依存しない。
+固定ABIのnative present hookは診断用であり、製品合成の経路ではない。
+
+`[事実]` `preview_engine_p5e_capacity_at_limit` は映像8本・静止画120枚・音声16本の構成で
+128枚の合成frameを30枚提示し、129枚・映像9本・音声17本を拒否した。
+`m7b_2_timeline_preview_mapping_focused` は映像の有無それぞれで128枚を受理し、129枚を拒否する。
+`preview_engine_p5e_exceed_layer_count` の検証アプリにも新しい上限を反映した。
+ログは `build/quadratic-semantic-20261011/ctest-capacity-final.log`。
+初回runの超過試験は古いcapability期待値で失敗した。期待値修正後のrunでは通過した。
+最新版の教材は冒頭から114秒の終端まで連続再生し、先読み失敗0・途中停止なしを確認した。
+再現用のコードと記録は [数式の配置編集](math-semantic-layout.md) にまとめた。
+
+`[未検証]` 多数の全画面ラスタを同時表示した場合のfps・メモリ余裕。
+128枚は受け入れ上限であり、全構成の性能保証ではない。
 
 ## 18. 画像・音声の単体素材
 

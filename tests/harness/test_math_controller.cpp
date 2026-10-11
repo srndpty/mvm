@@ -2617,6 +2617,24 @@ int main(int argc, char** argv) {
         check(pump([&] { return state(*controller, clipId) == QStringLiteral("ready"); }),
               "描画が終わると ready");
         check(*backend.renders == 1, "1 回描く");
+        const auto mathGeometry = controller->clipVisualGeometry(clipId);
+        check(!mathGeometry.isEmpty() && mathGeometry.value("x").toDouble() == 958.0 &&
+                  mathGeometry.value("y").toDouble() == 539.0 &&
+                  mathGeometry.value("width").toDouble() == 3.0 &&
+                  mathGeometry.value("height").toDouble() == 2.0,
+              "数式の選択枠は全画面ではなく、実際に描いた3×2の範囲に一致する");
+        check(controller->clipVisualGeometry(QStringLiteral("存在しない数式")).isEmpty(),
+              "描画を持たない対象に選択枠を代用しない");
+        check(controller->visualClipAt(959.0, 540.0) == clipId &&
+                  controller->visualClipAt(900.0, 500.0).isEmpty(),
+              "数式の範囲だけで当たり判定し、周囲の透明な画面を掴まない");
+        const auto movedMath = controller->effectsForVisualRect(clipId, 1054.0, 593.0, 3.0, 2.0);
+        check(!movedMath.isEmpty() &&
+                  std::abs(movedMath.value("positionX").toDouble() - 5.0) < 1e-9 &&
+                  std::abs(movedMath.value("positionY").toDouble() - 5.0) < 1e-9 &&
+                  movedMath.value("scaleX").toDouble() == 100.0 &&
+                  movedMath.value("scaleY").toDouble() == 100.0,
+              "数式の枠の移動を、同じ大きさの画素の移動へ逆変換する");
         check(controller->selectedMathClip()
                       .value(QStringLiteral("unavailableReason"))
                       .toString()
@@ -2669,6 +2687,8 @@ int main(int argc, char** argv) {
               "error の log を返す");
         check(failed.value(QStringLiteral("showingPrevious")).toBool(),
               "前に描けた画素を出していることを示す");
+        check(controller->clipVisualGeometry(clipId) == mathGeometry,
+              "描画に失敗して前の式を見せている間も、選択枠をその式に一致させる");
         check(mathPixel(*controller, frame, kX, kY) == std::vector<std::uint8_t>{255, 0, 0, 255},
               "失敗中の preview は last-good を出す");
 

@@ -824,6 +824,18 @@ mvm_add_test(math_equation_sequence_compile COMMAND mvm_test_equation_compile
 target_link_libraries(mvm_test_project_math PRIVATE mvm::project mvm::util mvm::warnings)
 mvm_add_test(math_project_json_focused COMMAND mvm_test_project_math PROPERTIES TIMEOUT 30)
 
+# 教材作成ツールから使うProject検証CLI。製品の公開検証関数だけを呼ぶ。
+add_executable(mvm_project_validate harness/mvm_project_validate.cpp)
+target_link_libraries(mvm_project_validate PRIVATE mvm::project mvm::util mvm::warnings)
+mvm_add_test(project_validate_score_good COMMAND mvm_project_validate
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/math-score/good.mvm"
+    --roundtrip "${CMAKE_CURRENT_BINARY_DIR}/math-score-roundtrip.mvm" PROPERTIES TIMEOUT 30)
+mvm_add_test(project_validate_score_bad_font
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+    -ExpectExit 1 -Exe "$<TARGET_FILE:mvm_project_validate>"
+    -ChildArgs "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/math-score/bad-font.mvm"
+    PROPERTIES TIMEOUT 30)
+
 # 数式の変形 (P2-1): Project / timeline の model と編集の不変条件。描画は含まない。
 add_executable(mvm_test_math_transform_timeline harness/test_math_transform_timeline.cpp)
 # math_clip_render は preview・書き出しの Write の frame の選び方 (mathIntroFrameAt) を、
@@ -2603,7 +2615,7 @@ if(MVM_ENABLE_QT)
             "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/18")
     endif()
 
-    # product capability (映像 8 / 合成 16 / 音声 16) を上限ちょうどで受理・描画し、
+    # product capability (映像 8 / 合成 128 / 音声 16) を上限ちょうどで受理・描画し、
     # 超過を拒否する。性能 (fps / VRAM) は見ない。
     mvm_add_test(preview_engine_p5e_capacity_at_limit
         COMMAND "${MVM_PWSH}" -NoProfile -File "${_p5c_fixture_wrapper}"

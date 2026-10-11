@@ -58,7 +58,8 @@ PHASE = REQUEST["phase"]
 
 def build(state):
     try:
-        return MathTex(*state["segments"], font_size=state["manim_font_size"])
+        return MathTex(*state["segments"], font_size=state["manim_font_size"],
+                       tex_template=MVM_TEX_TEMPLATE)
     except ValueError as error:
         fail("latex" if "latex error" in str(error).lower() else "other", str(error))
     except Exception as error:

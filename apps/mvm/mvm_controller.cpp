@@ -1,5 +1,4 @@
 #include "mvm_controller.h"
-#include "mvm_controller_detail.h"
 
 #include "app/audio_source_set_transaction.h"
 #include "app/equation_sequence_authoring.h"
@@ -20,6 +19,7 @@
 #include "media/manim/manim_math_tex.h"
 #include "media_file_filters.h"
 #include "media_import.h"
+#include "mvm_controller_detail.h"
 #include "preview_engine/preview_engine_internal.h"
 #include "project/clip_effects.h"
 #include "project/equation_sequence_edit.h"
@@ -52,15 +52,15 @@
 #include <QUuid>
 #include <QVariantMap>
 
-
 namespace mvm::app {
 using detail::fromPath;
 using detail::indexOfClipId;
 using detail::linearToDb;
 using detail::newClipId;
 using detail::previewErrorText;
-using detail::probeMedia;
 using detail::ProbedMedia;
+using detail::probeMedia;
+
 namespace {
 class SubtitlePreviewMotion final : public preview::PreviewMotion {
 public:
@@ -84,7 +84,6 @@ bool sameLayerSources(const preview::CompositionSnapshot& a,
                           return x.source == y.source && x.stillImage == y.stillImage;
                       });
 }
-
 
 bool revealFileInExplorer(const std::filesystem::path& path, QString& error) {
     char detail[512] = {};
@@ -150,7 +149,6 @@ const project::TimelineClip* topVideoClipAt(const project::Project& project,
             return *entry;
     return nullptr;
 }
-
 
 } // namespace
 
@@ -845,7 +843,6 @@ bool MvmController::commitProjectEdit(project::Project candidate, const QString&
     scheduleRecoveryAutosave();
     return true;
 }
-
 
 std::string MvmController::currentClipId() const {
     if (currentClipIndex_ < 0 ||
@@ -3685,6 +3682,26 @@ bool MvmController::textClipHasMotion(const QString& clipId) const {
     return false;
 }
 
+QRect MvmController::visualRasterBounds(int clipIndex) const {
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    if (clip.kind == project::TimelineClipKind::Text)
+        return textRasterBounds(clipIndex);
+    if (clip.kind != project::TimelineClipKind::Math || !mathRasters_)
+        return {};
+    const auto entry = mathRasters_->entryOf(mathRenderSpecFor(effectiveMathData(clip)));
+    std::shared_ptr<const media::StillImage> mask;
+    if (entry.state == MathRasterCache::State::Ready)
+        mask = entry.mask;
+    else if (const auto previous = mathLastGood_.constFind(QString::fromStdString(clip.id));
+             previous != mathLastGood_.constEnd())
+        mask = previous->mask;
+    int left = 0, top = 0;
+    if (!mask || !math::mathRasterPlacement(mask->width, mask->height, project_.outputWidth,
+                                            project_.outputHeight, left, top))
+        return {};
+    return QRect(left, top, mask->width, mask->height);
+}
+
 project::ClipVisualGeometry MvmController::visualGeometryOf(int clipIndex) const {
     if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size()))
         return {};
@@ -3693,20 +3710,23 @@ project::ClipVisualGeometry MvmController::visualGeometryOf(int clipIndex) const
         return {};
     const auto* item = project::findMediaItem(project_, clip.mediaItemId);
     if (!item && clip.kind != project::TimelineClipKind::Text &&
-        clip.kind != project::TimelineClipKind::Manim)
+        clip.kind != project::TimelineClipKind::Manim &&
+        clip.kind != project::TimelineClipKind::Math)
         return {};
     const auto effects = project::evaluateClipEffects(effectsForPreview(clipIndex),
                                                       playheadFrame_ - clip.timelineStartFrame);
     auto geometry = project::clipVisualGeometry(effects, item ? item->width : project_.outputWidth,
                                                 item ? item->height : project_.outputHeight,
                                                 project_.outputWidth, project_.outputHeight);
-    if (clip.kind == project::TimelineClipKind::Text && geometry.valid) {
+    if ((clip.kind == project::TimelineClipKind::Text ||
+         clip.kind == project::TimelineClipKind::Math) &&
+        geometry.valid) {
         const auto mapped = project::mapClipEffects(effects);
         const QRectF crop(mapped.sourceRect.x * project_.outputWidth,
                           mapped.sourceRect.y * project_.outputHeight,
                           mapped.sourceRect.width * project_.outputWidth,
                           mapped.sourceRect.height * project_.outputHeight);
-        const QRectF visible = QRectF(textRasterBounds(clipIndex)).intersected(crop);
+        const QRectF visible = QRectF(visualRasterBounds(clipIndex)).intersected(crop);
         if (visible.isEmpty())
             return {};
         const double sx = geometry.width / crop.width(), sy = geometry.height / crop.height();
@@ -3806,6 +3826,9 @@ QString MvmController::visualClipAt(double x, double y) {
             if (clip.track.kind != project::TrackKind::Video || clip.track.index != track ||
                 !clipVisibleAtPlayhead(index))
                 continue;
+            // 消失後の数式の透明な範囲で、背面の項の選択を妨げない。
+            if (clip.kind == project::TimelineClipKind::Math && textClipOpacity(index) <= 0.0)
+                continue;
             const bool hit = clip.kind == project::TimelineClipKind::Text &&
                                      !textClipHasMotion(QString::fromStdString(clip.id))
                                  ? textRasterBounds(index).contains(static_cast<int>(std::floor(x)),
@@ -3855,7 +3878,8 @@ QVariantMap MvmController::effectsForVisualRect(const QString& clipId, double x,
                                                 playheadFrame_ - clip.timelineStartFrame);
     const int sourceWidth = item ? item->width : project_.outputWidth;
     const int sourceHeight = item ? item->height : project_.outputHeight;
-    if (clip.kind == project::TimelineClipKind::Text) {
+    if (clip.kind == project::TimelineClipKind::Text ||
+        clip.kind == project::TimelineClipKind::Math) {
         const auto visible = visualGeometryOf(index);
         const auto full = project::clipVisualGeometry(effects, sourceWidth, sourceHeight,
                                                       project_.outputWidth, project_.outputHeight);
@@ -5336,32 +5360,35 @@ QVariantMap MvmController::selectedGraphClip() const {
     const auto& data = clip.graph;
     QVariantList functions;
     for (const auto& f : data.functions) {
-        QVariantMap row{{"id", QString::fromStdString(f.id.value)},
-                        {"expression", QString::fromStdString(f.expression)},
-                        {"label", QString::fromStdString(f.label)},
-                        {"color", QString::fromStdString(f.color)},
-                        {"strokeWidth", f.strokeWidth},
-                        {"domainMin", f.domainMin ? QString::number(*f.domainMin, 'g', 17) : QString()},
-                        {"domainMax", f.domainMax ? QString::number(*f.domainMax, 'g', 17) : QString()}};
+        QVariantMap row{
+            {"id", QString::fromStdString(f.id.value)},
+            {"expression", QString::fromStdString(f.expression)},
+            {"label", QString::fromStdString(f.label)},
+            {"color", QString::fromStdString(f.color)},
+            {"strokeWidth", f.strokeWidth},
+            {"domainMin", f.domainMin ? QString::number(*f.domainMin, 'g', 17) : QString()},
+            {"domainMax", f.domainMax ? QString::number(*f.domainMax, 'g', 17) : QString()}};
         functions.push_back(row);
     }
     return {{"clipId", QString::fromStdString(clip.id)},
             {"generation", QString::number(projectGeneration_)},
             {"revision", QString::number(currentRevision_)},
-            {"xMin", data.viewport.xMin}, {"xMax", data.viewport.xMax},
-            {"yMin", data.viewport.yMin}, {"yMax", data.viewport.yMax},
-            {"showAxes", data.axes.showAxes}, {"showGrid", data.axes.showGrid},
+            {"xMin", data.viewport.xMin},
+            {"xMax", data.viewport.xMax},
+            {"yMin", data.viewport.yMin},
+            {"yMax", data.viewport.yMax},
+            {"showAxes", data.axes.showAxes},
+            {"showGrid", data.axes.showGrid},
             {"xLabel", QString::fromStdString(data.axes.xLabel)},
             {"yLabel", QString::fromStdString(data.axes.yLabel)},
-            {"functions", functions}, {"draw", data.intro.kind == project::GraphIntroKind::Draw},
+            {"functions", functions},
+            {"draw", data.intro.kind == project::GraphIntroKind::Draw},
             {"frames", static_cast<qint64>(data.intro.frames)},
             {"sourceFrames", static_cast<qint64>(clip.sourceFrameCount)}};
 }
 
-QVariantMap MvmController::editGraphFromUi(const QVariantMap& authority,
-                                          const QString& functionId,
-                                          const QString& operation,
-                                          const QVariantMap& values) {
+QVariantMap MvmController::editGraphFromUi(const QVariantMap& authority, const QString& functionId,
+                                           const QString& operation, const QVariantMap& values) {
     const auto current = selectedGraphClip();
     const auto reject = [](const QString& message) -> QVariantMap {
         return {{"ok", false}, {"message", message}};
@@ -5401,25 +5428,32 @@ QVariantMap MvmController::editGraphFromUi(const QVariantMap& authority,
                                             values.value("index").toUInt(), length))
                 return fail(QStringLiteral("関数の移動先が不正です"));
         } else if (operation == "field") {
-            auto function = std::find_if(data.functions.begin(), data.functions.end(),
-                                         [&](const auto& f) { return f.id.value == functionId.toStdString(); });
+            auto function =
+                std::find_if(data.functions.begin(), data.functions.end(),
+                             [&](const auto& f) { return f.id.value == functionId.toStdString(); });
             if (!functionId.isEmpty() && function == data.functions.end())
                 return fail(QStringLiteral("編集する関数がありません"));
             for (auto it = values.cbegin(); it != values.cend(); ++it) {
                 const auto& key = it.key();
                 if (key == "xMin" || key == "xMax" || key == "yMin" || key == "yMax") {
-                    double* destination = key == "xMin" ? &data.viewport.xMin :
-                                          key == "xMax" ? &data.viewport.xMax :
-                                          key == "yMin" ? &data.viewport.yMin : &data.viewport.yMax;
+                    double* destination = key == "xMin"   ? &data.viewport.xMin
+                                          : key == "xMax" ? &data.viewport.xMax
+                                          : key == "yMin" ? &data.viewport.yMin
+                                                          : &data.viewport.yMax;
                     if (!number(key, *destination))
                         return fail(QStringLiteral("有限の数値を入力してください"));
-                } else if (key == "xLabel") data.axes.xLabel = it.value().toString().toStdString();
-                else if (key == "yLabel") data.axes.yLabel = it.value().toString().toStdString();
-                else if (key == "showAxes") data.axes.showAxes = it.value().toBool();
-                else if (key == "showGrid") data.axes.showGrid = it.value().toBool();
+                } else if (key == "xLabel")
+                    data.axes.xLabel = it.value().toString().toStdString();
+                else if (key == "yLabel")
+                    data.axes.yLabel = it.value().toString().toStdString();
+                else if (key == "showAxes")
+                    data.axes.showAxes = it.value().toBool();
+                else if (key == "showGrid")
+                    data.axes.showGrid = it.value().toBool();
                 else if (key == "draw") {
-                    data.intro = it.value().toBool() ? project::GraphIntro{project::GraphIntroKind::Draw, 1}
-                                                    : project::GraphIntro{};
+                    data.intro = it.value().toBool()
+                                     ? project::GraphIntro{project::GraphIntroKind::Draw, 1}
+                                     : project::GraphIntro{};
                 } else if (key == "frames") {
                     bool valid = false;
                     const auto frames = it.value().toString().toLongLong(&valid);
@@ -5428,24 +5462,31 @@ QVariantMap MvmController::editGraphFromUi(const QVariantMap& authority,
                     data.intro.frames = frames;
                 } else if (function == data.functions.end()) {
                     return fail(QStringLiteral("関数を選択してください"));
-                } else if (key == "expression") function->expression = it.value().toString().toStdString();
-                else if (key == "label") function->label = it.value().toString().toStdString();
-                else if (key == "color") function->color = it.value().toString().toUpper().toStdString();
+                } else if (key == "expression")
+                    function->expression = it.value().toString().toStdString();
+                else if (key == "label")
+                    function->label = it.value().toString().toStdString();
+                else if (key == "color")
+                    function->color = it.value().toString().toUpper().toStdString();
                 else if (key == "strokeWidth") {
                     if (!number(key, function->strokeWidth))
                         return fail(QStringLiteral("有限の線幅を入力してください"));
                 } else if (key == "domainMin" || key == "domainMax") {
                     auto& bound = key == "domainMin" ? function->domainMin : function->domainMax;
-                    if (it.value().toString().trimmed().isEmpty()) bound.reset();
+                    if (it.value().toString().trimmed().isEmpty())
+                        bound.reset();
                     else {
                         double value = 0;
                         if (!number(key, value))
-                            return fail(QStringLiteral("範囲は有限の数値、または空欄にしてください"));
+                            return fail(
+                                QStringLiteral("範囲は有限の数値、または空欄にしてください"));
                         bound = value;
                     }
-                } else return fail(QStringLiteral("未知の Graph 編集項目です"));
+                } else
+                    return fail(QStringLiteral("未知の Graph 編集項目です"));
             }
-        } else return fail(QStringLiteral("未知の Graph 操作です"));
+        } else
+            return fail(QStringLiteral("未知の Graph 操作です"));
         return true;
     });
     return {{"ok", ok}, {"message", ok ? QString() : message.isEmpty() ? statusText_ : message}};
@@ -5454,28 +5495,41 @@ QVariantMap MvmController::editGraphFromUi(const QVariantMap& authority,
 QVariantMap MvmController::graphStatusFromUi(const QString& clipId) const {
     const auto status = graphPreviewStatus(clipId.toStdString(), playheadFrame_);
     const bool ready = status.compileValid && status.validatedSnapshot && status.frameAvailable &&
-                       !status.transparentFallback && status.reason == GraphPreviewCache::Reason::None;
+                       !status.transparentFallback &&
+                       status.reason == GraphPreviewCache::Reason::None;
     // enum の値に対応する表示。renderer の本文を照合して状態を推定しない。
     const QStringList captions{
-        QStringLiteral("表示準備中"), QStringLiteral("グラフの構造または表示範囲が不正です"),
+        QStringLiteral("表示準備中"),
+        QStringLiteral("グラフの構造または表示範囲が不正です"),
         QStringLiteral("式の構文が不正です。式を修正してください"),
         QStringLiteral("未対応の識別子です。対応する関数名に修正してください"),
         QStringLiteral("定義域に描画できる有限の線がありません"),
         QStringLiteral("renderer が利用できません。Manim の設定を確認してください"),
-        QStringLiteral("描画中"), QStringLiteral("現在の成果物がありません"),
-        QStringLiteral("成果物が破損しています"), QStringLiteral("成果物の生成元が一致しません"),
-        QStringLiteral("現在の frame が未読込です"), QStringLiteral("メモリ上限を超えました"),
-        QStringLiteral("描画を取り消しました"), QStringLiteral("新しい編集の描画を待っています"),
-        QStringLiteral("グラフの transition は未対応です"), QStringLiteral("描画に失敗しました"),
+        QStringLiteral("描画中"),
+        QStringLiteral("現在の成果物がありません"),
+        QStringLiteral("成果物が破損しています"),
+        QStringLiteral("成果物の生成元が一致しません"),
+        QStringLiteral("現在の frame が未読込です"),
+        QStringLiteral("メモリ上限を超えました"),
+        QStringLiteral("描画を取り消しました"),
+        QStringLiteral("新しい編集の描画を待っています"),
+        QStringLiteral("グラフの transition は未対応です"),
+        QStringLiteral("描画に失敗しました"),
         QStringLiteral("TeX ラベルを描画できません。ラベルを修正してください"),
-        QStringLiteral("成果物を公開できません"), QStringLiteral("描画量の上限を超えました"),
-        QStringLiteral("frame を読み込み中"), QStringLiteral("clip が無効です"),
+        QStringLiteral("成果物を公開できません"),
+        QStringLiteral("描画量の上限を超えました"),
+        QStringLiteral("frame を読み込み中"),
+        QStringLiteral("clip が無効です"),
         QStringLiteral("track の出力が無効です")};
     QString caption = captions.value(static_cast<int>(status.reason));
     if (status.backendCheckInProgress)
         caption = QStringLiteral("renderer を確認中");
-    return {{"reason", static_cast<int>(status.reason)}, {"job", static_cast<int>(status.job)},
-            {"ready", ready}, {"caption", caption}, {"message", status.message}, {"key", status.key},
+    return {{"reason", static_cast<int>(status.reason)},
+            {"job", static_cast<int>(status.job)},
+            {"ready", ready},
+            {"caption", caption},
+            {"message", status.message},
+            {"key", status.key},
             {"sourceFrame", static_cast<qint64>(status.sourceFrame)}};
 }
 
@@ -5655,7 +5709,6 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     Q_EMIT stateChanged();
     return true;
 }
-
 
 bool MvmController::setTimelineFrameRate(int fpsNum, int fpsDen) {
     return setProjectVideoSettings(project_.outputWidth, project_.outputHeight, fpsNum, fpsDen);
