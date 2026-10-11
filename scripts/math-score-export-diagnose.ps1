@@ -34,7 +34,15 @@ param(
     # 0 は製品の timeout のまま。0 以外は製品の条件ではない (report に残る)。原因の特定後、製品の
     # timeout では終わらない長さの Project の全 frame を照合するためだけに使う。
     [int]$RequestTimeoutMs = 0,
-    [switch]$NegativeControls
+    [switch]$NegativeControls,
+    # none 以外なら、各 fixture を baseline の後に candidate (数式 layer の渡し方の試作) でも書き出し、
+    # pre-YUV を全 frame・全画素で比べる。終了コード 0 = 完全一致、13 = 1 階調以内、14 = それ超、
+    # 15 = 比較が成立しない。採否の判定には使わない (記録するだけ) ので -Expect any と併用する。
+    [ValidateSet('none', 'bounding-box', 'anchored-box')][string]$Compare = 'none',
+    # 0 は製品の値 (4) のまま。並列度の測定にだけ使う。
+    [int]$RenderThreads = 0,
+    # full-frame (製品) 以外は、主の書き出しそのものを試作の渡し方で行う。製品の経路ではない。
+    [ValidateSet('full-frame', 'bounding-box', 'anchored-box')][string]$Staging = 'full-frame'
 )
 
 Set-StrictMode -Version Latest
@@ -100,6 +108,10 @@ if ($NegativeControls) {
     $cases += [pscustomobject]@{ name = 'negative-oracle-shift'; fixture = 'math-1'; inject = 'oracle-shift'; expected = 8 }
     $cases += [pscustomobject]@{ name = 'negative-reject-frame'; fixture = 'math-1'; inject = 'reject-frame'; expected = 6 }
     $cases += [pscustomobject]@{ name = 'negative-cancel'; fixture = 'math-1'; inject = 'cancel'; expected = 11 }
+    if ($Compare -ne 'none') {
+        # 比較が効いていることの対照: baseline の 1 画素を 2 階調ずらすと「1 階調超」で落ちる。
+        $cases += [pscustomobject]@{ name = 'negative-compare-corrupt'; fixture = 'cmp-integer'; inject = 'compare-corrupt'; expected = 14 }
+    }
 }
 if ($cases.Count -eq 0) { throw '実行する fixture がありません' }
 
@@ -113,6 +125,12 @@ foreach ($case in $cases) {
         '--cap-seconds', $CapSeconds, '--stall-seconds', $StallSeconds,
         '--stack-samples', $StackSamples, '--inject', $case.inject)
     if ($RequestTimeoutMs -gt 0) { $arguments += @('--request-timeout-ms', $RequestTimeoutMs) }
+    if ($RenderThreads -gt 0) { $arguments += @('--render-threads', $RenderThreads) }
+    if ($Staging -ne 'full-frame') { $arguments += @('--staging', $Staging) }
+    # 既存の negative control (math-1) は比較なしのまま回す。
+    if ($Compare -ne 'none' -and ($case.inject -eq 'none' -or $case.inject -eq 'compare-corrupt')) {
+        $arguments += @('--compare', $Compare)
+    }
     $started = Get-Date
     & $harness @arguments 2> $log | Out-Null
     $code = $LASTEXITCODE

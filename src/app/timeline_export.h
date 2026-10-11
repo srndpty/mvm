@@ -26,6 +26,15 @@ struct TimelineMathTransformArtifact {
     std::function<bool(std::size_t, std::vector<std::uint8_t>&, std::string&)> loadFrame;
 };
 
+// 数式の静止 layer を MLT へ渡す形 (試作。製品は FullFrame のまま)。
+//   FullFrame    出力と同じ大きさの透過 PNG。MLT は layer ごとに全画素を合成する
+//   BoundingBox  字形のある範囲 (+ 余白 2 画素) だけを切り出し、配置の矩形をその分ずらす
+//   AnchoredBox  左上を原点のまま、字形の右端・下端より先だけを落とす。素材座標が FullFrame と
+//                同じになる (MLT は素材座標を binary32 で持つので、原点をずらすと端数が変わる)
+// 切り出すのは、等倍・回転なし・crop なしで上位 track にある静止の数式だけ。それ以外の clip は
+// どの指定でも FullFrame で渡す。
+enum class MathLayerStaging { FullFrame, BoundingBox, AnchoredBox };
+
 // M4 の書き出し要求。Project の output size を呼び出し側が渡す。
 struct TimelineExportRequest {
     std::filesystem::path outputPath;
@@ -60,6 +69,10 @@ struct TimelineExportRequest {
         equationFrameObserver;
     int renderThreads = 4;
     int encoderThreads = 0;
+    // 試作: 既定 (FullFrame) 以外は検証 harness だけが指定する。
+    MathLayerStaging mathLayerStaging = MathLayerStaging::FullFrame;
+    // 試作の検証用: 切り出した数式 clip の ID と範囲 (x, y, 幅, 高さ) を受け取る。
+    std::function<void(const std::string&, int, int, int, int)> mathStagingObserver;
     // 診断用: MLT 層の各境界の通過回数を記録する。nullptr なら観測しない (製品は nullptr)。
     MvmExportObserver* exportObserver = nullptr;
     // 診断用: 段階の境界で呼ぶ ("plan-begin"・"plan-end"・"staging-end"・"encode-end"・

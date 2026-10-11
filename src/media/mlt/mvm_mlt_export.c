@@ -25,14 +25,20 @@ static void set_err(char* err, size_t n, const char* fmt, ...) {
 }
 
 long long mvm_mlt_export_observer_now_ns(void) {
-    /* 周波数は起動中に変わらない。同時に初期化しても同じ値を書くだけ。 */
-    static LARGE_INTEGER frequency;
+    /* 周波数は起動中に変わらない。複数の thread が同時に初めて呼んでも、同じ値を atomic に
+     * 書くだけにする (半分だけ書かれた値を別の thread が読まない)。 */
+    static volatile LONG64 cached_frequency;
+    LONG64 frequency = InterlockedCompareExchange64(&cached_frequency, 0, 0);
     LARGE_INTEGER now;
-    if (!frequency.QuadPart)
-        QueryPerformanceFrequency(&frequency);
+    if (!frequency) {
+        LARGE_INTEGER queried;
+        QueryPerformanceFrequency(&queried);
+        frequency = queried.QuadPart;
+        InterlockedExchange64(&cached_frequency, frequency);
+    }
     QueryPerformanceCounter(&now);
-    return (now.QuadPart / frequency.QuadPart) * 1000000000LL +
-           (now.QuadPart % frequency.QuadPart) * 1000000000LL / frequency.QuadPart;
+    return (now.QuadPart / frequency) * 1000000000LL +
+           (now.QuadPart % frequency) * 1000000000LL / frequency;
 }
 
 void mvm_mlt_export_observe(MvmExportObserver* observer, int point, long long frame) {
@@ -62,6 +68,9 @@ void mvm_mlt_export_observe(MvmExportObserver* observer, int point, long long fr
             sample->ordinal = ordinal;
             sample->frame = frame;
             sample->ns = now;
+            /* 中身を書き終えてから公開する。sample_count は「予約した数」なので、読む側は
+             * ready の立っていない枠を読まない。 */
+            InterlockedExchange(&sample->ready, 1);
         }
     }
 }
@@ -90,13 +99,21 @@ static int export_rgba_image(mlt_frame frame, uint8_t** image, mlt_image_format*
     mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_IMAGE_REQUEST, position);
     if (!audit->spec->rgba_callback) {
         /* 観測だけのとき。consumer が要求した形式を変えない。 */
+        const long long began = observer ? mvm_mlt_export_observer_now_ns() : 0;
         const int passed = mlt_frame_get_image(frame, image, format, width, height, writable);
+        if (observer)
+            InterlockedExchangeAdd64(&observer->image_ns_total,
+                                     mvm_mlt_export_observer_now_ns() - began);
         mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_IMAGE_RETURN, position);
         return passed;
     }
     const mlt_image_format requested = *format;
     *format = mlt_image_rgba;
+    const long long began = observer ? mvm_mlt_export_observer_now_ns() : 0;
     int status = mlt_frame_get_image(frame, image, format, width, height, writable);
+    if (observer)
+        InterlockedExchangeAdd64(&observer->image_ns_total,
+                                 mvm_mlt_export_observer_now_ns() - began);
     mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_IMAGE_RETURN, position);
     if (status || !*image || *format != mlt_image_rgba || *width != audit->spec->width ||
         *height != audit->spec->height) {
@@ -453,7 +470,41 @@ static mlt_rect placement_rect_at(const MvmExportClip* clip, int index) {
         rect.w = frame->rect_width;
         rect.h = frame->rect_height;
     }
+    /* 切り出した素材 (試作)。等倍だけを受け付けるので、矩形は切り出した範囲そのものになる。 */
+    if (clip->source_width > 0) {
+        rect.x += clip->source_x;
+        rect.y += clip->source_y;
+        rect.w = clip->source_width;
+        rect.h = clip->source_height;
+    }
     return rect;
+}
+
+/* 切り出した素材を置けるのは、矩形が出力全体と同じ大きさ (等倍) で、回転・shear・crop が無い
+ * 上位 track の静止画だけ。拡縮があると MLT は素材を矩形の大きさへ縮拡してから置くので、
+ * 切り出した画像では結果が変わる。 */
+static int source_region_valid(const MvmExportClip* clip, const MvmExportSpec* spec) {
+    if (clip->source_width == 0 && clip->source_height == 0 && clip->source_x == 0 &&
+        clip->source_y == 0)
+        return 1;
+    if (clip->source_width <= 0 || clip->source_height <= 0 || clip->source_x < 0 ||
+        clip->source_y < 0 || clip->source_x > spec->width - clip->source_width ||
+        clip->source_y > spec->height - clip->source_height || clip->is_audio ||
+        clip->video_track <= 0 || !clip->is_still_image || clip->is_image_sequence ||
+        clip->opaque_backdrop || clip->rect_width != spec->width ||
+        clip->rect_height != spec->height || clip->rotation_degrees != 0.0 ||
+        clip->shear_degrees != 0.0 || clip->crop_left != 0 || clip->crop_top != 0 ||
+        clip->crop_right != 0 || clip->crop_bottom != 0)
+        return 0;
+    for (int index = 0; index < clip->motion_frame_count; ++index) {
+        const MvmExportMotionFrame* frame = &clip->motion_frames[index];
+        if (frame->rect_width != spec->width || frame->rect_height != spec->height ||
+            frame->rotation_degrees != 0.0 || frame->shear_degrees != 0.0 ||
+            frame->crop_left != 0.0 || frame->crop_top != 0.0 || frame->crop_right != 0.0 ||
+            frame->crop_bottom != 0.0)
+            return 0;
+    }
+    return 1;
 }
 
 static int crop_key_redundant(const MvmExportClip* clip, int index, double width, double height) {
@@ -962,6 +1013,11 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             set_err(err, err_size, "clip %d は audio clip です。sequential 経路は映像専用です", i);
             return 1;
         }
+        if (clips[i].source_width != 0 || clips[i].source_height != 0 || clips[i].source_x != 0 ||
+            clips[i].source_y != 0) {
+            set_err(err, err_size, "clip %d は切り出した素材です。sequential 経路は扱えません", i);
+            return 1;
+        }
         if (clips[i].effects_enabled &&
             (clips[i].opacity_keyframe_count <= 0 || !clips[i].opacity_keyframes ||
              clips[i].rect_width <= 0.0 || clips[i].rect_height <= 0.0)) {
@@ -1344,6 +1400,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         cut_capacity += 2 + clip->tail_padding_frames;
         if (!clip->is_audio && clip->timeline_start_frame < cursors[clip->video_track]) {
             set_err(err, err_size, "tractor clip %dが同一trackで重複または未sortです", index);
+            goto cleanup;
+        }
+        if (!source_region_valid(clip, spec)) {
+            set_err(err, err_size, "clip %dの切り出した素材の配置が不正です", index);
             goto cleanup;
         }
         if (clip->is_audio) {

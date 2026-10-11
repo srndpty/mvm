@@ -94,12 +94,26 @@ constexpr Fixture kFixtures[] = {
     // 層数を固定して尺（= layer ごとの keyframe 数）だけを伸ばす。コストが尺に依存するかを見る。
     {"math-16-480f", FixtureKind::Synthetic, 16, 480, 0, {0, 240, 479}},
     {"math-16-1920f", FixtureKind::Synthetic, 16, 1920, 0, {0, 960, 1919}},
-    // 実 Project の 89〜92 秒。分数線の伸縮と分子の移動を含む（元の代表 frame 5340・5370・5400）。
+    // 実 Project の 88〜91 秒。分数線の伸縮と分子の移動を含む（元の代表 frame 5340・5370・5400）。
     {"v4-region", FixtureKind::Region, 0, 180, 5280, {60, 90, 120}},
     {"v4-full", FixtureKind::Full, 0, 6840, 0, {600, 5370, 6720}},
+    // --- layer の渡し方の比較用 (P1)。上の fixture は変えず、別名で足す。全 frame を比べる。 ---
+    {"cmp-integer", FixtureKind::Synthetic, 1, 120, 0, {0, 60, 119}, true}, // 整数位置
+    {"cmp-fraction-fade", FixtureKind::Synthetic, 1, 120, 0, {0, 60, 119}}, // 端数位置と fade
+    {"cmp-layers-16", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}},    // 重なる複数 layer
+    {"cmp-layers-48", FixtureKind::Synthetic, 48, 120, 0, {0, 60, 119}},
+    // 実 Project の 20〜22 秒: 分子の移動と分数線の出現 (位置・不透明度の補間の途中を含む)。
+    {"cmp-region-motion", FixtureKind::Region, 0, 120, 1200, {30, 60, 96}},
+    // 実 Project の 88〜91 秒: 分数線の伸縮 (拡縮する layer は切り出しの対象外になる)。
+    {"cmp-region-scale", FixtureKind::Region, 0, 180, 5280, {60, 90, 120}},
 };
 
-enum class Inject { None, DropFrame, RejectFrame, OracleShift, Cancel };
+enum class Inject { None, DropFrame, RejectFrame, OracleShift, Cancel, CompareCorrupt };
+
+// --compare の結果。完全一致と 1 階調以内を同じ終了コードにしない。
+constexpr int kExitCompareWithinOne = 13; // candidate は baseline と 1 階調以内 (完全一致ではない)
+constexpr int kExitCompareDiffers = 14;   // 1 階調を超える画素がある
+constexpr int kExitCompareInvalid = 15; // 全 frame を比べられなかった、または baseline が再現しない
 
 // 不透明な下地 (alpha 255) へ MLT の affine が重ねた結果の alpha は 255 * (as + ad - as * ad) の
 // 切り捨てで、ad >= 254/255 なら 255 - (1 - as) >= 254。これより低い alpha は合成の異常として扱う。
@@ -110,6 +124,11 @@ struct Options {
     std::filesystem::path project, manim, output, ffprobe, gdb;
     const Fixture* fixture = nullptr;
     Inject inject = Inject::None;
+    // FullFrame 以外なら、baseline の後に同じ fixture をその渡し方でも書き出して全画素を比べる。
+    mvm::app::MathLayerStaging compare = mvm::app::MathLayerStaging::FullFrame;
+    // 0 は製品の値のまま。並列度の測定にだけ使う (report に残る)。
+    int renderThreads = 0;
+    mvm::app::MathLayerStaging mainStaging = mvm::app::MathLayerStaging::FullFrame;
     int capSeconds = 240;  // 書き出し全体の診断上限
     int stallSeconds = 45; // どの counter も進まない時間
     int stackSamples = 2;
@@ -798,6 +817,23 @@ bool parseOptions(int argc, char** argv, Options& options) {
             for (const auto& fixture : kFixtures)
                 if (value == fixture.name)
                     options.fixture = &fixture;
+        } else if (key == "--compare") {
+            if (value == "bounding-box")
+                options.compare = mvm::app::MathLayerStaging::BoundingBox;
+            else if (value == "anchored-box")
+                options.compare = mvm::app::MathLayerStaging::AnchoredBox;
+            else
+                return false;
+        } else if (key == "--staging") {
+            // 主の書き出しそのものを試作の渡し方で行う (製品の経路ではない。report に残る)。
+            if (value == "bounding-box")
+                options.mainStaging = mvm::app::MathLayerStaging::BoundingBox;
+            else if (value == "anchored-box")
+                options.mainStaging = mvm::app::MathLayerStaging::AnchoredBox;
+            else
+                return false;
+        } else if (key == "--render-threads") {
+            options.renderThreads = std::atoi(value.c_str());
         } else if (key == "--inject") {
             if (value == "drop-frame")
                 options.inject = Inject::DropFrame;
@@ -807,6 +843,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 options.inject = Inject::OracleShift;
             else if (value == "cancel")
                 options.inject = Inject::Cancel;
+            else if (value == "compare-corrupt")
+                options.inject = Inject::CompareCorrupt;
             else if (value != "none")
                 return false;
         } else {
@@ -901,9 +939,43 @@ int main(int argc, char** argv) {
     const std::set<std::int64_t> representative(std::begin(fixture.representative),
                                                 std::end(fixture.representative));
 
+    // --compare: 同じ process で続けて行う追加の書き出し (candidate と、再現性を見る baseline)。
+    struct ExtraRun {
+        mvm::app::MathLayerStaging staging = mvm::app::MathLayerStaging::FullFrame;
+        MvmExportObserver observer{};
+        std::function<bool(std::int64_t, const std::uint8_t*, int, int)> validator;
+        mvm::app::TimelineExportResult result;
+        long long beginNs = 0, endNs = 0;
+        double cpuSeconds = 0.0;
+        std::vector<long long> regionPixels; // 切り出して渡した数式 clip ごとの画素数
+    };
+
+    ExtraRun* extra = nullptr;
+    std::map<std::int64_t, QByteArray> baselineFrames;
+
     mvm::app::MvmController::ExportRunner runner =
         [&](const Project& exportProject, const mvm::app::TimelineExportRequest& request) {
             auto input = request;
+            if (options.renderThreads > 0)
+                input.renderThreads = options.renderThreads; // 製品の値 (4) ではない
+            if (extra) {
+                // 比較用の追加の書き出し。同じ controller・同じ要求で、layer の渡し方だけを変える。
+                if (options.requestTimeoutMs > 0)
+                    input.timeoutMs = options.requestTimeoutMs;
+                input.exportObserver = &extra->observer;
+                input.mathLayerStaging = extra->staging;
+                input.mathStagingObserver = [&](const std::string&, int, int, int regionWidth,
+                                                int regionHeight) {
+                    extra->regionPixels.push_back(static_cast<long long>(regionWidth) *
+                                                  regionHeight);
+                };
+                input.encoderFrameValidator = extra->validator;
+                extra->beginNs = mvm_mlt_export_observer_now_ns();
+                extra->result = mvm::app::exportTimeline(exportProject, input);
+                extra->endNs = mvm_mlt_export_observer_now_ns();
+                return extra->result;
+            }
+            input.mathLayerStaging = options.mainStaging;
             // timeout は製品の値のまま。診断の上限は watchdog が別に持つ。
             productTimeoutMs = input.timeoutMs;
             if (options.requestTimeoutMs > 0)
@@ -932,7 +1004,13 @@ int main(int argc, char** argv) {
                 std::uint64_t hash = 0;
                 int minAlpha = 0;
                 digestFrame(rgba, bytes, hash, minAlpha);
+                // 比較のときは baseline の全 frame を保持する (ほぼ単色なので圧縮すると小さい)。
+                QByteArray packed;
+                if (options.compare != mvm::app::MathLayerStaging::FullFrame)
+                    packed = qCompress(rgba, static_cast<qsizetype>(bytes), 1);
                 std::lock_guard lock(observation.mutex);
+                if (!packed.isEmpty())
+                    baselineFrames.try_emplace(frame, std::move(packed));
                 observation.width = frameWidth;
                 observation.height = frameHeight;
                 auto& seen = observation.frames[frame];
@@ -1121,6 +1199,132 @@ int main(int argc, char** argv) {
     snapshots.push_back(takeSnapshot());
     av_log_set_callback(av_log_default_callback);
     gTapObserver.store(nullptr);
+
+    // --- baseline と candidate の比較 ---------------------------------------------
+    // 同じ process・同じ build で、candidate、もう一度 baseline の順に書き出す。2 回目の baseline
+    // は 1 回目と全 frame 同じでなければならない (違えば比較そのものが成り立たない)。
+    struct FrameDifference {
+        long long pixels = 0; // 1 階調でも違う画素
+        long long beyond = 0; // 1 階調を超えて違う画素
+        int maxDifference = 0;
+        int left = 0, top = 0, right = 0, bottom = 0;
+    };
+
+    const bool comparing = options.compare != mvm::app::MathLayerStaging::FullFrame;
+    ExtraRun candidateRun, repeatRun;
+    std::mutex compareMutex;
+    std::set<std::int64_t> candidateSeen, repeatSeen;
+    std::map<std::int64_t, FrameDifference> candidateDifferences;
+    long long compareUnexpected = 0, repeatMismatches = 0;
+    bool compareRan = false;
+    if (comparing && exported.success && watchdog == "none") {
+        const auto frameBytes =
+            static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U;
+        const auto baselineHash = [&](std::int64_t frame) -> std::optional<std::uint64_t> {
+            std::lock_guard lock(observation.mutex);
+            const auto found = observation.frames.find(frame);
+            if (found == observation.frames.end())
+                return std::nullopt;
+            return found->second.hash;
+        };
+        candidateRun.staging = options.compare;
+        candidateRun.validator = [&](std::int64_t frame, const std::uint8_t* rgba, int frameWidth,
+                                     int frameHeight) {
+            std::uint64_t hash = 0;
+            int minAlpha = 0;
+            const auto expected = baselineHash(frame);
+            if (!expected || frameWidth != width || frameHeight != height) {
+                std::lock_guard lock(compareMutex);
+                ++compareUnexpected;
+                return true;
+            }
+            digestFrame(rgba, frameBytes, hash, minAlpha);
+            const bool corrupt = options.inject == Inject::CompareCorrupt && frame == 1;
+            FrameDifference difference;
+            if (hash != *expected || corrupt) {
+                QByteArray packed;
+                {
+                    std::lock_guard lock(observation.mutex);
+                    packed = baselineFrames.at(frame);
+                }
+                QByteArray baseline = qUncompress(packed);
+                if (static_cast<std::size_t>(baseline.size()) != frameBytes) {
+                    std::lock_guard lock(compareMutex);
+                    ++compareUnexpected;
+                    return true;
+                }
+                if (corrupt) // 比較が効いていることの対照: baseline の 1 画素を 2 階調ずらす
+                    baseline[0] = static_cast<char>(static_cast<std::uint8_t>(baseline[0]) ^ 2U);
+                const auto* base = reinterpret_cast<const std::uint8_t*>(baseline.constData());
+                difference.left = width;
+                difference.top = height;
+                difference.right = difference.bottom = -1;
+                for (std::size_t offset = 0; offset < frameBytes; offset += 4) {
+                    int worst = 0;
+                    for (std::size_t channel = 0; channel < 4; ++channel)
+                        worst = std::max(worst, std::abs(static_cast<int>(rgba[offset + channel]) -
+                                                         static_cast<int>(base[offset + channel])));
+                    if (worst == 0)
+                        continue;
+                    const int column =
+                        static_cast<int>((offset / 4U) % static_cast<std::size_t>(width));
+                    const int row =
+                        static_cast<int>((offset / 4U) / static_cast<std::size_t>(width));
+                    ++difference.pixels;
+                    difference.beyond += worst > 1;
+                    difference.maxDifference = std::max(difference.maxDifference, worst);
+                    difference.left = std::min(difference.left, column);
+                    difference.right = std::max(difference.right, column);
+                    difference.top = std::min(difference.top, row);
+                    difference.bottom = std::max(difference.bottom, row);
+                }
+            }
+            std::lock_guard lock(compareMutex);
+            candidateSeen.insert(frame);
+            if (difference.pixels > 0)
+                candidateDifferences[frame] = difference;
+            return true;
+        };
+        repeatRun.validator = [&](std::int64_t frame, const std::uint8_t* rgba, int frameWidth,
+                                  int frameHeight) {
+            std::uint64_t hash = 0;
+            int minAlpha = 0;
+            const auto expected = baselineHash(frame);
+            if (expected && frameWidth == width && frameHeight == height)
+                digestFrame(rgba, frameBytes, hash, minAlpha);
+            std::lock_guard lock(compareMutex);
+            repeatSeen.insert(frame);
+            if (!expected || hash != *expected)
+                ++repeatMismatches;
+            return true;
+        };
+        const auto runExtra = [&](ExtraRun& run, const char* suffix) {
+            const auto path = options.output / (std::string(fixture.name) + "-" + suffix + ".mp4");
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+            extra = &run;
+            const double cpuBefore = processCpuSeconds();
+            if (controller->exportTimeline(QUrl::fromLocalFile(toQString(path)))) {
+                QElapsedTimer elapsed;
+                elapsed.start();
+                bool cancelled = false;
+                while (controller->exporting()) {
+                    QGuiApplication::processEvents();
+                    QThread::msleep(20);
+                    if (!cancelled && elapsed.elapsed() > options.capSeconds * 1000LL) {
+                        controller->cancelTimelineExport();
+                        cancelled = true;
+                    }
+                }
+            }
+            run.cpuSeconds = processCpuSeconds() - cpuBefore;
+            extra = nullptr;
+            std::filesystem::remove(path, ignored);
+        };
+        runExtra(candidateRun, "candidate");
+        runExtra(repeatRun, "baseline-repeat");
+        compareRan = true;
+    }
 
     // --- 判定 --------------------------------------------------------------------
     QJsonArray failures;
@@ -1348,6 +1552,8 @@ int main(int argc, char** argv) {
     const long sampleCount = std::min<long>(sampleAttempts, MVM_EXPORT_OBSERVE_SAMPLE_CAPACITY);
     for (long index = 0; index < sampleCount; ++index) {
         const auto& sample = observer.samples[index];
+        if (!sample.ready)
+            continue; // 予約だけされて書き終わっていない枠
         samples.append(
             QJsonObject{{QStringLiteral("point"), QString::fromLatin1(kPointNames[sample.point])},
                         {QStringLiteral("ordinal"), static_cast<qint64>(sample.ordinal)},
@@ -1448,6 +1654,201 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --- 比較の記録 --------------------------------------------------------------
+    QString compareVerdict = QStringLiteral("NOT_REQUESTED");
+    if (comparing) {
+        const auto runObject = [&](const MvmExportObserver& observed, double wallSeconds,
+                                   double cpuSeconds, bool success) {
+            const auto images = observed.points[MVM_EXPORT_OBSERVE_IMAGE_RETURN].count;
+            const long long renderBegin = observed.stage_ns[MVM_EXPORT_STAGE_RENDER];
+            const long long renderEnd = observed.stage_ns[MVM_EXPORT_STAGE_CONSUMER_CLOSE];
+            return QJsonObject{
+                {QStringLiteral("success"), success},
+                {QStringLiteral("wall_seconds"), wallSeconds},
+                {QStringLiteral("cpu_seconds"), cpuSeconds},
+                {QStringLiteral("render_seconds"),
+                 renderEnd > renderBegin ? static_cast<double>(renderEnd - renderBegin) / 1e9
+                                         : 0.0},
+                {QStringLiteral("composited_images"), static_cast<qint64>(images)},
+                // 合成だけの時間 (検査・encoder を含まない)。全 render worker の和を回数で割る。
+                {QStringLiteral("compose_ms_per_image"),
+                 images > 0 ? static_cast<double>(observed.image_ns_total) / 1e6 /
+                                  static_cast<double>(images)
+                            : 0.0},
+                {QStringLiteral("animation_keyframes"),
+                 static_cast<qint64>(observed.animation_keyframes)}};
+        };
+        QJsonObject compare;
+        compare.insert(QStringLiteral("candidate"),
+                       options.compare == mvm::app::MathLayerStaging::BoundingBox
+                           ? QStringLiteral("bounding-box")
+                           : QStringLiteral("anchored-box"));
+        compare.insert(QStringLiteral("ran"), compareRan);
+        compare.insert(
+            QStringLiteral("baseline"),
+            runObject(observer,
+                      static_cast<double>(exportEndNs.load() - exportBeginNs.load()) / 1e9,
+                      cpuEnd - cpuBegin, exported.success));
+        compare.insert(
+            QStringLiteral("candidate_run"),
+            runObject(candidateRun.observer,
+                      static_cast<double>(candidateRun.endNs - candidateRun.beginNs) / 1e9,
+                      candidateRun.cpuSeconds, candidateRun.result.success));
+        compare.insert(QStringLiteral("baseline_repeat"),
+                       runObject(repeatRun.observer,
+                                 static_cast<double>(repeatRun.endNs - repeatRun.beginNs) / 1e9,
+                                 repeatRun.cpuSeconds, repeatRun.result.success));
+        long long regionTotal = 0;
+        for (const auto pixels : candidateRun.regionPixels)
+            regionTotal += pixels;
+        int mathClips = 0;
+        for (const auto& clip : project.timelineClips)
+            mathClips += clip.kind == TimelineClipKind::Math && clip.enabled;
+        compare.insert(QStringLiteral("math_clips"), mathClips);
+        compare.insert(QStringLiteral("cropped_clips"),
+                       static_cast<int>(candidateRun.regionPixels.size()));
+        compare.insert(QStringLiteral("cropped_area_ratio_mean"),
+                       candidateRun.regionPixels.empty()
+                           ? 0.0
+                           : static_cast<double>(regionTotal) /
+                                 static_cast<double>(candidateRun.regionPixels.size()) /
+                                 (static_cast<double>(width) * height));
+
+        // frame ごとの分類 (集計の軸に使うだけ。期待値には使わない)。
+        struct Bucket {
+            long long frames = 0, exact = 0, withinOne = 0, beyond = 0;
+        };
+
+        std::map<std::string, Bucket> buckets;
+        long long differingPixels = 0, beyondPixels = 0, framesExact = 0, framesWithinOne = 0,
+                  framesBeyond = 0, framesUncompared = 0;
+        int worstDifference = 0;
+        QJsonArray differingFrames;
+        for (std::int64_t frame = 0; frame < expectedFrames; ++frame) {
+            if (!candidateSeen.contains(frame)) {
+                ++framesUncompared; // 比べていない frame は一致に数えない
+                continue;
+            }
+            int layers = 0;
+            bool fractional = false, interpolating = false, fading = false, scaled = false;
+            for (const auto& clip : project.timelineClips) {
+                if (clip.kind != TimelineClipKind::Math || !clip.enabled)
+                    continue;
+                const auto end = clipEnd(project, clip);
+                if (frame < clip.timelineStartFrame || frame >= end)
+                    continue;
+                ++layers;
+                const auto local = frame - clip.timelineStartFrame;
+                const auto duration = end - clip.timelineStartFrame;
+                const auto at = mvm::project::evaluateClipEffects(clip.effects, local);
+                const auto differs = [&](std::int64_t other) {
+                    if (other < 0 || other >= duration)
+                        return false;
+                    const auto value = mvm::project::evaluateClipEffects(clip.effects, other);
+                    return value.positionXPercent != at.positionXPercent ||
+                           value.positionYPercent != at.positionYPercent ||
+                           value.scaleXPercent != at.scaleXPercent ||
+                           value.scaleYPercent != at.scaleYPercent ||
+                           value.opacityPercent != at.opacityPercent;
+                };
+                interpolating = interpolating || differs(local - 1) || differs(local + 1);
+                fading = fading || local < clip.effects.fadeInFrames ||
+                         local >= duration - clip.effects.fadeOutFrames;
+                scaled = scaled || at.scaleXPercent != 100.0 || at.scaleYPercent != 100.0;
+                const double dx = at.positionXPercent / 100.0 * width;
+                const double dy = at.positionYPercent / 100.0 * height;
+                fractional = fractional || std::abs(dx - std::round(dx)) > 1e-6 ||
+                             std::abs(dy - std::round(dy)) > 1e-6;
+            }
+            const auto found = candidateDifferences.find(frame);
+            const int kind = found == candidateDifferences.end() ? 0
+                             : found->second.beyond > 0          ? 2
+                                                                 : 1;
+            framesExact += kind == 0;
+            framesWithinOne += kind == 1;
+            framesBeyond += kind == 2;
+            const auto add = [&](const char* name, bool applies) {
+                if (!applies)
+                    return;
+                auto& bucket = buckets[name];
+                ++bucket.frames;
+                bucket.exact += kind == 0;
+                bucket.withinOne += kind == 1;
+                bucket.beyond += kind == 2;
+            };
+            add("all", true);
+            add("no_math_layer", layers == 0);
+            add("integer_position_static", layers > 0 && !fractional && !interpolating && !fading);
+            add("fractional_position_static", fractional && !interpolating && !fading);
+            add("interpolating", interpolating);
+            add("fading", fading);
+            add("scaled_layer_present", scaled);
+            add("multiple_layers", layers >= 2);
+            if (kind != 0) {
+                const auto& difference = found->second;
+                differingPixels += difference.pixels;
+                beyondPixels += difference.beyond;
+                worstDifference = std::max(worstDifference, difference.maxDifference);
+                if (differingFrames.size() < 48)
+                    differingFrames.append(QJsonObject{
+                        {QStringLiteral("frame"), static_cast<qint64>(frame)},
+                        {QStringLiteral("layers"), layers},
+                        {QStringLiteral("differing_pixels"),
+                         static_cast<qint64>(difference.pixels)},
+                        {QStringLiteral("pixels_beyond_one"),
+                         static_cast<qint64>(difference.beyond)},
+                        {QStringLiteral("max_channel_difference"), difference.maxDifference},
+                        {QStringLiteral("region"),
+                         QJsonArray{difference.left, difference.top, difference.right,
+                                    difference.bottom}}});
+            }
+        }
+        QJsonObject bucketObject;
+        for (const auto& [name, bucket] : buckets)
+            bucketObject.insert(QString::fromLatin1(name.c_str()),
+                                QJsonObject{{QStringLiteral("frames"), bucket.frames},
+                                            {QStringLiteral("exact"), bucket.exact},
+                                            {QStringLiteral("within_one"), bucket.withinOne},
+                                            {QStringLiteral("beyond_one"), bucket.beyond}});
+        compare.insert(QStringLiteral("frames_expected"), static_cast<qint64>(expectedFrames));
+        compare.insert(QStringLiteral("frames_exact"), framesExact);
+        compare.insert(QStringLiteral("frames_within_one"), framesWithinOne);
+        compare.insert(QStringLiteral("frames_beyond_one"), framesBeyond);
+        compare.insert(QStringLiteral("frames_uncompared"), framesUncompared);
+        compare.insert(QStringLiteral("differing_pixels"), differingPixels);
+        compare.insert(QStringLiteral("pixels_beyond_one"), beyondPixels);
+        compare.insert(QStringLiteral("max_channel_difference"), worstDifference);
+        compare.insert(QStringLiteral("unexpected_callbacks"), compareUnexpected);
+        compare.insert(QStringLiteral("baseline_repeat_frames"),
+                       static_cast<qint64>(repeatSeen.size()));
+        compare.insert(QStringLiteral("baseline_repeat_mismatches"), repeatMismatches);
+        compare.insert(QStringLiteral("by_category"), bucketObject);
+        compare.insert(QStringLiteral("differing_frames_first"), differingFrames);
+        const bool comparable = compareRan && candidateRun.result.success &&
+                                repeatRun.result.success && framesUncompared == 0 &&
+                                compareUnexpected == 0 && repeatMismatches == 0 &&
+                                static_cast<std::int64_t>(repeatSeen.size()) == expectedFrames;
+        compareVerdict = !comparable           ? QStringLiteral("COMPARE_INVALID")
+                         : framesBeyond > 0    ? QStringLiteral("DIFFERS_BEYOND_ONE")
+                         : framesWithinOne > 0 ? QStringLiteral("WITHIN_ONE_NOT_EXACT")
+                                               : QStringLiteral("EXACT");
+        compare.insert(QStringLiteral("verdict"), compareVerdict);
+        report.insert(QStringLiteral("compare"), compare);
+    }
+    report.insert(QStringLiteral("render_threads_override"), options.renderThreads);
+    report.insert(QStringLiteral("main_staging"),
+                  options.mainStaging == mvm::app::MathLayerStaging::FullFrame
+                      ? QStringLiteral("full-frame (product)")
+                  : options.mainStaging == mvm::app::MathLayerStaging::BoundingBox
+                      ? QStringLiteral("bounding-box (prototype)")
+                      : QStringLiteral("anchored-box (prototype)"));
+    report.insert(
+        QStringLiteral("compose_ms_per_image"),
+        observer.points[MVM_EXPORT_OBSERVE_IMAGE_RETURN].count > 0
+            ? static_cast<double>(observer.image_ns_total) / 1e6 /
+                  static_cast<double>(observer.points[MVM_EXPORT_OBSERVE_IMAGE_RETURN].count)
+            : 0.0);
+
     int exitCode = kExitPass;
     QString verdict = QStringLiteral("PASS");
     if (!exported.success && (finalExists || temporaryExists)) {
@@ -1468,6 +1869,17 @@ int main(int argc, char** argv) {
     } else if (!failures.isEmpty()) {
         exitCode = kExitParityFailed;
         verdict = QStringLiteral("PARITY_FAILED");
+    }
+    // 比較は baseline の照合が成立したときだけ判定に使う。
+    if (exitCode == kExitPass && comparing) {
+        if (compareVerdict == QStringLiteral("COMPARE_INVALID"))
+            exitCode = kExitCompareInvalid;
+        else if (compareVerdict == QStringLiteral("DIFFERS_BEYOND_ONE"))
+            exitCode = kExitCompareDiffers;
+        else if (compareVerdict == QStringLiteral("WITHIN_ONE_NOT_EXACT"))
+            exitCode = kExitCompareWithinOne;
+        if (exitCode != kExitPass)
+            verdict = compareVerdict;
     }
     report.insert(QStringLiteral("failures"), failures);
     report.insert(QStringLiteral("verdict"), verdict);

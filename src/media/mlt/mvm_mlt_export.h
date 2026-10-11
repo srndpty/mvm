@@ -98,6 +98,15 @@ typedef struct {
      * n 番の PNG を出す (qimage、1 枚 1 frame)。is_still_image と同時に指定する。
      * 数式の Write に使う (docs/math-clips.md P1-0 で frame 単位の対応を確認した)。 */
     int is_image_sequence;
+    /* 試作 (既定は 0 = 使わない)。source_width が正なら、path の画像は出力と同じ大きさの画像の
+     * [source_x, source_x + source_width) x [source_y, source_y + source_height) だけを切り出した
+     * ものとして扱い、配置の矩形をその分だけずらして同じ位置へ置く。等倍・回転なし・crop なしの
+     * 上位 track の静止画だけが使える (それ以外は拒否する)。rect_* は切り出す前の全体の矩形の
+     * まま渡す。 */
+    int source_x;
+    int source_y;
+    int source_width;
+    int source_height;
 } MvmExportClip;
 
 /* --- 書き出しの観測 (診断用) -------------------------------------------------
@@ -152,6 +161,7 @@ typedef struct {
     long long ordinal; /* その境界で何回目か (1 始まり) */
     long long frame;
     long long ns;
+    volatile long ready; /* 非0になってから上の値を読む (書いている途中の枠を読まない) */
 } MvmExportObserveSample;
 
 #define MVM_EXPORT_OBSERVE_SAMPLE_CAPACITY 256
@@ -168,6 +178,9 @@ typedef struct MvmExportObserver {
      * 値の変わらない区間は両端だけを置く (mvm_mlt_export.c)。 */
     volatile long long animation_samples;
     volatile long long animation_keyframes;
+    /* 合成後の画像の要求から戻りまでの時間の合計 (全 render worker の和、ns)。検査の callback は
+     * 含まない。1 frame の合成コストを、検査や encoder の時間と分けて比べるために使う。 */
+    volatile long long image_ns_total;
     volatile long sample_count; /* 採ろうとした数。CAPACITY を超えた分は捨てている */
     MvmExportObserveSample samples[MVM_EXPORT_OBSERVE_SAMPLE_CAPACITY];
     /* 入力: 非0なら muxer に packet ごとの debug 記録 (fdebug=ts) を出させる。記録を数えるのは

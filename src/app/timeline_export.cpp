@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -43,6 +44,52 @@ struct ExportGeometry {
     double rotationDegrees = 0.0;
     double shearDegrees = 0.0;
 };
+
+struct MathStagingRegion {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+};
+
+// 試作: 字形 (alpha > 0) のある範囲。双線形補間は隣の画素も読むので、透明な余白を 2 画素残す。
+// 字形が無い・範囲を決められないときは nullopt (全体を stage する)。
+std::optional<MathStagingRegion> mathStagingRegion(const std::vector<std::uint8_t>& rgba, int width,
+                                                   int height, MathLayerStaging mode) {
+    int left = width, top = height, right = -1, bottom = -1;
+    for (int row = 0; row < height; ++row) {
+        const auto* line =
+            rgba.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(width) * 4U;
+        for (int column = 0; column < width; ++column) {
+            if (line[static_cast<std::size_t>(column) * 4U + 3U] == 0)
+                continue;
+            left = std::min(left, column);
+            right = std::max(right, column);
+            top = std::min(top, row);
+            bottom = std::max(bottom, row);
+        }
+    }
+    if (right < 0)
+        return std::nullopt;
+    constexpr int kMargin = 2;
+    MathStagingRegion region;
+    region.x = mode == MathLayerStaging::AnchoredBox ? 0 : std::max(0, left - kMargin);
+    region.y = mode == MathLayerStaging::AnchoredBox ? 0 : std::max(0, top - kMargin);
+    region.width = std::min(width, right + 1 + kMargin) - region.x;
+    region.height = std::min(height, bottom + 1 + kMargin) - region.y;
+    // MLT の affine は素材を「高さ * (幅 / 高さ)」を int へ切り捨てた幅で要求する
+    // (transition_affine.c)。この式が元の幅に戻らない大きさだと 1 画素縮められるので、
+    // 戻る幅になるまで透明な余白を足す。
+    const auto requested = [&] {
+        return static_cast<int>(region.height *
+                                (static_cast<double>(region.width) / region.height));
+    };
+    while (requested() != region.width && region.x + region.width < width)
+        ++region.width;
+    if (requested() != region.width)
+        return std::nullopt;
+    return region;
+}
 
 bool hasEquationOuterTransition(const project::Project& project,
                                 const project::TimelineClip& clip) {
@@ -657,6 +704,35 @@ TimelineExportResult exportTimeline(const project::Project& project,
     std::map<std::size_t, std::string> writePaths;
     // mapping ごとの連番。cut の前後と Write の連番を混同しない。
     std::map<std::size_t, std::string> transformPaths;
+    // 試作 (既定は使わない): 字形の範囲だけを stage する数式 clip。切り出せるのは、その clip の
+    // どの区間も等倍・回転なし・crop なしで上位 layer にある静止のときだけ。
+    std::set<std::size_t> regionCandidates;
+    std::map<std::size_t, MathStagingRegion> mathRegions;
+    if (request.mathLayerStaging != MathLayerStaging::FullFrame) {
+        std::set<std::size_t> rejected;
+        for (const auto& planned : plan.clips) {
+            if (planned.subtitle || planned.audio)
+                continue;
+            const auto index = static_cast<std::size_t>(planned.projectClipIndex);
+            if (index >= project.timelineClips.size())
+                continue; // 下の検査が失敗にする
+            bool plain = project.timelineClips[index].kind == project::TimelineClipKind::Math &&
+                         !planned.mathWrite && planned.mathTransformId.empty() &&
+                         !planned.opaqueBackdrop && planned.videoTrackIndex > 0 &&
+                         planned.cropLeft == 0 && planned.cropTop == 0 && planned.cropRight == 0 &&
+                         planned.cropBottom == 0 && planned.rotationDegrees == 0.0 &&
+                         planned.shearDegrees == 0.0 && planned.rectWidth == request.width &&
+                         planned.rectHeight == request.height;
+            for (const auto& frame : planned.motionFrames)
+                plain = plain && frame.cropLeft == 0.0 && frame.cropTop == 0.0 &&
+                        frame.cropRight == 0.0 && frame.cropBottom == 0.0 &&
+                        frame.rotationDegrees == 0.0 && frame.shearDegrees == 0.0 &&
+                        frame.rectWidth == request.width && frame.rectHeight == request.height;
+            (plain ? regionCandidates : rejected).insert(index);
+        }
+        for (const auto index : rejected)
+            regionCandidates.erase(index);
+    }
     for (const auto& planned : plan.clips) {
         if (planned.subtitle)
             continue;
@@ -899,8 +975,18 @@ TimelineExportResult exportTimeline(const project::Project& project,
                 result.error = "数式 clip '" + clip.name + "' を書き出せません: " + composed.error;
                 return result;
             }
-            const QImage image(composed.rgba.data(), composed.width, composed.height,
-                               composed.width * 4, QImage::Format_RGBA8888);
+            QImage image(composed.rgba.data(), composed.width, composed.height, composed.width * 4,
+                         QImage::Format_RGBA8888);
+            if (regionCandidates.contains(index)) {
+                if (const auto region = mathStagingRegion(
+                        composed.rgba, composed.width, composed.height, request.mathLayerStaging)) {
+                    image = image.copy(region->x, region->y, region->width, region->height);
+                    mathRegions.emplace(index, *region);
+                    if (request.mathStagingObserver)
+                        request.mathStagingObserver(clip.id, region->x, region->y, region->width,
+                                                    region->height);
+                }
+            }
             std::string staged;
             if (!stagePng(image, QString::number(index) + "-math.png", staged))
                 return result;
@@ -1032,6 +1118,13 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.rotation_degrees = planned.rotationDegrees;
         mapped.shear_degrees = planned.shearDegrees;
         mapped.opaque_backdrop = planned.opaqueBackdrop ? 1 : 0;
+        if (const auto region = mathRegions.find(index);
+            !planned.subtitle && region != mathRegions.end()) {
+            mapped.source_x = region->second.x;
+            mapped.source_y = region->second.y;
+            mapped.source_width = region->second.width;
+            mapped.source_height = region->second.height;
+        }
         auto& opacityKeys = opacityStorage.emplace_back();
         for (const auto& key : planned.opacityKeys)
             opacityKeys.push_back({key.localFrame, key.opacity});

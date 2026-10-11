@@ -63,9 +63,22 @@ def main():
                 if match and (match.group(4) or '').endswith('libmlt-7.dll'):
                     rva = dict((n, a) for a, n in tables['libmlt-7.dll'])['mlt_frame_get_image']
                     base['libmlt-7.dll'] = (int(match.group(2), 16) - rva) & ~0xFFFF
+    anchor = 'mlt_frame_get_image'
     if 'libmlt-7.dll' not in base:
-        raise SystemExit('load 先を決める frame (export_rgba_image) が stack にありません')
-    print(f"libmlt-7.dll の load 先: {base['libmlt-7.dll']:#x} (mlt_frame_get_image の戻り先から)")
+        # layer が多いと合成の再帰が深く、採った 40 frame に export_rgba_image が入らない。
+        # consumer の thread にある observed_get_frame の呼び出し元 (mlt_service_get_frame) を使う。
+        anchor = 'mlt_service_get_frame'
+        for block in threads:
+            lines = block.splitlines()
+            for index, line in enumerate(lines):
+                if 'observed_get_frame' in line and index + 1 < len(lines):
+                    match = frame.match(lines[index + 1])
+                    if match and (match.group(4) or '').endswith('libmlt-7.dll'):
+                        rva = dict((n, a) for a, n in tables['libmlt-7.dll'])[anchor]
+                        base['libmlt-7.dll'] = (int(match.group(2), 16) - rva) & ~0xFFFF
+    if 'libmlt-7.dll' not in base:
+        raise SystemExit('load 先を決める frame が stack にありません')
+    print(f"libmlt-7.dll の load 先: {base['libmlt-7.dll']:#x} ({anchor} の戻り先から)")
 
     def resolve(address, module):
         table = tables[module]
