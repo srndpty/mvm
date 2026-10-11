@@ -2601,6 +2601,10 @@ int main(int argc, char** argv) {
                          mvm::app::MathRasterCache::BackendState::Available;
               }),
               "偽の backend が使える");
+        check(controller->visualRasterBoundsForTest(-1).isEmpty() &&
+                  controller->visualRasterBoundsForTest(0).isEmpty() &&
+                  controller->visualRasterBoundsForTest(99).isEmpty(),
+              "clipが無いときと範囲外の番号では描画範囲を空にする");
 
         const auto undoBefore = controller->undoDepthForTest();
         check(controller->createMathClip(QStringLiteral("  x^2  ")), "数式 clip を作る");
@@ -2618,6 +2622,18 @@ int main(int argc, char** argv) {
               "描画が終わると ready");
         check(*backend.renders == 1, "1 回描く");
         const auto mathGeometry = controller->clipVisualGeometry(clipId);
+        int mathIndex = -1;
+        const auto& placed = controller->projectForTest().timelineClips;
+        for (int index = 0; index < static_cast<int>(placed.size()); ++index) {
+            if (QString::fromStdString(placed[static_cast<std::size_t>(index)].id) == clipId)
+                mathIndex = index;
+        }
+        check(mathIndex == 0 &&
+                  controller->visualRasterBoundsForTest(mathIndex) == QRect(kX, kY, 3, 2),
+              "描けた数式の範囲は、中央へ置いたmaskそのもの");
+        check(controller->visualRasterBoundsForTest(-1).isEmpty() &&
+                  controller->visualRasterBoundsForTest(mathIndex + 1).isEmpty(),
+              "範囲外の番号では描画範囲を空にする");
         check(!mathGeometry.isEmpty() && mathGeometry.value("x").toDouble() == 958.0 &&
                   mathGeometry.value("y").toDouble() == 539.0 &&
                   mathGeometry.value("width").toDouble() == 3.0 &&
@@ -2948,6 +2964,18 @@ int main(int argc, char** argv) {
                   "2 つ目の instance は権限不足を返し、依存導入・再試行の対象にしない");
             check(!blocked.value(QStringLiteral("message")).toString().isEmpty(),
                   "権限不足でも理由の表示文を残す");
+            int blockedIndex = -1;
+            const auto& blockedClips = intruder->projectForTest().timelineClips;
+            for (int index = 0; index < static_cast<int>(blockedClips.size()); ++index) {
+                if (QString::fromStdString(blockedClips[static_cast<std::size_t>(index)].id) ==
+                    blockedId)
+                    blockedIndex = index;
+            }
+            check(blockedIndex >= 0 && intruder->visualRasterBoundsForTest(blockedIndex).isEmpty(),
+                  "権限が無く描画も無い数式の範囲は空");
+            check(intruder->visualRasterBoundsForTest(-1).isEmpty() &&
+                      intruder->visualRasterBoundsForTest(blockedIndex + 5).isEmpty(),
+                  "権限不足でも範囲外の番号は空");
             intruder->retryMathRendering();
             settle(100);
             check(*preflights == 0 && ownerJobsAlive(),

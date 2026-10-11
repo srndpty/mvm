@@ -4349,6 +4349,14 @@ mvm_add_test(math_export_focused
     COMMAND mvm_test_math_export "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
     PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
 
+# 解の公式の実 H.264 照合。114秒・全 frame のため通常の CTest には入れない。
+qt_add_executable(mvm_math_score_export_parity harness/math_score_export_parity.cpp
+    ${MVM_CONTROLLER_SOURCES})
+target_include_directories(mvm_math_score_export_parity PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_math_score_export_parity PRIVATE ${MVM_CONTROLLER_LIBRARIES})
+target_compile_definitions(mvm_math_score_export_parity PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_math_score_export_parity PROPERTIES WIN32_EXECUTABLE OFF)
+
 add_executable(mvm_test_subtitle_export harness/test_subtitle_export.cpp)
 target_link_libraries(mvm_test_subtitle_export PRIVATE mvm::project mvm::text_raster mvm::timeline_export mvm::mlt mvm::gpu_preview Qt6::Gui mvm::warnings)
 target_compile_definitions(mvm_test_subtitle_export PRIVATE ${MVM_MLT_PATH_DEFS})

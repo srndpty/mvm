@@ -69,8 +69,24 @@ Math clip のプレビュー上の選択・変形枠には、実際に表示中�
 
 座標は `canvas` 内の中心位置、期間は frame、透明度は 0〜100。
 `color` の既定値は黒。背景は入力 Project の画像 clip などを引き継ぐ。
-入力の数式は置き換えるため、残す数式の ID は `preserve_clip_ids` に指定する。
 変換先は入力と別ファイルにする。
+
+生成した clip の ID は `mvm-math-score:{配置ID}:{部分式}:{状態}` で、
+強調は末尾に `:highlight` を付ける。配置 ID・部分式 ID・状態 ID にコロンは使えない。
+再生成は、この ID と Project 内の所有記録 `math_score_ownership` が指す clip、
+マーカー、以前に足した track だけを置き換える。空になった元の track は消さない。
+
+- 置き換える入力の数式は `replace_clip_ids` に明示する。書かれていない利用者の数式は失敗とし、消さない。
+  この配置の clip が既にある再生成では、取り込み済みで存在しない ID を欠落として失敗にしない。
+- 残す数式は `preserve_clip_ids` に明示する。他の配置が所有する数式は、指定しなくても残す。
+- 元の映像 track は空でも、番号・名前・mute・solo・ミキサー設定を維持する。生成 track は末尾へ足す。
+- 所有者の記録が無いマーカーは消さない。配置の停止点と同じ frame なら失敗する。
+- 所有記録が無く、この配置の数式とマーカーが両方残っている Project は再生成しない。
+- 削除する数式に結び付いた字幕は、状態の `subtitle_cue_id` で引き取るときだけ結び付きを外す。
+  それ以外は失敗する。残る clip に結び付いた字幕の時刻は変えない。
+
+製品が Project を保存すると、未知の所有記録は書き出されない。clip ID は残る。
+その状態でマーカーも残っている再生成は、上の規則で失敗する。推測では移行しない。
 
 ```powershell
 pwsh scripts/build.ps1 -Target mvm_project_validate
@@ -211,3 +227,12 @@ Project validator の正常・不正 fixture 2 件を対象とした。全 CTest
 配置 compiler の単体試験は `python -m unittest discover -s tests/math_authoring -v` で実行する。
 今回の対象 CTest は 6/6、配置 compiler は 17/17、正式 lint は通過した。
 専用 GUI、疎なラスタの合成、書き出しの追加受け入れ試験は今後の項目として roadmap に残す。
+
+[事実] 2026-10-11、v4 の `quadratic.mvm` を製品の `MvmController` が組む要求のまま
+`exportTimeline`（MLT avformat / H.264、CRF 23）へ渡した。
+数式 cache の PNG を 121 枚 stage し、libx264 は consumer 開始時の警告まで出したが、
+約 46 分・CPU 時間 約 3000 秒のあいだ出力は 48 byte のまま増えなかった。
+作業メモリは約 1.7 GB で横ばいだった。frame は mux されていない。
+この実行は途中で止め、未完成の `quadratic-export.mp4.mvmtmp` は残していない。
+同じ Project の GPU preview 14 frame は `export-parity/preview-native-*.png` にある。
+preview の成功は書き出しの受け入れではない。

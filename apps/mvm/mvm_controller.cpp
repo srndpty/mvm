@@ -3683,6 +3683,8 @@ bool MvmController::textClipHasMotion(const QString& clipId) const {
 }
 
 QRect MvmController::visualRasterBounds(int clipIndex) const {
+    if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size()))
+        return {};
     const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
     if (clip.kind == project::TimelineClipKind::Text)
         return textRasterBounds(clipIndex);
@@ -3695,9 +3697,12 @@ QRect MvmController::visualRasterBounds(int clipIndex) const {
     else if (const auto previous = mathLastGood_.constFind(QString::fromStdString(clip.id));
              previous != mathLastGood_.constEnd())
         mask = previous->mask;
+    // 未要求・失敗・利用不可で直前の描画も無いとき、および空の mask は範囲を持たない。
+    if (!mask || mask->width <= 0 || mask->height <= 0)
+        return {};
     int left = 0, top = 0;
-    if (!mask || !math::mathRasterPlacement(mask->width, mask->height, project_.outputWidth,
-                                            project_.outputHeight, left, top))
+    if (!math::mathRasterPlacement(mask->width, mask->height, project_.outputWidth,
+                                   project_.outputHeight, left, top))
         return {};
     return QRect(left, top, mask->width, mask->height);
 }

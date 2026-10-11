@@ -16,7 +16,8 @@ loader.loader.exec_module(score_module)
 
 
 def recipe():
-    return dict(format='mvm-math-score/1', id='試験', canvas=[1920, 1080], fps=[60, 1],
+    return dict(format='mvm-math-score/1', id='試験', replace_clip_ids=['元'],
+                canvas=[1920, 1080], fps=[60, 1],
                 objects={'x': {'source': 'x^2'}, 'a': {'source': 'a'}}, states=[
                     dict(id='元', duration_frames=120, transition_frames=0,
                          parts={'x': dict(x=800, y=500), 'a': dict(x=700, y=500)}),
@@ -33,7 +34,7 @@ def project():
                 timeline_transitions=[], timeline_clips=[dict(id='元', kind='math', track_kind='video',
                                                               track_index=0, effects={}, math={})],
                 subtitles=dict(style={'font_family': '元の書体'}, cues=[
-                    dict(id='字幕', start_frame=120, end_frame=240, content='変更しない本文', link_clip_id='元')]))
+                    dict(id='字幕', start_frame=120, end_frame=240, content='変更しない本文')]))
 
 
 class ScoreTests(unittest.TestCase):
@@ -211,7 +212,9 @@ class ScoreTests(unittest.TestCase):
                                    parts={'x': dict(x=820, y=450), 'a': dict(x=1100, y=500)}))
         result, report = score_module.compile_score(data, project())
         self.assertEqual(len(report['objects']['a']), 2)
+        first = next(c for c in result['timeline_clips'] if c['id'] == report['objects']['a'][0])
         second = next(c for c in result['timeline_clips'] if c['id'] == report['objects']['a'][1])
+        self.assertEqual(first['track_index'], second['track_index'])
         self.assertEqual(second['effects']['position_x_keys'], [])
         self.assertEqual([(k['frame'], k['value']) for k in second['effects']['opacity_keys']], [(0, 0), (30, 100)])
 
@@ -295,6 +298,183 @@ class ScoreTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as error:
                 score_module.main()
         self.assertEqual(error.exception.code, 1)
+
+    def test_unused_template_track_is_kept_and_generated_tracks_follow_it(self):
+        base = project()
+        result, _ = score_module.compile_score(recipe(), base)
+        self.assertEqual(result['video_tracks'][0], base['video_tracks'][0])
+        self.assertGreater(len(result['video_tracks']), 1)
+        self.assertTrue(all(clip['track_index'] >= 1 for clip in result['timeline_clips']))
+        self.assertTrue(all(track['muted'] is False and track['solo'] is False and
+                            track['mixer_gain_db'] == 0.0 and track['mixer_pan'] == 0.0
+                            for track in result['video_tracks'][1:]))
+
+    def test_original_tracks_and_unrelated_content_survive_repeated_generation(self):
+        data = recipe()
+        data['preserve_clip_ids'] = ['ユーザー数式']
+        base = project()
+        base['video_tracks'] = [
+            dict(name='背景', muted=True, solo=False, mixer_name='', mixer_gain_db=0.0, mixer_pan=0.0),
+            dict(name='空き', muted=False, solo=False, mixer_name='', mixer_gain_db=0.0, mixer_pan=0.0),
+            dict(name='手前', muted=False, solo=False, mixer_name='', mixer_gain_db=0.0, mixer_pan=0.0),
+        ]
+        base['audio_tracks'] = [dict(name='ナレーション', muted=False, solo=True, mixer_name='主音声',
+                                     mixer_gain_db=-6.0, mixer_pan=0.5)]
+        base['timeline_clips'].extend([
+            dict(id='上の映像', kind='video', track_kind='video', track_index=2, name='既存'),
+            dict(id='ユーザー数式', kind='math', track_kind='video', track_index=2, effects={}, math={}),
+            dict(id='mvm-math-score:別の配置:項:段階', kind='math', track_kind='video', track_index=2,
+                 effects={}, math={}),
+        ])
+        base['timeline_markers'] = [17]
+        base['subtitles']['cues'].append(
+            dict(id='別字幕', start_frame=10, end_frame=20, content='残す', link_clip_id='ユーザー数式'))
+        first, _ = score_module.compile_score(data, base)
+        self.assertEqual(first['video_tracks'][:3], base['video_tracks'])
+        self.assertEqual(first['audio_tracks'], base['audio_tracks'])
+        self.assertTrue(all(track['muted'] is False for track in first['video_tracks'][3:]))
+        ids = [clip['id'] for clip in first['timeline_clips']]
+        self.assertEqual(ids.count('上の映像'), 1)
+        self.assertEqual(ids.count('ユーザー数式'), 1)
+        self.assertEqual(ids.count('mvm-math-score:別の配置:項:段階'), 1)
+        self.assertNotIn('元', ids)
+        self.assertEqual(next(clip['track_index'] for clip in first['timeline_clips']
+                              if clip['id'] == '上の映像'), 2)
+        self.assertEqual(next(clip['track_index'] for clip in first['timeline_clips']
+                              if clip['id'] == 'ユーザー数式'), 2)
+        self.assertIn(17, first['timeline_markers'])
+        unrelated = next(cue for cue in first['subtitles']['cues'] if cue['id'] == '別字幕')
+        self.assertEqual(unrelated, dict(id='別字幕', start_frame=10, end_frame=20, content='残す',
+                                         link_clip_id='ユーザー数式'))
+        second, _ = score_module.compile_score(data, first)
+        self.assertEqual(second, first)
+        self.assertEqual([clip['id'] for clip in second['timeline_clips']].count('ユーザー数式'), 1)
+
+    def test_unclassified_math_clip_is_rejected(self):
+        base = project()
+        base['timeline_clips'].append(
+            dict(id='ユーザー数式', kind='math', track_kind='video', track_index=0, effects={}, math={}))
+        with self.assertRaisesRegex(score_module.ScoreError, '所有者'):
+            score_module.compile_score(recipe(), base)
+
+    def test_unclaimed_marker_overlapping_a_score_marker_is_rejected(self):
+        base = project()
+        base['timeline_markers'] = [0]
+        with self.assertRaisesRegex(score_module.ScoreError, 'マーカー'):
+            score_module.compile_score(recipe(), base)
+
+    def test_subtitle_link_to_replaced_clip_requires_explicit_rebind(self):
+        base = project()
+        base['subtitles']['cues'][0]['link_clip_id'] = '元'
+        with self.assertRaisesRegex(score_module.ScoreError, '付け直す'):
+            score_module.compile_score(recipe(), base)
+
+    def test_explicit_subtitle_rebind_detaches_only_the_removed_clip(self):
+        data = recipe()
+        data['states'][1]['subtitle_cue_id'] = '字幕'
+        base = project()
+        base['subtitles']['cues'][0]['link_clip_id'] = '元'
+        result, _ = score_module.compile_score(data, base)
+        cue = result['subtitles']['cues'][0]
+        self.assertNotIn('link_clip_id', cue)
+        self.assertEqual((cue['start_frame'], cue['end_frame'], cue['content']), (120, 240, '変更しない本文'))
+
+    def test_rebinding_a_subtitle_linked_to_a_surviving_clip_is_rejected(self):
+        data = recipe()
+        data['preserve_clip_ids'] = ['ユーザー数式']
+        data['states'][1]['subtitle_cue_id'] = '別字幕'
+        base = project()
+        base['timeline_clips'].append(
+            dict(id='ユーザー数式', kind='math', track_kind='video', track_index=0, effects={}, math={}))
+        base['subtitles']['cues'].append(
+            dict(id='別字幕', start_frame=1, end_frame=2, content='残す', link_clip_id='ユーザー数式'))
+        with self.assertRaisesRegex(score_module.ScoreError, '結び付いた'):
+            score_module.compile_score(data, base)
+
+    def test_malformed_owned_clip_id_is_rejected(self):
+        base = project()
+        base['timeline_clips'].append(
+            dict(id='mvm-math-score:壊れた', kind='math', track_kind='video', track_index=0,
+                 effects={}, math={}))
+        with self.assertRaisesRegex(score_module.ScoreError, '所有ID'):
+            score_module.compile_score(recipe(), base)
+
+    def test_regeneration_without_marker_ownership_is_rejected(self):
+        first, _ = score_module.compile_score(recipe(), project())
+        del first[score_module.OWNERSHIP_KEY]
+        with self.assertRaisesRegex(score_module.ScoreError, '所有記録'):
+            score_module.compile_score(recipe(), first)
+
+    def test_generated_track_name_collision_is_rejected(self):
+        base = project()
+        base['video_tracks'].append(
+            dict(name='部分式 1', muted=False, solo=False, mixer_name='', mixer_gain_db=0.0, mixer_pan=0.0))
+        with self.assertRaisesRegex(score_module.ScoreError, 'track名'):
+            score_module.compile_score(recipe(), base)
+
+    def test_transition_touching_a_surviving_clip_is_rejected(self):
+        data = recipe()
+        data['preserve_clip_ids'] = ['ユーザー数式']
+        base = project()
+        base['timeline_clips'].append(
+            dict(id='ユーザー数式', kind='math', track_kind='video', track_index=0, effects={}, math={}))
+        base['timeline_transitions'] = [
+            dict(id='境界', incoming_clip_id='ユーザー数式', outgoing_clip_id='元')]
+        with self.assertRaisesRegex(score_module.ScoreError, 'トランジション'):
+            score_module.compile_score(data, base)
+
+    def test_same_clip_cannot_be_preserved_and_replaced(self):
+        data = recipe()
+        data['preserve_clip_ids'] = ['元']
+        with self.assertRaisesRegex(score_module.ScoreError, '両方'):
+            score_module.compile_score(data, project())
+
+    def test_invalid_json_preserves_the_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            score = folder / 'score.json'
+            base = folder / 'base.mvm'
+            output = folder / 'output.mvm'
+            report = folder / 'report.json'
+            score.write_text('{', encoding='utf-8')
+            base.write_text(json.dumps(project()), encoding='utf-8')
+            output.write_text('既存の保存結果', encoding='utf-8')
+            report.write_text('既存の検証結果', encoding='utf-8')
+            arguments = ['math_score', '--score', str(score), '--project', str(base),
+                         '--output', str(output), '--report', str(report), '--validator', '検証CLI']
+            with patch.object(sys, 'argv', arguments), \
+                    patch.object(score_module.subprocess, 'run') as validator:
+                with self.assertRaises(SystemExit) as error:
+                    score_module.main()
+            self.assertEqual(error.exception.code, 1)
+            self.assertEqual(output.read_text(encoding='utf-8'), '既存の保存結果')
+            self.assertEqual(report.read_text(encoding='utf-8'), '既存の検証結果')
+            self.assertEqual(validator.call_count, 0)
+            self.assertFalse(any(path.suffix == '.mvm' and path.name not in {'base.mvm', 'output.mvm'}
+                                 for path in folder.iterdir()))
+
+    def test_repeated_publication_is_deterministic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            score = folder / 'score.json'
+            base = folder / 'base.mvm'
+            output = folder / 'output.mvm'
+            report = folder / 'report.json'
+            score.write_text(json.dumps(recipe()), encoding='utf-8')
+            base.write_text(json.dumps(project()), encoding='utf-8')
+            arguments = ['math_score', '--score', str(score), '--project', str(base),
+                         '--output', str(output), '--report', str(report), '--validator', '検証CLI']
+            accepted = type('結果', (), dict(returncode=0, stderr=b''))()
+            with patch.object(sys, 'argv', arguments), \
+                    patch.object(score_module.subprocess, 'run', return_value=accepted):
+                score_module.main()
+            first_project = output.read_bytes()
+            first_report = report.read_bytes()
+            with patch.object(sys, 'argv', arguments), \
+                    patch.object(score_module.subprocess, 'run', return_value=accepted):
+                score_module.main()
+            self.assertEqual(output.read_bytes(), first_project)
+            self.assertEqual(report.read_bytes(), first_report)
 
 
 if __name__ == '__main__':

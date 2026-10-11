@@ -658,6 +658,9 @@ public:
 
     MathRasterCache& mathRastersForTest() { return *mathRasters_; }
 
+    // 範囲外、未描画、空の mask は空矩形。選択枠の当たり判定がこれを使う。
+    QRect visualRasterBoundsForTest(int clipIndex) const { return visualRasterBounds(clipIndex); }
+
     GraphPreviewCache& graphRastersForTest() { return *graphRasters_; }
 
     GraphPreviewCache::Status graphPreviewStatus(const std::string& clipId,
