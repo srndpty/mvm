@@ -167,6 +167,10 @@
     **MLT の color producer の data race**（V1 の隙間。製品の経路にも関わる）と、
     **preview の audio の後始末の解放後参照**（`transition_preview` の SegFault の原因）が見つかった。
     どちらも未修正。P3-5B・P3-6 の前に扱う。
+  - P3-5A.1（[結果](preview-audio-teardown-p35a1.md)）: `transition_preview` の SegFault の原因だった、preview の
+    audio の後始末の解放後の参照を直した（sink が clock を共有して持つ。`removeSource` の破棄の順も直した）。
+    debugger の下（debug heap）で動かす回帰の試験を 6 つ足し、修正を外すと落ちることを確かめた。
+    release の全 CTest 1521/1521。MLT の color producer の race は未修正のまま。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

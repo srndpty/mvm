@@ -2635,10 +2635,68 @@ if(MVM_ENABLE_QT)
     mvm_add_p5e_product_test(preview_engine_p5e_remove_fatal_event_order
         ARGS --remove-fatal-event-order)
 
-    list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
-    if(NOT _mvm_p5e_product_registered EQUAL 18)
+    # 主の audio source を外す → 足し直す → 外す を 3 回くり返す (sink・clock の作り直しと解放の
+    # くり返し)。外した ID をもう一度外せないこと (二重の解放をしない) も見る。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_audio_readd
+        ARGS --remove-audio-readd)
+
+    # --- audio の後始末の解放後の参照 (P3-5A.1) --------------------------------
+    # PreviewEngine::removeSource は、局所の sink の参照が clock より長く生きて、sink の destructor が
+    # 解放済みの clock を触っていた (sink は clock を参照で持っていた)。通常の起動では落ちない (解放した memory がまだ読める) ので、
+    # 上の試験は通ってしまう。debugger の下で起動すると debug heap になり、決まった場所で落ちる
+    # (scripts/run-under-debug-heap.ps1)。同じ scenario を debugger の下でも回して、退行を捕まえる。
+    set(_mvm_debug_heap_tests)
+    macro(mvm_add_debug_heap_test name)
+        cmake_parse_arguments(T "SIGNAL_ONLY" "EXE" "ARGS" ${ARGN})
+        list(JOIN T_ARGS "|" _child_args)
+        set(_signal_only)
+        if(T_SIGNAL_ONLY)
+            set(_signal_only -SignalOnly)
+        endif()
+        mvm_add_test(${name}
+            COMMAND "${MVM_PWSH}" -NoProfile -File
+                    "${CMAKE_SOURCE_DIR}/scripts/run-under-debug-heap.ps1"
+                    -Exe "${T_EXE}" -ChildArgs "${_child_args}"
+                    -Gdb "${MVM_UCRT64_ROOT}/bin/gdb.exe" ${_signal_only}
+            PROPERTIES LABELS "workstation" TIMEOUT 180)
+        list(APPEND _mvm_debug_heap_tests ${name})
+    endmacro()
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_remove_paused
+        EXE "$<TARGET_FILE:mvm_p5e_preview_smoke>"
+        ARGS "${_p5c_fixture_a}" "${_p5e_fixture_b}" --remove-audio-source)
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_remove_readd
+        EXE "$<TARGET_FILE:mvm_p5e_preview_smoke>"
+        ARGS "${_p5c_fixture_a}" "${_p5e_fixture_b}" --remove-audio-readd)
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_hot_swap
+        EXE "$<TARGET_FILE:mvm_p5e_preview_smoke>"
+        ARGS "${_p5c_fixture_a}" "${_p5e_fixture_b}" --hot-swap)
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_shutdown_race
+        EXE "$<TARGET_FILE:mvm_p5e_preview_smoke>"
+        ARGS "${_p5c_fixture_a}" "${_p5e_fixture_b}" --remove-shutdown-race)
+    # removal が fatal になり、removeSource の中にいる間に teardown が最後まで進む。
+    # removeSource が持つ局所の sink の参照が、engine の clock より長く生きる
+    # (sink が clock を共有して持たないと、ここで落ちる)。
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_fatal_event_order
+        EXE "$<TARGET_FILE:mvm_p5e_preview_smoke>"
+        ARGS "${_p5c_fixture_a}" "${_p5e_fixture_b}" --remove-fatal-event-order)
+    # controller 経由 (seek のたびに audio source の集合を差し替える)。最初に見つかった形。
+    # この試験は実時間の再生を検査するので、debugger の下では遅くなって自分の検査に落ちることが
+    # ある (12 回中 9 回)。その検査は通常の transition_preview が受け持ち、ここでは signal だけを見る。
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_transition_preview SIGNAL_ONLY
+        EXE "$<TARGET_FILE:mvm_test_transition_preview>"
+        ARGS "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
+             "${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav"
+             "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
+    list(LENGTH _mvm_debug_heap_tests _mvm_debug_heap_registered)
+    if(NOT _mvm_debug_heap_registered EQUAL 6)
         message(FATAL_ERROR
-            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/18")
+            "[mvm] debug heap の試験の登録数が不正です: ${_mvm_debug_heap_registered}/6")
+    endif()
+
+    list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
+    if(NOT _mvm_p5e_product_registered EQUAL 19)
+        message(FATAL_ERROR
+            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/19")
     endif()
 
     # product capability (映像 8 / 合成 128 / 音声 16) を上限ちょうどで受理・描画し、
