@@ -123,6 +123,9 @@
     固定費がある（graph の大きさに比例）。分割はこれと文字列化の減少が相殺し、4 つの分け方とも利益が
     一定しない（画素は 3840 frame で完全一致）。分割は HOLD。次は MLT の affine の実行経路の計測か、
     数式 layer を MLT の外で合成する設計の検討。
+  - P3-Design（[設計](math-compositor-p3-design.md)）: 数式の group を、字形の範囲だけ合成する CPU 合成器で
+    MLT の合成の位置に置く案を推奨（実装は未着手）。独立した binary32 の計算は代表 7 frame 中 6 frame で
+    MLT と全画素一致し、1 frame で 1 画素が違う。この差を解明するまで製品の挙動は変えない。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

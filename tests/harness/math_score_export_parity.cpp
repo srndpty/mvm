@@ -457,6 +457,9 @@ struct OracleLayer {
 //   を倍精度で独立に計算した参照。
 //             MLT は binary32 で計算して切り捨てるので、参照との差は 1 階調まで許す (事前に固定)。
 constexpr int kReferenceBound = 1;
+// P3 の spike (--reference-mode): 0 = 倍精度の参照 (既定)、1・2 = binary32 で MLT の式をなぞる。
+// 判定の基準 (上の許容) は変えない。差のある画素数を report で読むためだけに使う。
+int gReferenceMode = 0;
 
 struct OracleOutcome {
     bool applicable = false;
@@ -634,6 +637,48 @@ OracleOutcome expectedFrame(const Project& project,
                                          static_cast<std::size_t>(column)) *
                                         4U;
                     auto* to = outcome.expected.data() + offset;
+                    if (gReferenceMode != 0) {
+                        // P3 の spike: MLT の interp.h (interpBL_b32) の式を、binary32 のまま
+                        // source の 順に計算する。独立した合成で MLT と byte
+                        // 単位で一致させられるかを見る。 mode 2 は既存 oracle と同じく、不透明度に
+                        // 1/255 を先に掛ける。
+                        const float x = static_cast<float>(sx);
+                        const float y = static_cast<float>(sy);
+                        const int mf = std::min(static_cast<int>(std::floor(x)), width - 2);
+                        const int nf = std::min(static_cast<int>(std::floor(y)), height - 2);
+                        const float dx = x - static_cast<float>(mf);
+                        const float dy = y - static_cast<float>(nf);
+                        const auto texel = [&](int column2, int row2, std::size_t c) {
+                            return static_cast<float>(
+                                layer.rgba[(static_cast<std::size_t>(row2) * columns +
+                                            static_cast<std::size_t>(column2)) *
+                                               4U +
+                                           c]);
+                        };
+                        const auto sample = [&](std::size_t c) {
+                            const float a =
+                                texel(mf, nf, c) + (texel(mf + 1, nf, c) - texel(mf, nf, c)) * dx;
+                            const float b = texel(mf, nf + 1, c) +
+                                            (texel(mf + 1, nf + 1, c) - texel(mf, nf + 1, c)) * dx;
+                            return a + (b - a) * dy;
+                        };
+                        const float opacity = static_cast<float>(layer.opacity);
+                        const float below = static_cast<float>(to[3]) / 255.0f;
+                        const float above = gReferenceMode == 2
+                                                ? sample(3) * (opacity * (1.0f / 255.0f))
+                                                : sample(3) / 255.0f * opacity;
+                        const float total = above + below - above * below;
+                        if (total <= 0.0f)
+                            continue;
+                        const float weight = above / total;
+                        for (std::size_t c = 0; c < 3; ++c)
+                            to[c] = static_cast<std::uint8_t>(
+                                static_cast<float>(to[c]) * (1.0f - weight) + sample(c) * weight);
+                        to[3] = static_cast<std::uint8_t>(255 * total);
+                        if (above > 0.0f)
+                            touched[offset / 4U] = true;
+                        continue;
+                    }
                     const double sourceAlpha = channel(m, n, 3, fx, fy) / 255.0 * layer.opacity;
                     const double destinationAlpha = to[3] / 255.0;
                     const double alpha =
@@ -831,6 +876,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.capSeconds = std::atoi(value.c_str());
         else if (key == "--stall-seconds")
             options.stallSeconds = std::atoi(value.c_str());
+        else if (key == "--reference-mode")
+            gReferenceMode = std::atoi(value.c_str());
         else if (key == "--keyframe-stride")
             options.keyframeStride = std::atoi(value.c_str());
         else if (key == "--range") {
