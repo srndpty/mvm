@@ -93,6 +93,9 @@ struct Fixture {
     // 256 なら、alpha が左から右へ 0〜255 に変わる画像にする。257 なら、1〜255 の全部の値を画面
     // 全体へ散らす (どの値も字形の下に来る。0 は含めない)。-1 は元の背景のまま。
     int backgroundAlpha = -1;
+    // P3-3D: 対象外の配置の対照。1 = 一部の layer に拡縮・回転・crop を付ける (layer 2・5・8)、
+    // 2 = 全部の layer を回転させる (group にできる clip が無い)、3 = 背景 (V1) を拡縮する。
+    int geometry = 0;
 };
 
 constexpr Fixture kFixtures[] = {
@@ -136,6 +139,10 @@ constexpr Fixture kFixtures[] = {
     {"alpha-0", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 0},
     {"alpha-ramp", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 256},
     {"alpha-all-nonzero", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 257},
+    // --- P3-3D: 書き出しの前の判定の対照。数式は cmp-layers-16 と同じ 16 層。 ---
+    {"geom-mixed", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, -1, 1},
+    {"geom-all-unsupported", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, -1, 2},
+    {"base-transformed", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, -1, 3},
 };
 
 enum class Inject { None, DropFrame, RejectFrame, OracleShift, Cancel, CompareCorrupt };
@@ -189,7 +196,11 @@ struct Options {
     int mathGroupMainMode = 1;    // --math-group の mode (1 合成、2 測るだけ)
     int compareMathGroupMode = 1; // --compare math-group / math-group-probe
     int mathGroupRule = 0;        // 0 = 下に従来の layer が重ならない clip だけ、1 = 順序だけを守る
-    int mathGroupAlphaFloor = -1; // 0〜255 なら合成器の契約の下限の代わりに使う (実験)
+    // P3-3D。
+    bool ignoreAlphaProof = false; // V1 の alpha の証明を無いものとして扱う (証明が得られない対照)
+    int candidateRepeats = 1;      // candidate を同じ process の中で続けて書き出す回数
+    int cancelAfterImages = 8;     // --inject cancel: 合成済みの画像がこの数になったら取り消す
+    int mathGroupAlphaFloor = -1;  // 0〜255 なら合成器の契約の下限の代わりに使う (実験)
     // 準備済みの画像の上限 (事前に固定)。-1 は持ち方ごとの既定: 全画面は 800 MB (P3-3A の実測
     // 783 MB)、中身のある範囲だけは 64 MB (P3-3C)。
     long long mathGroupBudgetMb = -1;
@@ -259,6 +270,8 @@ bool buildSynthetic(const Project& base, const Fixture& fixture, Project& out, s
     bottom.sourceInFrame = 0;
     bottom.sourceOutFrame = bottom.sourceFrameCount = fixture.frames;
     bottom.effects = {};
+    if (fixture.geometry == 3) // V1 に effect を付ける (出す画素を確かめていない状態になる)
+        bottom.effects.scaleXPercent = bottom.effects.scaleYPercent = 110.0;
     out.timelineClips.push_back(bottom);
     while (static_cast<int>(out.videoTracks.size()) < fixture.layers + 1) {
         auto track = out.videoTracks.front();
@@ -277,6 +290,23 @@ bool buildSynthetic(const Project& base, const Fixture& fixture, Project& out, s
         truncateKeys(clip, fixture.frames);
         if (fixture.centered)
             clip.effects = {};
+        // P3-3D: 対象外の配置。key を消して、clip 全体で一定の値にする。
+        const bool scale = fixture.geometry == 1 && layer == 2;
+        const bool rotate = fixture.geometry == 2 || (fixture.geometry == 1 && layer == 5);
+        const bool crop = fixture.geometry == 1 && layer == 8;
+        if (scale) {
+            clip.effects.scaleXKeys.clear();
+            clip.effects.scaleYKeys.clear();
+            clip.effects.scaleXPercent = clip.effects.scaleYPercent = 120.0;
+        }
+        if (rotate) {
+            clip.effects.rotationKeys.clear();
+            clip.effects.rotationDegrees = 12.0;
+        }
+        if (crop) {
+            clip.effects.cropLeftKeys.clear();
+            clip.effects.cropLeftPercent = 10.0;
+        }
         out.timelineClips.push_back(std::move(clip));
     }
     return true;
@@ -1728,6 +1758,24 @@ QJsonObject groupJson(const MvmExportObserver& observed, long long live, long lo
          static_cast<qint64>(observed.math_group_layer_frames)},
         {QStringLiteral("raster_bytes"), static_cast<qint64>(observed.math_group_raster_bytes)},
         {QStringLiteral("raster_count"), static_cast<qint64>(observed.math_group_raster_count)},
+        {QStringLiteral("raster_shared"), static_cast<qint64>(observed.math_group_raster_shared)},
+        {QStringLiteral("raster_conflicts"),
+         static_cast<qint64>(observed.math_group_raster_conflicts)},
+        {QStringLiteral("decision"),
+         observed.math_group_decision == MVM_MATH_GROUP_DECISION_ELIGIBLE
+             ? QStringLiteral("ELIGIBLE")
+         : observed.math_group_decision == MVM_MATH_GROUP_DECISION_INELIGIBLE
+             ? QStringLiteral("INELIGIBLE")
+         : observed.math_group_decision == MVM_MATH_GROUP_DECISION_UNKNOWN
+             ? QStringLiteral("UNKNOWN")
+             : QStringLiteral("NONE")},
+        {QStringLiteral("decision_reason"),
+         QString::fromLatin1(observed.math_group_decision_reason)},
+        {QStringLiteral("graph"), observed.math_group_graph == 1 ? QStringLiteral("math-group")
+                                                                 : QStringLiteral("conventional")},
+        {QStringLiteral("base_alpha_proven"), observed.math_group_base_alpha_proven},
+        {QStringLiteral("base_clips_checked"),
+         static_cast<qint64>(observed.math_group_base_clips_checked)},
         {QStringLiteral("source_bytes_read"),
          static_cast<qint64>(observed.math_group_source_bytes)},
         {QStringLiteral("raster_live_bytes_after_prepare"),
@@ -1890,8 +1938,20 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (key == "--split-fault") {
             options.splitFault = std::atoi(value.c_str());
         } else if (key == "--math-group") {
-            options.mathGroupMain = value == "1" || value == "probe";
-            options.mathGroupMainMode = value == "probe" ? 2 : 1;
+            options.mathGroupMain = value == "1" || value == "probe" || value == "auto";
+            options.mathGroupMainMode = value == "probe" ? 2 : value == "auto" ? 3 : 1;
+        } else if (key == "--base-alpha-proof") {
+            if (value != "use" && value != "none")
+                return false;
+            options.ignoreAlphaProof = value == "none";
+        } else if (key == "--candidate-repeats") {
+            options.candidateRepeats = std::atoi(value.c_str());
+            if (options.candidateRepeats < 1 || options.candidateRepeats > 16)
+                return false;
+        } else if (key == "--cancel-after") {
+            options.cancelAfterImages = std::atoi(value.c_str());
+            if (options.cancelAfterImages < 0)
+                return false;
         } else if (key == "--math-group-rule") {
             options.mathGroupRule = std::atoi(value.c_str());
             if (options.mathGroupRule != 0 && options.mathGroupRule != 1)
@@ -1917,6 +1977,9 @@ bool parseOptions(int argc, char** argv, Options& options) {
             else if (value == "math-group-probe") {
                 options.compareMathGroup = true;
                 options.compareMathGroupMode = 2;
+            } else if (value == "math-group-auto") {
+                options.compareMathGroup = true;
+                options.compareMathGroupMode = 3;
             } else if (value == "bounding-box")
                 options.compare = mvm::app::MathLayerStaging::BoundingBox;
             else if (value == "anchored-box")
@@ -2092,6 +2155,7 @@ int main(int argc, char** argv) {
         target.diagnostic_math_group = options.mathGroupMain ? options.mathGroupMainMode : 0;
         target.diagnostic_math_group_fault = options.mathGroupMain ? options.mathGroupFault : 0;
         target.diagnostic_math_group_rule = options.mathGroupRule;
+        target.diagnostic_math_group_ignore_alpha_proof = options.ignoreAlphaProof ? 1 : 0;
         target.diagnostic_math_group_alpha_override = options.mathGroupAlphaFloor >= 0 ? 1 : 0;
         target.diagnostic_math_group_alpha_floor =
             options.mathGroupAlphaFloor >= 0 ? options.mathGroupAlphaFloor : 0;
@@ -2374,7 +2438,7 @@ int main(int argc, char** argv) {
         QGuiApplication::processEvents();
         QThread::msleep(20);
         if (options.inject == Inject::Cancel && !cancelSent &&
-            observer.points[MVM_EXPORT_OBSERVE_IMAGE_RETURN].count >= 8) {
+            observer.points[MVM_EXPORT_OBSERVE_IMAGE_RETURN].count >= options.cancelAfterImages) {
             controller->cancelTimelineExport();
             cancelSent = cancelInjected = true;
             cancelWall = seconds(mvm_mlt_export_observer_now_ns());
@@ -2451,6 +2515,7 @@ int main(int argc, char** argv) {
     std::set<std::int64_t> candidateSeen, repeatSeen;
     std::map<std::int64_t, FrameDifference> candidateDifferences;
     std::array<AlphaTally, 256> alphaTallies{};
+    int candidateExports = 0, candidateFailures = 0, candidateLeaks = 0;
     QJsonObject alphaExamples[256];
     long long compareUnexpected = 0, repeatMismatches = 0;
     bool compareRan = false;
@@ -2616,7 +2681,15 @@ int main(int argc, char** argv) {
             extra = nullptr;
             std::filesystem::remove(path, ignored);
         };
-        runExtra(candidateRun, "candidate");
+        // candidate は、同じ process の中で指定の回数だけ続けて書き出す (どの回も全 frame
+        // を比べる)。
+        for (int repeat = 0; repeat < options.candidateRepeats; ++repeat) {
+            runExtra(candidateRun, "candidate");
+            ++candidateExports;
+            candidateFailures += !candidateRun.result.success;
+            candidateLeaks += candidateRun.groupLive != 0 || candidateRun.groupActive != 0 ||
+                              candidateRun.rasterLiveAfter != 0;
+        }
         runExtra(repeatRun, "baseline-repeat");
         compareRan = true;
     }
@@ -2712,7 +2785,8 @@ int main(int argc, char** argv) {
         const auto referencePlan = mvm::app::mapTimelineExportPlan(project, planRequest);
         gPlan = referencePlan.success ? &referencePlan : nullptr;
         for (const auto frame : fixture.representative) {
-            if (rangeMode || fixture.backgroundAlpha >= 0)
+            // 独立期待値は、不透明な背景と、等倍・回転なし・crop なしの配置を前提にしている。
+            if (rangeMode || fixture.backgroundAlpha >= 0 || fixture.geometry != 0)
                 break;
             QJsonObject entry{{QStringLiteral("frame"), static_cast<qint64>(frame)}};
             const auto sample = observation.samples.find(frame);
@@ -2766,7 +2840,7 @@ int main(int argc, char** argv) {
             }
             oracleFrames.append(entry);
         }
-        if (rangeMode || fixture.backgroundAlpha >= 0) {
+        if (rangeMode || fixture.backgroundAlpha >= 0 || fixture.geometry != 0) {
         } else if (oracleApplicable == 0)
             fail(QStringLiteral("独立期待値と比較できた代表 frame がありません"));
         else if (maxConcurrentMath > 0 && oracleInked == 0)
@@ -3448,11 +3522,28 @@ int main(int argc, char** argv) {
             candidateRun.groupActive == 0 && repeatRun.groupLive == 0 &&
             repeatRun.groupActive == 0 &&
             (!options.compareMathGroup || candidateRun.rasterLiveAfter == 0) &&
+            candidateLeaks == 0 && candidateFailures == 0 &&
             (!options.compareMathGroup ||
-             (candidateRun.observer.math_group_clips > 0 &&
-              (options.compareMathGroupMode == 2 ? candidateRun.observer.math_group_callbacks > 0
-                                                 : candidateRun.observer.math_group_frames > 0) &&
-              observer.math_group_clips == 0 && repeatRun.observer.math_group_clips == 0));
+             (observer.math_group_clips == 0 && repeatRun.observer.math_group_clips == 0 &&
+              (candidateRun.observer.math_group_graph == 0
+                   // 従来の graph を選んだ (mode 3 で ELIGIBLE でなかった): group を 1 つも使わず、
+                   // affine の数が製品の経路と同じであること。判定が記録されていること。
+                   ? options.compareMathGroupMode == 3 &&
+                         candidateRun.observer.math_group_decision !=
+                             MVM_MATH_GROUP_DECISION_ELIGIBLE &&
+                         candidateRun.observer.math_group_decision !=
+                             MVM_MATH_GROUP_DECISION_NONE &&
+                         candidateRun.observer.math_group_clips == 0 &&
+                         candidateRun.observer.math_group_callbacks == 0 &&
+                         candidateRun.observer.overlay_transitions ==
+                             observer.overlay_transitions * candidateExports
+                   : candidateRun.observer.math_group_clips > 0 &&
+                         (options.compareMathGroupMode == 2
+                              ? candidateRun.observer.math_group_callbacks > 0
+                              : candidateRun.observer.math_group_frames > 0))));
+        compare.insert(QStringLiteral("candidate_exports"), candidateExports);
+        compare.insert(QStringLiteral("candidate_export_failures"), candidateFailures);
+        compare.insert(QStringLiteral("candidate_leaks"), candidateLeaks);
         compare.insert(QStringLiteral("group_clean"), groupClean);
         const bool comparable =
             compareRan && candidateRun.result.success && repeatRun.result.success &&

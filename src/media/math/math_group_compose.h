@@ -107,6 +107,10 @@ public:
 
     const std::string& provenance() const { return provenance_; }
 
+    // 元の画像として読める内容が other と完全に同じか (大きさ・持ち方・範囲・保存した全 byte)。
+    // 照合用の値だけでは決めない (値が同じでも byte を比べる)。
+    bool sameContent(const PreparedMathRaster& other) const;
+
 private:
     struct Pixels;
 
@@ -121,6 +125,33 @@ private:
 
 // 生きている準備済みの画像が持つ画素の byte 数の合計 (process 全体)。全部を解放すれば 0 になる。
 long long preparedMathRasterLiveBytes();
+
+// 同じ画像を 1 回だけ持つための置き場 (書き出し 1 回の間だけ使う)。
+// 共有するのは、出どころ (provenance: 成果物・見た目・前処理を呼び出し側が書いた文字列) が同じで、
+// かつ内容が完全に同じ (sameContent) ときだけである。出どころが同じでも内容が違えば別の画像として
+// 持つ (同じ path の成果物が書き換わっていた場合など)。内容が同じでも出どころが違えば共有しない。
+// intern が返す pointer は、この置き場が生きている間は動かない。thread からは読むだけにする
+// (intern は 1 つの thread から呼ぶ)。
+class PreparedMathRasterPool {
+public:
+    PreparedMathRasterPool();
+    ~PreparedMathRasterPool();
+    PreparedMathRasterPool(const PreparedMathRasterPool&) = delete;
+    PreparedMathRasterPool& operator=(const PreparedMathRasterPool&) = delete;
+
+    // raster を置き場へ入れ、使う画像を返す。同じ出どころ・同じ内容の画像が既にあればそれを返し、
+    // raster は捨てる。valid でない raster は nullptr。
+    const PreparedMathRaster* intern(PreparedMathRaster raster);
+
+    std::size_t size() const;          // 持っている画像の数
+    std::size_t storedBytes() const;   // 持っている画像の画素の byte 数の合計
+    std::size_t sharedCount() const;   // 既にある画像を返した回数
+    std::size_t conflictCount() const; // 出どころが同じで内容が違った回数 (別に持った)
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 struct MathGroupPlacement {
     const PreparedMathRaster* raster = nullptr;

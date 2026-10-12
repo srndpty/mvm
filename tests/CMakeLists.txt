@@ -160,6 +160,9 @@ add_test(NAME mlt_export_capacity_overflow COMMAND mvm_test_mlt_export_capacity)
 add_executable(mvm_test_math_group_compose core/test_math_group_compose.cpp)
 target_link_libraries(mvm_test_math_group_compose PRIVATE mvm::math mvm::warnings)
 add_test(NAME math_group_compose_oracle COMMAND mvm_test_math_group_compose)
+# P3-3D: 書き出しの前の判定が使う性質 (alpha が 1 以上の画素は、何を重ねても alpha 0 にならない)。
+# 上の alpha の binary32 の全部の値を確かめるので、十数秒かかる。
+add_test(NAME math_group_alpha_floor_lemma COMMAND mvm_test_math_group_compose alpha-floor)
 set_tests_properties(math_group_compose_oracle PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
 # timeout_ms の数え方の監査。現状は Sleep(20) の回数で数えるので、実時間では timeout_ms より遅く

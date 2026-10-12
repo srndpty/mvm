@@ -113,7 +113,20 @@ typedef struct {
      * だけ、affine transition の代わりに数式 group の transition でまとめて合成する。それ以外は
      * 無視して従来の経路のまま書き出す。呼び出し側は書き出しの関数から戻るまで保持する。 */
     const void* math_group_raster;
+    /* 試作 (P3-3D、診断専用。既定は 0 = 証明なし)。V1 (video_track 0) の clip について、この clip
+     * が 出す画素の alpha の最小値を、上位の層が stage した画素を **全部**
+     * 走査して確かめたときだけ、 最小値 + 1 を入れる (1 = 最小値 0、256 = 最小値 255)。動画など、全
+     * frame の画素を 確かめていない素材は 0 のままにする (種類や拡張子から推測しない)。 */
+    int math_group_base_alpha_proof;
 } MvmExportClip;
+
+/* 数式 group を使う graph にしてよいかの、書き出しの前の判定 (P3-3D)。 */
+typedef enum {
+    MVM_MATH_GROUP_DECISION_NONE = 0,   /* 判定していない (group を使わない書き出し) */
+    MVM_MATH_GROUP_DECISION_ELIGIBLE,   /* group の下地の alpha が 1 以上だと言える */
+    MVM_MATH_GROUP_DECISION_INELIGIBLE, /* 対象外の条件が実際にある */
+    MVM_MATH_GROUP_DECISION_UNKNOWN     /* 言えない (証明が無い) */
+} MvmMathGroupDecision;
 
 /* 数式 group の 1 layer (合成の順に並ぶ。先頭が一番下)。 */
 typedef struct {
@@ -286,6 +299,19 @@ typedef struct MvmExportObserver {
     int* diagnostic_math_group_assignment;
     int diagnostic_math_group_assignment_capacity;
     long long diagnostic_math_group_raster_budget_bytes;
+    /* 入力 (P3-3D)。
+     *   diagnostic_math_group  3 = 書き出しの前に判定し、ELIGIBLE のときだけ group を使う graph に
+     *     する。INELIGIBLE・UNKNOWN のときは、従来の graph (製品の書き出しと同じもの)
+     * をそのまま使う。 1・2 は判定に関わらず group を使う (判定は記録だけする)。 ignore_alpha_proof
+     * 非 0 なら、clip の math_group_base_alpha_proof を無いものとして扱う
+     *     (証明が得られない素材の対照)。 */
+    int diagnostic_math_group_ignore_alpha_proof;
+    /* 出力 (P3-3D)。 */
+    int math_group_decision;                 /* MvmMathGroupDecision */
+    char math_group_decision_reason[96];     /* 判定の理由 (事前に決めた名前) */
+    int math_group_graph;                    /* 実際に作った graph: 0 = 従来、1 = group を使う */
+    int math_group_base_alpha_proven;        /* 判定に使った V1 の alpha の最小値 (-1 は該当なし) */
+    long long math_group_base_clips_checked; /* group の区間に重なる V1 の clip の数 */
     /* 入力 (P3-3C): 準備済みの画像の持ち方。0 = 中身のある範囲だけ、1 = 全画面 (P3-3B までの形。
      * 比較の基準)。この層は画像の中身を見ない。上位の層が読む。 */
     int diagnostic_math_group_storage;
@@ -293,6 +319,8 @@ typedef struct MvmExportObserver {
     long long math_group_raster_count;      /* 準備した画像の数 */
     long long math_group_source_bytes;      /* 準備のために走査した元の画素の byte 数 */
     long long math_group_raster_live_bytes; /* 準備が終わった時点で生きている画素の byte 数 */
+    long long math_group_raster_shared;     /* 同じ出どころ・同じ内容の画像を共有した回数 */
+    long long math_group_raster_conflicts;  /* 出どころが同じで内容が違った回数 (共有しない) */
     /* 出力: 書き出しの関数へ入った時点の process の working set (byte)。画像の準備の後の値。 */
     long long math_group_working_set_at_export;
     /* 出力。最初の 2 つは画像を準備する上位の層が書く。 */

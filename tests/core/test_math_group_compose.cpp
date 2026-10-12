@@ -11,6 +11,7 @@
 #include "media/math/math_group_compose.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -122,6 +124,134 @@ Image glyph(std::mt19937& random, int width, int height) {
                 p[c] = p[3] == 0 ? 0 : static_cast<std::uint8_t>(random() % 256);
         }
     return image;
+}
+
+// 同じ準備済みの画像 (変えられない) を、複数の thread が同時に読んで別々の合成先へ合成する。
+// 置き場 (pool) の画像を使い、thread ごとに位置と不透明度を変える。結果は、同じ入力を 1 thread で
+// 合成したものと全 byte 同じでなければならない。違った合成の数を返す。
+// race の検出器 (ThreadSanitizer) を付けて実行する対象でもある。
+int runConcurrentCompose(int threads, int rounds) {
+    constexpr int width = 96, height = 64;
+    std::mt19937 engine(3305);
+    mvm::math::PreparedMathRasterPool pool;
+    std::vector<const mvm::math::PreparedMathRaster*> rasters;
+    for (int index = 0; index < 6; ++index) {
+        Image image(static_cast<std::size_t>(width) * height * 4, 0);
+        for (int row = 8 + index; row < 40 + index; ++row)
+            for (int column = 10 + index * 3; column < 70 + index * 2; ++column) {
+                auto* p = image.data() + (static_cast<std::size_t>(row) * width + column) * 4;
+                p[3] = static_cast<std::uint8_t>(engine() % 256);
+                p[0] = p[3] ? 204 : 0;
+                p[1] = p[3] ? 34 : 0;
+                p[2] = p[3] ? static_cast<std::uint8_t>(engine() % 256) : 0;
+            }
+        mvm::math::PreparedMathRaster raster;
+        std::string error;
+        if (!mvm::math::PreparedMathRaster::prepare(image.data(), width, height, width * 4U, raster,
+                                                    error, mvm::math::MathRasterStorage::RoiOnly,
+                                                    "artifact=" + std::to_string(index)))
+            return -1;
+        rasters.push_back(pool.intern(std::move(raster)));
+    }
+    Image base(static_cast<std::size_t>(width) * height * 4);
+    for (std::size_t i = 0; i < base.size(); ++i)
+        base[i] = i % 4 == 3 ? static_cast<std::uint8_t>(1 + engine() % 255)
+                             : static_cast<std::uint8_t>(engine() % 256);
+    const auto compose = [&](int worker, int round, Image& out) {
+        std::vector<mvm::math::MathGroupPlacement> placements;
+        for (std::size_t index = 0; index < rasters.size(); ++index)
+            placements.push_back(
+                {rasters[index],
+                 (worker * 7 + round * 3 + static_cast<int>(index)) % 23 - 11 + 0.36,
+                 (worker * 5 + round) % 17 - 8 + 0.5 * (round % 2),
+                 ((worker + round + static_cast<int>(index)) % 10 + 1) / 10.0});
+        out = base;
+        std::string error;
+        return mvm::math::composeMathGroup(out.data(), width, height, width * 4U, placements.data(),
+                                           placements.size(), error);
+    };
+    // 基準: 1 thread で先に全部を合成する。
+    std::vector<Image> expectedOutputs(static_cast<std::size_t>(threads) * rounds);
+    for (int worker = 0; worker < threads; ++worker)
+        for (int round = 0; round < rounds; ++round)
+            if (!compose(worker, round,
+                         expectedOutputs[static_cast<std::size_t>(worker) * rounds + round]))
+                return -1;
+    std::atomic<int> wrong{0};
+    std::vector<std::thread> workers;
+    for (int worker = 0; worker < threads; ++worker)
+        workers.emplace_back([&, worker] {
+            Image out;
+            for (int round = 0; round < rounds; ++round)
+                if (!compose(worker, round, out) ||
+                    out != expectedOutputs[static_cast<std::size_t>(worker) * rounds + round])
+                    ++wrong;
+        });
+    for (auto& thread : workers)
+        thread.join();
+    return wrong.load();
+}
+
+// 書き出しの前の判定 (P3-3D) が使う性質: MLT の合成後の alpha の式
+//   alpha = (uint8)(255 * ((上 + 下) - 上 * 下))、下 = d / 255 (binary32)
+// は、下の alpha d が 1 以上なら 1 以上の値を返す (alpha 1 以上の画素は、何を重ねても alpha 0 に
+// ならない)。上 (0〜1 の binary32) の全部の値について d = 1 を確かめ、d = 1〜255 については
+// 「d より小さくならない」ことを、上の値を間引いて確かめる。下の求め方は、1/255 を掛ける形と
+// 255 で割る形の両方を見る (MLT の補間の関数によって違いうるため)。
+int runAlphaFloorLemma() {
+    const auto f32 = [](float value) {
+        volatile float settled = value;
+        return static_cast<float>(settled);
+    };
+    const float reciprocal = f32(1.0f / 255.0f);
+    const auto out = [&](float above, float below) {
+        const float total = f32(f32(above + below) - f32(above * below));
+        return static_cast<int>(static_cast<std::uint8_t>(f32(255.0f * total)));
+    };
+    long long checked = 0, violations = 0, lowered = 0;
+    int worstDrop = 0, lowestOut = 255, lowestDropped = 256;
+    const float belows[2] = {f32(1.0f * reciprocal), f32(1.0f / 255.0f)};
+    // d = 1: 上の全部の値 (0.0 から 1.0 までの binary32、1,065,353,217 個)。
+    std::uint32_t bits = 0;
+    for (;; ++bits) {
+        float above;
+        std::memcpy(&above, &bits, 4);
+        for (const float below : belows)
+            violations += out(above, below) < 1;
+        checked += 2;
+        if (above == 1.0f)
+            break;
+    }
+    // d = 1〜255: 上の値を間引いて (4099 個おき)、alpha が 1 より小さくならないこと。
+    // alpha そのものは下がりうる (255 の上へ不透明な画素を重ねると 254 になる、など) ので、
+    // 下がった数と、下がった幅の最大も数える。
+    for (int d = 1; d <= 255; ++d) {
+        const float multiplied = f32(static_cast<float>(d) * reciprocal);
+        const float divided = f32(static_cast<float>(d) / 255.0f);
+        const auto see = [&](float above, float below) {
+            const int value = out(above, below);
+            violations += value < 1;
+            lowered += value < d;
+            if (value < d)
+                lowestDropped = std::min(lowestDropped, d);
+            worstDrop = std::max(worstDrop, d - value);
+            lowestOut = std::min(lowestOut, value);
+            ++checked;
+        };
+        for (std::uint32_t sample = 0; sample <= 0x3f800000U; sample += 4099U) {
+            float above;
+            std::memcpy(&above, &sample, 4);
+            see(above, multiplied);
+            see(above, divided);
+        }
+        see(1.0f, multiplied);
+        see(1.0f, divided);
+    }
+    std::printf("alpha が下がった数 %lld (下がった幅の最大 %d、下がった中で最小の下の alpha %d)、"
+                "合成後の alpha の最小 %d\n",
+                lowered, worstDrop, lowestDropped, lowestOut);
+    std::printf("alpha の下限の性質: %lld 通りを確かめ、反例 %lld 個\n", checked, violations);
+    return violations == 0 ? 0 : 1;
 }
 
 int runTests() {
@@ -798,6 +928,61 @@ int runTests() {
         std::printf("範囲だけを持つ画像と基準を比べた byte: %lld\n", roiCompared);
         compared += roiCompared;
     }
+
+    // --- P3-3D: 準備済みの画像の共有 (出どころと内容の両方が同じときだけ) -----------------
+    {
+        using mvm::math::PreparedMathRaster;
+        const long long liveBefore = mvm::math::preparedMathRasterLiveBytes();
+        std::mt19937 engine(3304);
+        const Image first = glyph(engine, width, height);
+        Image changed = first; // 同じ path の成果物が書き換わった場合: 字形の中の 1 byte だけが違う
+        changed[(static_cast<std::size_t>(height / 2) * width + width / 2) * 4 + 1] ^= 1;
+        const auto make = [&](const Image& image, const char* provenance) {
+            PreparedMathRaster raster;
+            std::string localError;
+            check(PreparedMathRaster::prepare(image.data(), width, height, width * 4U, raster,
+                                              localError, mvm::math::MathRasterStorage::RoiOnly,
+                                              provenance),
+                  "置き場へ入れる画像を準備できる");
+            return raster;
+        };
+        {
+            mvm::math::PreparedMathRasterPool pool;
+            const auto* a = pool.intern(make(first, "artifact=a.png;preprocess=none"));
+            const auto* again = pool.intern(make(first, "artifact=a.png;preprocess=none"));
+            check(a && again == a && pool.size() == 1 && pool.sharedCount() == 1 &&
+                      pool.conflictCount() == 0,
+                  "出どころも内容も同じ画像は共有する");
+            const auto* rewritten = pool.intern(make(changed, "artifact=a.png;preprocess=none"));
+            std::uint8_t fromFirst[4], fromChanged[4];
+            a->texel(width / 2, height / 2, fromFirst);
+            rewritten->texel(width / 2, height / 2, fromChanged);
+            check(rewritten && rewritten != a && pool.size() == 2 && pool.conflictCount() == 1 &&
+                      std::memcmp(fromFirst, fromChanged, 4) != 0 && !a->sameContent(*rewritten),
+                  "出どころが同じでも内容が違う画像は共有しない (同じ path の成果物の書き換え)");
+            const auto* other = pool.intern(make(first, "artifact=b.png;preprocess=none"));
+            check(other && other != a && pool.size() == 3 && a->sameContent(*other),
+                  "内容が同じでも出どころが違う画像は共有しない");
+            const auto* repainted = pool.intern(make(first, "artifact=a.png;preprocess=qtcrop"));
+            check(repainted && repainted != a && pool.size() == 4, "前処理が違う画像は共有しない");
+            const auto* afterConflict =
+                pool.intern(make(changed, "artifact=a.png;preprocess=none"));
+            check(afterConflict == rewritten && pool.size() == 4 && pool.sharedCount() == 2,
+                  "内容が違った後も、それぞれの内容ごとに共有する");
+            check(pool.intern(PreparedMathRaster()) == nullptr && pool.size() == 4,
+                  "準備していない画像は置き場に入らない");
+            check(pool.storedBytes() == a->storedBytes() + rewritten->storedBytes() +
+                                            other->storedBytes() + repainted->storedBytes() &&
+                      mvm::math::preparedMathRasterLiveBytes() - liveBefore ==
+                          static_cast<long long>(pool.storedBytes()),
+                  "置き場が持つ画素の byte 数を数える (捨てた画像の分は残らない)");
+        }
+        check(mvm::math::preparedMathRasterLiveBytes() == liveBefore,
+              "置き場を解放すると、生きている画素は元の数に戻る");
+    }
+
+    // --- P3-3D: 変えられない画像を、複数の thread から同時に読んで合成する -----------------
+    check(runConcurrentCompose(8, 40) == 0, "複数の thread の同時の合成は、1 thread の結果と同じ");
     std::printf("oracle と比べた byte: %lld、失敗: %d\n", compared, failures);
     return failures == 0 ? 0 : 1;
 }
@@ -935,5 +1120,39 @@ int runBench() {
 } // namespace
 
 int main(int argc, char** argv) {
-    return argc == 2 && std::string(argv[1]) == "bench" ? runBench() : runTests();
+    const std::string mode = argc == 2 ? argv[1] : "";
+    if (mode == "bench")
+        return runBench();
+    if (mode == "alpha-floor")
+        return runAlphaFloorLemma();
+    if (mode == "race-control") {
+        // race の検出器そのものの対照: 2 つの thread が同じ合成先へ同時に書く (意図した data
+        // race)。 検出器を付けて実行すると報告されなければならない。通常の試験では実行しない。
+        constexpr int width = 64, height = 48;
+        Image source(static_cast<std::size_t>(width) * height * 4, 200);
+        mvm::math::PreparedMathRaster raster;
+        std::string error;
+        if (!mvm::math::PreparedMathRaster::prepare(source.data(), width, height, width * 4U,
+                                                    raster, error))
+            return 2;
+        Image shared(source.size(), 255);
+        const auto work = [&] {
+            const mvm::math::MathGroupPlacement placement{&raster, 0.5, 0.5, 0.5};
+            std::string localError;
+            for (int round = 0; round < 50; ++round)
+                mvm::math::composeMathGroup(shared.data(), width, height, width * 4U, &placement, 1,
+                                            localError);
+        };
+        std::thread first(work), second(work);
+        first.join();
+        second.join();
+        return 0;
+    }
+    if (mode == "concurrent") {
+        // race の検出器の下で実行するための入口 (同時の合成だけを、回数を増やして行う)。
+        const int wrong = runConcurrentCompose(8, 200);
+        std::printf("同時の合成: 基準と違った数 %d\n", wrong);
+        return wrong == 0 ? 0 : 1;
+    }
+    return runTests();
 }

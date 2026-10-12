@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <deque>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -112,6 +114,64 @@ void PreparedMathRaster::texel(int x, int y, std::uint8_t out[4]) const {
                                          static_cast<std::size_t>(x - storedX_)) *
                                             4U,
                 4);
+}
+
+bool PreparedMathRaster::sameContent(const PreparedMathRaster& other) const {
+    if (!valid() || !other.valid() || width_ != other.width_ || height_ != other.height_ ||
+        storage_ != other.storage_ || roiX_ != other.roiX_ || roiY_ != other.roiY_ ||
+        roiWidth_ != other.roiWidth_ || roiHeight_ != other.roiHeight_ ||
+        storedX_ != other.storedX_ || storedY_ != other.storedY_ ||
+        storedWidth_ != other.storedWidth_ || storedHeight_ != other.storedHeight_ ||
+        checksum_ != other.checksum_ || storedBytes() != other.storedBytes())
+        return false;
+    return storedBytes() == 0 || std::memcmp(storedRgba(), other.storedRgba(), storedBytes()) == 0;
+}
+
+struct PreparedMathRasterPool::Impl {
+    std::deque<PreparedMathRaster> rasters; // 要素の address は動かない
+    std::multimap<std::string, const PreparedMathRaster*> byProvenance;
+    std::size_t bytes = 0, shared = 0, conflicts = 0;
+};
+
+PreparedMathRasterPool::PreparedMathRasterPool() : impl_(std::make_unique<Impl>()) {}
+
+PreparedMathRasterPool::~PreparedMathRasterPool() = default;
+
+const PreparedMathRaster* PreparedMathRasterPool::intern(PreparedMathRaster raster) {
+    if (!raster.valid())
+        return nullptr;
+    const auto range = impl_->byProvenance.equal_range(raster.provenance());
+    bool sameProvenance = false;
+    for (auto found = range.first; found != range.second; ++found) {
+        sameProvenance = true;
+        if (found->second->sameContent(raster)) {
+            ++impl_->shared;
+            return found->second;
+        }
+    }
+    if (sameProvenance)
+        ++impl_->conflicts; // 出どころは同じだが内容が違う。共有しない
+    impl_->bytes += raster.storedBytes();
+    impl_->rasters.push_back(std::move(raster));
+    const PreparedMathRaster* kept = &impl_->rasters.back();
+    impl_->byProvenance.emplace(kept->provenance(), kept);
+    return kept;
+}
+
+std::size_t PreparedMathRasterPool::size() const {
+    return impl_->rasters.size();
+}
+
+std::size_t PreparedMathRasterPool::storedBytes() const {
+    return impl_->bytes;
+}
+
+std::size_t PreparedMathRasterPool::sharedCount() const {
+    return impl_->shared;
+}
+
+std::size_t PreparedMathRasterPool::conflictCount() const {
+    return impl_->conflicts;
 }
 
 bool mathGroupAlphaRoundTripIsIdentity() {

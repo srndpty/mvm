@@ -1569,6 +1569,75 @@ static int plant_export_math_group(mlt_tractor tractor, const MvmExportClip* cli
     return 0;
 }
 
+/* 書き出しの前の判定 (P3-3D): group を使う graph にしてよいか。
+ *
+ * 合成器は、合成を始める前の下地の alpha が 1 以上であることを要求する。下地は、V1 の画素へ、
+ * group より下の layer (従来の affine と、前の group) を重ねたものである。次の 2 つが言えれば、
+ * 下地の alpha は 1 以上になる。
+ *   (O1) group の member が見えている全 frame で、V1 の画素の alpha が 1 以上。
+ *   (O2) 下の layer を重ねても alpha は下がらない (alpha が 1 以上の画素は 1 以上のまま)。
+ * (O1) は、V1 の clip ごとの証明 (上位の層が stage した画素を全部走査した最小値) で確かめる。
+ * V1 の隙間は黒の color producer で、alpha は 255 である。証明の無い clip
+ * (動画など)、effect・crop・ motion のある V1 の clip (affine filter
+ * が掛かり、出す画素を確かめていない) があれば UNKNOWN。 最小値 0 の clip があれば INELIGIBLE。
+ * (O2) は、MLT の合成の式 (合成後の alpha = 上 + 下 - 上 × 下。interp.h の全部の補間で同じ) と、
+ * この式が alpha を下げないことの検査 (単体試験) による。ここでは layer ごとには確かめない。
+ * 判定は画素を render しない。実行時の下地の検査 (合成器の拒否) は、判定に関わらず残る。 */
+static void math_group_preflight(const MvmExportClip* clips, int clip_count, const int* groups,
+                                 int group_count, MvmExportObserver* observer) {
+    const char* reason = "base-alpha-proven";
+    int decision = MVM_MATH_GROUP_DECISION_ELIGIBLE;
+    int lowest = -1;
+    long long checked = 0;
+    if (group_count <= 0) {
+        decision = MVM_MATH_GROUP_DECISION_INELIGIBLE;
+        reason = "no-eligible-math-clip";
+    }
+    for (int base = 0; group_count > 0 && base < clip_count; ++base) {
+        const MvmExportClip* v1 = &clips[base];
+        if (v1->is_audio || v1->video_track != 0)
+            continue;
+        /* この V1 の clip が、どれかの member と同じ frame に見えるか。 */
+        int relevant = 0;
+        for (int index = 0; !relevant && index < clip_count; ++index) {
+            const MvmExportClip* member = &clips[index];
+            relevant = groups[index] > 0 &&
+                       v1->timeline_start_frame <
+                           member->timeline_start_frame + member->timeline_duration_frames &&
+                       v1->timeline_start_frame + v1->timeline_duration_frames >
+                           member->timeline_start_frame;
+        }
+        if (!relevant)
+            continue;
+        ++checked;
+        const int proof = observer->diagnostic_math_group_ignore_alpha_proof
+                              ? 0
+                              : v1->math_group_base_alpha_proof;
+        const int transformed = v1->effects_enabled || v1->motion_frame_count > 0 ||
+                                v1->crop_left != 0 || v1->crop_top != 0 || v1->crop_right != 0 ||
+                                v1->crop_bottom != 0 || v1->opaque_backdrop;
+        if (proof == 1 && !transformed) {
+            /* alpha 0 の画素が実際にある。これ以上調べなくてよい。 */
+            decision = MVM_MATH_GROUP_DECISION_INELIGIBLE;
+            reason = "base-alpha-zero";
+            lowest = 0;
+            break;
+        }
+        if (proof <= 0 || proof > 256 || transformed) {
+            decision = MVM_MATH_GROUP_DECISION_UNKNOWN;
+            reason = transformed ? "base-clip-transformed" : "base-alpha-unproven";
+            continue; /* 後の clip で alpha 0 が見つかれば INELIGIBLE にする */
+        }
+        if (lowest < 0 || proof - 1 < lowest)
+            lowest = proof - 1;
+    }
+    observer->math_group_decision = decision;
+    snprintf(observer->math_group_decision_reason, sizeof(observer->math_group_decision_reason),
+             "%s", reason);
+    observer->math_group_base_alpha_proven = lowest;
+    observer->math_group_base_clips_checked = checked;
+}
+
 /* group の transition が失敗を記録していれば、書き出しを失敗にする。 */
 static int math_group_failed(const MvmExportSpec* spec, char* err, size_t err_size) {
     MvmExportObserver* observer = spec->observer;
@@ -1661,7 +1730,14 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             free(group_members);
             return 1;
         }
-        if (assigned > 0) {
+        /* P3-3D: 書き出しの前の判定。mode 3 では、ELIGIBLE でなければ従来の graph をそのまま使う
+         * (member の配列を捨てるので、以降は group を使わない書き出しと同じ道を通る)。 */
+        math_group_preflight(clips, clip_count, group_members, assigned, spec->observer);
+        const int use_groups = assigned > 0 && (spec->observer->diagnostic_math_group != 3 ||
+                                                spec->observer->math_group_decision ==
+                                                    MVM_MATH_GROUP_DECISION_ELIGIBLE);
+        spec->observer->math_group_graph = use_groups ? 1 : 0;
+        if (use_groups) {
             /* group ごとに空の track を 1 本ずつ、映像 track の一番上へ足す。 */
             group_count = assigned;
             group_track = video_playlist_count;

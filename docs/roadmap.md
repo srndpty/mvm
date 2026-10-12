@@ -150,6 +150,12 @@
     製品の経路・全画面で持つ形・範囲だけで持つ形の pre-YUV が 1,920 frame で一致。合成の時間は
     持ち方で変わらない（減ったのは memory と準備の時間）。alpha 0 の下地の扱い、data race の検出、
     Project 全体の書き出しは未解決。製品へは入れていない。
+  - P3-3D（[結果](math-transition-p33d.md)）: 数式 group を使ってよいかを書き出しの前に判定し
+    （ELIGIBLE / INELIGIBLE / UNKNOWN）、ELIGIBLE のときだけ使う。それ以外は従来の graph で書き出す。
+    根拠は、V1 の stage した静止画の alpha の全画素の走査と、「alpha 1 以上の画素は何を重ねても 0 に
+    ならない」ことの検査。21 通りの判定が期待どおりで、全 frame が製品の経路と一致。合成器・画像の
+    共有は ThreadSanitizer・AddressSanitizer で報告 0（MLT の統合部分は検出器の対象外で、stress で確認）。
+    Project 全体の書き出し、MLT の統合部分の race の検出、製品での有効化は未着手。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。
