@@ -129,6 +129,12 @@
   - P3-1（[結果](math-compositor-p31.md)）: 1 画素の差の原因は、motion のある clip に付く qtcrop の
     描き直しだった。純粋な合成器（`src/media/math/math_group_compose`）は、独立した oracle と全 byte 一致し、
     実際の MLT の pre-YUV とも代表 20 frame で完全一致した。全 frame の比較と丸めの対照が残っている（HOLD）。
+  - P3-1.1（[結果](math-compositor-p311.md)）: 全 frame へ広げた比較で、`cmp-layers-48` の 6 frame に
+    1 画素ずつの差が見つかった（HOLD）。丸めと範囲の対照は成立。
+  - P3-1.2（[結果](math-compositor-p312.md)）: 差の原因は、合成器が下の alpha を 255 で割っていたこと
+    （MLT の実 binary は 1/255 を掛ける。下の alpha が 254 の画素で 1 階調ずれる）。1 行の修正で、対象の
+    841 frame が MLT の pre-YUV と全画素一致した。拡縮を含む 119 frame は対象外のまま。layer の画像は
+    範囲を外から渡せない型にし、不透明でない下地は拒否する。MLT への組み込みは未着手。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

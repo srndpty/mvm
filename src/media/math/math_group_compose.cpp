@@ -1,6 +1,8 @@
 #include "media/math/math_group_compose.h"
 
 #include <cmath>
+#include <cstring>
+#include <utility>
 #include <vector>
 
 namespace mvm::math {
@@ -34,16 +36,108 @@ std::vector<float> sourceCoordinates(double rect, int size) {
 
 bool mathGroupAlphaRoundTripIsIdentity() {
     for (int alpha = 0; alpha <= 255; ++alpha) {
-        const float below = f32(static_cast<float>(alpha) / 255.0f);
+        const float below = f32(static_cast<float>(alpha) * f32(1.0f / 255.0f));
         if (static_cast<int>(static_cast<std::uint8_t>(f32(255.0f * below))) != alpha)
             return false;
     }
     return true;
 }
 
+bool PreparedMathRaster::prepare(const std::uint8_t* rgba, int width, int height,
+                                 std::size_t stride, PreparedMathRaster& out, std::string& error) {
+    out = PreparedMathRaster();
+    if (!rgba || width < 2 || height < 2 || stride < static_cast<std::size_t>(width) * 4U) {
+        error = "数式 layer の画像の大きさまたは参照が不正です";
+        return false;
+    }
+    const std::size_t rowBytes = static_cast<std::size_t>(width) * 4U;
+    PreparedMathRaster raster;
+    raster.rgba_.resize(rowBytes * static_cast<std::size_t>(height));
+    int left = width, top = height, right = -1, bottom = -1;
+    for (int row = 0; row < height; ++row) {
+        std::uint8_t* to = raster.rgba_.data() + static_cast<std::size_t>(row) * rowBytes;
+        std::memcpy(to, rgba + static_cast<std::size_t>(row) * stride, rowBytes);
+        // 範囲は複製した側の画素から求める (元の buffer が途中で変わっても食い違わない)。
+        for (int column = 0; column < width; ++column) {
+            if (to[static_cast<std::size_t>(column) * 4U + 3U] == 0)
+                continue;
+            left = column < left ? column : left;
+            right = column > right ? column : right;
+            top = row < top ? row : top;
+            bottom = row;
+        }
+    }
+    raster.width_ = width;
+    raster.height_ = height;
+    if (right >= 0) {
+        raster.roiX_ = left;
+        raster.roiY_ = top;
+        raster.roiWidth_ = right - left + 1;
+        raster.roiHeight_ = bottom - top + 1;
+    }
+    out = std::move(raster);
+    return true;
+}
+
+bool mathGroupDestinationEligible(const std::uint8_t* destination, int width, int height,
+                                  std::size_t stride) {
+    if (!destination || width < 2 || height < 2 || stride < static_cast<std::size_t>(width) * 4U)
+        return false;
+    for (int row = 0; row < height; ++row) {
+        const std::uint8_t* line = destination + static_cast<std::size_t>(row) * stride;
+        std::uint8_t all = 255;
+        for (int column = 0; column < width; ++column)
+            all &= line[static_cast<std::size_t>(column) * 4U + 3U];
+        if (all != 255)
+            return false;
+    }
+    return true;
+}
+
 bool composeMathGroup(std::uint8_t* destination, int width, int height, std::size_t stride,
-                      const MathGroupLayer* layers, std::size_t count, std::string& error,
+                      const MathGroupPlacement* layers, std::size_t count, std::string& error,
                       MathGroupStats* stats) {
+    if (!destination || width < 2 || height < 2 || stride < static_cast<std::size_t>(width) * 4U ||
+        (count > 0 && !layers)) {
+        error = "数式の合成先の大きさまたは参照が不正です";
+        return false;
+    }
+    // 先に全部の入力を確かめる。対象外が 1 つでもあれば、何も書かずに拒否する。
+    std::vector<detail::UncheckedMathGroupLayer> unchecked(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const MathGroupPlacement& layer = layers[index];
+        if (!layer.raster || !layer.raster->valid() || layer.raster->width() != width ||
+            layer.raster->height() != height || !std::isfinite(layer.rectX) ||
+            !std::isfinite(layer.rectY) || !(layer.opacity >= 0.0 && layer.opacity <= 1.0)) {
+            error = "数式 layer " + std::to_string(index) +
+                    " が不正です (準備済み・等倍・出力と同じ大きさ・不透明度 0〜1 だけに対応)";
+            return false;
+        }
+        auto& item = unchecked[index];
+        item.rgba = layer.raster->rgba();
+        item.width = width;
+        item.height = height;
+        item.rectX = layer.rectX;
+        item.rectY = layer.rectY;
+        item.opacity = layer.opacity;
+        item.roiX = layer.raster->roiX();
+        item.roiY = layer.raster->roiY();
+        item.roiWidth = layer.raster->roiWidth();
+        item.roiHeight = layer.raster->roiHeight();
+    }
+    if (!mathGroupDestinationEligible(destination, width, height, stride)) {
+        error = "数式の合成先に不透明でない画素があります (対象外。MLT と比べていない)";
+        return false;
+    }
+    return detail::composeMathGroupUnchecked(destination, width, height, stride, unchecked.data(),
+                                             count, error, stats);
+}
+
+namespace detail {
+
+bool composeMathGroupUnchecked(std::uint8_t* destination, int width, int height, std::size_t stride,
+                               const UncheckedMathGroupLayer* layers, std::size_t count,
+                               std::string& error, MathGroupStats* stats) {
     if (!destination || width < 2 || height < 2 || stride < static_cast<std::size_t>(width) * 4U ||
         (count > 0 && !layers)) {
         error = "数式の合成先の大きさまたは参照が不正です";
@@ -51,7 +145,7 @@ bool composeMathGroup(std::uint8_t* destination, int width, int height, std::siz
     }
     const bool skipEmpty = mathGroupAlphaRoundTripIsIdentity();
     for (std::size_t index = 0; index < count; ++index) {
-        const MathGroupLayer& layer = layers[index];
+        const UncheckedMathGroupLayer& layer = layers[index];
         if (!layer.rgba || layer.width != width || layer.height != height ||
             !std::isfinite(layer.rectX) || !std::isfinite(layer.rectY) ||
             !(layer.opacity >= 0.0 && layer.opacity <= 1.0) || layer.roiWidth < 0 ||
@@ -103,12 +197,15 @@ bool composeMathGroup(std::uint8_t* destination, int width, int height, std::siz
                 };
                 std::uint8_t* pixel = out + static_cast<std::size_t>(column) * 4U;
                 const float above = f32(sample(3) * gain);
-                const float below = f32(static_cast<float>(pixel[3]) / 255.0f);
+                // 下の alpha は 1/255 を掛けて求める (MLT の実 binary と同じ。255 で割ると、
+                // 下の alpha が 254 などのときに末尾の桁が違う)。
+                const float below = f32(static_cast<float>(pixel[3]) * f32(1.0f / 255.0f));
                 const float total = f32(f32(above + below) - f32(above * below));
                 if (stats)
                     ++stats->visitedPixels;
                 // 上下とも alpha 0 の画素は、MLT では 0 で割ることになり結果が定まらない。
-                // 不透明な下地の上では起きない。書かずに残す。
+                // 不透明な下地の上では起きない (検査を通す入口は透明な下地を拒否する)。
+                // 書かずに残す。
                 if (!(total > 0.0f))
                     continue;
                 const float weight = f32(above / total);
@@ -122,5 +219,7 @@ bool composeMathGroup(std::uint8_t* destination, int width, int height, std::siz
     }
     return true;
 }
+
+} // namespace detail
 
 } // namespace mvm::math

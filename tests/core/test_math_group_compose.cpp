@@ -10,18 +10,25 @@
 #include "../harness/mlt_rgba_oracle.h"
 #include "media/math/math_group_compose.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <random>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
 
-using mvm::math::MathGroupLayer;
+// 既存の試験は、範囲と下地を確かめない入口 (detail) を直接使う: 誤った範囲を渡す対照と、
+// 下の alpha が 254 の画素の検査は、検査を通す入口からは作れない。
+using MathGroupLayer = mvm::math::detail::UncheckedMathGroupLayer;
+constexpr auto composeUnchecked = mvm::math::detail::composeMathGroupUnchecked;
 using Image = std::vector<std::uint8_t>;
 
 int failures = 0;
@@ -81,9 +88,8 @@ bool compose(Image& destination, int width, int height, const std::vector<Placed
         input.push_back(item);
     }
     std::string error;
-    return mvm::math::composeMathGroup(destination.data(), width, height,
-                                       static_cast<std::size_t>(width) * 4, input.data(),
-                                       input.size(), error);
+    return composeUnchecked(destination.data(), width, height, static_cast<std::size_t>(width) * 4,
+                            input.data(), input.size(), error, nullptr);
 }
 
 long long differing(const Image& a, const Image& b) {
@@ -207,8 +213,8 @@ int runTests() {
             fractional[0].opacity = 1.0;
             Image out = base;
             std::string error;
-            mvm::math::composeMathGroup(out.data(), width, height, width * 4U, fractional.data(), 1,
-                                        error);
+            composeUnchecked(out.data(), width, height, width * 4U, fractional.data(), 1, error,
+                             nullptr);
             auto single = layers;
             single.resize(1);
             single[0].opacity = 1.0;
@@ -225,14 +231,241 @@ int runTests() {
     bad.width = 16;
     bad.height = 16;
     std::string error;
-    check(!mvm::math::composeMathGroup(base.data(), width, height, width * 4U, &bad, 1, error),
+    check(!composeUnchecked(base.data(), width, height, width * 4U, &bad, 1, error, nullptr),
           "出力と大きさの違う layer (拡縮) を拒否する");
     bad.rgba = base.data();
     bad.width = width;
     bad.height = height;
     bad.opacity = 1.5;
-    check(!mvm::math::composeMathGroup(base.data(), width, height, width * 4U, &bad, 1, error),
+    check(!composeUnchecked(base.data(), width, height, width * 4U, &bad, 1, error, nullptr),
           "範囲外の不透明度を拒否する");
+
+    // --- P3-1.2: 下の alpha が 254 のときの丸め (回帰) -----------------------------------
+    // 実際の MLT の pre-YUV で観測した値 (cmp-layers-48 の frame 13 (866, 556) と frame 14
+    // (911, 510)、最後に重なる layer)。下の alpha を 255 で割る実装は R が 1 階調ずれる。
+    {
+        struct Observed {
+            std::uint8_t below[4], texel[4];
+            double opacity;
+            std::uint8_t mlt[4];
+        };
+
+        const Observed observed[] = {
+            {{204, 194, 194, 254}, {204, 34, 34, 255}, 0.12049074074074075, {203, 174, 174, 254}},
+            {{204, 204, 204, 254}, {204, 34, 34, 255}, 0.13792592592592592, {204, 180, 180, 254}},
+        };
+        for (const auto& item : observed) {
+            Image destination(4 * 4 * 4), raster(4 * 4 * 4);
+            for (std::size_t pixel = 0; pixel < 16; ++pixel) {
+                std::memcpy(destination.data() + pixel * 4, item.below, 4);
+                std::memcpy(raster.data() + pixel * 4, item.texel, 4);
+            }
+            MathGroupLayer layer;
+            layer.rgba = raster.data();
+            layer.width = layer.height = 4;
+            layer.opacity = item.opacity;
+            std::string composeError;
+            check(composeUnchecked(destination.data(), 4, 4, 16, &layer, 1, composeError, nullptr),
+                  "下の alpha が 254 の合成が成功する");
+            if (std::memcmp(destination.data(), item.mlt, 4) != 0)
+                std::fprintf(stderr, "MLT の観測値 %d,%d,%d,%d に対して %d,%d,%d,%d\n", item.mlt[0],
+                             item.mlt[1], item.mlt[2], item.mlt[3], destination[0], destination[1],
+                             destination[2], destination[3]);
+            check(std::memcmp(destination.data(), item.mlt, 4) == 0,
+                  "下の alpha が 254 の画素が MLT の観測値と一致する");
+        }
+    }
+    // 下の alpha 254・255 について、色・texel の alpha・不透明度を総当たりして oracle と比べる。
+    // (254 は MLT が字形の縁で作る alpha。合成の途中の下地として実際に現れる。)
+    {
+        constexpr int sweepWidth = 256;
+        const std::uint8_t colors[] = {0, 34, 128, 204, 255};
+        const std::uint8_t alphas[] = {1, 64, 75, 138, 200, 254, 255};
+        const double sweepOpacities[] = {0.12049074074074075,
+                                         0.13792592592592592,
+                                         0.25925925925925924,
+                                         0.54992592592592593,
+                                         0.86207407407407421,
+                                         0.95140740740740748,
+                                         1.0,
+                                         0.5};
+        const int rows = static_cast<int>(std::size(colors) * std::size(alphas));
+        long long sweepCompared = 0, sweepWrong = 0, sweepOutside = 0;
+        for (const std::uint8_t belowAlpha : {std::uint8_t{254}, std::uint8_t{255}})
+            for (const double opacity : sweepOpacities) {
+                Image destination(static_cast<std::size_t>(sweepWidth) * rows * 4);
+                Image raster(destination.size());
+                for (int row = 0; row < rows; ++row)
+                    for (int column = 0; column < sweepWidth; ++column) {
+                        const auto at = (static_cast<std::size_t>(row) * sweepWidth + column) * 4;
+                        destination[at] = static_cast<std::uint8_t>(column);
+                        destination[at + 1] = static_cast<std::uint8_t>(255 - column);
+                        destination[at + 2] = static_cast<std::uint8_t>((column * 7) % 256);
+                        destination[at + 3] = belowAlpha;
+                        const auto color =
+                            colors[static_cast<std::size_t>(row) % std::size(colors)];
+                        raster[at] = color;
+                        raster[at + 1] = static_cast<std::uint8_t>(255 - color);
+                        raster[at + 2] = 34;
+                        raster[at + 3] = alphas[static_cast<std::size_t>(row) / std::size(colors)];
+                    }
+                // oracle は、binary32 の値が 255 を僅かに超える組 (255 と 255 の混合など) を
+                // 定義域の外として拒否する。その画素は比べず、数だけを残す (一致に数えない)。
+                Image want = destination;
+                std::vector<bool> outside(want.size() / 4);
+                for (std::size_t at = 0; at < want.size(); at += 4) {
+                    try {
+                        const auto result = mvm::test::mltSourceOver(
+                            {want[at], want[at + 1], want[at + 2], want[at + 3]},
+                            {raster[at], raster[at + 1], raster[at + 2], raster[at + 3]}, opacity);
+                        std::memcpy(want.data() + at, result.data(), 4);
+                    } catch (const std::domain_error&) {
+                        outside[at / 4] = true;
+                        ++sweepOutside;
+                    }
+                }
+                MathGroupLayer layer;
+                layer.rgba = raster.data();
+                layer.width = sweepWidth;
+                layer.height = rows;
+                layer.opacity = opacity;
+                std::string composeError;
+                check(composeUnchecked(destination.data(), sweepWidth, rows, sweepWidth * 4U,
+                                       &layer, 1, composeError, nullptr),
+                      "総当たりの合成が成功する");
+                for (std::size_t at = 0; at < want.size(); at += 4) {
+                    if (outside[at / 4])
+                        continue;
+                    sweepWrong += std::memcmp(destination.data() + at, want.data() + at, 4) != 0;
+                    sweepCompared += 4;
+                }
+            }
+        if (sweepWrong != 0)
+            std::fprintf(stderr, "下の alpha 254・255 の総当たり: %lld 画素が oracle と違います\n",
+                         sweepWrong);
+        check(sweepWrong == 0, "下の alpha 254・255 の総当たりで oracle と全 byte 一致する");
+        check(sweepCompared > sweepOutside * 4, "総当たりの大半は oracle の定義域の中にある");
+        std::printf("下の alpha 254・255 の総当たりで比べた byte: %lld (oracle の定義域の外で"
+                    "比べなかった画素: %lld)\n",
+                    sweepCompared, sweepOutside);
+        compared += sweepCompared;
+    }
+
+    // --- P3-1.2: 準備済みの画像 (字形の範囲を外から渡せない) と下地の検査 ----------------
+    {
+        std::mt19937 localRandom(312);
+        Image base(static_cast<std::size_t>(width) * height * 4);
+        for (std::size_t i = 0; i < base.size(); ++i)
+            base[i] = i % 4 == 3 ? 255 : static_cast<std::uint8_t>(localRandom() % 256);
+        Image source = glyph(localRandom, width, height);
+        // 範囲の四隅を必ず不透明にする (範囲が画素から正しく求まることを確かめる)。
+        const int left = width / 4, top = height / 4, right = left + width / 2 - 1,
+                  bottom = top + height / 2 - 1;
+        for (const auto& corner : {std::pair{left, top}, std::pair{right, bottom}})
+            source[(static_cast<std::size_t>(corner.second) * width + corner.first) * 4 + 3] = 255;
+        mvm::math::PreparedMathRaster raster;
+        std::string prepareError;
+        check(mvm::math::PreparedMathRaster::prepare(source.data(), width, height, width * 4U,
+                                                     raster, prepareError),
+              "画像を準備できる");
+        check(raster.roiX() == left && raster.roiY() == top && raster.roiWidth() == width / 2 &&
+                  raster.roiHeight() == height / 2,
+              "字形の範囲は画素から求まる");
+        // 期待値: 範囲を使わない全体の走査 (検査を通さない入口、roi 0)。
+        MathGroupLayer whole;
+        whole.rgba = source.data();
+        whole.width = width;
+        whole.height = height;
+        whole.rectX = 3.36;
+        whole.rectY = -2.5;
+        whole.opacity = 0.75;
+        Image want = base;
+        std::string composeError;
+        check(composeUnchecked(want.data(), width, height, width * 4U, &whole, 1, composeError,
+                               nullptr),
+              "全体の走査が成功する");
+        mvm::math::MathGroupPlacement placement{&raster, whole.rectX, whole.rectY, whole.opacity};
+        Image got = base;
+        check(mvm::math::composeMathGroup(got.data(), width, height, width * 4U, &placement, 1,
+                                          composeError) &&
+                  got == want && got != base,
+              "準備済みの画像の合成は全体の走査と同じ結果になる");
+        // 準備の後で元の buffer を壊しても、準備済みの画像と結果は変わらない。
+        Image scribbled = source;
+        std::fill(source.begin(), source.end(), std::uint8_t{255});
+        Image again = base;
+        check(mvm::math::composeMathGroup(again.data(), width, height, width * 4U, &placement, 1,
+                                          composeError) &&
+                  again == want &&
+                  std::memcmp(raster.rgba(), scribbled.data(), scribbled.size()) == 0,
+              "準備の後で元の buffer を書き換えても結果が変わらない");
+        // 準備できない入力・準備していない画像は拒否する。
+        mvm::math::PreparedMathRaster rejected;
+        check(!mvm::math::PreparedMathRaster::prepare(nullptr, width, height, width * 4U, rejected,
+                                                      prepareError) &&
+                  !rejected.valid(),
+              "参照の無い画像は準備できない");
+        check(!mvm::math::PreparedMathRaster::prepare(scribbled.data(), width, height, width * 2U,
+                                                      rejected, prepareError) &&
+                  !rejected.valid(),
+              "行の間隔が足りない画像は準備できない");
+        const auto rejects = [&](Image destination, mvm::math::MathGroupPlacement item,
+                                 const char* message) {
+            const Image before = destination;
+            std::string rejectError;
+            const bool composed = mvm::math::composeMathGroup(destination.data(), width, height,
+                                                              width * 4U, &item, 1, rejectError);
+            check(!composed && destination == before && !rejectError.empty(), message);
+        };
+        mvm::math::PreparedMathRaster empty;
+        rejects(base, {&empty, 0.0, 0.0, 1.0}, "準備していない画像を拒否し、何も書かない");
+        rejects(base, {nullptr, 0.0, 0.0, 1.0}, "画像の無い layer を拒否し、何も書かない");
+        rejects(base, {&raster, 0.0, 0.0, 1.5}, "範囲外の不透明度を拒否し、何も書かない");
+        Image smallSource(16 * 16 * 4, 255);
+        mvm::math::PreparedMathRaster smallRaster;
+        check(mvm::math::PreparedMathRaster::prepare(smallSource.data(), 16, 16, 64, smallRaster,
+                                                     prepareError),
+              "小さい画像を準備できる");
+        rejects(base, {&smallRaster, 0.0, 0.0, 1.0},
+                "出力と大きさの違う画像 (拡縮) を拒否し、何も書かない");
+        // 下地の検査: 透明・半透明の画素が 1 つでもあれば拒否する (MLT と比べていない)。
+        for (const std::uint8_t alpha : {std::uint8_t{0}, std::uint8_t{128}, std::uint8_t{254}}) {
+            Image transparent = base;
+            transparent[(static_cast<std::size_t>(height - 1) * width + (width - 1)) * 4 + 3] =
+                alpha; // 字形の範囲の外の 1 画素だけ
+            check(!mvm::math::mathGroupDestinationEligible(transparent.data(), width, height,
+                                                           width * 4U),
+                  "不透明でない下地は対象外と判定する");
+            rejects(transparent, placement, "不透明でない下地を拒否し、何も書かない");
+        }
+        check(mvm::math::mathGroupDestinationEligible(base.data(), width, height, width * 4U),
+              "不透明な下地は対象と判定する");
+        // 2 枚を 1 回で重ねる。1 枚目で alpha が 254 になった画素の上へ 2 枚目が重なる
+        // (合成の途中の 254 は対象の中)。検査を通さない入口で 1 枚ずつ重ねた結果と同じ。
+        mvm::math::MathGroupPlacement stack[] = {{&raster, 0.36, 0.0, 0.5},
+                                                 {&raster, 2.36, 1.5, 0.3333}};
+        Image stacked = base;
+        check(mvm::math::composeMathGroup(stacked.data(), width, height, width * 4U, stack, 2,
+                                          composeError),
+              "2 枚の合成が成功する");
+        Image stepped = base;
+        for (const auto& item : stack) {
+            MathGroupLayer one;
+            one.rgba = raster.rgba();
+            one.width = width;
+            one.height = height;
+            one.rectX = item.rectX;
+            one.rectY = item.rectY;
+            one.opacity = item.opacity;
+            composeUnchecked(stepped.data(), width, height, width * 4U, &one, 1, composeError,
+                             nullptr);
+        }
+        long long edge = 0;
+        for (std::size_t at = 3; at < stacked.size(); at += 4)
+            edge += stacked[at] == 254;
+        check(stacked == stepped && edge > 0,
+              "途中で alpha が 254 になる重なりも 1 枚ずつ重ねた結果と同じ");
+    }
     std::printf("oracle と比べた byte: %lld、失敗: %d\n", compared, failures);
     return failures == 0 ? 0 : 1;
 }
@@ -282,8 +515,8 @@ int runBench() {
         constexpr int frames = 20;
         const auto begin = std::chrono::steady_clock::now();
         for (int frame = 0; frame < frames; ++frame)
-            if (!mvm::math::composeMathGroup(destination.data(), width, height, width * 4U,
-                                             layers.data(), layers.size(), error, &stats))
+            if (!composeUnchecked(destination.data(), width, height, width * 4U, layers.data(),
+                                  layers.size(), error, &stats))
                 return 1;
         const double seconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
