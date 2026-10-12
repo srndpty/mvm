@@ -41,6 +41,8 @@ param(
     [ValidateSet('none', 'bounding-box', 'anchored-box', 'split-transitions')][string]$Compare = 'none',
     # 主の書き出しで transition を区間ごとに分ける (試作。製品の経路ではない)。
     [switch]$SplitTransitions,
+    # 分け方 '変わる区間の上限/変わらない区間の下限[/変わらない区間の上限]'。空は既定 (64/8)。
+    [string]$SplitPolicy = '',
     # 診断用: graph は Project 全体のまま '先頭:frame数' の区間だけを書き出す (parity は判定しない)。
     [string]$Range = '',
     # 0 は製品の値 (4) のまま。並列度の測定にだけ使う。
@@ -117,7 +119,12 @@ if ($NegativeControls) {
         $cases += [pscustomobject]@{ name = 'negative-compare-corrupt'; fixture = 'cmp-integer'; inject = 'compare-corrupt'; expected = 14 }
         if ($Compare -eq 'split-transitions') {
             # 分割そのものを壊す対照: keyframe の位置ずれ・keyframe の欠落・不透明度の誤り。どれも 1 階調超で落ちる。
-            $cases += [pscustomobject]@{ name = 'negative-split-wrong-mapping'; fixture = 'cmp-region-motion'; inject = 'none'; expected = 14; fault = 1 }
+            # 各 frame に 1 つ後の frame の値を置く (animation としては正しく、対応だけが誤り)。
+            # 画素の不一致 (14) として検出されなければならない。
+            $cases += [pscustomobject]@{ name = 'negative-split-wrong-mapping'; fixture = 'cmp-region-motion'; inject = 'none'; expected = 14; fault = 4 }
+            # keyframe の位置を 1 frame ずらすと書き出しそのものが失敗し、比較は不成立 (15) になる。
+            # 画素の比較の対照には数えない。壊れた animation が成立扱いにならないことの記録として残す。
+            $cases += [pscustomobject]@{ name = 'invalid-animation-shifted-keys'; fixture = 'cmp-region-motion'; inject = 'none'; expected = 15; fault = 1 }
             $cases += [pscustomobject]@{ name = 'negative-split-skipped-keyframe'; fixture = 'cmp-region-motion'; inject = 'none'; expected = 14; fault = 2 }
             $cases += [pscustomobject]@{ name = 'negative-split-wrong-alpha'; fixture = 'cmp-region-motion'; inject = 'none'; expected = 14; fault = 3 }
         }
@@ -138,6 +145,7 @@ foreach ($case in $cases) {
     if ($RenderThreads -gt 0) { $arguments += @('--render-threads', $RenderThreads) }
     if ($Staging -ne 'full-frame') { $arguments += @('--staging', $Staging) }
     if ($SplitTransitions) { $arguments += @('--split-transitions', 1) }
+    if ($SplitPolicy -ne '') { $arguments += @('--split-policy', $SplitPolicy) }
     if ($Range -ne '') { $arguments += @('--range', $Range) }
     if ($case.PSObject.Properties.Name -contains 'fault') { $arguments += @('--split-fault', $case.fault) }
     # 既存の negative control (math-1) は比較なしのまま回す。

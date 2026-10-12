@@ -181,6 +181,9 @@ typedef struct MvmExportObserver {
     /* 合成後の画像の要求から戻りまでの時間の合計 (全 render worker の和、ns)。検査の callback は
      * 含まない。1 frame の合成コストを、検査や encoder の時間と分けて比べるために使う。 */
     volatile long long image_ns_total;
+    /* 最終 producer の get_frame の時間の合計 (ns)。tractor が全 track と全 transition を通って
+     * frame を組み立てる時間で、画素の合成は含まない。 */
+    volatile long long frame_ns_total;
     volatile long sample_count; /* 採ろうとした数。CAPACITY を超えた分は捨てている */
     MvmExportObserveSample samples[MVM_EXPORT_OBSERVE_SAMPLE_CAPACITY];
     /* 入力: 非0なら muxer に packet ごとの debug 記録 (fdebug=ts) を出させる。記録を数えるのは
@@ -200,8 +203,19 @@ typedef struct MvmExportObserver {
     /* 入力 (試作。0 が製品の動作): 上位 track の clip の affine transition を、値の変わらない区間と
      * 変わる区間に分けて植える。評価される値は変えない (mvm_mlt_export.c)。 */
     int diagnostic_split_transitions;
-    /* 入力 (比較の対照用。0 以外は意図的に壊す): 1 = keyframe の位置を 1 frame ずらす、
-     * 2 = keyframe を 1 つおきに落とす、3 = 不透明度を半分にする。 */
+    /* 入力 (試作の分け方。0 は既定値 8 / 64 / 無制限)。
+     *   static_run   同じ値がこの frame 数以上続く所を「変わらない区間」にする
+     *   animated_run 「変わる区間」の長さの上限
+     *   static_chunk 「変わらない区間」の長さの上限。出力と keyframe の複雑さを変えずに transition
+     * の 総数だけを増やして、transition 1 つの固定費を測るために使う */
+    int diagnostic_split_static_run;
+    int diagnostic_split_animated_run;
+    int diagnostic_split_static_chunk;
+    /* 入力 (比較の対照用。0 以外は意図的に壊す): 1 = keyframe の位置を 1 frame ずらす
+     * (区間の先頭の keyframe
+     * が無くなり、書き出しそのものが失敗する。画素の比較の対照にはならない)、 2 = keyframe を 1
+     * つおきに落とす、3 = 不透明度を半分にする、 4 = 各 frame に 1 つ後の frame の値を置く
+     * (animation としては正しく、対応だけが誤り)。 */
     int diagnostic_split_fault;
     /* 植えた上位 track の affine transition の数。 */
     volatile long long overlay_transitions;

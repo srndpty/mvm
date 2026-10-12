@@ -119,6 +119,10 @@
     行う animation の文字列化だった（実測で確認）。transition を区間ごとに分ける試作は 1320 frame で
     画素が完全一致し、文字列化も消えたが、transition が増えた分のコストが出て改善が一定しない（HOLD）。
     次は、transition の数と keyframe の数の釣り合いを測る。
+  - P2-B の調査（[結果](math-export-p2b.md)）: 植えた transition 1 つにつき毎 frame 0.29〜0.35 ms の
+    固定費がある（graph の大きさに比例）。分割はこれと文字列化の減少が相殺し、4 つの分け方とも利益が
+    一定しない（画素は 3840 frame で完全一致）。分割は HOLD。次は MLT の affine の実行経路の計測か、
+    数式 layer を MLT の外で合成する設計の検討。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

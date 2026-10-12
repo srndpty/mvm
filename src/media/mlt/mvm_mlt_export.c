@@ -149,7 +149,9 @@ static int observed_get_frame(mlt_service service, mlt_frame_ptr frame, int inde
     MvmExportObserver* observer = audit->spec->observer;
     mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_FRAME_REQUEST,
                            (long long)mlt_producer_position((mlt_producer)service));
+    const long long began = mvm_mlt_export_observer_now_ns();
     const int status = audit->original_get_frame(service, frame, index);
+    InterlockedExchangeAdd64(&observer->frame_ns_total, mvm_mlt_export_observer_now_ns() - began);
     mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_FRAME_RETURN,
                            frame && *frame ? (long long)mlt_frame_get_position(*frame) : -1);
     return status;
@@ -829,6 +831,8 @@ static int plant_export_overlay_segment(mlt_profile profile, mlt_tractor tractor
             continue;
         ++keyframes;
         mlt_rect rect = placement_rect_at(clip, index);
+        if (fault == 4 && index + 1 < clip->opacity_keyframe_count)
+            rect = placement_rect_at(clip, index + 1); /* 故障: 1 つ後の frame の値を置く */
         if (fault == 3)
             rect.o *= 0.5; /* 故障: 不透明度を半分にする */
         if (mlt_properties_anim_set_rect(props, "rect", rect, (mlt_position)position,
@@ -865,10 +869,15 @@ static int plant_export_overlay_segment(mlt_profile profile, mlt_tractor tractor
 static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
                                        const MvmExportClip* clip, char* err, size_t err_size,
                                        const MvmExportSpec* spec, int* cancel_status) {
-    enum { kStaticRun = 8, kAnimatedRun = 64 };
-
     const int count = clip->opacity_keyframe_count;
     int split = spec->observer && spec->observer->diagnostic_split_transitions;
+    const int kStaticRun = split && spec->observer->diagnostic_split_static_run > 1
+                               ? spec->observer->diagnostic_split_static_run
+                               : 8;
+    const int kAnimatedRun = split && spec->observer->diagnostic_split_animated_run >= kStaticRun
+                                 ? spec->observer->diagnostic_split_animated_run
+                                 : 64;
+    const int kStaticChunk = split ? spec->observer->diagnostic_split_static_chunk : 0;
     /* keyframe が全 frame に並んでいる clip だけを分ける (歯抜けなら従来どおり 1 つ)。 */
     for (int index = 0; split && index < count; ++index)
         split = clip->opacity_keyframes[index].local_frame == index;
@@ -888,6 +897,9 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
                                                    clip->motion_frames[same + 1].shear_degrees)))
             ++same;
         int last = same;
+        if (same - first + 1 >= kStaticRun && kStaticChunk >= kStaticRun &&
+            same - first + 1 > kStaticChunk)
+            last = first + kStaticChunk - 1; /* 診断用: 変わらない区間をさらに刻む */
         if (same - first + 1 < kStaticRun) {
             /* 変わる区間: 長い「変わらない区間」の手前まで、上限の長さで切る。 */
             last = first;

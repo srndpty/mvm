@@ -148,7 +148,9 @@ struct Options {
     // 試作 (P2-A): 主の書き出しで transition を区間ごとに分ける / 比較の candidate として分ける。
     bool splitTransitions = false;
     bool compareSplit = false;
-    int splitFault = 0;    // candidate だけに入れる故障 (比較の対照)
+    int splitFault = 0; // candidate だけに入れる故障 (比較の対照)
+    // 分け方 (0 は既定値): 変わる区間の上限 / 変わらない区間の下限 / 変わらない区間の上限。
+    int splitAnimatedRun = 0, splitStaticRun = 0, splitStaticChunk = 0;
     int capSeconds = 240;  // 書き出し全体の診断上限
     int stallSeconds = 45; // どの counter も進まない時間
     int stackSamples = 2;
@@ -849,6 +851,11 @@ bool parseOptions(int argc, char** argv, Options& options) {
                     options.fixture = &fixture;
         } else if (key == "--split-transitions") {
             options.splitTransitions = value == "1";
+        } else if (key == "--split-policy") {
+            // "変わる区間の上限/変わらない区間の下限[/変わらない区間の上限]"
+            if (std::sscanf(value.c_str(), "%d/%d/%d", &options.splitAnimatedRun,
+                            &options.splitStaticRun, &options.splitStaticChunk) < 2)
+                return false;
         } else if (key == "--split-fault") {
             options.splitFault = std::atoi(value.c_str());
         } else if (key == "--compare") {
@@ -975,6 +982,9 @@ int main(int argc, char** argv) {
         target.diagnostic_first_frame = options.rangeFirst;
         target.diagnostic_frame_count = options.rangeCount;
         target.diagnostic_split_transitions = options.splitTransitions ? 1 : 0;
+        target.diagnostic_split_animated_run = options.splitAnimatedRun;
+        target.diagnostic_split_static_run = options.splitStaticRun;
+        target.diagnostic_split_static_chunk = options.splitStaticChunk;
     };
     applyDiagnosticInputs(observer);
     std::mutex stageMutex;
@@ -1770,6 +1780,9 @@ int main(int argc, char** argv) {
                            ? QStringLiteral("bounding-box")
                            : QStringLiteral("anchored-box"));
         compare.insert(QStringLiteral("candidate_fault"), options.splitFault);
+        // candidate の書き出しが失敗したときの理由。画素の不一致による検出と区別する。
+        compare.insert(QStringLiteral("candidate_error"),
+                       QString::fromStdString(candidateRun.result.error));
         compare.insert(QStringLiteral("candidate_overlay_transitions"),
                        static_cast<qint64>(candidateRun.observer.overlay_transitions));
         compare.insert(QStringLiteral("ran"), compareRan);
@@ -1986,6 +1999,16 @@ int main(int argc, char** argv) {
     }
     report.insert(QStringLiteral("keyframe_stride"), options.keyframeStride);
     report.insert(QStringLiteral("split_transitions"), options.splitTransitions);
+    report.insert(QStringLiteral("split_policy"), QStringLiteral("%1/%2/%3")
+                                                      .arg(options.splitAnimatedRun)
+                                                      .arg(options.splitStaticRun)
+                                                      .arg(options.splitStaticChunk));
+    report.insert(
+        QStringLiteral("frame_request_ms_per_image"),
+        observer.points[MVM_EXPORT_OBSERVE_FRAME_RETURN].count > 0
+            ? static_cast<double>(observer.frame_ns_total) / 1e6 /
+                  static_cast<double>(observer.points[MVM_EXPORT_OBSERVE_FRAME_RETURN].count)
+            : 0.0);
     report.insert(QStringLiteral("overlay_transitions"),
                   static_cast<qint64>(observer.overlay_transitions));
     report.insert(QStringLiteral("range_first"), static_cast<qint64>(options.rangeFirst));
