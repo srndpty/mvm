@@ -525,6 +525,43 @@ int runBench() {
             seconds * 1e3 / frames, static_cast<unsigned long long>(stats.visitedPixels / frames),
             stats.visitedPixels ? seconds * 1e9 / static_cast<double>(stats.visitedPixels) : 0.0);
     }
+    // 下地の検査 (全画素の alpha の走査) と、画像の準備 (複製と字形の範囲の走査) の時間。
+    {
+        Image destination(static_cast<std::size_t>(width) * height * 4, 255);
+        constexpr int rounds = 200;
+        bool eligible = true;
+        auto begin = std::chrono::steady_clock::now();
+        for (int round = 0; round < rounds; ++round)
+            eligible = mvm::math::mathGroupDestinationEligible(destination.data(), width, height,
+                                                               width * 4U) &&
+                       eligible;
+        double seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+        std::printf("%-26s %8.3f ms/回 (対象=%d)\n", "下地の検査 1920x1080", seconds * 1e3 / rounds,
+                    eligible ? 1 : 0);
+        Image copy(destination.size());
+        begin = std::chrono::steady_clock::now();
+        for (int round = 0; round < rounds; ++round)
+            std::memcpy(copy.data(), destination.data(), destination.size());
+        seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+        std::printf("%-26s %8.3f ms/回\n", "合成先の複製 1920x1080", seconds * 1e3 / rounds);
+        Image raster(destination.size(), 0);
+        for (int row = 530; row < 550; ++row)
+            for (int column = 694; column < 1226; ++column)
+                raster[(static_cast<std::size_t>(row) * width + column) * 4 + 3] = 200;
+        constexpr int prepares = 20;
+        std::string error;
+        begin = std::chrono::steady_clock::now();
+        for (int round = 0; round < prepares; ++round) {
+            mvm::math::PreparedMathRaster prepared;
+            if (!mvm::math::PreparedMathRaster::prepare(raster.data(), width, height, width * 4U,
+                                                        prepared, error))
+                return 1;
+        }
+        seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+        std::printf("%-26s %8.3f ms/回 (1 枚 %.1f MB)\n", "画像の準備 1920x1080",
+                    seconds * 1e3 / prepares, static_cast<double>(raster.size()) / 1048576.0);
+    }
     return 0;
 }
 

@@ -135,6 +135,11 @@
     （MLT の実 binary は 1/255 を掛ける。下の alpha が 254 の画素で 1 階調ずれる）。1 行の修正で、対象の
     841 frame が MLT の pre-YUV と全画素一致した。拡縮を含む 119 frame は対象外のまま。layer の画像は
     範囲を外から渡せない型にし、不透明でない下地は拒否する。MLT への組み込みは未着手。
+  - P3-3A（[結果](math-transition-p33a.md)）: 合成器を MLT の transition として入れる試作（診断専用、既定は
+    無効）。製品の経路の pre-YUV と全 frame 一致し、数式が 16 層以上重なる区間の render は 7.6〜16 倍に
+    なった。ただし合成器は不透明な下地だけが対象なので、拡縮する layer の上の数式は group にできず、
+    v4 の Project 全体の graph では 99 clip 中 25 だけが対象で、利益は 1.17〜1.39 倍にとどまる。
+    下地の条件・画像の memory（全体で 783 MB）・data race の検出が未解決。製品へは入れていない。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

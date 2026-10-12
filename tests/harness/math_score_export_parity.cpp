@@ -165,6 +165,11 @@ struct Options {
     // P3-1.2 の診断: frame:x:y の画素について、MLT と合成器の値と layer ごとの途中の値を残す。
     std::vector<std::array<std::int64_t, 3>> probes;
     int splitFault = 0; // candidate だけに入れる故障 (比較の対照)
+    // 試作 (P3-3A): 数式 group の transition。主の書き出しを含む全部の書き出しで使う / 比較の
+    // candidate だけで使う。どちらも製品の経路ではない (report に残る)。
+    bool mathGroupMain = false;
+    bool compareMathGroup = false;
+    int mathGroupFault = 0; // group を使う書き出しへ入れる故障 (対照)
     // 分け方 (0 は既定値): 変わる区間の上限 / 変わらない区間の下限 / 変わらない区間の上限。
     int splitAnimatedRun = 0, splitStaticRun = 0, splitStaticChunk = 0;
     int capSeconds = 240;  // 書き出し全体の診断上限
@@ -1561,9 +1566,15 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 return false;
         } else if (key == "--split-fault") {
             options.splitFault = std::atoi(value.c_str());
+        } else if (key == "--math-group") {
+            options.mathGroupMain = value == "1";
+        } else if (key == "--math-group-fault") {
+            options.mathGroupFault = std::atoi(value.c_str());
         } else if (key == "--compare") {
             if (value == "split-transitions")
                 options.compareSplit = true;
+            else if (value == "math-group")
+                options.compareMathGroup = true;
             else if (value == "bounding-box")
                 options.compare = mvm::app::MathLayerStaging::BoundingBox;
             else if (value == "anchored-box")
@@ -1707,6 +1718,8 @@ int main(int argc, char** argv) {
         target.diagnostic_split_animated_run = options.splitAnimatedRun;
         target.diagnostic_split_static_run = options.splitStaticRun;
         target.diagnostic_split_static_chunk = options.splitStaticChunk;
+        target.diagnostic_math_group = options.mathGroupMain ? 1 : 0;
+        target.diagnostic_math_group_fault = options.mathGroupMain ? options.mathGroupFault : 0;
     };
     applyDiagnosticInputs(observer);
     std::mutex stageMutex;
@@ -1725,6 +1738,8 @@ int main(int argc, char** argv) {
     struct ExtraRun {
         mvm::app::MathLayerStaging staging = mvm::app::MathLayerStaging::FullFrame;
         bool split = false;
+        bool mathGroup = false;
+        long long groupLive = -1, groupActive = -1; // 書き出しの後に残っていた数 (0 が正)
         MvmExportObserver observer{};
         std::function<bool(std::int64_t, const std::uint8_t*, int, int)> validator;
         mvm::app::TimelineExportResult result;
@@ -1736,6 +1751,7 @@ int main(int argc, char** argv) {
 
     ExtraRun* extra = nullptr;
     std::map<std::int64_t, QByteArray> baselineFrames;
+    long long mainGroupLive = -1, mainGroupActive = -1;
 
     mvm::app::MvmController::ExportRunner runner =
         [&](const Project& exportProject, const mvm::app::TimelineExportRequest& request) {
@@ -1751,6 +1767,10 @@ int main(int argc, char** argv) {
                     extra->observer.diagnostic_split_transitions = 1;
                     extra->observer.diagnostic_split_fault = options.splitFault;
                 }
+                if (extra->mathGroup) {
+                    extra->observer.diagnostic_math_group = 1;
+                    extra->observer.diagnostic_math_group_fault = options.mathGroupFault;
+                }
                 input.exportObserver = &extra->observer;
                 input.mathLayerStaging = extra->staging;
                 input.mathStagingObserver = [&](const std::string&, int, int, int regionWidth,
@@ -1762,6 +1782,8 @@ int main(int argc, char** argv) {
                 extra->beginNs = mvm_mlt_export_observer_now_ns();
                 extra->result = mvm::app::exportTimeline(exportProject, input);
                 extra->endNs = mvm_mlt_export_observer_now_ns();
+                extra->groupLive = mvm_mlt_math_group_live();
+                extra->groupActive = mvm_mlt_math_group_active();
                 return extra->result;
             }
             input.mathLayerStaging = options.mainStaging;
@@ -1797,7 +1819,7 @@ int main(int argc, char** argv) {
                 // 比較のときは baseline の全 frame を保持する (ほぼ単色なので圧縮すると小さい)。
                 QByteArray packed;
                 if (options.compare != mvm::app::MathLayerStaging::FullFrame ||
-                    options.compareSplit || options.compositorAll)
+                    options.compareSplit || options.compareMathGroup || options.compositorAll)
                     packed = qCompress(rgba, static_cast<qsizetype>(bytes), 1);
                 std::lock_guard lock(observation.mutex);
                 if (!packed.isEmpty())
@@ -1818,6 +1840,8 @@ int main(int argc, char** argv) {
             exportBeginNs.store(mvm_mlt_export_observer_now_ns());
             exported = mvm::app::exportTimeline(exportProject, input);
             exportEndNs.store(mvm_mlt_export_observer_now_ns());
+            mainGroupLive = mvm_mlt_math_group_live();
+            mainGroupActive = mvm_mlt_math_group_active();
             return exported;
         };
     auto controller = std::make_unique<mvm::app::MvmController>(
@@ -2012,8 +2036,8 @@ int main(int argc, char** argv) {
         int left = 0, top = 0, right = 0, bottom = 0;
     };
 
-    const bool comparing =
-        options.compare != mvm::app::MathLayerStaging::FullFrame || options.compareSplit;
+    const bool comparing = options.compare != mvm::app::MathLayerStaging::FullFrame ||
+                           options.compareSplit || options.compareMathGroup;
     ExtraRun candidateRun, repeatRun;
     std::mutex compareMutex;
     std::set<std::int64_t> candidateSeen, repeatSeen;
@@ -2032,8 +2056,9 @@ int main(int argc, char** argv) {
         };
         candidateRun.staging = options.compare;
         candidateRun.split = options.compareSplit;
+        candidateRun.mathGroup = options.compareMathGroup;
         // baseline と同じ渡し方を保つ (比べるのは candidate の 1 点だけ)。
-        if (options.compareSplit)
+        if (options.compareSplit || options.compareMathGroup)
             candidateRun.staging = repeatRun.staging = options.mainStaging;
         candidateRun.validator = [&](std::int64_t absoluteFrame, const std::uint8_t* rgba,
                                      int frameWidth, int frameHeight) {
@@ -2486,6 +2511,21 @@ int main(int argc, char** argv) {
     report.insert(QStringLiteral("format"), QStringLiteral("mvm-math-score-export-diagnosis/1"));
     report.insert(QStringLiteral("fixture"), QString::fromLatin1(fixture.name));
     report.insert(QStringLiteral("inject"), static_cast<int>(options.inject));
+    report.insert(
+        QStringLiteral("math_group_main"),
+        QJsonObject{
+            {QStringLiteral("enabled"), options.mathGroupMain},
+            {QStringLiteral("fault"), options.mathGroupMain ? options.mathGroupFault : 0},
+            {QStringLiteral("transitions"), static_cast<qint64>(observer.math_group_transitions)},
+            {QStringLiteral("grouped_clips"), static_cast<qint64>(observer.math_group_clips)},
+            {QStringLiteral("retained_clips"),
+             static_cast<qint64>(observer.math_group_retained_clips)},
+            {QStringLiteral("composed_frames"), static_cast<qint64>(observer.math_group_frames)},
+            {QStringLiteral("callbacks"), static_cast<qint64>(observer.math_group_callbacks)},
+            {QStringLiteral("errors"), static_cast<qint64>(observer.math_group_errors)},
+            {QStringLiteral("error"), QString::fromUtf8(observer.math_group_error)},
+            {QStringLiteral("live_after_export"), mainGroupLive},
+            {QStringLiteral("active_after_export"), mainGroupActive}});
     {
         // 空でなければ固定 fixture そのものではない (診断用に layer を絞っている)。
         QJsonArray selected;
@@ -2702,11 +2742,62 @@ int main(int argc, char** argv) {
         };
         QJsonObject compare;
         compare.insert(QStringLiteral("candidate"),
-                       options.compareSplit ? QStringLiteral("split-transitions")
+                       options.compareSplit       ? QStringLiteral("split-transitions")
+                       : options.compareMathGroup ? QStringLiteral("math-group")
                        : options.compare == mvm::app::MathLayerStaging::BoundingBox
                            ? QStringLiteral("bounding-box")
                            : QStringLiteral("anchored-box"));
-        compare.insert(QStringLiteral("candidate_fault"), options.splitFault);
+        compare.insert(QStringLiteral("candidate_fault"),
+                       options.compareMathGroup ? options.mathGroupFault : options.splitFault);
+        const auto groupObject = [&](const MvmExportObserver& observed, long long live,
+                                     long long active) {
+            const auto frames = observed.math_group_frames;
+            const auto per = [&](long long ns) {
+                return frames > 0 ? static_cast<double>(ns) / 1e6 / static_cast<double>(frames)
+                                  : 0.0;
+            };
+            return QJsonObject{
+                {QStringLiteral("enabled"), observed.diagnostic_math_group != 0},
+                {QStringLiteral("fault"), observed.diagnostic_math_group_fault},
+                {QStringLiteral("transitions"),
+                 static_cast<qint64>(observed.math_group_transitions)},
+                {QStringLiteral("grouped_clips"), static_cast<qint64>(observed.math_group_clips)},
+                {QStringLiteral("retained_clips"),
+                 static_cast<qint64>(observed.math_group_retained_clips)},
+                {QStringLiteral("retained_geometry"),
+                 static_cast<qint64>(observed.math_group_retained_geometry)},
+                {QStringLiteral("retained_above_retained_layer"),
+                 static_cast<qint64>(observed.math_group_retained_above)},
+                {QStringLiteral("retained_first_reason"),
+                 QString::fromLatin1(observed.math_group_retained_reason)},
+                {QStringLiteral("affine_transitions"),
+                 static_cast<qint64>(observed.overlay_transitions)},
+                {QStringLiteral("callbacks"), static_cast<qint64>(observed.math_group_callbacks)},
+                {QStringLiteral("composed_frames"), static_cast<qint64>(frames)},
+                {QStringLiteral("composed_layer_frames"),
+                 static_cast<qint64>(observed.math_group_layer_frames)},
+                {QStringLiteral("raster_bytes"),
+                 static_cast<qint64>(observed.math_group_raster_bytes)},
+                {QStringLiteral("prepare_ms"),
+                 static_cast<double>(observed.math_group_prepare_ns) / 1e6},
+                {QStringLiteral("copy_ms_per_frame"), per(observed.math_group_copy_ns)},
+                {QStringLiteral("compose_ms_per_frame"), per(observed.math_group_compose_ns)},
+                {QStringLiteral("callback_ms_per_frame"), per(observed.math_group_callback_ns)},
+                {QStringLiteral("upstream_ms_per_frame"), per(observed.math_group_upstream_ns)},
+                {QStringLiteral("errors"), static_cast<qint64>(observed.math_group_errors)},
+                {QStringLiteral("error"), QString::fromUtf8(observed.math_group_error)},
+                {QStringLiteral("error_frame"),
+                 static_cast<qint64>(observed.math_group_error_frame)},
+                {QStringLiteral("live_after_export"), live},
+                {QStringLiteral("active_after_export"), active}};
+        };
+        compare.insert(QStringLiteral("baseline_group"),
+                       groupObject(observer, mainGroupLive, mainGroupActive));
+        compare.insert(
+            QStringLiteral("candidate_group"),
+            groupObject(candidateRun.observer, candidateRun.groupLive, candidateRun.groupActive));
+        compare.insert(QStringLiteral("repeat_group"),
+                       groupObject(repeatRun.observer, repeatRun.groupLive, repeatRun.groupActive));
         // candidate の書き出しが失敗したときの理由。画素の不一致による検出と区別する。
         compare.insert(QStringLiteral("candidate_error"),
                        QString::fromStdString(candidateRun.result.error));
@@ -2853,10 +2944,22 @@ int main(int argc, char** argv) {
         compare.insert(QStringLiteral("baseline_repeat_mismatches"), repeatMismatches);
         compare.insert(QStringLiteral("by_category"), bucketObject);
         compare.insert(QStringLiteral("differing_frames_first"), differingFrames);
-        const bool comparable = compareRan && candidateRun.result.success &&
-                                repeatRun.result.success && framesUncompared == 0 &&
-                                compareUnexpected == 0 && repeatMismatches == 0 &&
-                                static_cast<std::int64_t>(repeatSeen.size()) == expectedFrames;
+        // 数式 group: 書き出しの後に transition・callback が残っていないこと、candidate が実際に
+        // clip をまとめたこと (まとめていなければ比較は空振り)、baseline は group
+        // を使っていないこと。
+        const bool groupClean =
+            mainGroupLive == 0 && mainGroupActive == 0 && candidateRun.groupLive == 0 &&
+            candidateRun.groupActive == 0 && repeatRun.groupLive == 0 &&
+            repeatRun.groupActive == 0 &&
+            (!options.compareMathGroup ||
+             (candidateRun.observer.math_group_clips > 0 &&
+              candidateRun.observer.math_group_frames > 0 && observer.math_group_clips == 0 &&
+              repeatRun.observer.math_group_clips == 0));
+        compare.insert(QStringLiteral("group_clean"), groupClean);
+        const bool comparable =
+            compareRan && candidateRun.result.success && repeatRun.result.success &&
+            framesUncompared == 0 && compareUnexpected == 0 && repeatMismatches == 0 &&
+            static_cast<std::int64_t>(repeatSeen.size()) == expectedFrames && groupClean;
         compareVerdict = !comparable           ? QStringLiteral("COMPARE_INVALID")
                          : framesBeyond > 0    ? QStringLiteral("DIFFERS_BEYOND_ONE")
                          : framesWithinOne > 0 ? QStringLiteral("WITHIN_ONE_NOT_EXACT")

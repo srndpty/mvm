@@ -107,7 +107,28 @@ typedef struct {
     int source_y;
     int source_width;
     int source_height;
+    /* 試作 (P3-3A、診断専用。既定は NULL = 使わない)。NULL でなければ、この clip は「静止の数式で、
+     * 画像はこの準備済みの画像 (上位の層の型。この層は中身を見ない) と同じ」と申告されている。
+     * MvmExportObserver::diagnostic_math_group が非 0 で、配置が等倍・回転なし・crop なしのとき
+     * だけ、affine transition の代わりに数式 group の transition でまとめて合成する。それ以外は
+     * 無視して従来の経路のまま書き出す。呼び出し側は書き出しの関数から戻るまで保持する。 */
+    const void* math_group_raster;
 } MvmExportClip;
+
+/* 数式 group の 1 layer (合成の順に並ぶ。先頭が一番下)。 */
+typedef struct {
+    const void* raster; /* MvmExportClip::math_group_raster */
+    double rect_x;
+    double rect_y;
+    double opacity;
+} MvmExportMathGroupLayer;
+
+/* rgba (width x height、行の間隔 stride) へ layers を下から順に合成する。0 で成功。
+ * 失敗 (入力が対象外) のときは rgba へ何も書かず、非 0 を返して err に理由を書く。
+ * render worker から並行に呼ばれる。 */
+typedef int (*MvmExportMathGroupCompose)(void* opaque, unsigned char* rgba, int width, int height,
+                                         size_t stride, const MvmExportMathGroupLayer* layers,
+                                         int count, char* err, size_t err_size);
 
 /* --- 書き出しの観測 (診断用) -------------------------------------------------
  * 「どの段階まで進んだか」を、出力 file の大きさではなく各境界の通過回数で見るために使う。
@@ -219,7 +240,47 @@ typedef struct MvmExportObserver {
     int diagnostic_split_fault;
     /* 植えた上位 track の affine transition の数。 */
     volatile long long overlay_transitions;
+
+    /* --- 数式 group の transition (試作、P3-3A。入力がすべて 0 / NULL なら製品の動作) ---
+     * 入力: 非 0 なら、math_group_raster を持つ対象の clip のうち、下に従来の経路の layer が
+     * 重ならないものを 1 つの transition でまとめて合成する (それ以外は従来の経路へ残す)。compose
+     * が NULL なら書き出しを拒否する。tractor 経路だけ。 */
+    int diagnostic_math_group;
+    MvmExportMathGroupCompose diagnostic_math_group_compose;
+    void* diagnostic_math_group_opaque;
+    /* 入力 (比較の対照用。0 以外は意図的に壊す): 1 = group の 2 frame 目の合成を飛ばす、
+     * 2 = 1 つ後の frame の値を使う、3 = 不透明度を半分にする、4 = 下地に不透明でない画素を作る
+     * (合成器が拒否し、書き出しが失敗しなければならない)、5 = 別の member の画像を使う、
+     * 6 = 一番上の layer を落とす。 */
+    int diagnostic_math_group_fault;
+    /* 出力。最初の 2 つは画像を準備する上位の層が書く。 */
+    long long math_group_raster_bytes;            /* 準備済みの画像が持つ画素の byte 数の合計 */
+    long long math_group_prepare_ns;              /* 画像の準備 (前処理と範囲の走査) の時間の合計 */
+    volatile long long math_group_transitions;    /* 植えた group の transition の数 */
+    volatile long long math_group_clips;          /* まとめた clip の数 */
+    volatile long long math_group_retained_clips; /* 申告されたが従来の経路へ残した clip の数 */
+    /* 残した clip の内訳: 配置が対象外 (拡縮・回転・crop など) / 配置は対象だが、下に従来の経路の
+     * layer が重なる。 */
+    volatile long long math_group_retained_geometry;
+    volatile long long math_group_retained_above;
+    char math_group_retained_reason[64];        /* 最初に残した clip の理由 */
+    volatile long long math_group_callbacks;    /* 画像の callback の回数 */
+    volatile long long math_group_frames;       /* 合成を行って画像を差し替えた回数 */
+    volatile long long math_group_layer_frames; /* 合成した layer の延べ数 */
+    volatile long long math_group_upstream_ns;  /* 下の frame の画像を得る時間 (group の外) */
+    volatile long long math_group_copy_ns;      /* 合成先の確保と複製 */
+    volatile long long math_group_compose_ns;   /* compose の呼び出し (下地の検査を含む) */
+    volatile long long math_group_callback_ns;  /* callback 全体から upstream を引いた時間 */
+    volatile long long math_group_errors;       /* 0 でなければ書き出しは失敗する */
+    volatile long math_group_error_ready;
+    long long math_group_error_frame;
+    char math_group_error[256]; /* 最初の失敗 (error_ready が非 0 になってから読む) */
 } MvmExportObserver;
+
+/* 生きている数式 group の transition の数と、実行中の画像 callback の数。書き出しの関数から
+ * 戻った後はどちらも 0 でなければならない (0 でなければ書き出しは失敗を返す)。 */
+long long mvm_mlt_math_group_live(void);
+long long mvm_mlt_math_group_active(void);
 
 /* 単調増加の時刻 (QueryPerformanceCounter、ns)。 */
 long long mvm_mlt_export_observer_now_ns(void);

@@ -177,7 +177,7 @@ add_library(mvm_timeline_export STATIC
 target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_timeline_export
     PUBLIC mvm::project mvm::equation_sequence_compile mvm::graph_render_compile
-    PRIVATE mvm::core mvm::mlt mvm::text_raster mvm::math_clip_render mvm_still_image
+    PRIVATE mvm::core mvm::mlt mvm::text_raster mvm::math_clip_render mvm::math mvm_still_image
         mvm::warnings)
 add_library(mvm::timeline_export ALIAS mvm_timeline_export)
 
@@ -202,6 +202,7 @@ add_library(mvm_mlt STATIC
     media/mlt/mvm_mlt_explore.c
     media/mlt/mvm_mlt_compose.c
     media/mlt/mvm_mlt_export.c
+    media/mlt/mvm_mlt_math_group.c
     media/mlt/mvm_mlt_rgba_diagnostic.c
     media/mlt/mvm_mlt_effects_p0.c
     media/mlt/mvm_mlt_overlay_p0.c

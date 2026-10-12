@@ -1,6 +1,7 @@
 #include "mvm_mlt_export.h"
 
 #include "../../util/mvm_win_utf8.h"
+#include "mvm_mlt_math_group.h"
 #include "mvm_mlt_probe.h"
 #include "mvm_mlt_runtime.h"
 
@@ -1421,6 +1422,124 @@ fail:
 
 /* playlist に frames 分の空きを足す。V1 (track 0) は黒の背景で埋め、それ以外は blank にする。
  * V1 を blank にすると、上位 track の affine transition が掛からない (上の定義を参照)。 */
+/* --- 数式 group の transition (試作、P3-3A。observer の diagnostic_math_group が 0 なら何もしない)
+ * ---
+ *
+ * 合成の順は clips の並び (上位 track の clip ごとに transition を植える順) で決まる。
+ * group は 1 つだけ作り、最初の member の位置へ植える。member にするのは、次の両方を満たす clip:
+ *   (1) 配置が対象 (mvm_mlt_math_group_clip_eligible)。
+ *   (2) 並びで自分より前にある「従来の経路の上位 track の clip」のどれとも、時間が重ならない。
+ * (2) の理由は 2 つある。
+ *   - 順序: member は group の位置 (最初の member の位置) でまとめて合成される。自分より前にある
+ *     従来の clip と同じ frame に見えていると、その clip より先に合成されて順序が変わる。
+ *     時間が重ならなければ、どの frame でも合成の順は従来と同じになる。
+ *   - 下地: 従来の affine が重ねた画素は alpha が 254 になりうる。合成器は不透明な下地だけを
+ *     対象にする。(2) を満たす member の下にあるのは V1 と、同じ group の前の member だけになる。
+ * どちらかを満たさない clip は従来の経路へ残し、数と最初の理由を observer へ書く。
+ * groups[index] は member なら 1、従来の経路なら 0。member があれば 1 を返す (失敗は -1)。 */
+static int assign_math_groups(const MvmExportClip* clips, int clip_count, const MvmExportSpec* spec,
+                              int* groups, char* err, size_t err_size) {
+    MvmExportObserver* observer = spec->observer;
+    if (!observer || !observer->diagnostic_math_group)
+        return 0;
+    if (!observer->diagnostic_math_group_compose) {
+        set_err(err, err_size, "数式 group の合成の callback がありません");
+        return -1;
+    }
+    int members = 0;
+    for (int index = 0; index < clip_count; ++index) {
+        const MvmExportClip* clip = &clips[index];
+        if (clip->is_audio || clip->video_track <= 0)
+            continue; /* transition を植えない clip。順序にも下地の alpha にも関わらない */
+        const char* reason = NULL;
+        int eligible = mvm_mlt_math_group_clip_eligible(clip, spec->width, spec->height, &reason);
+        const int geometry = eligible;
+        for (int before = 0; eligible && before < index; ++before) {
+            const MvmExportClip* other = &clips[before];
+            if (groups[before] != 0 || other->is_audio || other->video_track <= 0)
+                continue;
+            if (other->timeline_start_frame <
+                    clip->timeline_start_frame + clip->timeline_duration_frames &&
+                other->timeline_start_frame + other->timeline_duration_frames >
+                    clip->timeline_start_frame) {
+                eligible = 0;
+                reason = "above-retained-layer";
+            }
+        }
+        if (eligible) {
+            groups[index] = 1;
+            ++members;
+            continue;
+        }
+        if (clip->math_group_raster) {
+            /* 申告されたが対象外。黙って合成器へ回さず、従来の経路へ残して数える。 */
+            InterlockedIncrement64(geometry ? &observer->math_group_retained_above
+                                            : &observer->math_group_retained_geometry);
+            if (InterlockedIncrement64(&observer->math_group_retained_clips) == 1)
+                snprintf(observer->math_group_retained_reason,
+                         sizeof(observer->math_group_retained_reason), "%s",
+                         reason ? reason : "not-overlay-video");
+        }
+    }
+    return members > 0 ? 1 : 0;
+}
+
+/* group の member (groups が 1 の clip、並びの順) を 1 つの transition として、V1 と group 用の
+ * 空の track の間へ植える。transition は上の track の frame を隠すので、他の clip が載らない
+ * 専用の track を使う。 */
+static int plant_export_math_group(mlt_tractor tractor, const MvmExportClip* clips, int clip_count,
+                                   const int* groups, int group_track, const MvmExportSpec* spec,
+                                   char* err, size_t err_size) {
+    int count = 0;
+    for (int index = 0; index < clip_count; ++index)
+        count += groups[index] != 0;
+    const MvmExportClip** members =
+        (const MvmExportClip**)calloc((size_t)(count > 0 ? count : 1), sizeof(*members));
+    if (!members || count <= 0) {
+        free(members);
+        set_err(err, err_size, "数式 group の member 配列を確保できません");
+        return 1;
+    }
+    for (int index = 0, at = 0; index < clip_count; ++index)
+        if (groups[index] != 0)
+            members[at++] = &clips[index];
+    char reason[160] = {0};
+    mlt_transition transition = mvm_mlt_math_group_new(members, count, spec->width, spec->height,
+                                                       spec->observer, reason, sizeof(reason));
+    free(members);
+    if (!transition) {
+        set_err(err, err_size, "%s", reason);
+        return 1;
+    }
+    mlt_transition_set_tracks(transition, 0, group_track);
+    if (mlt_field_plant_transition(mlt_tractor_field(tractor), transition, 0, group_track) != 0) {
+        mlt_transition_close(transition);
+        set_err(err, err_size, "数式 group の transition を V1 との間へ配置できません");
+        return 1;
+    }
+    mlt_transition_close(transition);
+    MvmExportObserver* observer = spec->observer; /* group は observer がある時だけ作られる */
+    if (observer) {
+        InterlockedIncrement64(&observer->math_group_transitions);
+        InterlockedExchangeAdd64(&observer->math_group_clips, count);
+    }
+    return 0;
+}
+
+/* group の transition が失敗を記録していれば、書き出しを失敗にする。 */
+static int math_group_failed(const MvmExportSpec* spec, char* err, size_t err_size) {
+    MvmExportObserver* observer = spec->observer;
+    if (!observer || !observer->diagnostic_math_group ||
+        InterlockedCompareExchange64(&observer->math_group_errors, 0, 0) == 0)
+        return 0;
+    if (InterlockedCompareExchange(&observer->math_group_error_ready, 0, 0))
+        set_err(err, err_size, "%s (frame %lld)", observer->math_group_error,
+                observer->math_group_error_frame);
+    else
+        set_err(err, err_size, "数式 group の合成に失敗しました");
+    return 1;
+}
+
 static int append_gap(mlt_playlist playlist, int track, mlt_producer v1_background,
                       long long frames) {
     if (frames <= 0)
@@ -1453,6 +1572,9 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     int failed = MVM_EXPORT_FAILED;
     ExportRgbaAudit audit = {spec, 0, 0};
     long long render_frames = total_duration;
+    int* group_members = NULL; /* 試作 (P3-3A)。NULL なら全 clip が従来の経路 */
+    int group_track = -1;      /* group の transition が上の track として使う空の track */
+    int group_planted = 0;
 
     if (out)
         memset(out, 0, sizeof(*out));
@@ -1478,6 +1600,27 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             return 1;
         } else if (clip->video_track + 1 > video_playlist_count) {
             video_playlist_count = clip->video_track + 1;
+        }
+    }
+    if (spec->observer && spec->observer->diagnostic_math_group) {
+        /* 試作 (P3-3A): member を決め、member があれば映像 track の一番上に空の track を 1 本足す
+         * (audio の track はその上に続く)。 */
+        group_members = (int*)calloc((size_t)(clip_count > 0 ? clip_count : 1), sizeof(int));
+        if (!group_members) {
+            set_err(err, err_size, "数式 group の配列を確保できません");
+            return 1;
+        }
+        const int assigned =
+            assign_math_groups(clips, clip_count, spec, group_members, err, err_size);
+        if (assigned < 0) {
+            free(group_members);
+            return 1;
+        }
+        if (assigned > 0)
+            group_track = video_playlist_count++;
+        else {
+            free(group_members);
+            group_members = NULL;
         }
     }
     track_capacity = video_playlist_count + audio_clip_count;
@@ -1658,6 +1801,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                 goto cleanup;
             }
         }
+        /* 試作 (P3-3A): 数式 group でまとめる clip は playlist に置かない。その区間は blank の
+         * まま残り (下の gap の処理が埋める)、画像は group の transition が合成する。 */
+        if (group_members && group_members[index])
+            continue;
         if (clip->timeline_start_frame > cursors[track]) {
             if (append_gap(playlists[track], track, v1_background,
                            clip->timeline_start_frame - cursors[track]) != 0) {
@@ -1752,6 +1899,20 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     for (int index = 0; index < clip_count; ++index) {
         if (clips[index].is_audio || clips[index].video_track == 0)
             continue;
+        if (group_members && group_members[index]) {
+            /* 試作 (P3-3A): 最初の member の位置へ、全 member を 1 つの transition として植える。
+             * 残りの member はここでは何も植えない (合成の順が変わらない理由は
+             * assign_math_groups)。 */
+            if (!group_planted) {
+                if (plant_export_math_group(tractor, clips, clip_count, group_members, group_track,
+                                            spec, err, err_size) != 0)
+                    goto cleanup;
+                group_planted = 1;
+                if (out)
+                    ++out->transition_count;
+            }
+            continue;
+        }
         if (plant_export_overlay_affine(profile, tractor, &clips[index], err, err_size, spec,
                                         &failed) != 0)
             goto cleanup;
@@ -1825,6 +1986,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                 set_err(err, err_size, "書き出しをキャンセルしました");
                 goto cleanup;
             }
+            if (math_group_failed(spec, err, err_size)) {
+                mlt_consumer_stop(consumer);
+                goto cleanup;
+            }
             Sleep(20);
             waited += 20;
             if (waited >= spec->timeout_ms) {
@@ -1832,6 +1997,9 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                 goto cleanup;
             }
         }
+        /* 最後の frame での失敗を取りこぼさない。 */
+        if (math_group_failed(spec, err, err_size))
+            goto cleanup;
         if (spec->progress_callback &&
             spec->progress_callback(total_duration, total_duration, spec->progress_opaque) != 0) {
             failed = MVM_EXPORT_CANCELLED;
@@ -1898,7 +2066,17 @@ cleanup:
     free(cursors);
     free(audio_tracks);
     free(playlists);
+    free(group_members);
     if (profile)
         mlt_profile_close(profile);
+    /* 試作 (P3-3A): graph を閉じた後に、group の transition と実行中の callback が残っていない
+     * こと。残っていれば、呼び出し側が持つ画像を解放後に参照しうるので、成功として返さない。 */
+    if (spec && spec->observer && spec->observer->diagnostic_math_group &&
+        (mvm_mlt_math_group_live() != 0 || mvm_mlt_math_group_active() != 0)) {
+        if (failed == MVM_EXPORT_OK) {
+            set_err(err, err_size, "数式 group の transition が解放されていません");
+            failed = MVM_EXPORT_FAILED;
+        }
+    }
     return failed;
 }
