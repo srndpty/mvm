@@ -69,6 +69,7 @@ target_link_libraries(mvm_project PRIVATE mvm::util)
 # backend (Manim など) の型も Project の型も含めない。cache key と出力 raster への配置。
 add_library(mvm_math STATIC
     media/math/equation_sequence_render.cpp
+    media/math/math_group_compose.cpp
     media/math/math_render.cpp
     media/math/math_raster_layout.cpp
     media/math/math_tex_segments.cpp

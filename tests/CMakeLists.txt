@@ -156,6 +156,12 @@ target_link_libraries(mvm_test_mlt_export_capacity PRIVATE mvm::mlt mvm::warning
 target_compile_definitions(mvm_test_mlt_export_capacity PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_CAPACITY_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
 add_test(NAME mlt_export_capacity_overflow COMMAND mvm_test_mlt_export_capacity)
+# 数式 layer の CPU 合成 (MLT・Qt に依存しない)。期待値は独立した oracle で作る。
+add_executable(mvm_test_math_group_compose core/test_math_group_compose.cpp)
+target_link_libraries(mvm_test_math_group_compose PRIVATE mvm::math mvm::warnings)
+add_test(NAME math_group_compose_oracle COMMAND mvm_test_math_group_compose)
+set_tests_properties(math_group_compose_oracle PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
 # timeout_ms の数え方の監査。現状は Sleep(20) の回数で数えるので、実時間では timeout_ms より遅く
 # timeout する (終了コード 3)。実時間で数えるよう直したら、期待を 0 に変える。
 # 合否の基準ではなく現状の記録なので、通常の実行から外す (stability)。

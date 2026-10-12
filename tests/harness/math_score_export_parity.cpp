@@ -9,6 +9,7 @@
 #include "app/math_clip_render.h"
 #include "app/text_raster.h"
 #include "app/timeline_export.h"
+#include "media/math/math_group_compose.h"
 #include "media/mlt/mvm_mlt_export.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "media/still_image/static_image.h"
@@ -46,6 +47,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPainter>
+#include <QPainterPath>
 #include <QProcess>
 #include <QThread>
 #include <QUrl>
@@ -460,14 +463,16 @@ constexpr int kReferenceBound = 1;
 // P3 の spike (--reference-mode): 0 = 倍精度の参照 (既定)、1・2 = binary32 で MLT の式をなぞる。
 // 判定の基準 (上の許容) は変えない。差のある画素数を report で読むためだけに使う。
 int gReferenceMode = 0;
+const mvm::app::TimelineExportPlan* gPlan = nullptr;
 
 struct OracleOutcome {
     bool applicable = false;
     bool exactTier = true;
     std::string reason;
     int layers = 0;
-    long long inked = 0;      // 上の layer が寄与した画素数（0 なら空振り）
-    long long differing = 0;  // 1 階調でも違う画素
+    long long inked = 0;     // 上の layer が寄与した画素数（0 なら空振り）
+    long long differing = 0; // 1 階調でも違う画素
+    QString firstDiffering;
     long long mismatches = 0; // 許容を超えて違う画素
     int maxDifference = 0;
     QJsonObject firstMismatch;
@@ -578,6 +583,41 @@ OracleOutcome expectedFrame(const Project& project,
                         std::abs(rectX - std::round(rectX)) <= 1e-6 &&
                         std::abs(rectY - std::round(rectY)) <= 1e-6;
         layer.opacity = *opacity / 100.0;
+        if (gReferenceMode >= 7 && gPlan) {
+            bool cropFilter = false;
+            // mode 7: 位置と不透明度を、書き出しが MLT へ渡すのと同じ計画の値にする。
+            // 上の独立な導出 (Project の % から直接) と、倍精度の末尾の桁が違いうる。
+            for (const auto& mapped : gPlan->clips) {
+                if (mapped.audio || mapped.subtitle || mapped.renderClip.id != clip.id ||
+                    frame < mapped.timelineStartFrame ||
+                    frame >= mapped.timelineStartFrame + mapped.timelineDurationFrames)
+                    continue;
+                const auto at = static_cast<std::size_t>(frame - mapped.timelineStartFrame);
+                layer.rectX =
+                    mapped.motionFrames.empty() ? mapped.rectX : mapped.motionFrames[at].rectX;
+                layer.rectY =
+                    mapped.motionFrames.empty() ? mapped.rectY : mapped.motionFrames[at].rectY;
+                layer.opacity = mapped.opacityKeys[at].opacity;
+                cropFilter = !mapped.motionFrames.empty();
+            }
+            if ((gReferenceMode == 8 || gReferenceMode == 9) && cropFilter) {
+                // mode 8: 書き出しは motion のある clip に qtcrop を付ける (crop が 0 でも)。
+                // MLT の qtcrop は画像を QPainter で描き直す (filter_qtcrop.cpp)。同じ手順を通す。
+                QImage foreground(layer.rgba.data(), width, height, width * 4,
+                                  QImage::Format_RGBA8888);
+                QImage background(width, height, QImage::Format_RGBA8888);
+                background.fill(QColor(0, 0, 0, 0));
+                {
+                    QPainter painter(&background);
+                    painter.setRenderHints(QPainter::Antialiasing);
+                    QPainterPath path;
+                    path.addRoundedRect(0, 0, width, height, 0, 0);
+                    painter.setClipPath(path);
+                    painter.drawImage(QPointF(0, 0), foreground.copy());
+                }
+                layer.rgba = imageBytes(background);
+            }
+        }
         outcome.exactTier = outcome.exactTier && layer.integer;
         layers.push_back(std::move(layer));
     }
@@ -603,6 +643,48 @@ OracleOutcome expectedFrame(const Project& project,
     const auto columns = static_cast<std::size_t>(width);
     std::vector<bool> touched(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
     for (const auto& layer : layers) {
+        if (gReferenceMode == 9) {
+            // mode 9: 純粋な合成器 (src/media/math/math_group_compose) そのものを使う。
+            // 字形の範囲 (alpha > 0 の外接矩形) を渡して、範囲だけを走査する経路を通す。
+            mvm::math::MathGroupLayer input;
+            input.rgba = layer.rgba.data();
+            input.width = width;
+            input.height = height;
+            input.rectX = layer.rectX;
+            input.rectY = layer.rectY;
+            input.opacity = layer.opacity;
+            int left = width, top = height, right = -1, bottom = -1;
+            for (int row = 0; row < height; ++row)
+                for (int column = 0; column < width; ++column)
+                    if (layer.rgba[(static_cast<std::size_t>(row) * columns +
+                                    static_cast<std::size_t>(column)) *
+                                       4U +
+                                   3U] != 0) {
+                        left = std::min(left, column);
+                        right = std::max(right, column);
+                        top = std::min(top, row);
+                        bottom = std::max(bottom, row);
+                    }
+            if (right >= 0) {
+                input.roiX = left;
+                input.roiY = top;
+                input.roiWidth = right - left + 1;
+                input.roiHeight = bottom - top + 1;
+            }
+            const auto before = outcome.expected;
+            std::string composeError;
+            if (layer.rectWidth != width || layer.rectHeight != height ||
+                !mvm::math::composeMathGroup(outcome.expected.data(), width, height, columns * 4U,
+                                             &input, 1, composeError)) {
+                outcome.reason = "合成器が対応していない layer です: " + composeError;
+                return outcome;
+            }
+            for (std::size_t pixel = 0; pixel < touched.size(); ++pixel)
+                if (std::memcmp(before.data() + pixel * 4U, outcome.expected.data() + pixel * 4U,
+                                4) != 0)
+                    touched[pixel] = true;
+            continue;
+        }
         if (!outcome.exactTier) {
             // 参照: 出力画素 → 素材座標 (矩形の中心を合わせて拡縮) → 双線形 → source-over。
             // MLT は素材の範囲外の画素に触れない。
@@ -663,17 +745,32 @@ OracleOutcome expectedFrame(const Project& project,
                             return a + (b - a) * dy;
                         };
                         const float opacity = static_cast<float>(layer.opacity);
-                        const float below = static_cast<float>(to[3]) / 255.0f;
-                        const float above = gReferenceMode == 2
+                        // mode 3: 下の alpha も割り算ではなく 1/255 の掛け算にする (既存 oracle
+                        // と同じ)。
+                        const float below = gReferenceMode == 3
+                                                ? static_cast<float>(to[3]) * (1.0f / 255.0f)
+                                                : static_cast<float>(to[3]) / 255.0f;
+                        const float above = gReferenceMode >= 2
                                                 ? sample(3) * (opacity * (1.0f / 255.0f))
                                                 : sample(3) / 255.0f * opacity;
                         const float total = above + below - above * below;
                         if (total <= 0.0f)
                             continue;
                         const float weight = above / total;
-                        for (std::size_t c = 0; c < 3; ++c)
-                            to[c] = static_cast<std::uint8_t>(
-                                static_cast<float>(to[c]) * (1.0f - weight) + sample(c) * weight);
+                        for (std::size_t c = 0; c < 3; ++c) {
+                            // 色の式の候補 (1 画素の差の原因の切り分け):
+                            //   4 = 下 + (上 - 下) * 重み、5・6 = 積和を 1 回の丸めで行う (FMA)。
+                            const float lower = static_cast<float>(to[c]);
+                            const float upper = sample(c);
+                            const float mixed =
+                                gReferenceMode == 4 ? lower + (upper - lower) * weight
+                                : gReferenceMode == 5
+                                    ? std::fma(upper, weight, lower * (1.0f - weight))
+                                : gReferenceMode == 6
+                                    ? std::fma(lower, 1.0f - weight, upper * weight)
+                                    : lower * (1.0f - weight) + upper * weight;
+                            to[c] = static_cast<std::uint8_t>(mixed);
+                        }
                         to[3] = static_cast<std::uint8_t>(255 * total);
                         if (above > 0.0f)
                             touched[offset / 4U] = true;
@@ -751,6 +848,22 @@ void compareFrame(OracleOutcome& outcome, const std::vector<std::uint8_t>& actua
                                            static_cast<int>(outcome.expected[offset + channel])));
         if (difference == 0)
             continue;
+        if (outcome.differing == 0) {
+            // 最初に違った画素 (許容の内外によらず残す)。
+            const auto pixel = offset / 4U;
+            outcome.firstDiffering =
+                QStringLiteral("x=%1 y=%2 expected=%3,%4,%5,%6 actual=%7,%8,%9,%10")
+                    .arg(pixel % static_cast<std::size_t>(width))
+                    .arg(pixel / static_cast<std::size_t>(width))
+                    .arg(outcome.expected[offset])
+                    .arg(outcome.expected[offset + 1])
+                    .arg(outcome.expected[offset + 2])
+                    .arg(outcome.expected[offset + 3])
+                    .arg(actual[offset])
+                    .arg(actual[offset + 1])
+                    .arg(actual[offset + 2])
+                    .arg(actual[offset + 3]);
+        }
         ++outcome.differing;
         outcome.maxDifference = std::max(outcome.maxDifference, difference);
         if (difference <= (outcome.exactTier ? 0 : kReferenceBound))
@@ -1545,6 +1658,13 @@ int main(int argc, char** argv) {
                 fail(QStringLiteral("復号した frame の時刻が 0 始まりの等間隔ではありません"));
         }
 
+        mvm::app::TimelineExportRequest planRequest;
+        planRequest.width = width;
+        planRequest.height = height;
+        planRequest.fpsNum = static_cast<int>(project.timelineFpsNum);
+        planRequest.fpsDen = static_cast<int>(project.timelineFpsDen);
+        const auto referencePlan = mvm::app::mapTimelineExportPlan(project, planRequest);
+        gPlan = referencePlan.success ? &referencePlan : nullptr;
         for (const auto frame : fixture.representative) {
             if (rangeMode)
                 break;
@@ -1583,6 +1703,7 @@ int main(int argc, char** argv) {
             entry.insert(QStringLiteral("allowed_channel_difference"),
                          oracle.exactTier ? 0 : kReferenceBound);
             entry.insert(QStringLiteral("differing_pixels"), static_cast<qint64>(oracle.differing));
+            entry.insert(QStringLiteral("first_differing"), oracle.firstDiffering);
             entry.insert(QStringLiteral("mismatched_pixels"),
                          static_cast<qint64>(oracle.mismatches));
             entry.insert(QStringLiteral("max_channel_difference"), oracle.maxDifference);
