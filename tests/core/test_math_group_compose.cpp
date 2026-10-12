@@ -92,6 +92,17 @@ bool compose(Image& destination, int width, int height, const std::vector<Placed
                             input.data(), input.size(), error, nullptr);
 }
 
+// 準備済みの画像を、元の画像の座標で全部読み出す (保存していない所は 0)。
+Image fullPixels(const mvm::math::PreparedMathRaster& raster) {
+    Image image(static_cast<std::size_t>(raster.width()) * raster.height() * 4);
+    for (int row = 0; row < raster.height(); ++row)
+        for (int column = 0; column < raster.width(); ++column)
+            raster.texel(column, row,
+                         image.data() +
+                             (static_cast<std::size_t>(row) * raster.width() + column) * 4);
+    return image;
+}
+
 long long differing(const Image& a, const Image& b) {
     long long count = 0;
     for (std::size_t i = 0; i < a.size(); ++i)
@@ -399,8 +410,7 @@ int runTests() {
         Image again = base;
         check(mvm::math::composeMathGroup(again.data(), width, height, width * 4U, &placement, 1,
                                           composeError) &&
-                  again == want &&
-                  std::memcmp(raster.rgba(), scribbled.data(), scribbled.size()) == 0,
+                  again == want && fullPixels(raster) == scribbled,
               "準備の後で元の buffer を書き換えても結果が変わらない");
         // 準備できない入力・準備していない画像は拒否する。
         mvm::math::PreparedMathRaster rejected;
@@ -457,7 +467,8 @@ int runTests() {
                   "alpha 1 以上の下地は対象と判定する");
             Image expectedOutput = translucent;
             MathGroupLayer sameRaster = whole; // source は上で書き換えたので、準備済みの画素を使う
-            sameRaster.rgba = raster.rgba();
+            const Image rasterPixels = fullPixels(raster);
+            sameRaster.rgba = rasterPixels.data();
             check(composeUnchecked(expectedOutput.data(), width, height, width * 4U, &sameRaster, 1,
                                    composeError, nullptr),
                   "半透明の下地への全体の走査が成功する");
@@ -485,9 +496,10 @@ int runTests() {
                                           composeError),
               "2 枚の合成が成功する");
         Image stepped = base;
+        const Image stackPixels = fullPixels(raster);
         for (const auto& item : stack) {
             MathGroupLayer one;
-            one.rgba = raster.rgba();
+            one.rgba = stackPixels.data();
             one.width = width;
             one.height = height;
             one.rectX = item.rectX;
@@ -501,6 +513,290 @@ int runTests() {
             edge += stacked[at] == 254;
         check(stacked == stepped && edge > 0,
               "途中で alpha が 254 になる重なりも 1 枚ずつ重ねた結果と同じ");
+    }
+
+    // --- P3-3C: 中身のある範囲だけを持つ準備済みの画像 ---------------------------------------
+    // 基準は 2 つ: (1) 全画素を持つ準備済みの画像 (P3-3B までの形)、(2) 元の画素を全部走査する、
+    // 検査を通さない入口。範囲だけを持つ画像の合成が、どちらとも全 byte 一致すること。
+    {
+        using mvm::math::MathRasterStorage;
+        using mvm::math::PreparedMathRaster;
+        const long long liveBefore = mvm::math::preparedMathRasterLiveBytes();
+        long long roiCompared = 0;
+
+        struct Place {
+            double x, y, opacity;
+        };
+
+        // 下地: 色は乱数、alpha は指定の値 (1・254・255 と、混ぜたもの)。
+        const auto makeBase = [&](std::mt19937& engine, int alphaKind) {
+            Image image(static_cast<std::size_t>(width) * height * 4);
+            for (std::size_t i = 0; i < image.size(); ++i)
+                image[i] = static_cast<std::uint8_t>(engine() % 256);
+            for (std::size_t at = 3; at < image.size(); at += 4)
+                image[at] = alphaKind == 0   ? 255
+                            : alphaKind == 1 ? 254
+                            : alphaKind == 2 ? 1
+                                             : static_cast<std::uint8_t>(1 + engine() % 255);
+            return image;
+        };
+        // sources[i] を places[i] へ置いて下から重ねる。3 通りの結果が同じことを確かめ、範囲だけを
+        // 持つ画像の結果を返す。
+        const auto sameAsReferences = [&](const std::vector<Image>& sources,
+                                          const std::vector<Place>& places, const Image& baseImage,
+                                          const char* message) {
+            std::vector<PreparedMathRaster> roi(sources.size()), full(sources.size());
+            std::vector<mvm::math::MathGroupPlacement> roiPlaces, fullPlaces;
+            std::vector<MathGroupLayer> wholeLayers;
+            std::string localError;
+            bool prepared = true;
+            for (std::size_t index = 0; index < sources.size(); ++index) {
+                prepared = PreparedMathRaster::prepare(sources[index].data(), width, height,
+                                                       width * 4U, roi[index], localError,
+                                                       MathRasterStorage::RoiOnly) &&
+                           PreparedMathRaster::prepare(sources[index].data(), width, height,
+                                                       width * 4U, full[index], localError,
+                                                       MathRasterStorage::FullFrame) &&
+                           prepared;
+                roiPlaces.push_back(
+                    {&roi[index], places[index].x, places[index].y, places[index].opacity});
+                fullPlaces.push_back(
+                    {&full[index], places[index].x, places[index].y, places[index].opacity});
+                MathGroupLayer layer; // 全画素・範囲の指定なし (全体を走査する)
+                layer.rgba = sources[index].data();
+                layer.width = width;
+                layer.height = height;
+                layer.rectX = places[index].x;
+                layer.rectY = places[index].y;
+                layer.opacity = places[index].opacity;
+                wholeLayers.push_back(layer);
+                // 持ち方が違っても、元の画像として読める内容は同じ。
+                prepared = prepared &&
+                           roi[index].contentChecksum() == full[index].contentChecksum() &&
+                           roi[index].roiX() == full[index].roiX() &&
+                           roi[index].roiWidth() == full[index].roiWidth() &&
+                           roi[index].roiY() == full[index].roiY() &&
+                           roi[index].roiHeight() == full[index].roiHeight() &&
+                           roi[index].storedBytes() ==
+                               static_cast<std::size_t>(roi[index].storedWidth()) *
+                                   static_cast<std::size_t>(roi[index].storedHeight()) * 4U;
+            }
+            Image fromRoi = baseImage, fromFull = baseImage, fromWhole = baseImage;
+            const bool composed =
+                prepared &&
+                mvm::math::composeMathGroup(fromRoi.data(), width, height, width * 4U,
+                                            roiPlaces.data(), roiPlaces.size(), localError) &&
+                mvm::math::composeMathGroup(fromFull.data(), width, height, width * 4U,
+                                            fullPlaces.data(), fullPlaces.size(), localError) &&
+                composeUnchecked(fromWhole.data(), width, height, width * 4U, wholeLayers.data(),
+                                 wholeLayers.size(), localError, nullptr);
+            if (!composed || fromRoi != fromFull || fromRoi != fromWhole)
+                std::fprintf(stderr,
+                             "%s: 準備・合成 %d、全画面との差 %lld byte、全走査との差 %lld byte\n",
+                             message, composed ? 1 : 0, differing(fromRoi, fromFull),
+                             differing(fromRoi, fromWhole));
+            check(composed && fromRoi == fromFull && fromRoi == fromWhole, message);
+            roiCompared += static_cast<long long>(fromRoi.size());
+            return fromRoi;
+        };
+        const auto blank = [&]() { return Image(static_cast<std::size_t>(width) * height * 4, 0); };
+        const auto put = [&](Image& image, int x, int y, std::uint8_t r, std::uint8_t g,
+                             std::uint8_t b, std::uint8_t a) {
+            auto* p = image.data() + (static_cast<std::size_t>(y) * width + x) * 4;
+            p[0] = r;
+            p[1] = g;
+            p[2] = b;
+            p[3] = a;
+        };
+        std::mt19937 engine(3303);
+        // 位置: 整数、端数、大きな正負 (ほとんど外・完全に外)。
+        const std::vector<Place> positions = {{0.0, 0.0, 1.0},
+                                              {0.36, -0.5, 0.75},
+                                              {-7.25, 5.75, 0.12049074074074075},
+                                              {width - 3.5, 2.25, 1.0},
+                                              {-(width - 3.5), -2.25, 0.5},
+                                              {3.0, height - 2.5, 0.9},
+                                              {1.5, -(height - 2.5), 0.3333},
+                                              {width + 5.0, 0.0, 1.0},
+                                              {-(width + 5.0), 0.5, 1.0},
+                                              {0.5, height + 4.0, 1.0},
+                                              {0.999, 0.001, 0.86207407407407421}};
+        for (int alphaKind = 0; alphaKind < 4; ++alphaKind) {
+            const Image localBase = makeBase(engine, alphaKind);
+            // 中央の字形 (透明・半透明・不透明が混ざる)。
+            const Image center = glyph(engine, width, height);
+            // 画像の端に掛かる字形 (切れた字形): 左上の角と右下の角。
+            Image clipped = blank();
+            for (int row = 0; row < 6; ++row)
+                for (int column = 0; column < 9; ++column) {
+                    put(clipped, column, row, 204, 34, 34,
+                        static_cast<std::uint8_t>(40 + (column * 23 + row * 7) % 216));
+                    put(clipped, width - 1 - column, height - 1 - row, 10, 200, 90,
+                        static_cast<std::uint8_t>(255 - (column * 11 + row * 29) % 200));
+                }
+            // 幅 1 画素の字形、1 texel だけの字形、全部 0 の画像。
+            Image thin = blank(), single = blank();
+            for (int row = 9; row < 30; ++row)
+                put(thin, 21, row, 255, 255, 255, static_cast<std::uint8_t>(row * 8));
+            put(single, 10, 10, 200, 40, 40, 255);
+            const Image empty = blank();
+            // alpha が 0 で色が 0 でない texel が字形の外にある画像。MLT は色を alpha
+            // と独立に補間する ので、こういう texel は縁の画素の色に効く。捨ててはならない。
+            Image tinted = blank();
+            for (int row = 14; row < 22; ++row)
+                for (int column = 18; column < 40; ++column)
+                    put(tinted, column, row, 204, 34, 34,
+                        column >= 24 && column < 34 && row >= 16 && row < 20 ? 180 : 0);
+            // qtcrop の描き直しの後のような、色の付いた半透明の字形 (色が alpha
+            // に応じて落ちている)。
+            Image colored = blank();
+            for (int row = 12; row < 26; ++row)
+                for (int column = 8; column < 50; ++column) {
+                    const int alpha = (column * 37 + row * 91) % 256;
+                    put(colored, column, row, static_cast<std::uint8_t>(204 * alpha / 255),
+                        static_cast<std::uint8_t>(34 * alpha / 255),
+                        static_cast<std::uint8_t>(34 * alpha / 255),
+                        static_cast<std::uint8_t>(alpha));
+                }
+            const std::pair<const Image*, const char*> images[] = {
+                {&center, "中央の字形: 範囲だけを持つ画像の合成は基準と同じ"},
+                {&clipped, "画像の端に掛かる字形: 範囲だけを持つ画像の合成は基準と同じ"},
+                {&thin, "幅 1 画素の字形: 範囲だけを持つ画像の合成は基準と同じ"},
+                {&single, "1 texel の字形: 範囲だけを持つ画像の合成は基準と同じ"},
+                {&empty, "全部 0 の画像: 範囲だけを持つ画像の合成は基準と同じ"},
+                {&tinted, "alpha 0 で色のある texel: 範囲だけを持つ画像の合成は基準と同じ"},
+                {&colored, "色の付いた半透明の字形: 範囲だけを持つ画像の合成は基準と同じ"}};
+            for (const auto& [image, message] : images)
+                for (const auto& position : positions)
+                    sameAsReferences({*image}, {position}, localBase, message);
+            // 重なる複数の layer (不透明度は fade の途中の値を含む)。
+            sameAsReferences({center, colored, clipped, tinted, thin, center},
+                             {{0.36, 0.0, 0.25925925925925924},
+                              {2.75, -1.5, 0.54992592592592593},
+                              {-1.25, 0.5, 1.0},
+                              {4.5, 3.25, 0.95140740740740748},
+                              {-3.0, 0.75, 0.13792592592592592},
+                              {6.36, 2.0, 0.0}},
+                             localBase, "重なる複数の layer: 範囲だけを持つ画像の合成は基準と同じ");
+        }
+        // 範囲の縁の補間: 不透明な 1 texel を縦横に半画素ずらすと、ちょうど 2 x 2 画素が変わる
+        // (範囲の外へ 1 画素はみ出す分を含む)。範囲の外の texel を透明として読めていること。
+        {
+            Image single = blank();
+            put(single, 10, 10, 200, 40, 40, 255);
+            const Image localBase = makeBase(engine, 0);
+            const Image out =
+                sameAsReferences({single}, {{0.5, 0.5, 1.0}}, localBase,
+                                 "範囲の縁の補間: 範囲だけを持つ画像の合成は基準と同じ");
+            long long changed = 0;
+            bool inside = true;
+            for (int row = 0; row < height; ++row)
+                for (int column = 0; column < width; ++column) {
+                    const auto at = (static_cast<std::size_t>(row) * width + column) * 4;
+                    if (std::memcmp(out.data() + at, localBase.data() + at, 4) == 0)
+                        continue;
+                    ++changed;
+                    inside = inside && column >= 10 && column <= 11 && row >= 10 && row <= 11;
+                }
+            check(changed == 4 && inside, "範囲の縁の 1 画素外まで補間で描かれる (2 x 2 画素)");
+        }
+        // 持ち方: 範囲だけを持つ画像は範囲の画素しか持たず、元の画像として読むと同じ内容になる。
+        {
+            Image tinted = blank();
+            for (int row = 14; row < 22; ++row)
+                for (int column = 18; column < 40; ++column)
+                    put(tinted, column, row, 204, 34, 34,
+                        column >= 24 && column < 34 && row >= 16 && row < 20 ? 180 : 0);
+            PreparedMathRaster roi, full, none;
+            std::string localError;
+            check(PreparedMathRaster::prepare(tinted.data(), width, height, width * 4U, roi,
+                                              localError, MathRasterStorage::RoiOnly,
+                                              "artifact=test;preprocess=none") &&
+                      PreparedMathRaster::prepare(tinted.data(), width, height, width * 4U, full,
+                                                  localError, MathRasterStorage::FullFrame),
+                  "2 通りの持ち方で準備できる");
+            check(roi.width() == width && roi.height() == height && roi.storedX() == 18 &&
+                      roi.storedY() == 14 && roi.storedWidth() == 22 && roi.storedHeight() == 8 &&
+                      roi.storedBytes() == 22U * 8U * 4U,
+                  "保存する範囲は、どれかの byte が 0 でない texel の外接矩形");
+            check(roi.roiX() == 24 && roi.roiY() == 16 && roi.roiWidth() == 10 &&
+                      roi.roiHeight() == 4,
+                  "字形の範囲 (alpha が 0 でない texel) は保存する範囲の中にある");
+            check(full.storedWidth() == width && full.storedHeight() == height &&
+                      full.storedBytes() == tinted.size(),
+                  "全画面の持ち方は全画素を持つ");
+            bool same = true;
+            for (int row = -1; row <= height; ++row)
+                for (int column = -1; column <= width; ++column) {
+                    std::uint8_t fromRoi[4], fromFull[4], want[4] = {0, 0, 0, 0};
+                    roi.texel(column, row, fromRoi);
+                    full.texel(column, row, fromFull);
+                    if (column >= 0 && row >= 0 && column < width && row < height)
+                        std::memcpy(want,
+                                    tinted.data() +
+                                        (static_cast<std::size_t>(row) * width + column) * 4,
+                                    4);
+                    same = same && std::memcmp(fromRoi, want, 4) == 0 &&
+                           std::memcmp(fromFull, want, 4) == 0;
+                }
+            check(same, "元の画像の座標で読むと、どちらの持ち方も元の画素と同じ (外は 0)");
+            check(roi.provenance() == "artifact=test;preprocess=none", "出どころの記録を保つ");
+            Image otherImage = tinted;
+            put(otherImage, 0, 0, 1, 0, 0, 0);
+            PreparedMathRaster other;
+            check(PreparedMathRaster::prepare(otherImage.data(), width, height, width * 4U, other,
+                                              localError) &&
+                      other.contentChecksum() != roi.contentChecksum() && other.storedX() == 0 &&
+                      other.storedY() == 0,
+                  "1 byte でも違う画像は照合用の値が違い、保存する範囲に入る");
+            const Image empty = blank();
+            check(PreparedMathRaster::prepare(empty.data(), width, height, width * 4U, none,
+                                              localError) &&
+                      none.valid() && none.storedBytes() == 0 && none.storedRgba() == nullptr &&
+                      none.roiWidth() == 0,
+                  "全部 0 の画像は画素を持たない");
+            // 複製は同じ画素を共有し、生きている byte 数は増えない。
+            const long long live = mvm::math::preparedMathRasterLiveBytes();
+            {
+                const PreparedMathRaster copy = roi;
+                check(copy.storedRgba() == roi.storedRgba() &&
+                          mvm::math::preparedMathRasterLiveBytes() == live,
+                      "複製は同じ画素を共有する");
+            }
+            check(live - liveBefore ==
+                      static_cast<long long>(roi.storedBytes() + full.storedBytes() +
+                                             other.storedBytes()),
+                  "生きている画素の byte 数を数える");
+        }
+        check(mvm::math::preparedMathRasterLiveBytes() == liveBefore,
+              "準備済みの画像を解放すると、生きている画素は元の数に戻る");
+        // 検査を通さない入口: 字形の範囲が保存した範囲からはみ出す指定は拒否する。
+        {
+            Image some = blank();
+            put(some, 5, 5, 1, 2, 3, 255);
+            MathGroupLayer bad;
+            bad.rgba = some.data();
+            bad.width = width;
+            bad.height = height;
+            bad.storedRegion = true;
+            bad.storedX = 5;
+            bad.storedY = 5;
+            bad.storedWidth = 1;
+            bad.storedHeight = 1;
+            bad.roiX = 4;
+            bad.roiY = 5;
+            bad.roiWidth = 2;
+            bad.roiHeight = 1;
+            Image untouched = makeBase(engine, 0);
+            const Image before = untouched;
+            std::string localError;
+            check(!composeUnchecked(untouched.data(), width, height, width * 4U, &bad, 1,
+                                    localError, nullptr) &&
+                      untouched == before,
+                  "字形の範囲が保存した範囲からはみ出す layer を拒否する");
+        }
+        std::printf("範囲だけを持つ画像と基準を比べた byte: %lld\n", roiCompared);
+        compared += roiCompared;
     }
     std::printf("oracle と比べた byte: %lld、失敗: %d\n", compared, failures);
     return failures == 0 ? 0 : 1;
@@ -597,6 +893,41 @@ int runBench() {
         seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
         std::printf("%-26s %8.3f ms/回 (1 枚 %.1f MB)\n", "画像の準備 1920x1080",
                     seconds * 1e3 / prepares, static_cast<double>(raster.size()) / 1048576.0);
+        // P3-3C: 持ち方ごとの準備と合成 (40 層、字形 532x20、端数位置)。
+        for (const auto storage :
+             {mvm::math::MathRasterStorage::FullFrame, mvm::math::MathRasterStorage::RoiOnly}) {
+            const char* name =
+                storage == mvm::math::MathRasterStorage::FullFrame ? "全画面" : "範囲だけ";
+            mvm::math::PreparedMathRaster prepared;
+            begin = std::chrono::steady_clock::now();
+            for (int round = 0; round < prepares; ++round)
+                if (!mvm::math::PreparedMathRaster::prepare(raster.data(), width, height,
+                                                            width * 4U, prepared, error, storage))
+                    return 1;
+            const double prepareMs =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count() *
+                1e3 / prepares;
+            std::vector<mvm::math::MathGroupPlacement> placements(40);
+            for (int index = 0; index < 40; ++index)
+                placements[static_cast<std::size_t>(index)] = {&prepared, (index % 8) * 3 + 0.36,
+                                                               (index % 5) * 2 + 0.36, 0.9};
+            constexpr int frames = 20;
+            mvm::math::MathGroupStats stats;
+            begin = std::chrono::steady_clock::now();
+            for (int frame = 0; frame < frames; ++frame)
+                if (!mvm::math::composeMathGroup(destination.data(), width, height, width * 4U,
+                                                 placements.data(), placements.size(), error,
+                                                 &stats))
+                    return 1;
+            const double composeMs =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count() *
+                1e3 / frames;
+            std::printf("%-10s 準備 %7.3f ms/枚、保存 %9zu byte、40 層の合成 %7.3f ms/frame "
+                        "(うち素材座標の表 %6.3f ms、下地の検査を含む)、%llu 画素/frame\n",
+                        name, prepareMs, prepared.storedBytes(), composeMs,
+                        static_cast<double>(stats.coordinateNs) / 1e6 / frames,
+                        static_cast<unsigned long long>(stats.visitedPixels / frames));
+        }
     }
     return 0;
 }

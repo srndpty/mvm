@@ -145,6 +145,11 @@
     分け方にして、v4 の Project 全体の graph で 99 clip 中 97 が group になり、4 区間とも pre-YUV が一致、
     render は 9.6〜22.6 倍（別々の process で B, C, C, B）。準備済みの画像の memory（783 MB）、
     data race の検出、Project 全体の書き出しは未解決。製品へは入れていない。
+  - P3-3C（[結果](math-transition-p33c.md)）: 準備済みの画像を、中身のある範囲の画素だけで持つ形にした。
+    v4 の Project 全体の graph で 783 MB → 2.81 MB、process の peak は製品の経路より約 200 MB 少ない。
+    製品の経路・全画面で持つ形・範囲だけで持つ形の pre-YUV が 1,920 frame で一致。合成の時間は
+    持ち方で変わらない（減ったのは memory と準備の時間）。alpha 0 の下地の扱い、data race の検出、
+    Project 全体の書き出しは未解決。製品へは入れていない。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

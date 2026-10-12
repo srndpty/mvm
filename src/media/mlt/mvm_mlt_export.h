@@ -286,6 +286,13 @@ typedef struct MvmExportObserver {
     int* diagnostic_math_group_assignment;
     int diagnostic_math_group_assignment_capacity;
     long long diagnostic_math_group_raster_budget_bytes;
+    /* 入力 (P3-3C): 準備済みの画像の持ち方。0 = 中身のある範囲だけ、1 = 全画面 (P3-3B までの形。
+     * 比較の基準)。この層は画像の中身を見ない。上位の層が読む。 */
+    int diagnostic_math_group_storage;
+    /* 出力 (P3-3C。画像を準備する上位の層が書く)。 */
+    long long math_group_raster_count;      /* 準備した画像の数 */
+    long long math_group_source_bytes;      /* 準備のために走査した元の画素の byte 数 */
+    long long math_group_raster_live_bytes; /* 準備が終わった時点で生きている画素の byte 数 */
     /* 出力: 書き出しの関数へ入った時点の process の working set (byte)。画像の準備の後の値。 */
     long long math_group_working_set_at_export;
     /* 出力。最初の 2 つは画像を準備する上位の層が書く。 */

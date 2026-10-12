@@ -190,7 +190,9 @@ struct Options {
     int compareMathGroupMode = 1; // --compare math-group / math-group-probe
     int mathGroupRule = 0;        // 0 = 下に従来の layer が重ならない clip だけ、1 = 順序だけを守る
     int mathGroupAlphaFloor = -1; // 0〜255 なら合成器の契約の下限の代わりに使う (実験)
-    long long mathGroupBudgetMb = 800; // 準備済みの画像の上限 (事前に固定。P3-3A の実測 783 MB)
+    // 準備済みの画像の上限 (事前に固定)。-1 は持ち方ごとの既定: 全画面は 800 MB (P3-3A の実測
+    // 783 MB)、中身のある範囲だけは 64 MB (P3-3C)。
+    long long mathGroupBudgetMb = -1;
     // 分け方 (0 は既定値): 変わる区間の上限 / 変わらない区間の下限 / 変わらない区間の上限。
     int splitAnimatedRun = 0, splitStaticRun = 0, splitStaticChunk = 0;
     int capSeconds = 240;  // 書き出し全体の診断上限
@@ -502,6 +504,8 @@ constexpr int kReferenceBound = 1;
 // P3 の spike (--reference-mode): 0 = 倍精度の参照 (既定)、1・2 = binary32 で MLT の式をなぞる。
 // 判定の基準 (上の許容) は変えない。差のある画素数を report で読むためだけに使う。
 int gReferenceMode = 0;
+// P3-3C: 準備済みの画像の持ち方 (--prepared-storage)。既定は中身のある範囲だけ。
+mvm::math::MathRasterStorage gPreparedStorage = mvm::math::MathRasterStorage::RoiOnly;
 const mvm::app::TimelineExportPlan* gPlan = nullptr;
 
 struct OracleOutcome {
@@ -1133,7 +1137,12 @@ public:
                       std::string& error) const {
         const auto& image = layer.raster->image;
         mvm::math::detail::UncheckedMathGroupLayer input;
-        input.rgba = image.rgba();
+        input.rgba = image.storedRgba();
+        input.storedRegion = image.storage() == mvm::math::MathRasterStorage::RoiOnly;
+        input.storedX = image.storedX();
+        input.storedY = image.storedY();
+        input.storedWidth = image.storedWidth();
+        input.storedHeight = image.storedHeight();
         input.width = width_;
         input.height = height_;
         input.rectX = layer.rectX;
@@ -1151,7 +1160,8 @@ public:
     // run の終わりに、使った入力が準備の時から変わっていないことを確かめる。
     bool verifyInputs(std::string& error) const {
         for (const auto& [key, raster] : rasters_) {
-            if (bytesSha256(raster.image.rgba(), bytes()) != raster.preparedSha256) {
+            if (bytesSha256(raster.image.storedRgba(), raster.image.storedBytes()) !=
+                raster.preparedSha256) {
                 error = "準備済みの画像が run の途中で変わりました: " + key;
                 return false;
             }
@@ -1207,9 +1217,10 @@ private:
         }
         if (!mvm::math::PreparedMathRaster::prepare(rgba.data(), width_, height_,
                                                     static_cast<std::size_t>(width_) * 4U,
-                                                    raster.image, error))
+                                                    raster.image, error, gPreparedStorage))
             return false;
-        raster.preparedSha256 = bytesSha256(raster.image.rgba(), bytes());
+        // 保存している画素 (持ち方による) の SHA-256。
+        raster.preparedSha256 = bytesSha256(raster.image.storedRgba(), raster.image.storedBytes());
         return true;
     }
 
@@ -1382,11 +1393,9 @@ QJsonArray tracePixel(const CompositorRun& run, const CompositorFrame& frame, in
             QJsonArray texels;
             for (int dy = 0; dy < 2; ++dy)
                 for (int dx = 0; dx < 2; ++dx) {
-                    const auto* texel =
-                        layer.raster->image.rgba() +
-                        (static_cast<std::size_t>(n + dy) * static_cast<std::size_t>(width) +
-                         static_cast<std::size_t>(m + dx)) *
-                            4U;
+                    // 元の画像の座標で読む (保存していない texel は 0)。
+                    std::uint8_t texel[4];
+                    layer.raster->image.texel(m + dx, n + dy, texel);
                     contributes = contributes || texel[3] != 0;
                     texels.append(rgbaArray(texel));
                 }
@@ -1718,6 +1727,11 @@ QJsonObject groupJson(const MvmExportObserver& observed, long long live, long lo
         {QStringLiteral("composed_layer_frames"),
          static_cast<qint64>(observed.math_group_layer_frames)},
         {QStringLiteral("raster_bytes"), static_cast<qint64>(observed.math_group_raster_bytes)},
+        {QStringLiteral("raster_count"), static_cast<qint64>(observed.math_group_raster_count)},
+        {QStringLiteral("source_bytes_read"),
+         static_cast<qint64>(observed.math_group_source_bytes)},
+        {QStringLiteral("raster_live_bytes_after_prepare"),
+         static_cast<qint64>(observed.math_group_raster_live_bytes)},
         {QStringLiteral("prepare_ms"), static_cast<double>(observed.math_group_prepare_ns) / 1e6},
         {QStringLiteral("working_set_after_prepare_mb"),
          static_cast<double>(observed.math_group_working_set_at_export) / 1048576.0},
@@ -1886,6 +1900,11 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.mathGroupAlphaFloor = std::atoi(value.c_str());
             if (options.mathGroupAlphaFloor < 0 || options.mathGroupAlphaFloor > 255)
                 return false;
+        } else if (key == "--prepared-storage") {
+            if (value != "roi" && value != "full")
+                return false;
+            gPreparedStorage = value == "full" ? mvm::math::MathRasterStorage::FullFrame
+                                               : mvm::math::MathRasterStorage::RoiOnly;
         } else if (key == "--math-group-budget-mb") {
             options.mathGroupBudgetMb = std::atoll(value.c_str());
         } else if (key == "--math-group-fault") {
@@ -2076,7 +2095,12 @@ int main(int argc, char** argv) {
         target.diagnostic_math_group_alpha_override = options.mathGroupAlphaFloor >= 0 ? 1 : 0;
         target.diagnostic_math_group_alpha_floor =
             options.mathGroupAlphaFloor >= 0 ? options.mathGroupAlphaFloor : 0;
-        target.diagnostic_math_group_raster_budget_bytes = options.mathGroupBudgetMb * 1024 * 1024;
+        const bool fullStorage = gPreparedStorage == mvm::math::MathRasterStorage::FullFrame;
+        target.diagnostic_math_group_storage = fullStorage ? 1 : 0;
+        const long long budgetMb = options.mathGroupBudgetMb >= 0 ? options.mathGroupBudgetMb
+                                   : fullStorage                  ? 800
+                                                                  : 64;
+        target.diagnostic_math_group_raster_budget_bytes = budgetMb * 1024 * 1024;
     };
     // 数式 group の下地の観測と clip ごとの結果 (group を使う書き出しごとに 1 組)。
     GroupProbe mainProbe, candidateProbe;
@@ -2110,6 +2134,8 @@ int main(int argc, char** argv) {
         bool mathGroup = false;
         long long groupLive = -1, groupActive = -1; // 書き出しの後に残っていた数 (0 が正)
         long long workingSetBeforePrepare = 0;      // staging の後、画像の準備の前
+        long long rasterLiveAfter = -1; // 書き出しの後に生きている準備済みの画素 (0 が正)
+        long long workingSetAfter = 0;  // 書き出しの関数から戻った直後
         MvmExportObserver observer{};
         std::function<bool(std::int64_t, const std::uint8_t*, int, int)> validator;
         mvm::app::TimelineExportResult result;
@@ -2122,6 +2148,7 @@ int main(int argc, char** argv) {
     ExtraRun* extra = nullptr;
     std::map<std::int64_t, QByteArray> baselineFrames;
     long long mainGroupLive = -1, mainGroupActive = -1;
+    long long mainRasterLiveAfter = -1, mainWorkingSetAfter = 0;
 
     mvm::app::MvmController::ExportRunner runner =
         [&](const Project& exportProject, const mvm::app::TimelineExportRequest& request) {
@@ -2159,6 +2186,8 @@ int main(int argc, char** argv) {
                 extra->endNs = mvm_mlt_export_observer_now_ns();
                 extra->groupLive = mvm_mlt_math_group_live();
                 extra->groupActive = mvm_mlt_math_group_active();
+                extra->rasterLiveAfter = mvm::math::preparedMathRasterLiveBytes();
+                extra->workingSetAfter = workingSetBytes(false);
                 return extra->result;
             }
             input.mathLayerStaging = options.mainStaging;
@@ -2219,6 +2248,8 @@ int main(int argc, char** argv) {
             exportEndNs.store(mvm_mlt_export_observer_now_ns());
             mainGroupLive = mvm_mlt_math_group_live();
             mainGroupActive = mvm_mlt_math_group_active();
+            mainRasterLiveAfter = mvm::math::preparedMathRasterLiveBytes();
+            mainWorkingSetAfter = workingSetBytes(false);
             return exported;
         };
     auto controller = std::make_unique<mvm::app::MvmController>(
@@ -2955,6 +2986,13 @@ int main(int argc, char** argv) {
                     static_cast<qint64>(options.mathGroupBudgetMb));
         main.insert(QStringLiteral("working_set_before_prepare_mb"),
                     static_cast<double>(mainWorkingSetBeforePrepare) / 1048576.0);
+        main.insert(QStringLiteral("raster_live_bytes_after_export"), mainRasterLiveAfter);
+        main.insert(QStringLiteral("working_set_after_export_mb"),
+                    static_cast<double>(mainWorkingSetAfter) / 1048576.0);
+        main.insert(QStringLiteral("storage"),
+                    gPreparedStorage == mvm::math::MathRasterStorage::FullFrame
+                        ? QStringLiteral("full-frame")
+                        : QStringLiteral("roi-only"));
         if (options.mathGroupMain) {
             main.insert(QStringLiteral("destination"), mainProbe.toJson());
             main.insert(QStringLiteral("assignment"), assignmentJson(mainProbe, groupPlan));
@@ -3228,6 +3266,14 @@ int main(int argc, char** argv) {
                        options.mathGroupAlphaFloor);
         compare.insert(QStringLiteral("candidate_working_set_before_prepare_mb"),
                        static_cast<double>(candidateRun.workingSetBeforePrepare) / 1048576.0);
+        compare.insert(QStringLiteral("candidate_raster_live_bytes_after_export"),
+                       candidateRun.rasterLiveAfter);
+        compare.insert(QStringLiteral("candidate_working_set_after_export_mb"),
+                       static_cast<double>(candidateRun.workingSetAfter) / 1048576.0);
+        compare.insert(QStringLiteral("candidate_storage"),
+                       gPreparedStorage == mvm::math::MathRasterStorage::FullFrame
+                           ? QStringLiteral("full-frame")
+                           : QStringLiteral("roi-only"));
         if (!alphaBackground.empty()) {
             // 背景の alpha ごと: 画素の数、MLT が背景から変えた画素、candidate が MLT と違う画素。
             QJsonArray byAlpha;
@@ -3401,6 +3447,7 @@ int main(int argc, char** argv) {
             mainGroupLive == 0 && mainGroupActive == 0 && candidateRun.groupLive == 0 &&
             candidateRun.groupActive == 0 && repeatRun.groupLive == 0 &&
             repeatRun.groupActive == 0 &&
+            (!options.compareMathGroup || candidateRun.rasterLiveAfter == 0) &&
             (!options.compareMathGroup ||
              (candidateRun.observer.math_group_clips > 0 &&
               (options.compareMathGroupMode == 2 ? candidateRun.observer.math_group_callbacks > 0

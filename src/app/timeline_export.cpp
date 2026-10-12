@@ -9,6 +9,7 @@
 #include "project/timeline_render.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -770,9 +771,44 @@ TimelineExportResult exportTimeline(const project::Project& project,
     // transition 用の準備済みの画像にする。stage する PNG と同じ画素から作る。
     const bool mathGroup =
         request.exportObserver != nullptr && request.exportObserver->diagnostic_math_group != 0;
-    std::map<std::size_t, std::vector<std::uint8_t>> mathGroupSources;
     std::deque<math::PreparedMathRaster> mathGroupRasters; // 書き出しの関数から戻るまで保持する
     std::map<std::pair<std::size_t, bool>, const math::PreparedMathRaster*> mathGroupPrepared;
+    // 同じ成果物・同じ見た目・同じ前処理の画像は 1 回だけ準備する。
+    std::map<std::string, const math::PreparedMathRaster*> mathGroupByIdentity;
+    // 配置が対象になりうる mapping だけを申告する (P3-3C: 使わない画像を準備しない)。MLT の層が
+    // frame ごとの値で最終の判定をするので、ここでの判定は MLT の層と同じか、それより狭い。
+    const auto mathGroupPlanEligible = [&](const TimelineExportClipMapping& planned) {
+        if (planned.subtitle || planned.audio || planned.mathWrite ||
+            !planned.mathTransformId.empty() || planned.equationSequence || planned.graph ||
+            planned.opaqueBackdrop || planned.videoTrackIndex <= 0 || planned.cropLeft != 0 ||
+            planned.cropTop != 0 || planned.cropRight != 0 || planned.cropBottom != 0)
+            return false;
+        if (planned.motionFrames.empty())
+            return planned.rectWidth == request.width && planned.rectHeight == request.height &&
+                   planned.rotationDegrees == 0.0 && planned.shearDegrees == 0.0;
+        for (const auto& frame : planned.motionFrames)
+            if (frame.rectWidth != request.width || frame.rectHeight != request.height ||
+                frame.rotationDegrees != 0.0 || frame.shearDegrees != 0.0 ||
+                frame.cropLeft != 0.0 || frame.cropTop != 0.0 || frame.cropRight != 0.0 ||
+                frame.cropBottom != 0.0)
+                return false;
+        return true;
+    };
+    // project の clip ごとに、必要な画像 ([0] 前処理なし、[1] qtcrop と同じ描き直しの後)。
+    std::map<std::size_t, std::array<bool, 2>> mathGroupNeeded;
+    if (mathGroup)
+        for (const auto& planned : plan.clips) {
+            if (!mathGroupPlanEligible(planned))
+                continue;
+            const auto index = static_cast<std::size_t>(planned.projectClipIndex);
+            if (index < project.timelineClips.size() &&
+                project.timelineClips[index].kind == project::TimelineClipKind::Math)
+                mathGroupNeeded[index][planned.motionFrames.empty() ? 0 : 1] = true;
+        }
+    const auto mathGroupStorage =
+        mathGroup && request.exportObserver->diagnostic_math_group_storage == 1
+            ? math::MathRasterStorage::FullFrame
+            : math::MathRasterStorage::RoiOnly;
     if (request.mathLayerStaging != MathLayerStaging::FullFrame) {
         std::set<std::size_t> rejected;
         for (const auto& planned : plan.clips) {
@@ -1056,8 +1092,57 @@ TimelineExportResult exportTimeline(const project::Project& project,
             if (!stagePng(image, QString::number(index) + "-math.png", staged))
                 return result;
             clipPaths.emplace(index, std::move(staged));
-            if (mathGroup && !mathRegions.contains(index))
-                mathGroupSources.emplace(index, composed.rgba);
+            if (const auto needed = mathGroupNeeded.find(index);
+                needed != mathGroupNeeded.end() && !mathRegions.contains(index)) {
+                // stage した PNG と同じ画素から、必要な画像だけを準備する。全画面の複製は残さない
+                // (RoiOnly なら、準備済みの画像が持つのは中身のある範囲だけ)。
+                for (const bool qtcrop : {false, true}) {
+                    if (!needed->second[qtcrop ? 1 : 0])
+                        continue;
+                    const auto artifactPath = pathToUtf8(artifact->second);
+                    const std::string identity =
+                        artifactPath + '\n' + clip.math.syntax + '\n' + clip.math.source + '\n' +
+                        std::to_string(clip.math.fontSize) + '\n' + clip.math.color + '\n' +
+                        clip.math.backgroundColor + '\n' + (qtcrop ? "qtcrop" : "none");
+                    auto known = mathGroupByIdentity.find(identity);
+                    if (known == mathGroupByIdentity.end()) {
+                        auto* observer = request.exportObserver;
+                        const auto begin = mvm_mlt_export_observer_now_ns();
+                        std::string prepareError;
+                        auto& raster = mathGroupRasters.emplace_back();
+                        const std::vector<std::uint8_t> repainted =
+                            qtcrop ? repaintLikeQtcrop(composed.rgba, request.width, request.height)
+                                   : std::vector<std::uint8_t>();
+                        const auto& pixels = qtcrop ? repainted : composed.rgba;
+                        if (!math::PreparedMathRaster::prepare(
+                                pixels.data(), request.width, request.height,
+                                static_cast<std::size_t>(request.width) * 4U, raster, prepareError,
+                                mathGroupStorage,
+                                "artifact=" + artifactPath +
+                                    (qtcrop ? ";preprocess=qtcrop-rect-full-radius-0"
+                                            : ";preprocess=none"))) {
+                            result.error = "数式 clip '" + clip.name +
+                                           "' の画像を準備できません: " + prepareError;
+                            return result;
+                        }
+                        ++observer->math_group_raster_count;
+                        observer->math_group_source_bytes += static_cast<long long>(pixels.size());
+                        observer->math_group_raster_bytes +=
+                            static_cast<long long>(raster.storedBytes());
+                        // 上限を超えたら止める (黙って増やさない)。
+                        if (const auto budget = observer->diagnostic_math_group_raster_budget_bytes;
+                            budget > 0 && observer->math_group_raster_bytes > budget) {
+                            result.error = "数式 group の準備済みの画像が上限 " +
+                                           std::to_string(budget / (1024 * 1024)) +
+                                           " MB を超えました";
+                            return result;
+                        }
+                        observer->math_group_prepare_ns += mvm_mlt_export_observer_now_ns() - begin;
+                        known = mathGroupByIdentity.emplace(identity, &raster).first;
+                    }
+                    mathGroupPrepared.emplace(std::pair{index, qtcrop}, known->second);
+                }
+            }
             continue;
         }
         if (clip.kind == project::TimelineClipKind::Image) {
@@ -1163,44 +1248,13 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.timeline_start_frame = planned.timelineStartFrame;
         mapped.timeline_duration_frames = planned.timelineDurationFrames;
         mapped.effects_enabled = planned.effectsEnabled ? 1 : 0;
-        if (mathGroup && !planned.subtitle && !planned.audio && !planned.mathWrite &&
-            planned.mathTransformId.empty() && !planned.equationSequence && !planned.graph) {
-            // 静止の数式として申告する。配置が対象かどうか (等倍・回転なし・crop なし) は MLT
-            // の層が frame ごとの値を見て決め、対象外なら従来の経路のまま書き出す。
-            if (const auto source = mathGroupSources.find(index);
-                source != mathGroupSources.end()) {
-                const bool qtcrop = !planned.motionFrames.empty();
-                auto prepared = mathGroupPrepared.find({index, qtcrop});
-                if (prepared == mathGroupPrepared.end()) {
-                    const auto begin = mvm_mlt_export_observer_now_ns();
-                    std::string prepareError;
-                    auto& raster = mathGroupRasters.emplace_back();
-                    const auto pixels =
-                        qtcrop ? repaintLikeQtcrop(source->second, request.width, request.height)
-                               : source->second;
-                    if (!math::PreparedMathRaster::prepare(
-                            pixels.data(), request.width, request.height,
-                            static_cast<std::size_t>(request.width) * 4U, raster, prepareError)) {
-                        result.error =
-                            "数式 clip '" + clip.name + "' の画像を準備できません: " + prepareError;
-                        return result;
-                    }
-                    request.exportObserver->math_group_raster_bytes +=
-                        static_cast<long long>(pixels.size());
-                    // 上限を超えたら止める (黙って増やさない)。
-                    if (const auto budget =
-                            request.exportObserver->diagnostic_math_group_raster_budget_bytes;
-                        budget > 0 && request.exportObserver->math_group_raster_bytes > budget) {
-                        result.error = "数式 group の準備済みの画像が上限 " +
-                                       std::to_string(budget / (1024 * 1024)) + " MB を超えました";
-                        return result;
-                    }
-                    request.exportObserver->math_group_prepare_ns +=
-                        mvm_mlt_export_observer_now_ns() - begin;
-                    prepared = mathGroupPrepared.emplace(std::pair{index, qtcrop}, &raster).first;
-                }
+        if (mathGroup && mathGroupPlanEligible(planned)) {
+            // 静止の数式として申告する。MLT の層が frame ごとの値を見てもう一度判定し、対象外なら
+            // 従来の経路のまま書き出す。
+            if (const auto prepared =
+                    mathGroupPrepared.find({index, !planned.motionFrames.empty()});
+                prepared != mathGroupPrepared.end())
                 mapped.math_group_raster = prepared->second;
-            }
         }
         auto& motion = motionStorage.emplace_back();
         motion.reserve(planned.motionFrames.size());
@@ -1246,7 +1300,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
     }
 
     if (mathGroup) {
-        mathGroupSources.clear(); // 準備済みの画像が複製を持っている
+        request.exportObserver->math_group_raster_live_bytes = math::preparedMathRasterLiveBytes();
         request.exportObserver->diagnostic_math_group_compose = &composeMathGroupForExport;
         request.exportObserver->diagnostic_math_group_opaque = nullptr;
     }
