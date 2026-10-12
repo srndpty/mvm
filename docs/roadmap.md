@@ -161,6 +161,12 @@
     encoder 直前の RGBA は全 frame が製品の経路と一致した。判定は、静止画でない clip に付いた証明を
     使わないよう直し、単体試験を足した。製品での有効化はまだ（繰り返しの安定、MLT の統合部分の
     race の検出、製品からの入口、実行時の拒否のときのやり直しが残る）。
+  - P3-5A（[結果](math-export-p35a.md)）: 全長の書き出しを同じ identity で 2 回追加し（計 3 回、272〜294 秒、
+    出力の MP4 は 3 回とも同じ）、120 frame の SHA-256 と 40 frame の全 byte の比較を足した。数式 group の
+    transition は、MLT 7.36.1 ごと TSan・ASan で build した隔離 harness で報告 0。その過程で、
+    **MLT の color producer の data race**（V1 の隙間。製品の経路にも関わる）と、
+    **preview の audio の後始末の解放後参照**（`transition_preview` の SegFault の原因）が見つかった。
+    どちらも未修正。P3-5B・P3-6 の前に扱う。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

@@ -202,6 +202,10 @@ struct Options {
     int mathGroupRule = 0;        // 0 = 下に従来の layer が重ならない clip だけ、1 = 順序だけを守る
     // P3-3D。
     bool ignoreAlphaProof = false; // V1 の alpha の証明を無いものとして扱う (証明が得られない対照)
+    // P3-5A: frame ごとに、全 byte の SHA-256 も採る (64 bit の digest とは独立の hash)。
+    bool strongDigest = false;
+    // P3-5A: この frame (timeline の絶対 frame) の RGBA をそのまま file へ書く。
+    std::set<std::int64_t> dumpFrames;
     int forgeAlphaProof = 0;      // 非 0: V1 の alpha の証明をこの値に差し替える (誤った証明の対照)
     int candidateRepeats = 1;     // candidate を同じ process の中で続けて書き出す回数
     int cancelAfterImages = 8;    // --inject cancel: 合成済みの画像がこの数になったら取り消す
@@ -361,6 +365,7 @@ struct FrameSeen {
     std::uint64_t hash = 0;
     int minAlpha = 0;
     bool repeatDiffers = false; // 同じ frame の再要求で画素が違った
+    QByteArray sha256;          // --strong-digest のときだけ (全 byte の SHA-256)
 };
 
 struct Observation {
@@ -1954,6 +1959,11 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.ignoreAlphaProof = value == "none";
             if (value.rfind("forge:", 0) == 0)
                 options.forgeAlphaProof = std::atoi(value.c_str() + 6);
+        } else if (key == "--strong-digest") {
+            options.strongDigest = value == "1";
+        } else if (key == "--dump-frames") {
+            for (const auto& part : QString::fromStdString(value).split(QLatin1Char(',')))
+                options.dumpFrames.insert(part.toLongLong());
         } else if (key == "--candidate-repeats") {
             options.candidateRepeats = std::atoi(value.c_str());
             if (options.candidateRepeats < 1 || options.candidateRepeats > 16)
@@ -2297,6 +2307,20 @@ int main(int argc, char** argv) {
                 std::uint64_t hash = 0;
                 int minAlpha = 0;
                 digestFrame(rgba, bytes, hash, minAlpha);
+                QByteArray sha256;
+                if (options.strongDigest)
+                    sha256 =
+                        QCryptographicHash::hash(QByteArrayView(reinterpret_cast<const char*>(rgba),
+                                                                static_cast<qsizetype>(bytes)),
+                                                 QCryptographicHash::Sha256);
+                if (options.dumpFrames.contains(absoluteFrame)) {
+                    // 同じ frame が再要求されても、最初の 1 回だけ書く (名前は絶対 frame)。
+                    const auto path = options.output / (std::string(fixture.name) + "-frame-" +
+                                                        std::to_string(absoluteFrame) + ".rgba");
+                    QFile dump(toQString(path));
+                    if (!dump.exists() && dump.open(QIODevice::WriteOnly))
+                        dump.write(reinterpret_cast<const char*>(rgba), static_cast<qint64>(bytes));
+                }
                 // 比較のときは baseline の全 frame を保持する (ほぼ単色なので圧縮すると小さい)。
                 QByteArray packed;
                 if (options.compare != mvm::app::MathLayerStaging::FullFrame ||
@@ -2308,10 +2332,11 @@ int main(int argc, char** argv) {
                 observation.width = frameWidth;
                 observation.height = frameHeight;
                 auto& seen = observation.frames[frame];
-                if (seen.calls > 0 && seen.hash != hash)
+                if (seen.calls > 0 && (seen.hash != hash || seen.sha256 != sha256))
                     seen.repeatDiffers = true;
                 ++seen.calls;
                 seen.hash = hash;
+                seen.sha256 = sha256;
                 seen.minAlpha = minAlpha;
                 if (representative.contains(frame) && !observation.samples.contains(frame))
                     observation.samples.emplace(frame,
@@ -3292,12 +3317,17 @@ int main(int argc, char** argv) {
         QFile digests(toQString(options.output / (std::string(fixture.name) + "-pre-yuv.tsv")));
         if (digests.open(QIODevice::WriteOnly)) {
             for (const auto& [frame, seen] : observation.frames)
-                digests.write(QStringLiteral("%1\t%2\t%3\t%4\n")
-                                  .arg(frame)
-                                  .arg(seen.calls)
-                                  .arg(seen.hash, 16, 16, QLatin1Char('0'))
-                                  .arg(seen.minAlpha)
-                                  .toUtf8());
+                // 5 列目 (SHA-256) は --strong-digest のときだけ付く。
+                digests.write(
+                    QStringLiteral("%1\t%2\t%3\t%4%5\n")
+                        .arg(frame)
+                        .arg(seen.calls)
+                        .arg(seen.hash, 16, 16, QLatin1Char('0'))
+                        .arg(seen.minAlpha)
+                        .arg(seen.sha256.isEmpty()
+                                 ? QString()
+                                 : QLatin1Char('\t') + QString::fromLatin1(seen.sha256.toHex()))
+                        .toUtf8());
         }
     }
 
