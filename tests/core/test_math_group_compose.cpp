@@ -61,7 +61,7 @@ Image expected(Image destination, int width, int height, const std::vector<Place
 }
 
 bool compose(Image& destination, int width, int height, const std::vector<Placed>& layers,
-             bool roi = false) {
+             bool roi = false, int omitRightColumns = 0) {
     std::vector<MathGroupLayer> input;
     for (const auto& layer : layers) {
         MathGroupLayer item;
@@ -74,7 +74,8 @@ bool compose(Image& destination, int width, int height, const std::vector<Placed
         if (roi) { // 中央の 1/2 だけに字形がある画像用
             item.roiX = width / 4;
             item.roiY = height / 4;
-            item.roiWidth = width / 2;
+            // omitRightColumns > 0 は対照用: 字形のある右端の列を範囲から外す (誤った範囲)。
+            item.roiWidth = width / 2 - omitRightColumns;
             item.roiHeight = height / 2;
         }
         input.push_back(item);
@@ -134,6 +135,22 @@ int runTests() {
             for (auto& layer : layers)
                 if (layer.opacity == 0.0)
                     layer.opacity = 0.5;
+        // 範囲の境界の対照用: 一番下の layer の、字形の範囲の四隅と右端の列を必ず不透明にする
+        // (境界ちょうどに見える画素がある)。出力の中に収まる位置へ置く。
+        if (round == 7) {
+            auto& bottom = layers.front();
+            bottom.x = 0;
+            bottom.y = 0;
+            bottom.opacity = 1.0;
+            const int right = width / 4 + width / 2 - 1;
+            for (int row = height / 4; row < height / 4 + height / 2; ++row) {
+                auto* p = bottom.rgba.data() + (static_cast<std::size_t>(row) * width + right) * 4;
+                p[0] = 200;
+                p[1] = 40;
+                p[2] = 40;
+                p[3] = 255;
+            }
+        }
         const Image want = expected(base, width, height, layers);
         Image got = base;
         check(compose(got, width, height, layers), "合成が成功する");
@@ -172,6 +189,14 @@ int runTests() {
                 if (alpha[0].rgba[i] > 8)
                     alpha[0].rgba[i] = static_cast<std::uint8_t>(alpha[0].rgba[i] - 8);
             mutated("texel の alpha", alpha);
+            // 範囲の対照: 字形のある右端の 1 列を範囲から外すと、その列が描かれず、期待値と違う。
+            // (正しい範囲では上の「字形の範囲だけを走査しても結果が同じ」が成り立っている。)
+            Image clipped = base;
+            compose(clipped, width, height, layers, true, 1);
+            if (differing(clipped, want) == 0)
+                std::fprintf(stderr, "対照 '範囲の右端の欠落' が検出されません\n");
+            check(differing(clipped, want) != 0,
+                  "範囲から外した境界の画素は不一致として検出される");
             // 端数の位置は整数位置の期待値と一致してはならない。
             std::vector<MathGroupLayer> fractional(1);
             fractional[0].rgba = layers[0].rgba.data();

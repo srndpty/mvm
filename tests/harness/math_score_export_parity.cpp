@@ -151,6 +151,8 @@ struct Options {
     // 試作 (P2-A): 主の書き出しで transition を区間ごとに分ける / 比較の candidate として分ける。
     bool splitTransitions = false;
     bool compareSplit = false;
+    // P3-1.1: 全 frame について、純粋な合成器の出力を MLT の pre-YUV と byte 単位で比べる。
+    bool compositorAll = false;
     int splitFault = 0; // candidate だけに入れる故障 (比較の対照)
     // 分け方 (0 は既定値): 変わる区間の上限 / 変わらない区間の下限 / 変わらない区間の上限。
     int splitAnimatedRun = 0, splitStaticRun = 0, splitStaticChunk = 0;
@@ -446,8 +448,16 @@ std::optional<double> heldValue(const std::vector<mvm::project::ClipKeyframe>& k
     return std::nullopt;
 }
 
+// mode 9 の全 frame 比較で使う、clip ごとに 1 回だけ作る入力 (画像と字形の範囲)。
+// 画像は書き出しが MLT へ渡すものと同じにする: motion のある clip は qtcrop と同じ描き直しを通す。
+struct PreparedRaster {
+    std::vector<std::uint8_t> rgba;
+    int roiX = 0, roiY = 0, roiWidth = 0, roiHeight = 0;
+};
+
 struct OracleLayer {
-    std::vector<std::uint8_t> rgba; // 出力と同じ大きさ、straight alpha
+    const PreparedRaster* prepared = nullptr; // あれば rgba の代わりにこれを使う
+    std::vector<std::uint8_t> rgba;           // 出力と同じ大きさ、straight alpha
     // 出力上で layer 全体を置く矩形 (画素)。等倍で整数位置なら integer。
     double rectX = 0.0, rectY = 0.0, rectWidth = 0.0, rectHeight = 0.0;
     bool integer = true;
@@ -467,6 +477,7 @@ const mvm::app::TimelineExportPlan* gPlan = nullptr;
 
 struct OracleOutcome {
     bool applicable = false;
+    bool unsupported = false; // 合成器が対応していない変形を含む (比べていない)
     bool exactTier = true;
     std::string reason;
     int layers = 0;
@@ -527,6 +538,99 @@ OracleOutcome expectedFrame(const Project& project,
     std::vector<OracleLayer> layers;
     for (std::size_t index = 1; index < active.size(); ++index) {
         const auto& clip = *active[index];
+        if (gReferenceMode == 9 && gPlan) {
+            // 全 frame 比較: 値は書き出しの計画のものをそのまま使う (補間・fade の途中を含む)。
+            const mvm::app::TimelineExportClipMapping* mapped = nullptr;
+            for (const auto& candidate : gPlan->clips)
+                if (!candidate.audio && !candidate.subtitle && candidate.renderClip.id == clip.id &&
+                    frame >= candidate.timelineStartFrame &&
+                    frame < candidate.timelineStartFrame + candidate.timelineDurationFrames)
+                    mapped = &candidate;
+            const auto artifact = artifacts.find(clip.id);
+            if (!mapped || clip.kind != TimelineClipKind::Math || mapped->mathWrite ||
+                !mapped->mathTransformId.empty() || artifact == artifacts.end()) {
+                outcome.unsupported = true;
+                outcome.reason = clip.name + ": 静止の数式ではない layer です";
+                return outcome;
+            }
+            const auto at = static_cast<std::size_t>(frame - mapped->timelineStartFrame);
+            const bool motion = !mapped->motionFrames.empty();
+            const auto* moving = motion ? &mapped->motionFrames[at] : nullptr;
+            const double rectWidth = motion ? moving->rectWidth : mapped->rectWidth;
+            const double rectHeight = motion ? moving->rectHeight : mapped->rectHeight;
+            const bool transformed =
+                motion ? moving->rotationDegrees != 0.0 || moving->shearDegrees != 0.0 ||
+                             moving->cropLeft != 0.0 || moving->cropTop != 0.0 ||
+                             moving->cropRight != 0.0 || moving->cropBottom != 0.0
+                       : mapped->rotationDegrees != 0.0 || mapped->shearDegrees != 0.0 ||
+                             mapped->cropLeft != 0 || mapped->cropTop != 0 ||
+                             mapped->cropRight != 0 || mapped->cropBottom != 0;
+            if (rectWidth != width || rectHeight != height || transformed) {
+                outcome.unsupported = true;
+                outcome.reason = clip.name + ": 拡縮・回転・crop を含む layer です";
+                return outcome;
+            }
+            static std::map<std::string, PreparedRaster> cache;
+            const std::string key = clip.id + (motion ? "#qtcrop" : "#plain");
+            auto prepared = cache.find(key);
+            if (prepared == cache.end()) {
+                auto composed =
+                    mvm::app::composeMathClipFromPng(artifact->second, clip.math, width, height);
+                if (!composed.success || composed.width != width || composed.height != height) {
+                    outcome.reason = clip.name + ": 数式の成果物を合成できません";
+                    return outcome;
+                }
+                PreparedRaster raster;
+                raster.rgba = std::move(composed.rgba);
+                if (motion) {
+                    // 書き出しは motion のある clip に qtcrop を付ける。MLT の qtcrop
+                    // と同じ描き直し。
+                    QImage foreground(raster.rgba.data(), width, height, width * 4,
+                                      QImage::Format_RGBA8888);
+                    QImage background(width, height, QImage::Format_RGBA8888);
+                    background.fill(QColor(0, 0, 0, 0));
+                    {
+                        QPainter painter(&background);
+                        painter.setRenderHints(QPainter::Antialiasing);
+                        QPainterPath path;
+                        path.addRoundedRect(0, 0, width, height, 0, 0);
+                        painter.setClipPath(path);
+                        painter.drawImage(QPointF(0, 0), foreground.copy());
+                    }
+                    raster.rgba = imageBytes(background);
+                }
+                int left = width, top = height, right = -1, bottom = -1;
+                for (int row = 0; row < height; ++row)
+                    for (int column = 0; column < width; ++column)
+                        if (raster.rgba[(static_cast<std::size_t>(row) *
+                                             static_cast<std::size_t>(width) +
+                                         static_cast<std::size_t>(column)) *
+                                            4U +
+                                        3U] != 0) {
+                            left = std::min(left, column);
+                            right = std::max(right, column);
+                            top = std::min(top, row);
+                            bottom = std::max(bottom, row);
+                        }
+                if (right >= 0) {
+                    raster.roiX = left;
+                    raster.roiY = top;
+                    raster.roiWidth = right - left + 1;
+                    raster.roiHeight = bottom - top + 1;
+                }
+                prepared = cache.emplace(key, std::move(raster)).first;
+            }
+            OracleLayer layer;
+            layer.prepared = &prepared->second;
+            layer.rectX = motion ? moving->rectX : mapped->rectX;
+            layer.rectY = motion ? moving->rectY : mapped->rectY;
+            layer.rectWidth = rectWidth;
+            layer.rectHeight = rectHeight;
+            layer.opacity = mapped->opacityKeys[at].opacity;
+            outcome.exactTier = false;
+            layers.push_back(std::move(layer));
+            continue;
+        }
         const auto local = frame - clip.timelineStartFrame;
         const auto& effects = clip.effects;
         const auto duration = clipEnd(project, clip) - clip.timelineStartFrame;
@@ -647,14 +751,14 @@ OracleOutcome expectedFrame(const Project& project,
             // mode 9: 純粋な合成器 (src/media/math/math_group_compose) そのものを使う。
             // 字形の範囲 (alpha > 0 の外接矩形) を渡して、範囲だけを走査する経路を通す。
             mvm::math::MathGroupLayer input;
-            input.rgba = layer.rgba.data();
+            input.rgba = layer.prepared ? layer.prepared->rgba.data() : layer.rgba.data();
             input.width = width;
             input.height = height;
             input.rectX = layer.rectX;
             input.rectY = layer.rectY;
             input.opacity = layer.opacity;
             int left = width, top = height, right = -1, bottom = -1;
-            for (int row = 0; row < height; ++row)
+            for (int row = 0; !layer.prepared && row < height; ++row)
                 for (int column = 0; column < width; ++column)
                     if (layer.rgba[(static_cast<std::size_t>(row) * columns +
                                     static_cast<std::size_t>(column)) *
@@ -665,7 +769,12 @@ OracleOutcome expectedFrame(const Project& project,
                         top = std::min(top, row);
                         bottom = std::max(bottom, row);
                     }
-            if (right >= 0) {
+            if (layer.prepared) {
+                input.roiX = layer.prepared->roiX;
+                input.roiY = layer.prepared->roiY;
+                input.roiWidth = layer.prepared->roiWidth;
+                input.roiHeight = layer.prepared->roiHeight;
+            } else if (right >= 0) {
                 input.roiX = left;
                 input.roiY = top;
                 input.roiWidth = right - left + 1;
@@ -989,6 +1098,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.capSeconds = std::atoi(value.c_str());
         else if (key == "--stall-seconds")
             options.stallSeconds = std::atoi(value.c_str());
+        else if (key == "--compositor-all")
+            options.compositorAll = value == "1";
         else if (key == "--reference-mode")
             gReferenceMode = std::atoi(value.c_str());
         else if (key == "--keyframe-stride")
@@ -1235,7 +1346,7 @@ int main(int argc, char** argv) {
                 // 比較のときは baseline の全 frame を保持する (ほぼ単色なので圧縮すると小さい)。
                 QByteArray packed;
                 if (options.compare != mvm::app::MathLayerStaging::FullFrame ||
-                    options.compareSplit)
+                    options.compareSplit || options.compositorAll)
                     packed = qCompress(rgba, static_cast<qsizetype>(bytes), 1);
                 std::lock_guard lock(observation.mutex);
                 if (!packed.isEmpty())
@@ -1729,8 +1840,88 @@ int main(int argc, char** argv) {
         fail(QStringLiteral("失敗・取消なのに出力 file が残っています"));
     }
 
+    // --- 合成器の全 frame 比較 (P3-1.1) -------------------------------------------
+    QJsonObject compositorAllReport;
+    if (options.compositorAll && exported.success && !rangeMode) {
+        gReferenceMode = 9;
+        mvm::app::TimelineExportRequest allRequest;
+        allRequest.width = width;
+        allRequest.height = height;
+        allRequest.fpsNum = static_cast<int>(project.timelineFpsNum);
+        allRequest.fpsDen = static_cast<int>(project.timelineFpsDen);
+        const auto allPlan = mvm::app::mapTimelineExportPlan(project, allRequest);
+        gPlan = allPlan.success ? &allPlan : nullptr;
+        long long compared = 0, missingFrames = 0, unsupportedFrames = 0, mismatching = 0,
+                  differingPixels = 0, inkedFrames = 0;
+        QString firstMismatch;
+        std::map<std::string, int> reasons;
+        for (std::int64_t frame = 0; gPlan && frame < expectedFrames; ++frame) {
+            const auto stored = baselineFrames.find(frame);
+            if (stored == baselineFrames.end()) {
+                ++missingFrames;
+                continue;
+            }
+            const QByteArray baseline = qUncompress(stored->second);
+            auto outcome = expectedFrame(project, artifacts, burnSubtitles, frame, false);
+            if (!outcome.applicable) {
+                ++unsupportedFrames; // 比べていない。一致には数えない
+                ++reasons[outcome.unsupported ? "unsupported-transform" : outcome.reason];
+                continue;
+            }
+            const std::vector<std::uint8_t> actual(baseline.constBegin(), baseline.constEnd());
+            if (actual.size() != outcome.expected.size()) {
+                ++missingFrames;
+                continue;
+            }
+            compareFrame(outcome, actual, width);
+            ++compared;
+            inkedFrames += outcome.inked > 0;
+            differingPixels += outcome.differing;
+            if (outcome.differing > 0) {
+                ++mismatching;
+                if (firstMismatch.isEmpty())
+                    firstMismatch =
+                        QStringLiteral("frame %1 %2").arg(frame).arg(outcome.firstDiffering);
+            }
+        }
+        QJsonObject reasonObject;
+        for (const auto& [reason, count] : reasons)
+            reasonObject.insert(QString::fromStdString(reason), count);
+        compositorAllReport = (QJsonObject{
+            {QStringLiteral("plan_available"), gPlan != nullptr},
+            {QStringLiteral("frames_expected"), static_cast<qint64>(expectedFrames)},
+            {QStringLiteral("frames_observed"), static_cast<qint64>(baselineFrames.size())},
+            {QStringLiteral("frames_compared"), compared},
+            {QStringLiteral("frames_missing"), missingFrames},
+            {QStringLiteral("frames_unsupported"), unsupportedFrames},
+            {QStringLiteral("frames_with_math_pixels"), inkedFrames},
+            {QStringLiteral("frames_mismatching"), mismatching},
+            {QStringLiteral("differing_pixels"), differingPixels},
+            {QStringLiteral("first_mismatch"), firstMismatch},
+            {QStringLiteral("unsupported_reasons"), reasonObject}});
+        if (!gPlan || missingFrames != 0 ||
+            compared + unsupportedFrames != static_cast<long long>(expectedFrames))
+            fail(QStringLiteral("合成器の全 frame 比較: 比べられない frame があります (欠落 %1)")
+                     .arg(missingFrames));
+        if (mismatching != 0)
+            fail(QStringLiteral("合成器の全 frame 比較: %1 frame が MLT と違います (%2)")
+                     .arg(mismatching)
+                     .arg(firstMismatch));
+        if (compared == 0)
+            fail(QStringLiteral("合成器の全 frame 比較: 比べた frame がありません"));
+        std::fprintf(stderr,
+                     "合成器の全 frame 比較: 想定 %lld 観測 %lld 比較 %lld 欠落 %lld 対象外 %lld "
+                     "不一致 %lld (差のある画素 %lld)\n",
+                     static_cast<long long>(expectedFrames),
+                     static_cast<long long>(baselineFrames.size()), compared, missingFrames,
+                     unsupportedFrames, mismatching, differingPixels);
+        gPlan = nullptr;
+    }
+
     // --- 記録 --------------------------------------------------------------------
     QJsonObject report;
+    if (options.compositorAll)
+        report.insert(QStringLiteral("compositor_all"), compositorAllReport);
     report.insert(QStringLiteral("format"), QStringLiteral("mvm-math-score-export-diagnosis/1"));
     report.insert(QStringLiteral("fixture"), QString::fromLatin1(fixture.name));
     report.insert(QStringLiteral("inject"), static_cast<int>(options.inject));
