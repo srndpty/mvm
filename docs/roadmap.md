@@ -156,6 +156,11 @@
     ならない」ことの検査。21 通りの判定が期待どおりで、全 frame が製品の経路と一致。合成器・画像の
     共有は ThreadSanitizer・AddressSanitizer で報告 0（MLT の統合部分は検出器の対象外で、stress で確認）。
     Project 全体の書き出し、MLT の統合部分の race の検出、製品での有効化は未着手。
+  - P3-4（[結果](math-export-p34.md)）: 判定つきの数式 group（診断用）で、v4 の Project 全体
+    （6840 frame）を 1 回書き出した。実時間 272.4 秒で完走し、H.264 の 6840 frame を復号でき、
+    encoder 直前の RGBA は全 frame が製品の経路と一致した。判定は、静止画でない clip に付いた証明を
+    使わないよう直し、単体試験を足した。製品での有効化はまだ（繰り返しの安定、MLT の統合部分の
+    race の検出、製品からの入口、実行時の拒否のときのやり直しが残る）。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

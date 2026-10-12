@@ -1582,9 +1582,16 @@ static int plant_export_math_group(mlt_tractor tractor, const MvmExportClip* cli
  * が掛かり、出す画素を確かめていない) があれば UNKNOWN。 最小値 0 の clip があれば INELIGIBLE。
  * (O2) は、MLT の合成の式 (合成後の alpha = 上 + 下 - 上 × 下。interp.h の全部の補間で同じ) と、
  * この式が alpha を下げないことの検査 (単体試験) による。ここでは layer ごとには確かめない。
- * 判定は画素を render しない。実行時の下地の検査 (合成器の拒否) は、判定に関わらず残る。 */
-static void math_group_preflight(const MvmExportClip* clips, int clip_count, const int* groups,
-                                 int group_count, MvmExportObserver* observer) {
+ * 判定は画素を render しない。実行時の下地の検査 (合成器の拒否) は、判定に関わらず残る。
+ *
+ * P3-4: 証明は「stage した静止画 1 枚」についてのものなので、そうでない clip (連番・動画・
+ * frame hold・切り出した素材) に証明が付いていても使わない (呼び出し側の誤りを ELIGIBLE に
+ * しない)。画素も MLT も使わない関数なので、単体試験から直接呼べる形にしてある。 */
+void mvm_mlt_export_math_group_preflight(const MvmExportClip* clips, int clip_count,
+                                         const int* groups, int group_count, int ignore_proof,
+                                         int forge_proof, int* out_decision, char* out_reason,
+                                         size_t reason_size, int* out_lowest,
+                                         long long* out_checked) {
     const char* reason = "base-alpha-proven";
     int decision = MVM_MATH_GROUP_DECISION_ELIGIBLE;
     int lowest = -1;
@@ -1592,6 +1599,10 @@ static void math_group_preflight(const MvmExportClip* clips, int clip_count, con
     if (group_count <= 0) {
         decision = MVM_MATH_GROUP_DECISION_INELIGIBLE;
         reason = "no-eligible-math-clip";
+    } else if (!clips || !groups) { /* 入力が欠けている。言えない。 */
+        decision = MVM_MATH_GROUP_DECISION_UNKNOWN;
+        reason = "base-alpha-unproven";
+        clip_count = 0;
     }
     for (int base = 0; group_count > 0 && base < clip_count; ++base) {
         const MvmExportClip* v1 = &clips[base];
@@ -1610,12 +1621,16 @@ static void math_group_preflight(const MvmExportClip* clips, int clip_count, con
         if (!relevant)
             continue;
         ++checked;
-        const int proof = observer->diagnostic_math_group_ignore_alpha_proof
-                              ? 0
-                              : v1->math_group_base_alpha_proof;
+        const int staged_still = v1->is_still_image && !v1->is_image_sequence && !v1->is_frame_hold;
+        const int proof = ignore_proof    ? 0
+                          : forge_proof   ? forge_proof
+                          : !staged_still ? 0
+                                          : v1->math_group_base_alpha_proof;
         const int transformed = v1->effects_enabled || v1->motion_frame_count > 0 ||
                                 v1->crop_left != 0 || v1->crop_top != 0 || v1->crop_right != 0 ||
-                                v1->crop_bottom != 0 || v1->opaque_backdrop;
+                                v1->crop_bottom != 0 || v1->opaque_backdrop ||
+                                v1->source_width != 0 || v1->source_height != 0 ||
+                                v1->source_x != 0 || v1->source_y != 0;
         if (proof == 1 && !transformed) {
             /* alpha 0 の画素が実際にある。これ以上調べなくてよい。 */
             decision = MVM_MATH_GROUP_DECISION_INELIGIBLE;
@@ -1631,11 +1646,26 @@ static void math_group_preflight(const MvmExportClip* clips, int clip_count, con
         if (lowest < 0 || proof - 1 < lowest)
             lowest = proof - 1;
     }
-    observer->math_group_decision = decision;
-    snprintf(observer->math_group_decision_reason, sizeof(observer->math_group_decision_reason),
-             "%s", reason);
-    observer->math_group_base_alpha_proven = lowest;
-    observer->math_group_base_clips_checked = checked;
+    /* ELIGIBLE でないときは、証明した最小値を返さない (途中まで調べた値を証明として読ませない)。 */
+    if (decision == MVM_MATH_GROUP_DECISION_UNKNOWN)
+        lowest = -1;
+    if (out_decision)
+        *out_decision = decision;
+    if (out_reason && reason_size > 0)
+        snprintf(out_reason, reason_size, "%s", reason);
+    if (out_lowest)
+        *out_lowest = lowest;
+    if (out_checked)
+        *out_checked = checked;
+}
+
+static void math_group_preflight(const MvmExportClip* clips, int clip_count, const int* groups,
+                                 int group_count, MvmExportObserver* observer) {
+    mvm_mlt_export_math_group_preflight(
+        clips, clip_count, groups, group_count, observer->diagnostic_math_group_ignore_alpha_proof,
+        observer->diagnostic_math_group_forge_alpha_proof, &observer->math_group_decision,
+        observer->math_group_decision_reason, sizeof(observer->math_group_decision_reason),
+        &observer->math_group_base_alpha_proven, &observer->math_group_base_clips_checked);
 }
 
 /* group の transition が失敗を記録していれば、書き出しを失敗にする。 */

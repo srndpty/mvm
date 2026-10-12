@@ -163,6 +163,12 @@ add_test(NAME math_group_compose_oracle COMMAND mvm_test_math_group_compose)
 # P3-3D: 書き出しの前の判定が使う性質 (alpha が 1 以上の画素は、何を重ねても alpha 0 にならない)。
 # 上の alpha の binary32 の全部の値を確かめるので、十数秒かかる。
 add_test(NAME math_group_alpha_floor_lemma COMMAND mvm_test_math_group_compose alpha-floor)
+# P3-4: 数式 group を使ってよいかの判定 (clip の表だけで確かめる。画素も MLT の実行も使わない)。
+add_executable(mvm_test_math_group_preflight harness/test_math_group_preflight.cpp)
+target_link_libraries(mvm_test_math_group_preflight PRIVATE mvm::mlt mvm::warnings)
+add_test(NAME math_group_preflight_decisions COMMAND mvm_test_math_group_preflight)
+set_tests_properties(math_group_preflight_decisions PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
 set_tests_properties(math_group_compose_oracle PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
 # timeout_ms の数え方の監査。現状は Sleep(20) の回数で数えるので、実時間では timeout_ms より遅く

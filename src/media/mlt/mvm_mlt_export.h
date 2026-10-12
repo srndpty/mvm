@@ -306,6 +306,9 @@ typedef struct MvmExportObserver {
      * 非 0 なら、clip の math_group_base_alpha_proof を無いものとして扱う
      *     (証明が得られない素材の対照)。 */
     int diagnostic_math_group_ignore_alpha_proof;
+    /* 入力 (P3-4): 非 0 なら、V1 の clip の証明をこの値に差し替える (誤った証明の対照。
+     * 256 は「alpha 255 と証明した」、257 以上は範囲外)。 */
+    int diagnostic_math_group_forge_alpha_proof;
     /* 出力 (P3-3D)。 */
     int math_group_decision;                 /* MvmMathGroupDecision */
     char math_group_decision_reason[96];     /* 判定の理由 (事前に決めた名前) */
@@ -432,6 +435,17 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
  * あっても空の playlist を 10000 本作る (UI は track を連続で足すので通常は起きない)。
  * 詰めるなら transition の track 番号も一緒に写し替える必要がある。
  * (関数名は 2 track 時代のまま。) */
+/* 数式 group を使ってよいかの、書き出しの前の判定 (P3-3D・P3-4)。画素も MLT も使わない。
+ * groups[i] は clip i の group の番号 (0 は member でない)、group_count は group の数。
+ * ignore_proof 非 0 は証明を無いものとして扱い、forge_proof 非 0 は証明をその値に差し替える
+ * (どちらも対照用)。out_decision は MvmMathGroupDecision、out_lowest は証明した V1 の alpha の
+ * 最小値 (ELIGIBLE のときだけ意味がある。-1 は該当なし)。 */
+void mvm_mlt_export_math_group_preflight(const MvmExportClip* clips, int clip_count,
+                                         const int* groups, int group_count, int ignore_proof,
+                                         int forge_proof, int* out_decision, char* out_reason,
+                                         size_t reason_size, int* out_lowest,
+                                         long long* out_checked);
+
 int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long long total_duration,
                              const MvmExportSpec* spec, const char* out_path, MvmExportResult* out,
                              char* err, size_t err_size);

@@ -143,6 +143,10 @@ constexpr Fixture kFixtures[] = {
     {"geom-mixed", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, -1, 1},
     {"geom-all-unsupported", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, -1, 2},
     {"base-transformed", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, -1, 3},
+    // --- P3-4: V1 の隙間 (黒の color producer) の上の数式。4 = V1 に clip が無い、
+    // 5 = V1 の clip が前半だけ (後半は隙間。clip の境界をまたぐ)。 ---
+    {"base-gap", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, -1, 4},
+    {"base-half-gap", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, -1, 5},
 };
 
 enum class Inject { None, DropFrame, RejectFrame, OracleShift, Cancel, CompareCorrupt };
@@ -198,9 +202,10 @@ struct Options {
     int mathGroupRule = 0;        // 0 = 下に従来の layer が重ならない clip だけ、1 = 順序だけを守る
     // P3-3D。
     bool ignoreAlphaProof = false; // V1 の alpha の証明を無いものとして扱う (証明が得られない対照)
-    int candidateRepeats = 1;      // candidate を同じ process の中で続けて書き出す回数
-    int cancelAfterImages = 8;     // --inject cancel: 合成済みの画像がこの数になったら取り消す
-    int mathGroupAlphaFloor = -1;  // 0〜255 なら合成器の契約の下限の代わりに使う (実験)
+    int forgeAlphaProof = 0;      // 非 0: V1 の alpha の証明をこの値に差し替える (誤った証明の対照)
+    int candidateRepeats = 1;     // candidate を同じ process の中で続けて書き出す回数
+    int cancelAfterImages = 8;    // --inject cancel: 合成済みの画像がこの数になったら取り消す
+    int mathGroupAlphaFloor = -1; // 0〜255 なら合成器の契約の下限の代わりに使う (実験)
     // 準備済みの画像の上限 (事前に固定)。-1 は持ち方ごとの既定: 全画面は 800 MB (P3-3A の実測
     // 783 MB)、中身のある範囲だけは 64 MB (P3-3C)。
     long long mathGroupBudgetMb = -1;
@@ -272,7 +277,10 @@ bool buildSynthetic(const Project& base, const Fixture& fixture, Project& out, s
     bottom.effects = {};
     if (fixture.geometry == 3) // V1 に effect を付ける (出す画素を確かめていない状態になる)
         bottom.effects.scaleXPercent = bottom.effects.scaleYPercent = 110.0;
-    out.timelineClips.push_back(bottom);
+    if (fixture.geometry == 5)
+        bottom.sourceOutFrame = bottom.sourceFrameCount = fixture.frames / 2;
+    if (fixture.geometry != 4)
+        out.timelineClips.push_back(bottom);
     while (static_cast<int>(out.videoTracks.size()) < fixture.layers + 1) {
         auto track = out.videoTracks.front();
         track.name = "診断 " + std::to_string(out.videoTracks.size());
@@ -1941,9 +1949,11 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.mathGroupMain = value == "1" || value == "probe" || value == "auto";
             options.mathGroupMainMode = value == "probe" ? 2 : value == "auto" ? 3 : 1;
         } else if (key == "--base-alpha-proof") {
-            if (value != "use" && value != "none")
+            if (value != "use" && value != "none" && value.rfind("forge:", 0) != 0)
                 return false;
             options.ignoreAlphaProof = value == "none";
+            if (value.rfind("forge:", 0) == 0)
+                options.forgeAlphaProof = std::atoi(value.c_str() + 6);
         } else if (key == "--candidate-repeats") {
             options.candidateRepeats = std::atoi(value.c_str());
             if (options.candidateRepeats < 1 || options.candidateRepeats > 16)
@@ -2156,6 +2166,7 @@ int main(int argc, char** argv) {
         target.diagnostic_math_group_fault = options.mathGroupMain ? options.mathGroupFault : 0;
         target.diagnostic_math_group_rule = options.mathGroupRule;
         target.diagnostic_math_group_ignore_alpha_proof = options.ignoreAlphaProof ? 1 : 0;
+        target.diagnostic_math_group_forge_alpha_proof = options.forgeAlphaProof;
         target.diagnostic_math_group_alpha_override = options.mathGroupAlphaFloor >= 0 ? 1 : 0;
         target.diagnostic_math_group_alpha_floor =
             options.mathGroupAlphaFloor >= 0 ? options.mathGroupAlphaFloor : 0;
