@@ -128,7 +128,18 @@ typedef struct {
  * render worker から並行に呼ばれる。 */
 typedef int (*MvmExportMathGroupCompose)(void* opaque, unsigned char* rgba, int width, int height,
                                          size_t stride, const MvmExportMathGroupLayer* layers,
-                                         int count, char* err, size_t err_size);
+                                         int count, int minimum_destination_alpha, char* err,
+                                         size_t err_size);
+/* minimum_destination_alpha: 合成を始める前の rgba の alpha の下限。-1 なら合成器の契約の値
+ * (実験用の指定が無いとき)。 */
+
+/* 合成の直前の下地 (group の下にある全 layer を重ねた RGBA) を見せる。書いてはならない。
+ * frame は timeline の絶対 frame、group は group の番号 (1 始まり)、layers はその frame で見えて
+ * いる member。render worker から並行に呼ばれる。 */
+typedef void (*MvmExportMathGroupProbe)(void* opaque, long long frame, int group,
+                                        const unsigned char* rgba, int width, int height,
+                                        size_t stride, const MvmExportMathGroupLayer* layers,
+                                        int count);
 
 /* --- 書き出しの観測 (診断用) -------------------------------------------------
  * 「どの段階まで進んだか」を、出力 file の大きさではなく各境界の通過回数で見るために使う。
@@ -251,8 +262,32 @@ typedef struct MvmExportObserver {
     /* 入力 (比較の対照用。0 以外は意図的に壊す): 1 = group の 2 frame 目の合成を飛ばす、
      * 2 = 1 つ後の frame の値を使う、3 = 不透明度を半分にする、4 = 下地に不透明でない画素を作る
      * (合成器が拒否し、書き出しが失敗しなければならない)、5 = 別の member の画像を使う、
-     * 6 = 一番上の layer を落とす。 */
+     * 6 = 一番上の layer を落とす。
+     * (4 は P3-3B から alpha 0 の画素を作る。合成器の下限が 1 になったため。) */
     int diagnostic_math_group_fault;
+    /* 入力 (P3-3B)。
+     *   diagnostic_math_group  1 = まとめて合成する / 2 = 測るだけ (member は従来の経路のまま、
+     *     group の位置に何も書かない transition を植えて probe を呼ぶ。出力は製品と同じになる)。
+     *   rule  0 = 下に従来の layer が時間的に重ならない clip だけを 1 つの group にする (P3-3A)。
+     *         1 = 合成の順だけを守る。従来の layer と時間が重なる所で group を切り、複数の group に
+     *             する。この場合、group の下地は従来の layer や前の group が作った画素を含む。
+     *   alpha_override / alpha_floor  非 0 なら、合成器の契約の下限の代わりに alpha_floor を使う
+     *     (下限の根拠を調べる実験用)。
+     *   probe  合成の直前の下地を見せる callback (NULL なら呼ばない)。
+     *   assignment  clip ごとの結果を書く配列 (clip の数以上の長さ。NULL なら書かない):
+     *     正 = group の番号、0 = 申告なし、-1 = 配置が対象外、-2 = 下に従来の layer が重なる (rule
+     * 0)。 raster_budget_bytes  準備済みの画像の byte 数の上限 (0 は上限なし)。超えたら上位の層が
+     *     書き出しを失敗にする。 */
+    int diagnostic_math_group_rule;
+    int diagnostic_math_group_alpha_override;
+    int diagnostic_math_group_alpha_floor;
+    MvmExportMathGroupProbe diagnostic_math_group_probe;
+    void* diagnostic_math_group_probe_opaque;
+    int* diagnostic_math_group_assignment;
+    int diagnostic_math_group_assignment_capacity;
+    long long diagnostic_math_group_raster_budget_bytes;
+    /* 出力: 書き出しの関数へ入った時点の process の working set (byte)。画像の準備の後の値。 */
+    long long math_group_working_set_at_export;
     /* 出力。最初の 2 つは画像を準備する上位の層が書く。 */
     long long math_group_raster_bytes;            /* 準備済みの画像が持つ画素の byte 数の合計 */
     long long math_group_prepare_ns;              /* 画像の準備 (前処理と範囲の走査) の時間の合計 */

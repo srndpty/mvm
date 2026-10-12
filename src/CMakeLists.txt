@@ -209,7 +209,7 @@ add_library(mvm_mlt STATIC
     media/mlt/mvm_mlt_audiograph.c
 )
 target_include_directories(mvm_mlt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mvm_mlt PUBLIC mvm::util PRIVATE MLT::MLT)
+target_link_libraries(mvm_mlt PUBLIC mvm::util psapi PRIVATE MLT::MLT)
 target_compile_definitions(mvm_mlt PRIVATE
     MVM_MLT_VERSION_STRING="${MLT_VERSION}"
 )

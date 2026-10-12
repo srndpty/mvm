@@ -241,8 +241,8 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
 // 試作 (P3-3A、診断専用): 数式 group の transition から呼ばれる合成。render worker から並行に
 // 呼ばれる。状態を持たず、準備済みの画像 (変更できない) を読むだけである。
 int composeMathGroupForExport(void*, unsigned char* rgba, int width, int height, std::size_t stride,
-                              const MvmExportMathGroupLayer* layers, int count, char* err,
-                              std::size_t errSize) {
+                              const MvmExportMathGroupLayer* layers, int count,
+                              int minimumDestinationAlpha, char* err, std::size_t errSize) {
     std::vector<math::MathGroupPlacement> placements(static_cast<std::size_t>(count));
     for (int index = 0; index < count; ++index) {
         const auto& layer = layers[index];
@@ -251,9 +251,15 @@ int composeMathGroupForExport(void*, unsigned char* rgba, int width, int height,
             layer.opacity};
     }
     std::string error;
-    // 対象外の入力 (不透明でない下地を含む) は、何も書かずに拒否される。
-    if (math::composeMathGroup(rgba, width, height, stride, placements.data(), placements.size(),
-                               error))
+    // 対象外の入力 (alpha が下限より小さい下地を含む) は、何も書かずに拒否される。
+    // 下限は合成器の契約の値。負でない値が渡されるのは、下限の根拠を調べる実験のときだけである。
+    const bool composed = minimumDestinationAlpha < 0
+                              ? math::composeMathGroup(rgba, width, height, stride,
+                                                       placements.data(), placements.size(), error)
+                              : math::detail::composeMathGroupWithAlphaFloor(
+                                    rgba, width, height, stride, placements.data(),
+                                    placements.size(), minimumDestinationAlpha, error);
+    if (composed)
         return 0;
     if (err && errSize > 0)
         std::snprintf(err, errSize, "%s", error.c_str());
@@ -1181,6 +1187,14 @@ TimelineExportResult exportTimeline(const project::Project& project,
                     }
                     request.exportObserver->math_group_raster_bytes +=
                         static_cast<long long>(pixels.size());
+                    // 上限を超えたら止める (黙って増やさない)。
+                    if (const auto budget =
+                            request.exportObserver->diagnostic_math_group_raster_budget_bytes;
+                        budget > 0 && request.exportObserver->math_group_raster_bytes > budget) {
+                        result.error = "数式 group の準備済みの画像が上限 " +
+                                       std::to_string(budget / (1024 * 1024)) + " MB を超えました";
+                        return result;
+                    }
                     request.exportObserver->math_group_prepare_ns +=
                         mvm_mlt_export_observer_now_ns() - begin;
                     prepared = mathGroupPrepared.emplace(std::pair{index, qtcrop}, &raster).first;

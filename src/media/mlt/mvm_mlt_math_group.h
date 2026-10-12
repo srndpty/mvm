@@ -25,8 +25,8 @@
  * 位置と不透明度は clip から複製して持つ (clip の配列は書き出しの呼び出しの間だけ有効)。
  * 画像 (math_group_raster) は複製しない。呼び出し側が、書き出しの関数から戻るまで保持する。
  * 失敗したら NULL を返して err に理由を書く。 */
-mlt_transition mvm_mlt_math_group_new(const MvmExportClip* const* members, int count, int width,
-                                      int height, MvmExportObserver* observer, char* err,
+mlt_transition mvm_mlt_math_group_new(const MvmExportClip* const* members, int count, int id,
+                                      int width, int height, MvmExportObserver* observer, char* err,
                                       size_t err_size);
 
 /* clip をまとめて合成してよいか。だめなら 0 を返し、reason に事前に決めた理由の名前を書く

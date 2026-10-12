@@ -23,9 +23,12 @@
 //
 // 対象にしてよい入力 (これ以外は拒否する。MLT 側の画素の振る舞いを確かめていない):
 //   - 等倍の layer だけ。拡縮、回転、shear、crop、出力と大きさの違う layer は対象外。
-//   - 合成を始める前の destination は、全画素が不透明 (alpha 255) であること。透明・半透明の
-//     下地は実際の MLT と比べていない。合成の途中で alpha が 254 になるのは MLT と同じ結果で、
-//     これは対象の中にある (実際の MLT の出力と全画素を比べている)。
+//   - 合成を始める前の destination は、全画素の alpha が 1 以上であること
+//     (kMathGroupMinimumDestinationAlpha)。alpha 1〜255 のすべての値について、実際の MLT の出力と
+//     全画素が一致することを確かめている (docs/math-transition-p33b.md)。
+//   - alpha 0 の画素がある destination は対象外。MLT は、上下とも alpha 0 の画素の色を 0 に
+//     書き換える (0 での割り算の結果を 8 bit へ落とすため)。これは字形の無い画素でも起きるので、
+//     字形の範囲だけを走査するこの合成器では再現しない。
 
 #include <cstddef>
 #include <cstdint>
@@ -79,7 +82,15 @@ struct MathGroupStats {
     std::uint64_t visitedPixels = 0; // 補間と合成を行った出力画素の数 (全 layer の合計)
 };
 
-// destination が対象の下地か (全画素の alpha が 255)。
+// 合成を始める前の destination の alpha の下限 (これより小さい画素が 1 つでもあれば拒否する)。
+// 値の根拠は docs/math-transition-p33b.md (P3-3B より前は 255)。
+constexpr int kMathGroupMinimumDestinationAlpha = 1;
+
+// destination の全画素の alpha の最小値。参照・大きさが不正なら -1。
+int mathGroupMinimumDestinationAlpha(const std::uint8_t* destination, int width, int height,
+                                     std::size_t stride);
+
+// destination が対象の下地か (全画素の alpha が kMathGroupMinimumDestinationAlpha 以上)。
 bool mathGroupDestinationEligible(const std::uint8_t* destination, int width, int height,
                                   std::size_t stride);
 
@@ -112,6 +123,13 @@ struct UncheckedMathGroupLayer {
     int roiWidth = 0;
     int roiHeight = 0;
 };
+
+// composeMathGroup と同じ検査をするが、destination の alpha の下限を呼び出し側が決める。
+// 下限の根拠を調べる実験 (検証 harness、診断用の書き出し) だけが使う。対象外なら何も書かない。
+bool composeMathGroupWithAlphaFloor(std::uint8_t* destination, int width, int height,
+                                    std::size_t stride, const MathGroupPlacement* layers,
+                                    std::size_t count, int minimumDestinationAlpha,
+                                    std::string& error, MathGroupStats* stats = nullptr);
 
 // 失敗したら destination は途中まで書かれていることがある。
 bool composeMathGroupUnchecked(std::uint8_t* destination, int width, int height, std::size_t stride,

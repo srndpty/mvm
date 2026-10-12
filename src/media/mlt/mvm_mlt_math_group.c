@@ -36,6 +36,11 @@ typedef struct {
     MvmExportObserver* observer;
     MvmExportMathGroupCompose compose;
     void* compose_opaque;
+    MvmExportMathGroupProbe probe; /* NULL でなければ、合成の直前の下地を見せる */
+    void* probe_opaque;
+    int id;            /* group の番号 (1 始まり) */
+    int probe_only;    /* 非 0 なら合成しない (member は従来の経路に残っている) */
+    int minimum_alpha; /* compose へ渡す下地の alpha の下限。-1 は合成器の契約の値 */
     int fault;
 } MathGroupState;
 
@@ -176,6 +181,17 @@ static int math_group_get_image(mlt_frame a_frame, uint8_t** image, mlt_image_fo
     if (!layers) {
         record_failure(state, position, "数式 group: layer の一覧を確保できません");
         error = mlt_frame_get_image(a_frame, image, format, width, height, writable);
+    } else if (active > 0 && state->probe_only) {
+        /* 測るだけ: member は従来の affine が合成する。affine と同じ形式で下の画像を得て、
+         * 中身を見せ、そのまま返す (書かない)。 */
+        *format = mlt_image_rgba;
+        const long long t0 = mvm_mlt_export_observer_now_ns();
+        error = mlt_frame_get_image(a_frame, image, format, width, height, 1);
+        upstream_ns = mvm_mlt_export_observer_now_ns() - t0;
+        if (!error && image && *image && *format == mlt_image_rgba && *width == state->width &&
+            *height == state->height && state->probe)
+            state->probe(state->probe_opaque, position, state->id, *image, state->width,
+                         state->height, (size_t)state->width * 4U, layers, active);
     } else if (active == 0) {
         /* 見えている member が無い frame は何もしない (形式も要求し直さない)。 */
         const long long t0 = mvm_mlt_export_observer_now_ns();
@@ -196,6 +212,9 @@ static int math_group_get_image(mlt_frame a_frame, uint8_t** image, mlt_image_fo
         } else {
             const size_t stride = (size_t)state->width * 4U;
             const size_t size = stride * (size_t)state->height;
+            if (state->probe)
+                state->probe(state->probe_opaque, position, state->id, *image, state->width,
+                             state->height, stride, layers, active);
             /* 渡された buffer へは書かない。複製へ合成し、成功したときだけ差し替える。 */
             uint8_t* copy = (uint8_t*)mlt_pool_alloc((int)size);
             if (!copy) {
@@ -203,13 +222,13 @@ static int math_group_get_image(mlt_frame a_frame, uint8_t** image, mlt_image_fo
             } else {
                 memcpy(copy, *image, size);
                 if (fault == 4)
-                    copy[3] = 254; /* 下地に不透明でない画素を作る (合成器が拒否する) */
+                    copy[3] = 0; /* 下地に対象外の画素 (alpha 0) を作る (合成器が拒否する) */
                 const long long t2 = mvm_mlt_export_observer_now_ns();
                 copy_ns = t2 - t1;
                 char message[200] = {0};
                 const int rejected =
                     state->compose(state->compose_opaque, copy, state->width, state->height, stride,
-                                   layers, active, message, sizeof(message));
+                                   layers, active, state->minimum_alpha, message, sizeof(message));
                 compose_ns = mvm_mlt_export_observer_now_ns() - t2;
                 if (rejected) {
                     char text[256];
@@ -256,8 +275,8 @@ static mlt_frame math_group_process(mlt_transition transition, mlt_frame a_frame
     return a_frame;
 }
 
-mlt_transition mvm_mlt_math_group_new(const MvmExportClip* const* members, int count, int width,
-                                      int height, MvmExportObserver* observer, char* err,
+mlt_transition mvm_mlt_math_group_new(const MvmExportClip* const* members, int count, int id,
+                                      int width, int height, MvmExportObserver* observer, char* err,
                                       size_t err_size) {
     if (!members || count <= 0 || width < 2 || height < 2 || !observer ||
         !observer->diagnostic_math_group_compose) {
@@ -276,6 +295,13 @@ mlt_transition mvm_mlt_math_group_new(const MvmExportClip* const* members, int c
     state->compose = observer->diagnostic_math_group_compose;
     state->compose_opaque = observer->diagnostic_math_group_opaque;
     state->fault = observer->diagnostic_math_group_fault;
+    state->probe = observer->diagnostic_math_group_probe;
+    state->probe_opaque = observer->diagnostic_math_group_probe_opaque;
+    state->id = id;
+    state->probe_only = observer->diagnostic_math_group == 2;
+    state->minimum_alpha = observer->diagnostic_math_group_alpha_override
+                               ? observer->diagnostic_math_group_alpha_floor
+                               : -1;
     state->members = (MathGroupMember*)calloc((size_t)count, sizeof(MathGroupMember));
     state->count = state->members ? count : 0;
     long long first = 0, last = 0;

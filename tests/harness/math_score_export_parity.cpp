@@ -34,6 +34,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <psapi.h>
 #include <set>
 #include <string>
 #include <tlhelp32.h>
@@ -88,6 +89,10 @@ struct Fixture {
     // Synthetic: 数式を画面中央・等倍・fade なしに置き直す。整数画素の配置になり、既存の
     // MLT oracle (source-over) をそのまま適用できる対照になる。
     bool centered = false;
+    // P3-3B: 0〜255 なら、背景をその alpha で一様な画像に差し替える (RGB は alpha と無関係な模様)。
+    // 256 なら、alpha が左から右へ 0〜255 に変わる画像にする。257 なら、1〜255 の全部の値を画面
+    // 全体へ散らす (どの値も字形の下に来る。0 は含めない)。-1 は元の背景のまま。
+    int backgroundAlpha = -1;
 };
 
 constexpr Fixture kFixtures[] = {
@@ -121,6 +126,16 @@ constexpr Fixture kFixtures[] = {
     {"p2-window-early", FixtureKind::Region, 0, 60, 1200, {0, 30, 59}},
     {"p2-window-middle", FixtureKind::Region, 0, 60, 3400, {0, 30, 59}},
     {"p2-window-late", FixtureKind::Region, 0, 60, 6500, {0, 30, 59}},
+    // --- P3-3B: 下地の alpha を変えた対照。16 層 (端数位置・不透明度の補間・重なり) は
+    // cmp-layers-16 と同じで、背景だけを差し替える。上の fixture は変えない。 ---
+    {"alpha-255", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 255},
+    {"alpha-254", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 254},
+    {"alpha-253", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 253},
+    {"alpha-128", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 128},
+    {"alpha-1", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 1},
+    {"alpha-0", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 0},
+    {"alpha-ramp", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 256},
+    {"alpha-all-nonzero", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, 257},
 };
 
 enum class Inject { None, DropFrame, RejectFrame, OracleShift, Cancel, CompareCorrupt };
@@ -170,6 +185,12 @@ struct Options {
     bool mathGroupMain = false;
     bool compareMathGroup = false;
     int mathGroupFault = 0; // group を使う書き出しへ入れる故障 (対照)
+    // P3-3B。
+    int mathGroupMainMode = 1;    // --math-group の mode (1 合成、2 測るだけ)
+    int compareMathGroupMode = 1; // --compare math-group / math-group-probe
+    int mathGroupRule = 0;        // 0 = 下に従来の layer が重ならない clip だけ、1 = 順序だけを守る
+    int mathGroupAlphaFloor = -1; // 0〜255 なら合成器の契約の下限の代わりに使う (実験)
+    long long mathGroupBudgetMb = 800; // 準備済みの画像の上限 (事前に固定。P3-3A の実測 783 MB)
     // 分け方 (0 は既定値): 変わる区間の上限 / 変わらない区間の下限 / 変わらない区間の上限。
     int splitAnimatedRun = 0, splitStaticRun = 0, splitStaticChunk = 0;
     int capSeconds = 240;  // 書き出し全体の診断上限
@@ -1478,6 +1499,294 @@ QString fileSha256(const std::filesystem::path& path) {
     return QString::fromLatin1(hash.result().toHex());
 }
 
+// --- 数式 group の観測 (P3-3A・P3-3B) ---------------------------------------------
+
+long long workingSetBytes(bool peak) {
+    PROCESS_MEMORY_COUNTERS counters;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
+        return 0;
+    return static_cast<long long>(peak ? counters.PeakWorkingSetSize : counters.WorkingSetSize);
+}
+
+// 背景の alpha ごとの集計 (alpha の対照 fixture)。
+struct AlphaTally {
+    long long pixels = 0;           // その alpha の背景の画素 (全 frame の延べ)
+    long long touched = 0;          // MLT の出力が背景と違う画素
+    long long touchedAlphaOnly = 0; // そのうち、alpha が 0 のままで色だけが変わった画素
+    long long mismatching = 0;      // candidate が MLT と違う画素
+};
+
+// group の合成の直前の下地 (group の下の全 layer を重ねた RGBA) の alpha の分布。
+// callback は render worker から並行に呼ばれる。集計は group ごとに全部の呼び出しを足し、
+// 呼び出しごとの記録は上限までにする (超えたら truncated を立てる)。
+struct GroupProbe {
+    static constexpr int kAssignmentCapacity = 65536;
+    static constexpr int kSampleLimit = 256;
+
+    struct PerGroup {
+        long long calls = 0;
+        long long callsBelowOpaque = 0;          // 最小の alpha が 255 未満だった呼び出し
+        long long callsFootprintBelowOpaque = 0; // 字形の範囲の中に 255 未満の画素があった呼び出し
+        int minimumAlpha = 255;
+        int minimumFootprintAlpha = 255;
+        std::int64_t firstFrame = -1, lastFrame = -1;
+        std::array<long long, 256> full{};      // 全画面
+        std::array<long long, 256> footprint{}; // その frame で見えている member の字形の範囲
+    };
+
+    std::mutex mutex;
+    std::map<int, PerGroup> groups;
+    QJsonArray samples;
+    long long calls = 0;
+    std::vector<int> assignment; // MLT の層が書く (clip ごと)
+
+    static QJsonObject histogramJson(const std::array<long long, 256>& histogram) {
+        long long lower = 0, total = 0;
+        QJsonObject values; // 0 でない値だけ
+        int minimum = 255, maximum = 0;
+        for (int alpha = 0; alpha < 256; ++alpha) {
+            const auto count = histogram[static_cast<std::size_t>(alpha)];
+            if (count == 0)
+                continue;
+            total += count;
+            minimum = std::min(minimum, alpha);
+            maximum = std::max(maximum, alpha);
+            if (alpha < 253)
+                lower += count;
+            values.insert(QString::number(alpha), static_cast<qint64>(count));
+        }
+        return QJsonObject{{QStringLiteral("pixels"), static_cast<qint64>(total)},
+                           {QStringLiteral("minimum"), total > 0 ? minimum : -1},
+                           {QStringLiteral("maximum"), total > 0 ? maximum : -1},
+                           {QStringLiteral("alpha_255"), static_cast<qint64>(histogram[255])},
+                           {QStringLiteral("alpha_254"), static_cast<qint64>(histogram[254])},
+                           {QStringLiteral("alpha_253"), static_cast<qint64>(histogram[253])},
+                           {QStringLiteral("alpha_below_253"), static_cast<qint64>(lower)},
+                           {QStringLiteral("histogram"), values}};
+    }
+
+    QJsonObject toJson() {
+        std::lock_guard lock(mutex);
+        std::array<long long, 256> full{}, footprint{};
+        QJsonArray perGroup;
+        long long below = 0, footprintBelow = 0;
+        for (const auto& [id, group] : groups) {
+            for (std::size_t alpha = 0; alpha < 256; ++alpha) {
+                full[alpha] += group.full[alpha];
+                footprint[alpha] += group.footprint[alpha];
+            }
+            below += group.callsBelowOpaque;
+            footprintBelow += group.callsFootprintBelowOpaque;
+            perGroup.append(QJsonObject{
+                {QStringLiteral("group"), id},
+                {QStringLiteral("calls"), static_cast<qint64>(group.calls)},
+                {QStringLiteral("first_frame"), static_cast<qint64>(group.firstFrame)},
+                {QStringLiteral("last_frame"), static_cast<qint64>(group.lastFrame)},
+                {QStringLiteral("minimum_alpha"), group.minimumAlpha},
+                {QStringLiteral("minimum_alpha_in_glyph_roi"), group.minimumFootprintAlpha},
+                {QStringLiteral("calls_with_alpha_below_255"),
+                 static_cast<qint64>(group.callsBelowOpaque)},
+                {QStringLiteral("calls_with_alpha_below_255_in_glyph_roi"),
+                 static_cast<qint64>(group.callsFootprintBelowOpaque)},
+                {QStringLiteral("full_frame"), histogramJson(group.full)},
+                {QStringLiteral("glyph_roi"), histogramJson(group.footprint)}});
+        }
+        return QJsonObject{
+            {QStringLiteral("calls"), static_cast<qint64>(calls)},
+            {QStringLiteral("calls_with_alpha_below_255"), static_cast<qint64>(below)},
+            {QStringLiteral("calls_with_alpha_below_255_in_glyph_roi"),
+             static_cast<qint64>(footprintBelow)},
+            {QStringLiteral("full_frame"), histogramJson(full)},
+            {QStringLiteral("glyph_roi"), histogramJson(footprint)},
+            {QStringLiteral("groups"), perGroup},
+            {QStringLiteral("samples"), samples},
+            {QStringLiteral("samples_limit"), kSampleLimit},
+            {QStringLiteral("samples_truncated"), calls > samples.size()}};
+    }
+};
+
+void groupProbeCallback(void* opaque, long long frame, int group, const unsigned char* rgba,
+                        int width, int height, std::size_t stride,
+                        const MvmExportMathGroupLayer* layers, int count) {
+    auto* probe = static_cast<GroupProbe*>(opaque);
+    std::array<long long, 256> full{}, footprint{};
+    // 字形の範囲: member ごとに、準備済みの画像の範囲を置く位置へずらし、補間の分だけ 1
+    // 画素広げる。
+    std::vector<std::uint8_t> mask(static_cast<std::size_t>(width) *
+                                   static_cast<std::size_t>(height));
+    for (int index = 0; index < count; ++index) {
+        const auto* raster =
+            static_cast<const mvm::math::PreparedMathRaster*>(layers[index].raster);
+        if (!raster || raster->roiWidth() <= 0)
+            continue;
+        const int left =
+            std::max(0, static_cast<int>(std::floor(raster->roiX() + layers[index].rect_x)) - 1);
+        const int top =
+            std::max(0, static_cast<int>(std::floor(raster->roiY() + layers[index].rect_y)) - 1);
+        const int right =
+            std::min(width, static_cast<int>(std::ceil(raster->roiX() + raster->roiWidth() +
+                                                       layers[index].rect_x)) +
+                                1);
+        const int bottom =
+            std::min(height, static_cast<int>(std::ceil(raster->roiY() + raster->roiHeight() +
+                                                        layers[index].rect_y)) +
+                                 1);
+        for (int row = top; row < bottom; ++row)
+            std::memset(mask.data() +
+                            static_cast<std::size_t>(row) * static_cast<std::size_t>(width) +
+                            static_cast<std::size_t>(left),
+                        1, static_cast<std::size_t>(std::max(0, right - left)));
+    }
+    for (int row = 0; row < height; ++row) {
+        const auto* line = rgba + static_cast<std::size_t>(row) * stride;
+        const auto* masked =
+            mask.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(width);
+        for (int column = 0; column < width; ++column) {
+            const auto alpha = line[static_cast<std::size_t>(column) * 4U + 3U];
+            ++full[alpha];
+            footprint[alpha] += masked[column];
+        }
+    }
+    int minimum = 255, footprintMinimum = 255;
+    long long footprintPixels = 0;
+    for (int alpha = 255; alpha >= 0; --alpha) {
+        if (full[static_cast<std::size_t>(alpha)] != 0)
+            minimum = alpha;
+        if (footprint[static_cast<std::size_t>(alpha)] != 0)
+            footprintMinimum = alpha;
+        footprintPixels += footprint[static_cast<std::size_t>(alpha)];
+    }
+    std::lock_guard lock(probe->mutex);
+    ++probe->calls;
+    auto& entry = probe->groups[group];
+    ++entry.calls;
+    entry.callsBelowOpaque += minimum < 255;
+    entry.callsFootprintBelowOpaque += footprintMinimum < 255;
+    entry.minimumAlpha = std::min(entry.minimumAlpha, minimum);
+    entry.minimumFootprintAlpha = std::min(entry.minimumFootprintAlpha, footprintMinimum);
+    entry.firstFrame =
+        entry.firstFrame < 0 ? frame : std::min<std::int64_t>(entry.firstFrame, frame);
+    entry.lastFrame = std::max<std::int64_t>(entry.lastFrame, frame);
+    for (std::size_t alpha = 0; alpha < 256; ++alpha) {
+        entry.full[alpha] += full[alpha];
+        entry.footprint[alpha] += footprint[alpha];
+    }
+    if (probe->samples.size() < GroupProbe::kSampleLimit) {
+        long long lower = 0, footprintLower = 0;
+        for (std::size_t alpha = 0; alpha < 253; ++alpha) {
+            lower += full[alpha];
+            footprintLower += footprint[alpha];
+        }
+        probe->samples.append(QJsonObject{
+            {QStringLiteral("frame"), static_cast<qint64>(frame)},
+            {QStringLiteral("group"), group},
+            {QStringLiteral("visible_members"), count},
+            {QStringLiteral("minimum_alpha"), minimum},
+            {QStringLiteral("alpha_255"), static_cast<qint64>(full[255])},
+            {QStringLiteral("alpha_254"), static_cast<qint64>(full[254])},
+            {QStringLiteral("alpha_253"), static_cast<qint64>(full[253])},
+            {QStringLiteral("alpha_below_253"), lower},
+            {QStringLiteral("glyph_roi_pixels"), footprintPixels},
+            {QStringLiteral("glyph_roi_minimum_alpha"), footprintMinimum},
+            {QStringLiteral("glyph_roi_alpha_254"), static_cast<qint64>(footprint[254])},
+            {QStringLiteral("glyph_roi_alpha_253"), static_cast<qint64>(footprint[253])},
+            {QStringLiteral("glyph_roi_alpha_below_253"), footprintLower}});
+    }
+}
+
+QJsonObject groupJson(const MvmExportObserver& observed, long long live, long long active) {
+    const auto frames = observed.math_group_frames;
+    const auto per = [&](long long ns) {
+        return frames > 0 ? static_cast<double>(ns) / 1e6 / static_cast<double>(frames) : 0.0;
+    };
+    return QJsonObject{
+        {QStringLiteral("enabled"), observed.diagnostic_math_group != 0},
+        {QStringLiteral("mode"), observed.diagnostic_math_group},
+        {QStringLiteral("fault"), observed.diagnostic_math_group_fault},
+        {QStringLiteral("transitions"), static_cast<qint64>(observed.math_group_transitions)},
+        {QStringLiteral("grouped_clips"), static_cast<qint64>(observed.math_group_clips)},
+        {QStringLiteral("retained_clips"), static_cast<qint64>(observed.math_group_retained_clips)},
+        {QStringLiteral("retained_geometry"),
+         static_cast<qint64>(observed.math_group_retained_geometry)},
+        {QStringLiteral("retained_above_retained_layer"),
+         static_cast<qint64>(observed.math_group_retained_above)},
+        {QStringLiteral("retained_first_reason"),
+         QString::fromLatin1(observed.math_group_retained_reason)},
+        {QStringLiteral("affine_transitions"), static_cast<qint64>(observed.overlay_transitions)},
+        {QStringLiteral("callbacks"), static_cast<qint64>(observed.math_group_callbacks)},
+        {QStringLiteral("composed_frames"), static_cast<qint64>(frames)},
+        {QStringLiteral("composed_layer_frames"),
+         static_cast<qint64>(observed.math_group_layer_frames)},
+        {QStringLiteral("raster_bytes"), static_cast<qint64>(observed.math_group_raster_bytes)},
+        {QStringLiteral("prepare_ms"), static_cast<double>(observed.math_group_prepare_ns) / 1e6},
+        {QStringLiteral("working_set_after_prepare_mb"),
+         static_cast<double>(observed.math_group_working_set_at_export) / 1048576.0},
+        {QStringLiteral("copy_ms_per_frame"), per(observed.math_group_copy_ns)},
+        {QStringLiteral("compose_ms_per_frame"), per(observed.math_group_compose_ns)},
+        {QStringLiteral("callback_ms_per_frame"), per(observed.math_group_callback_ns)},
+        {QStringLiteral("upstream_ms_per_frame"), per(observed.math_group_upstream_ns)},
+        {QStringLiteral("callback_seconds_total"),
+         static_cast<double>(observed.math_group_callback_ns) / 1e9},
+        {QStringLiteral("errors"), static_cast<qint64>(observed.math_group_errors)},
+        {QStringLiteral("error"), QString::fromUtf8(observed.math_group_error)},
+        {QStringLiteral("error_frame"), static_cast<qint64>(observed.math_group_error_frame)},
+        {QStringLiteral("live_after_export"), live},
+        {QStringLiteral("active_after_export"), active}};
+}
+
+// MLT の層が clip ごとに書いた結果を、書き出しの計画 (同じ並び) の clip と対応づける。
+QJsonObject assignmentJson(const GroupProbe& probe, const mvm::app::TimelineExportPlan& plan) {
+    constexpr int kListLimit = 200;
+    QJsonArray retained, groups, conventional;
+    std::map<int, QJsonObject> perGroup;
+    std::map<int, int> members;
+    long long grouped = 0, geometry = 0, above = 0, undeclared = 0;
+    for (std::size_t index = 0;
+         plan.success && index < plan.clips.size() && index < probe.assignment.size(); ++index) {
+        const auto& clip = plan.clips[index];
+        const int code = probe.assignment[index];
+        const QJsonObject described{
+            {QStringLiteral("index"), static_cast<int>(index)},
+            {QStringLiteral("name"), QString::fromStdString(clip.renderClip.name)},
+            {QStringLiteral("track"), clip.videoTrackIndex},
+            {QStringLiteral("start"), static_cast<qint64>(clip.timelineStartFrame)},
+            {QStringLiteral("frames"), static_cast<qint64>(clip.timelineDurationFrames)}};
+        if (code > 0) {
+            ++grouped;
+            if (++members[code] == 1)
+                perGroup[code] = QJsonObject{{QStringLiteral("group"), code},
+                                             {QStringLiteral("first_member"), described}};
+            continue;
+        }
+        if (clip.audio || clip.videoTrackIndex <= 0)
+            continue;
+        auto entry = described;
+        entry.insert(QStringLiteral("reason"), code == -1   ? QStringLiteral("geometry")
+                                               : code == -2 ? QStringLiteral("above-retained-layer")
+                                                            : QStringLiteral("not-declared"));
+        geometry += code == -1;
+        above += code == -2;
+        undeclared += code == 0;
+        // 従来の経路に残る上位 track の clip (group の下地を作りうる layer)。
+        if (conventional.size() < kListLimit)
+            conventional.append(entry);
+    }
+    for (auto& [id, entry] : perGroup) {
+        entry.insert(QStringLiteral("members"), members[id]);
+        groups.append(entry);
+    }
+    return QJsonObject{{QStringLiteral("plan_available"), plan.success},
+                       {QStringLiteral("grouped_clips"), grouped},
+                       {QStringLiteral("groups"), groups},
+                       {QStringLiteral("conventional_geometry"), geometry},
+                       {QStringLiteral("conventional_above_retained_layer"), above},
+                       {QStringLiteral("conventional_not_declared"), undeclared},
+                       {QStringLiteral("conventional_layers"), conventional},
+                       {QStringLiteral("conventional_layers_limit"), kListLimit},
+                       {QStringLiteral("conventional_layers_truncated"),
+                        geometry + above + undeclared > conventional.size()}};
+}
+
 const char* const kPointNames[MVM_EXPORT_OBSERVE_POINT_COUNT] = {
     "producer_frame_request", "producer_frame_return", "image_request",
     "image_return",           "validator_entry",       "validator_return",
@@ -1567,7 +1876,18 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (key == "--split-fault") {
             options.splitFault = std::atoi(value.c_str());
         } else if (key == "--math-group") {
-            options.mathGroupMain = value == "1";
+            options.mathGroupMain = value == "1" || value == "probe";
+            options.mathGroupMainMode = value == "probe" ? 2 : 1;
+        } else if (key == "--math-group-rule") {
+            options.mathGroupRule = std::atoi(value.c_str());
+            if (options.mathGroupRule != 0 && options.mathGroupRule != 1)
+                return false;
+        } else if (key == "--math-group-alpha-floor") {
+            options.mathGroupAlphaFloor = std::atoi(value.c_str());
+            if (options.mathGroupAlphaFloor < 0 || options.mathGroupAlphaFloor > 255)
+                return false;
+        } else if (key == "--math-group-budget-mb") {
+            options.mathGroupBudgetMb = std::atoll(value.c_str());
         } else if (key == "--math-group-fault") {
             options.mathGroupFault = std::atoi(value.c_str());
         } else if (key == "--compare") {
@@ -1575,7 +1895,10 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 options.compareSplit = true;
             else if (value == "math-group")
                 options.compareMathGroup = true;
-            else if (value == "bounding-box")
+            else if (value == "math-group-probe") {
+                options.compareMathGroup = true;
+                options.compareMathGroupMode = 2;
+            } else if (value == "bounding-box")
                 options.compare = mvm::app::MathLayerStaging::BoundingBox;
             else if (value == "anchored-box")
                 options.compare = mvm::app::MathLayerStaging::AnchoredBox;
@@ -1686,6 +2009,35 @@ int main(int argc, char** argv) {
                      static_cast<long long>(fixture.frames));
         return kExitProtocol;
     }
+    // P3-3B: 下地の alpha の対照。背景を、alpha を指定した画像に差し替える。
+    std::vector<std::uint8_t> alphaBackground;
+    if (fixture.backgroundAlpha >= 0) {
+        const int imageWidth = project.outputWidth, imageHeight = project.outputHeight;
+        QImage image(imageWidth, imageHeight, QImage::Format_RGBA8888);
+        for (int row = 0; row < imageHeight; ++row) {
+            auto* line = image.scanLine(row);
+            for (int column = 0; column < imageWidth; ++column) {
+                // RGB は alpha と無関係に決める (0 も 255 も現れる)。
+                line[column * 4] = static_cast<std::uint8_t>((column * 7 + row * 3) & 255);
+                line[column * 4 + 1] = static_cast<std::uint8_t>((column ^ row) & 255);
+                line[column * 4 + 2] = static_cast<std::uint8_t>((row * 5 + 40) & 255);
+                const int alphaValue = fixture.backgroundAlpha == 256 ? column * 256 / imageWidth
+                                       : fixture.backgroundAlpha == 257
+                                           ? 1 + (column * 37 + row * 101) % 255
+                                           : fixture.backgroundAlpha;
+                line[column * 4 + 3] = static_cast<std::uint8_t>(alphaValue);
+            }
+        }
+        const auto backgroundPath =
+            options.output / (std::string(fixture.name) + "-background.png");
+        if (!image.save(toQString(backgroundPath), "PNG")) {
+            std::fprintf(stderr, "背景の画像を書けません\n");
+            return kExitProtocol;
+        }
+        project.timelineClips.front().mediaPath = backgroundPath;
+        alphaBackground = imageBytes(image);
+    }
+    const int admissibleAlpha = fixture.backgroundAlpha >= 0 ? 0 : kAdmissibleAlpha;
     if (options.rangeCount > 0 && options.rangeFirst + options.rangeCount > fixture.frames) {
         std::fprintf(stderr, "--range が fixture の尺を超えています\n");
         return kExitProtocol;
@@ -1718,10 +2070,27 @@ int main(int argc, char** argv) {
         target.diagnostic_split_animated_run = options.splitAnimatedRun;
         target.diagnostic_split_static_run = options.splitStaticRun;
         target.diagnostic_split_static_chunk = options.splitStaticChunk;
-        target.diagnostic_math_group = options.mathGroupMain ? 1 : 0;
+        target.diagnostic_math_group = options.mathGroupMain ? options.mathGroupMainMode : 0;
         target.diagnostic_math_group_fault = options.mathGroupMain ? options.mathGroupFault : 0;
+        target.diagnostic_math_group_rule = options.mathGroupRule;
+        target.diagnostic_math_group_alpha_override = options.mathGroupAlphaFloor >= 0 ? 1 : 0;
+        target.diagnostic_math_group_alpha_floor =
+            options.mathGroupAlphaFloor >= 0 ? options.mathGroupAlphaFloor : 0;
+        target.diagnostic_math_group_raster_budget_bytes = options.mathGroupBudgetMb * 1024 * 1024;
+    };
+    // 数式 group の下地の観測と clip ごとの結果 (group を使う書き出しごとに 1 組)。
+    GroupProbe mainProbe, candidateProbe;
+    const auto attachProbe = [](MvmExportObserver& target, GroupProbe& probe) {
+        probe.assignment.assign(GroupProbe::kAssignmentCapacity, 0);
+        target.diagnostic_math_group_probe = &groupProbeCallback;
+        target.diagnostic_math_group_probe_opaque = &probe;
+        target.diagnostic_math_group_assignment = probe.assignment.data();
+        target.diagnostic_math_group_assignment_capacity = GroupProbe::kAssignmentCapacity;
     };
     applyDiagnosticInputs(observer);
+    if (options.mathGroupMain)
+        attachProbe(observer, mainProbe);
+    long long mainWorkingSetBeforePrepare = 0;
     std::mutex stageMutex;
     std::vector<std::pair<std::string, long long>> stages;
     std::map<std::string, std::filesystem::path> artifacts;
@@ -1740,6 +2109,7 @@ int main(int argc, char** argv) {
         bool split = false;
         bool mathGroup = false;
         long long groupLive = -1, groupActive = -1; // 書き出しの後に残っていた数 (0 が正)
+        long long workingSetBeforePrepare = 0;      // staging の後、画像の準備の前
         MvmExportObserver observer{};
         std::function<bool(std::int64_t, const std::uint8_t*, int, int)> validator;
         mvm::app::TimelineExportResult result;
@@ -1768,9 +2138,14 @@ int main(int argc, char** argv) {
                     extra->observer.diagnostic_split_fault = options.splitFault;
                 }
                 if (extra->mathGroup) {
-                    extra->observer.diagnostic_math_group = 1;
+                    extra->observer.diagnostic_math_group = options.compareMathGroupMode;
                     extra->observer.diagnostic_math_group_fault = options.mathGroupFault;
+                    attachProbe(extra->observer, candidateProbe);
                 }
+                input.stageObserver = [&](const char* name) {
+                    if (std::string(name) == "staging-end")
+                        extra->workingSetBeforePrepare = workingSetBytes(false);
+                };
                 input.exportObserver = &extra->observer;
                 input.mathLayerStaging = extra->staging;
                 input.mathStagingObserver = [&](const std::string&, int, int, int regionWidth,
@@ -1796,6 +2171,8 @@ int main(int argc, char** argv) {
             burnSubtitles = input.burnSubtitles;
             input.exportObserver = &observer;
             input.stageObserver = [&](const char* name) {
+                if (std::string(name) == "staging-end")
+                    mainWorkingSetBeforePrepare = workingSetBytes(false);
                 std::lock_guard lock(stageMutex);
                 stages.emplace_back(name, mvm_mlt_export_observer_now_ns());
             };
@@ -2042,6 +2419,8 @@ int main(int argc, char** argv) {
     std::mutex compareMutex;
     std::set<std::int64_t> candidateSeen, repeatSeen;
     std::map<std::int64_t, FrameDifference> candidateDifferences;
+    std::array<AlphaTally, 256> alphaTallies{};
+    QJsonObject alphaExamples[256];
     long long compareUnexpected = 0, repeatMismatches = 0;
     bool compareRan = false;
     if (comparing && exported.success && watchdog == "none") {
@@ -2074,6 +2453,55 @@ int main(int argc, char** argv) {
             digestFrame(rgba, frameBytes, hash, minAlpha);
             const bool corrupt = options.inject == Inject::CompareCorrupt && frame == 1;
             FrameDifference difference;
+            if (!alphaBackground.empty() && alphaBackground.size() == frameBytes) {
+                // 背景の alpha ごとに、数式が触れた画素と、candidate が baseline
+                // と違う画素を数える。
+                QByteArray packed;
+                {
+                    std::lock_guard lock(observation.mutex);
+                    packed = baselineFrames.at(frame);
+                }
+                const QByteArray baseline = qUncompress(packed);
+                if (static_cast<std::size_t>(baseline.size()) == frameBytes) {
+                    const auto* base = reinterpret_cast<const std::uint8_t*>(baseline.constData());
+                    std::array<AlphaTally, 256> local{};
+                    QJsonObject example[256];
+                    for (std::size_t offset = 0; offset < frameBytes; offset += 4) {
+                        const auto* background = alphaBackground.data() + offset;
+                        auto& tally = local[background[3]];
+                        const bool touched = std::memcmp(base + offset, background, 4) != 0;
+                        ++tally.pixels;
+                        tally.touched += touched;
+                        // MLT が、数式の画素の無い所で背景を書き換えた (alpha 0 の画素など)。
+                        tally.touchedAlphaOnly +=
+                            touched && base[offset + 3] == background[3] && background[3] == 0;
+                        if (std::memcmp(base + offset, rgba + offset, 4) == 0)
+                            continue;
+                        ++tally.mismatching;
+                        if (example[background[3]].isEmpty())
+                            example[background[3]] = QJsonObject{
+                                {QStringLiteral("frame"), static_cast<qint64>(frame)},
+                                {QStringLiteral("x"),
+                                 static_cast<int>((offset / 4U) % static_cast<std::size_t>(width))},
+                                {QStringLiteral("y"),
+                                 static_cast<int>((offset / 4U) / static_cast<std::size_t>(width))},
+                                {QStringLiteral("background"), rgbaArray(background)},
+                                {QStringLiteral("mlt"), rgbaArray(base + offset)},
+                                {QStringLiteral("candidate"), rgbaArray(rgba + offset)}};
+                    }
+                    std::lock_guard lock(compareMutex);
+                    for (int alpha = 0; alpha < 256; ++alpha) {
+                        auto& total = alphaTallies[static_cast<std::size_t>(alpha)];
+                        const auto& part = local[static_cast<std::size_t>(alpha)];
+                        total.pixels += part.pixels;
+                        total.touched += part.touched;
+                        total.touchedAlphaOnly += part.touchedAlphaOnly;
+                        total.mismatching += part.mismatching;
+                        if (alphaExamples[alpha].isEmpty() && !example[alpha].isEmpty())
+                            alphaExamples[alpha] = example[alpha];
+                    }
+                }
+            }
             if (hash != *expected || corrupt) {
                 QByteArray packed;
                 {
@@ -2180,7 +2608,7 @@ int main(int argc, char** argv) {
         if (found->second.calls > 1 && repeated.size() < 64)
             repeated.append(QJsonObject{{QStringLiteral("frame"), static_cast<qint64>(frame)},
                                         {QStringLiteral("calls"), found->second.calls}});
-        if (found->second.minAlpha < kAdmissibleAlpha && transparent.size() < 64)
+        if (found->second.minAlpha < admissibleAlpha && transparent.size() < 64)
             transparent.append(static_cast<qint64>(frame));
         if (found->second.repeatDiffers && unstable.size() < 64)
             unstable.append(static_cast<qint64>(frame));
@@ -2194,7 +2622,7 @@ int main(int argc, char** argv) {
             continue;
         }
         repeatedCount += found->second.calls > 1;
-        transparentCount += found->second.minAlpha < kAdmissibleAlpha;
+        transparentCount += found->second.minAlpha < admissibleAlpha;
         lowestAlpha = std::min(lowestAlpha, found->second.minAlpha);
         unstableCount += found->second.repeatDiffers;
     }
@@ -2217,7 +2645,7 @@ int main(int argc, char** argv) {
                      .arg(missingCount));
         if (transparentCount != 0)
             fail(QStringLiteral("pre-YUV の alpha が %1 未満の frame が %2 あります (最小 %3)")
-                     .arg(kAdmissibleAlpha)
+                     .arg(admissibleAlpha)
                      .arg(transparentCount)
                      .arg(lowestAlpha));
         if (unstableCount != 0)
@@ -2253,7 +2681,7 @@ int main(int argc, char** argv) {
         const auto referencePlan = mvm::app::mapTimelineExportPlan(project, planRequest);
         gPlan = referencePlan.success ? &referencePlan : nullptr;
         for (const auto frame : fixture.representative) {
-            if (rangeMode)
+            if (rangeMode || fixture.backgroundAlpha >= 0)
                 break;
             QJsonObject entry{{QStringLiteral("frame"), static_cast<qint64>(frame)}};
             const auto sample = observation.samples.find(frame);
@@ -2307,7 +2735,7 @@ int main(int argc, char** argv) {
             }
             oracleFrames.append(entry);
         }
-        if (rangeMode) {
+        if (rangeMode || fixture.backgroundAlpha >= 0) {
         } else if (oracleApplicable == 0)
             fail(QStringLiteral("独立期待値と比較できた代表 frame がありません"));
         else if (maxConcurrentMath > 0 && oracleInked == 0)
@@ -2511,21 +2939,54 @@ int main(int argc, char** argv) {
     report.insert(QStringLiteral("format"), QStringLiteral("mvm-math-score-export-diagnosis/1"));
     report.insert(QStringLiteral("fixture"), QString::fromLatin1(fixture.name));
     report.insert(QStringLiteral("inject"), static_cast<int>(options.inject));
-    report.insert(
-        QStringLiteral("math_group_main"),
-        QJsonObject{
-            {QStringLiteral("enabled"), options.mathGroupMain},
-            {QStringLiteral("fault"), options.mathGroupMain ? options.mathGroupFault : 0},
-            {QStringLiteral("transitions"), static_cast<qint64>(observer.math_group_transitions)},
-            {QStringLiteral("grouped_clips"), static_cast<qint64>(observer.math_group_clips)},
-            {QStringLiteral("retained_clips"),
-             static_cast<qint64>(observer.math_group_retained_clips)},
-            {QStringLiteral("composed_frames"), static_cast<qint64>(observer.math_group_frames)},
-            {QStringLiteral("callbacks"), static_cast<qint64>(observer.math_group_callbacks)},
-            {QStringLiteral("errors"), static_cast<qint64>(observer.math_group_errors)},
-            {QStringLiteral("error"), QString::fromUtf8(observer.math_group_error)},
-            {QStringLiteral("live_after_export"), mainGroupLive},
-            {QStringLiteral("active_after_export"), mainGroupActive}});
+    {
+        // 数式 group (主の書き出し)。clip ごとの結果の対応づけに、書き出しと同じ計画を使う。
+        mvm::app::TimelineExportRequest groupPlanRequest;
+        groupPlanRequest.width = width;
+        groupPlanRequest.height = height;
+        groupPlanRequest.fpsNum = static_cast<int>(project.timelineFpsNum);
+        groupPlanRequest.fpsDen = static_cast<int>(project.timelineFpsDen);
+        const auto groupPlan = mvm::app::mapTimelineExportPlan(project, groupPlanRequest);
+        auto main = groupJson(observer, mainGroupLive, mainGroupActive);
+        main.insert(QStringLiteral("enabled"), options.mathGroupMain);
+        main.insert(QStringLiteral("rule"), options.mathGroupRule);
+        main.insert(QStringLiteral("alpha_floor_override"), options.mathGroupAlphaFloor);
+        main.insert(QStringLiteral("budget_megabytes"),
+                    static_cast<qint64>(options.mathGroupBudgetMb));
+        main.insert(QStringLiteral("working_set_before_prepare_mb"),
+                    static_cast<double>(mainWorkingSetBeforePrepare) / 1048576.0);
+        if (options.mathGroupMain) {
+            main.insert(QStringLiteral("destination"), mainProbe.toJson());
+            main.insert(QStringLiteral("assignment"), assignmentJson(mainProbe, groupPlan));
+        }
+        report.insert(QStringLiteral("math_group_main"), main);
+        if (options.compareMathGroup) {
+            report.insert(QStringLiteral("math_group_candidate_destination"),
+                          candidateProbe.toJson());
+            report.insert(QStringLiteral("math_group_candidate_assignment"),
+                          assignmentJson(candidateProbe, groupPlan));
+        }
+        {
+            const long long renderBegin = observer.stage_ns[MVM_EXPORT_STAGE_RENDER];
+            const long long renderEnd = observer.stage_ns[MVM_EXPORT_STAGE_CONSUMER_CLOSE];
+            report.insert(
+                QStringLiteral("main_render_seconds"),
+                renderEnd > renderBegin ? static_cast<double>(renderEnd - renderBegin) / 1e9 : 0.0);
+            const auto count = [&](int point) {
+                return static_cast<qint64>(observer.points[point].count);
+            };
+            report.insert(QStringLiteral("main_encoder_submitted"),
+                          count(MVM_EXPORT_OBSERVE_ENCODER_SUBMIT));
+            report.insert(QStringLiteral("main_encoded_packets"),
+                          count(MVM_EXPORT_OBSERVE_ENCODED_PACKET));
+            report.insert(QStringLiteral("main_muxed_packets"),
+                          count(MVM_EXPORT_OBSERVE_MUXED_PACKET));
+        }
+        report.insert(QStringLiteral("process_peak_working_set_mb"),
+                      static_cast<double>(workingSetBytes(true)) / 1048576.0);
+        report.insert(QStringLiteral("process_working_set_mb"),
+                      static_cast<double>(workingSetBytes(false)) / 1048576.0);
+    }
     {
         // 空でなければ固定 fixture そのものではない (診断用に layer を絞っている)。
         QJsonArray selected;
@@ -2670,7 +3131,8 @@ int main(int argc, char** argv) {
     report.insert(QStringLiteral("pre_yuv_repeated_count"), repeatedCount);
     report.insert(QStringLiteral("pre_yuv_repeated_first"), repeated);
     report.insert(QStringLiteral("pre_yuv_outside_domain"), outside);
-    report.insert(QStringLiteral("pre_yuv_admissible_alpha"), kAdmissibleAlpha);
+    report.insert(QStringLiteral("pre_yuv_admissible_alpha"), admissibleAlpha);
+    report.insert(QStringLiteral("background_alpha"), fixture.backgroundAlpha);
     report.insert(QStringLiteral("pre_yuv_lowest_alpha"), lowestAlpha);
     report.insert(QStringLiteral("pre_yuv_low_alpha_count"), transparentCount);
     report.insert(QStringLiteral("pre_yuv_low_alpha_first"), transparent);
@@ -2751,45 +3213,7 @@ int main(int argc, char** argv) {
                        options.compareMathGroup ? options.mathGroupFault : options.splitFault);
         const auto groupObject = [&](const MvmExportObserver& observed, long long live,
                                      long long active) {
-            const auto frames = observed.math_group_frames;
-            const auto per = [&](long long ns) {
-                return frames > 0 ? static_cast<double>(ns) / 1e6 / static_cast<double>(frames)
-                                  : 0.0;
-            };
-            return QJsonObject{
-                {QStringLiteral("enabled"), observed.diagnostic_math_group != 0},
-                {QStringLiteral("fault"), observed.diagnostic_math_group_fault},
-                {QStringLiteral("transitions"),
-                 static_cast<qint64>(observed.math_group_transitions)},
-                {QStringLiteral("grouped_clips"), static_cast<qint64>(observed.math_group_clips)},
-                {QStringLiteral("retained_clips"),
-                 static_cast<qint64>(observed.math_group_retained_clips)},
-                {QStringLiteral("retained_geometry"),
-                 static_cast<qint64>(observed.math_group_retained_geometry)},
-                {QStringLiteral("retained_above_retained_layer"),
-                 static_cast<qint64>(observed.math_group_retained_above)},
-                {QStringLiteral("retained_first_reason"),
-                 QString::fromLatin1(observed.math_group_retained_reason)},
-                {QStringLiteral("affine_transitions"),
-                 static_cast<qint64>(observed.overlay_transitions)},
-                {QStringLiteral("callbacks"), static_cast<qint64>(observed.math_group_callbacks)},
-                {QStringLiteral("composed_frames"), static_cast<qint64>(frames)},
-                {QStringLiteral("composed_layer_frames"),
-                 static_cast<qint64>(observed.math_group_layer_frames)},
-                {QStringLiteral("raster_bytes"),
-                 static_cast<qint64>(observed.math_group_raster_bytes)},
-                {QStringLiteral("prepare_ms"),
-                 static_cast<double>(observed.math_group_prepare_ns) / 1e6},
-                {QStringLiteral("copy_ms_per_frame"), per(observed.math_group_copy_ns)},
-                {QStringLiteral("compose_ms_per_frame"), per(observed.math_group_compose_ns)},
-                {QStringLiteral("callback_ms_per_frame"), per(observed.math_group_callback_ns)},
-                {QStringLiteral("upstream_ms_per_frame"), per(observed.math_group_upstream_ns)},
-                {QStringLiteral("errors"), static_cast<qint64>(observed.math_group_errors)},
-                {QStringLiteral("error"), QString::fromUtf8(observed.math_group_error)},
-                {QStringLiteral("error_frame"),
-                 static_cast<qint64>(observed.math_group_error_frame)},
-                {QStringLiteral("live_after_export"), live},
-                {QStringLiteral("active_after_export"), active}};
+            return groupJson(observed, live, active);
         };
         compare.insert(QStringLiteral("baseline_group"),
                        groupObject(observer, mainGroupLive, mainGroupActive));
@@ -2798,6 +3222,32 @@ int main(int argc, char** argv) {
             groupObject(candidateRun.observer, candidateRun.groupLive, candidateRun.groupActive));
         compare.insert(QStringLiteral("repeat_group"),
                        groupObject(repeatRun.observer, repeatRun.groupLive, repeatRun.groupActive));
+        compare.insert(QStringLiteral("candidate_mode"), options.compareMathGroupMode);
+        compare.insert(QStringLiteral("candidate_rule"), options.mathGroupRule);
+        compare.insert(QStringLiteral("candidate_alpha_floor_override"),
+                       options.mathGroupAlphaFloor);
+        compare.insert(QStringLiteral("candidate_working_set_before_prepare_mb"),
+                       static_cast<double>(candidateRun.workingSetBeforePrepare) / 1048576.0);
+        if (!alphaBackground.empty()) {
+            // 背景の alpha ごと: 画素の数、MLT が背景から変えた画素、candidate が MLT と違う画素。
+            QJsonArray byAlpha;
+            for (int alpha = 0; alpha < 256; ++alpha) {
+                const auto& tally = alphaTallies[static_cast<std::size_t>(alpha)];
+                if (tally.pixels == 0)
+                    continue;
+                QJsonObject entry{
+                    {QStringLiteral("background_alpha"), alpha},
+                    {QStringLiteral("pixels"), static_cast<qint64>(tally.pixels)},
+                    {QStringLiteral("changed_by_mlt"), static_cast<qint64>(tally.touched)},
+                    {QStringLiteral("changed_by_mlt_keeping_alpha_zero"),
+                     static_cast<qint64>(tally.touchedAlphaOnly)},
+                    {QStringLiteral("mismatching"), static_cast<qint64>(tally.mismatching)}};
+                if (!alphaExamples[alpha].isEmpty())
+                    entry.insert(QStringLiteral("first_mismatch"), alphaExamples[alpha]);
+                byAlpha.append(entry);
+            }
+            compare.insert(QStringLiteral("by_background_alpha"), byAlpha);
+        }
         // candidate の書き出しが失敗したときの理由。画素の不一致による検出と区別する。
         compare.insert(QStringLiteral("candidate_error"),
                        QString::fromStdString(candidateRun.result.error));
@@ -2953,8 +3403,9 @@ int main(int argc, char** argv) {
             repeatRun.groupActive == 0 &&
             (!options.compareMathGroup ||
              (candidateRun.observer.math_group_clips > 0 &&
-              candidateRun.observer.math_group_frames > 0 && observer.math_group_clips == 0 &&
-              repeatRun.observer.math_group_clips == 0));
+              (options.compareMathGroupMode == 2 ? candidateRun.observer.math_group_callbacks > 0
+                                                 : candidateRun.observer.math_group_frames > 0) &&
+              observer.math_group_clips == 0 && repeatRun.observer.math_group_clips == 0));
         compare.insert(QStringLiteral("group_clean"), groupClean);
         const bool comparable =
             compareRan && candidateRun.result.success && repeatRun.result.success &&

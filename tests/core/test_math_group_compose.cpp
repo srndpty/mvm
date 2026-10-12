@@ -275,8 +275,8 @@ int runTests() {
                   "下の alpha が 254 の画素が MLT の観測値と一致する");
         }
     }
-    // 下の alpha 254・255 について、色・texel の alpha・不透明度を総当たりして oracle と比べる。
-    // (254 は MLT が字形の縁で作る alpha。合成の途中の下地として実際に現れる。)
+    // 下の alpha 1〜255 (8 値) について、色・texel の alpha・不透明度を総当たりして oracle
+    // と比べる。 (254 は MLT が字形の縁で作る alpha。合成の途中の下地として実際に現れる。)
     {
         constexpr int sweepWidth = 256;
         const std::uint8_t colors[] = {0, 34, 128, 204, 255};
@@ -291,7 +291,9 @@ int runTests() {
                                          0.5};
         const int rows = static_cast<int>(std::size(colors) * std::size(alphas));
         long long sweepCompared = 0, sweepWrong = 0, sweepOutside = 0;
-        for (const std::uint8_t belowAlpha : {std::uint8_t{254}, std::uint8_t{255}})
+        for (const std::uint8_t belowAlpha :
+             {std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{64}, std::uint8_t{128},
+              std::uint8_t{200}, std::uint8_t{253}, std::uint8_t{254}, std::uint8_t{255}})
             for (const double opacity : sweepOpacities) {
                 Image destination(static_cast<std::size_t>(sweepWidth) * rows * 4);
                 Image raster(destination.size());
@@ -341,11 +343,12 @@ int runTests() {
                 }
             }
         if (sweepWrong != 0)
-            std::fprintf(stderr, "下の alpha 254・255 の総当たり: %lld 画素が oracle と違います\n",
+            std::fprintf(stderr,
+                         "下の alpha 1〜255 (8 値) の総当たり: %lld 画素が oracle と違います\n",
                          sweepWrong);
-        check(sweepWrong == 0, "下の alpha 254・255 の総当たりで oracle と全 byte 一致する");
+        check(sweepWrong == 0, "下の alpha 1〜255 (8 値) の総当たりで oracle と全 byte 一致する");
         check(sweepCompared > sweepOutside * 4, "総当たりの大半は oracle の定義域の中にある");
-        std::printf("下の alpha 254・255 の総当たりで比べた byte: %lld (oracle の定義域の外で"
+        std::printf("下の alpha 1〜255 (8 値) の総当たりで比べた byte: %lld (oracle の定義域の外で"
                     "比べなかった画素: %lld)\n",
                     sweepCompared, sweepOutside);
         compared += sweepCompared;
@@ -428,15 +431,48 @@ int runTests() {
               "小さい画像を準備できる");
         rejects(base, {&smallRaster, 0.0, 0.0, 1.0},
                 "出力と大きさの違う画像 (拡縮) を拒否し、何も書かない");
-        // 下地の検査: 透明・半透明の画素が 1 つでもあれば拒否する (MLT と比べていない)。
-        for (const std::uint8_t alpha : {std::uint8_t{0}, std::uint8_t{128}, std::uint8_t{254}}) {
+        // 下地の検査 (P3-3B): alpha 0 の画素が 1 つでもあれば拒否する。MLT は上下とも alpha 0 の
+        // 画素の色を 0 に書き換えるが、この合成器は再現しない。
+        {
             Image transparent = base;
             transparent[(static_cast<std::size_t>(height - 1) * width + (width - 1)) * 4 + 3] =
-                alpha; // 字形の範囲の外の 1 画素だけ
+                0; // 字形の範囲の外の 1 画素だけ
             check(!mvm::math::mathGroupDestinationEligible(transparent.data(), width, height,
                                                            width * 4U),
-                  "不透明でない下地は対象外と判定する");
-            rejects(transparent, placement, "不透明でない下地を拒否し、何も書かない");
+                  "alpha 0 の画素がある下地は対象外と判定する");
+            check(mvm::math::mathGroupMinimumDestinationAlpha(transparent.data(), width, height,
+                                                              width * 4U) == 0,
+                  "下地の alpha の最小値を求める");
+            rejects(transparent, placement, "alpha 0 の画素がある下地を拒否し、何も書かない");
+        }
+        // alpha 1 以上の下地は対象 (実際の MLT と alpha 1〜255 の全値で一致を確かめた範囲)。
+        // 結果は、検査を通さない入口で同じ下地へ重ねたものと同じ。
+        for (const std::uint8_t alpha :
+             {std::uint8_t{1}, std::uint8_t{128}, std::uint8_t{253}, std::uint8_t{254}}) {
+            Image translucent = base;
+            for (std::size_t at = 3; at < translucent.size(); at += 4)
+                translucent[at] = alpha;
+            check(mvm::math::mathGroupDestinationEligible(translucent.data(), width, height,
+                                                          width * 4U),
+                  "alpha 1 以上の下地は対象と判定する");
+            Image expectedOutput = translucent;
+            MathGroupLayer sameRaster = whole; // source は上で書き換えたので、準備済みの画素を使う
+            sameRaster.rgba = raster.rgba();
+            check(composeUnchecked(expectedOutput.data(), width, height, width * 4U, &sameRaster, 1,
+                                   composeError, nullptr),
+                  "半透明の下地への全体の走査が成功する");
+            Image output = translucent;
+            check(mvm::math::composeMathGroup(output.data(), width, height, width * 4U, &placement,
+                                              1, composeError) &&
+                      output == expectedOutput && output != translucent,
+                  "alpha 1 以上の下地への合成は全体の走査と同じ結果になる");
+            // 下限を引き上げれば拒否される (実験用の入口)。
+            Image floorOutput = translucent;
+            check(!mvm::math::detail::composeMathGroupWithAlphaFloor(floorOutput.data(), width,
+                                                                     height, width * 4U, &placement,
+                                                                     1, 255, composeError) &&
+                      floorOutput == translucent,
+                  "下限より小さい alpha の下地を拒否し、何も書かない");
         }
         check(mvm::math::mathGroupDestinationEligible(base.data(), width, height, width * 4U),
               "不透明な下地は対象と判定する");

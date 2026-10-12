@@ -79,24 +79,42 @@ bool PreparedMathRaster::prepare(const std::uint8_t* rgba, int width, int height
     return true;
 }
 
-bool mathGroupDestinationEligible(const std::uint8_t* destination, int width, int height,
-                                  std::size_t stride) {
+int mathGroupMinimumDestinationAlpha(const std::uint8_t* destination, int width, int height,
+                                     std::size_t stride) {
     if (!destination || width < 2 || height < 2 || stride < static_cast<std::size_t>(width) * 4U)
-        return false;
+        return -1;
+    std::uint8_t lowest = 255;
     for (int row = 0; row < height; ++row) {
         const std::uint8_t* line = destination + static_cast<std::size_t>(row) * stride;
-        std::uint8_t all = 255;
-        for (int column = 0; column < width; ++column)
-            all &= line[static_cast<std::size_t>(column) * 4U + 3U];
-        if (all != 255)
-            return false;
+        std::uint8_t rowLowest = 255;
+        for (int column = 0; column < width; ++column) {
+            const std::uint8_t alpha = line[static_cast<std::size_t>(column) * 4U + 3U];
+            rowLowest = alpha < rowLowest ? alpha : rowLowest;
+        }
+        lowest = rowLowest < lowest ? rowLowest : lowest;
     }
-    return true;
+    return lowest;
+}
+
+bool mathGroupDestinationEligible(const std::uint8_t* destination, int width, int height,
+                                  std::size_t stride) {
+    return mathGroupMinimumDestinationAlpha(destination, width, height, stride) >=
+           kMathGroupMinimumDestinationAlpha;
 }
 
 bool composeMathGroup(std::uint8_t* destination, int width, int height, std::size_t stride,
                       const MathGroupPlacement* layers, std::size_t count, std::string& error,
                       MathGroupStats* stats) {
+    return detail::composeMathGroupWithAlphaFloor(destination, width, height, stride, layers, count,
+                                                  kMathGroupMinimumDestinationAlpha, error, stats);
+}
+
+namespace detail {
+
+bool composeMathGroupWithAlphaFloor(std::uint8_t* destination, int width, int height,
+                                    std::size_t stride, const MathGroupPlacement* layers,
+                                    std::size_t count, int minimumDestinationAlpha,
+                                    std::string& error, MathGroupStats* stats) {
     if (!destination || width < 2 || height < 2 || stride < static_cast<std::size_t>(width) * 4U ||
         (count > 0 && !layers)) {
         error = "数式の合成先の大きさまたは参照が不正です";
@@ -125,15 +143,15 @@ bool composeMathGroup(std::uint8_t* destination, int width, int height, std::siz
         item.roiWidth = layer.raster->roiWidth();
         item.roiHeight = layer.raster->roiHeight();
     }
-    if (!mathGroupDestinationEligible(destination, width, height, stride)) {
-        error = "数式の合成先に不透明でない画素があります (対象外。MLT と比べていない)";
+    const int lowest = mathGroupMinimumDestinationAlpha(destination, width, height, stride);
+    if (lowest < minimumDestinationAlpha) {
+        error = "数式の合成先の alpha の最小値 " + std::to_string(lowest) + " が対象の下限 " +
+                std::to_string(minimumDestinationAlpha) + " より小さい (対象外。書かずに拒否)";
         return false;
     }
-    return detail::composeMathGroupUnchecked(destination, width, height, stride, unchecked.data(),
-                                             count, error, stats);
+    return composeMathGroupUnchecked(destination, width, height, stride, unchecked.data(), count,
+                                     error, stats);
 }
-
-namespace detail {
 
 bool composeMathGroupUnchecked(std::uint8_t* destination, int width, int height, std::size_t stride,
                                const UncheckedMathGroupLayer* layers, std::size_t count,
@@ -203,9 +221,9 @@ bool composeMathGroupUnchecked(std::uint8_t* destination, int width, int height,
                 const float total = f32(f32(above + below) - f32(above * below));
                 if (stats)
                     ++stats->visitedPixels;
-                // 上下とも alpha 0 の画素は、MLT では 0 で割ることになり結果が定まらない。
-                // 不透明な下地の上では起きない (検査を通す入口は透明な下地を拒否する)。
-                // 書かずに残す。
+                // 上下とも alpha 0 の画素は、MLT では 0 で割ることになり、色が 0 に書き換わる。
+                // ここでは書かずに残す (MLT と違う)。検査を通す入口は alpha 0 の画素がある下地を
+                // 拒否するので、この分岐を通るのは検査を通さない入口だけである。
                 if (!(total > 0.0f))
                     continue;
                 const float weight = f32(above / total);

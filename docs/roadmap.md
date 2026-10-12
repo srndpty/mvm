@@ -140,6 +140,11 @@
     なった。ただし合成器は不透明な下地だけが対象なので、拡縮する layer の上の数式は group にできず、
     v4 の Project 全体の graph では 99 clip 中 25 だけが対象で、利益は 1.17〜1.39 倍にとどまる。
     下地の条件・画像の memory（全体で 783 MB）・data race の検出が未解決。製品へは入れていない。
+  - P3-3B（[結果](math-transition-p33b.md)）: 合成器の下地の対象を「alpha 1 以上」へ広げた（1〜255 の全値で
+    実際の MLT と全画素一致。alpha 0 は MLT が色を 0 に書き換えるので対象外）。合成の順だけを守る
+    分け方にして、v4 の Project 全体の graph で 99 clip 中 97 が group になり、4 区間とも pre-YUV が一致、
+    render は 9.6〜22.6 倍（別々の process で B, C, C, B）。準備済みの画像の memory（783 MB）、
+    data race の検出、Project 全体の書き出しは未解決。製品へは入れていない。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。
