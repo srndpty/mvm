@@ -15,12 +15,11 @@ P3-5A・P3-5A.2 の過去の結果（1513/1514、1517/1522）は、履歴とし�
 | --- | --- |
 | 表示の環境 | 判定する script を作った。**今日の環境は安定していない**: 有効 → 途中で monitor が無くなる、をくり返している（1） |
 | 全 CTest（commit `ee3fbbd` = P3-5A.2 の内容） | **PASS: 1522/1522。** 実行の前後とも環境は VALID（2.1） |
-| 全 CTest（その後に足した「渡す前の検査」を含む作業 tree） | **HOLD: 1518/1522。** 実行中に monitor が無くなり、run の後の環境は INVALID。取り直しを待っている（2.2） |
+| 全 CTest（「渡す前の検査」を含む最終の内容。commit `c3b683f`） | **PASS: 1522/1522。** 実行の前後とも環境は VALID（2.3）。1 回目は 1518/1522 で、実行中に monitor が無くなった（2.2。履歴として残す） |
 | color producer の race への対処 | 成立。検出器・Windows の出力・対照とも、足した検査を含めて確かめ直した（4） |
 | cache の key を変える要求 | 対応している書き出しの条件では、起きない。起きた場合は、MLT へ渡す前に断る（3） |
 
-**全体: commit 済みの P3-5A.2 は gate を通った。作業 tree（検査を 1 段足したもの）は、環境が有効なまま終わる
-全 CTest が 1 回取れるまで HOLD。**
+**全体: PASS / CLOSED。** 最終の内容（渡す前の検査を含む）で、環境が有効なまま終わる全 CTest が通った。残る不確かさは 6 にある。次は P3-5B（書き出しの timeout を実時間で数える修正）を勧める。
 
 ## 1. 表示の環境（Task A）
 
@@ -199,11 +198,34 @@ v4 全体（6840 frame）の書き出しは、やり直していない。v4 は 
   `identity-after.json`（binary 157 個、MLT の module、Qt・FFmpeg・x264 の DLL、変更した source）。
 - 検出器の run の source と MLT の library は `sanitizers/identity.txt`（g++ 11.4、WSL。Windows の binary ではない）。
 
+### 2.3 最終の内容（commit `c3b683f`。作業 tree の変更なし）
+
+2.2 の作業 tree は、その後 commit された（`c3b683f`。内容は 2.2 で試験したものと同じ）。16:00 までの
+自動の取り直しは、環境が VALID にならなかったので実行されなかった（`final-2/`。試験は走っていない）。
+18:32 に環境が VALID になっていたので、全 CTest を 1 回だけ実行した（ほかの全 CTest と重ねていない）。`final-3/`。
+
+| | |
+| --- | --- |
+| 実行の前の環境 | VALID（monitor 1、1920×1200、DPI 96、電源 on、描画と提示の probe が成功） |
+| 実行の後の環境 | VALID（同じ。無操作 890 秒。試験の script が自動消灯を止めていた） |
+| 結果 | **1522/1522 通過**（1,088 秒）。登録数は 1522 のまま |
+| git | HEAD `c3b683f`、作業 tree の変更なし（実行の前後とも） |
+| binary | 157 個の SHA-256 を前後で記録。`test.ps1` の build が link し直す 2 つ（`mvm.exe`・`mvm_test_text_ui_input.exe`）以外は前後で同じ。背景の試験の binary（`mvm_test_mlt_export_v1_gap.exe`、`36E1ED48…`）と検証 harness（`C4C71CB6…`）は、4 の確かめ直しに使ったものと同じ |
+| runtime・source | 前後で同じ（`identity-before.json`・`identity-after.json`） |
+
+- 2.2 で落ちた 4 件は、全部通った: `math_equation_sequence_preview_controller`（14.9 秒）、
+  `math_raster_cache_focused`（24.0 秒）、`fixed_test_window_independent_of_screen`、
+  `preview_engine_p5c_engine_lifetime_detach`。
+- 2.2 の結果（1518/1522）と、P3-5A・P3-5A.2 の結果（1513/1514、1517/1522）は、履歴としてそのまま残してある。
+
+
 ## 6. 残っていること
 
-1. **作業 tree の全 CTest**（環境が有効なまま終わる 1 回）。取り直しを待っている。
+1. 全 CTest は、最終の内容では 1 回だけ通っている（2.3）。くり返しの安定は見ていない。
 2. `math_equation_sequence_preview_controller`・`math_raster_cache_focused` が、全 CTest の負荷の中で 1 回落ちた。
-   単独では通る。今回の変更と無関係な binary を含むが、原因は切り分けていない。
-3. `preview_engine_p5c_engine_lifetime_detach` の 0xc0000409 の dump は採れていない。
-4. 作業 tree の変更を commit しない場合（P3-5A.2 のままにする場合）は、2.1 の結果がそのまま使える。
-   その場合、cache の保護は「起きた後に見つける」検査だけになる（3.3）。
+   単独では 8 回中 8 回、最終の全 CTest（2.3）でも通った。今回の変更と無関係な binary を含む。並列の負荷で
+   時間が延びると落ちると考えられるが、原因は切り分けていない。もう一度落ちたら、負荷を決めた cohort で
+   別に調べる（sleep を伸ばしたり、検査を弱めたりして通すことはしない）。
+3. `preview_engine_p5c_engine_lifetime_detach` の 0xc0000409 の dump は採れていない。有効な環境では再現しない
+   （2.3 でも通った）。
+4. 全 CTest は、monitor が無いと GUI の試験が落ちる。gate の前後に `scripts/gui-environment-preflight.ps1` で環境を確かめないと、結果を取り違える。`test.ps1` 自身は、monitor が無いことを検出しない。
