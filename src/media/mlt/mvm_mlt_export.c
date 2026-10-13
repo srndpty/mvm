@@ -4,6 +4,7 @@
 #include "mvm_mlt_math_group.h"
 #include "mvm_mlt_probe.h"
 #include "mvm_mlt_runtime.h"
+#include "mvm_mlt_v1_background.h"
 
 #include <windows.h>
 #include <limits.h>
@@ -1711,6 +1712,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     mlt_consumer consumer = NULL;
     long long* cursors = NULL;
     mlt_producer v1_background = NULL;
+    MvmV1Background* v1_guard = NULL; /* v1_background の持ち主 (cache の保護と検査) */
     int failed = MVM_EXPORT_FAILED;
     ExportRgbaAudit audit = {spec, 0, 0};
     long long render_frames = total_duration;
@@ -1932,15 +1934,22 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
      * affine transition は下の frame が test card だと上の frame をそのまま返す (実測)。
      * そのため V1 が空の区間では、V2 以上の clip の位置・拡大・回転・crop・不透明度が
      * 書き出されていなかった (docs/premiere-like-editing.md §18.6)。 */
-    v1_background = mlt_factory_producer(profile, "color", "#000000");
-    if (!v1_background) {
-        set_err(err, err_size, "V1 の背景 (color producer) を作れません");
-        goto cleanup;
+    /* MLT の color producer は、cache を作り直す間に来た別の worker へ、埋まる前の画素を返す
+     * ことがある。形式を固定し、consumer を始める前に 1 thread で cache を作り、以後は画像の
+     * 要求ごとに cache が変わっていないことを確かめる (mvm_mlt_v1_background.h)。
+     * 従来の graph でも数式 group の graph でも同じ背景を使う。 */
+    {
+        char reason[256] = {0};
+        v1_guard = mvm_mlt_v1_background_new(
+            profile, total_duration, spec->width, spec->height,
+            spec->observer ? spec->observer->diagnostic_v1_background_fault : 0, reason,
+            sizeof(reason));
+        if (!v1_guard) {
+            set_err(err, err_size, "%s", reason);
+            goto cleanup;
+        }
+        v1_background = mvm_mlt_v1_background_producer(v1_guard);
     }
-    mlt_properties_set_position(MLT_PRODUCER_PROPERTIES(v1_background), "length",
-                                (mlt_position)total_duration + 1);
-    mlt_properties_set_position(MLT_PRODUCER_PROPERTIES(v1_background), "out",
-                                (mlt_position)total_duration);
 
     tractor = mlt_tractor_new();
     for (int track = 0; track < video_playlist_count; ++track) {
@@ -2164,6 +2173,11 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                 mlt_consumer_stop(consumer);
                 goto cleanup;
             }
+            /* 背景の cache が作り直された (埋まる前の画素を出したおそれがある)。続けない。 */
+            if (mvm_mlt_v1_background_failed(v1_guard, err, err_size)) {
+                mlt_consumer_stop(consumer);
+                goto cleanup;
+            }
             Sleep(20);
             waited += 20;
             if (waited >= spec->timeout_ms) {
@@ -2173,6 +2187,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         }
         /* 最後の frame での失敗を取りこぼさない。 */
         if (math_group_failed(spec, err, err_size))
+            goto cleanup;
+        if (mvm_mlt_v1_background_failed(v1_guard, err, err_size))
             goto cleanup;
         if (spec->progress_callback &&
             spec->progress_callback(total_duration, total_duration, spec->progress_opaque) != 0) {
@@ -2235,8 +2251,12 @@ cleanup:
         if (producers[index])
             mlt_producer_close(producers[index]);
     free(producers);
-    if (v1_background)
-        mlt_producer_close(v1_background);
+    if (v1_guard) {
+        if (spec->observer)
+            mvm_mlt_v1_background_stats(v1_guard, &spec->observer->v1_background_frames,
+                                        &spec->observer->v1_background_violations);
+        mvm_mlt_v1_background_close(v1_guard);
+    }
     free(cursors);
     free(audio_tracks);
     free(playlists);

@@ -156,6 +156,17 @@ target_link_libraries(mvm_test_mlt_export_capacity PRIVATE mvm::mlt mvm::warning
 target_compile_definitions(mvm_test_mlt_export_capacity PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_CAPACITY_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
 add_test(NAME mlt_export_capacity_overflow COMMAND mvm_test_mlt_export_capacity)
+# P3-5A.2: V1 の隙間 (黒の背景) を含む書き出し。背景の cache が作り直されないこと、隙間だけの
+# frame が全画素 (0, 0, 0, 255) であること、作り直しが起きたら書き出しが失敗することを見る。
+add_executable(mvm_test_mlt_export_v1_gap harness/test_mlt_export_v1_gap.cpp)
+target_link_libraries(mvm_test_mlt_export_v1_gap PRIVATE mvm::mlt mvm::warnings)
+target_compile_definitions(mvm_test_mlt_export_v1_gap PRIVATE ${MVM_MLT_PATH_DEFS}
+    MVM_V1_GAP_TEST_IMAGE="${CMAKE_SOURCE_DIR}/tests/assets/smoke/png_alpha.png")
+add_test(NAME mlt_export_v1_gap_background COMMAND mvm_test_mlt_export_v1_gap)
+set_tests_properties(mlt_export_v1_gap_background PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/png_alpha.png"
+    TIMEOUT 300)
 # 数式 layer の CPU 合成 (MLT・Qt に依存しない)。期待値は独立した oracle で作る。
 add_executable(mvm_test_math_group_compose core/test_math_group_compose.cpp)
 target_link_libraries(mvm_test_math_group_compose PRIVATE mvm::math mvm::warnings)

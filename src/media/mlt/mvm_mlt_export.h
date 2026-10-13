@@ -309,6 +309,13 @@ typedef struct MvmExportObserver {
     /* 入力 (P3-4): 非 0 なら、V1 の clip の証明をこの値に差し替える (誤った証明の対照。
      * 256 は「alpha 255 と証明した」、257 以上は範囲外)。 */
     int diagnostic_math_group_forge_alpha_proof;
+    /* 入力 (P3-5A.2): V1 の背景 (黒の color producer) の保護の対照用の故障。0 = なし (既定)。
+     * 値は mvm_mlt_v1_background.h の MVM_V1_BACKGROUND_FAULT_*。 */
+    int diagnostic_v1_background_fault;
+    /* 出力 (P3-5A.2): V1 の背景の画像の要求を検査した数と、違反 (cache の作り直しなど) の数。
+     * 違反が 1 つでもあれば、書き出しは失敗する (observer が無くても同じ)。 */
+    long long v1_background_frames;
+    long long v1_background_violations;
     /* 出力 (P3-3D)。 */
     int math_group_decision;                 /* MvmMathGroupDecision */
     char math_group_decision_reason[96];     /* 判定の理由 (事前に決めた名前) */

@@ -171,6 +171,11 @@
     audio の後始末の解放後の参照を直した（sink が clock を共有して持つ。`removeSource` の破棄の順も直した）。
     debugger の下（debug heap）で動かす回帰の試験を 6 つ足し、修正を外すと落ちることを確かめた。
     release の全 CTest 1521/1521。MLT の color producer の race は未修正のまま。
+  - P3-5A.2（[結果](mlt-color-race-p35a2.md)）: MLT の color producer の race への対処。V1 の背景の形式を rgba に
+    固定し、consumer を始める前に 1 thread で cache を作り、以後は画像の要求ごとに cache が変わっていないことを
+    確かめる（変わっていたら書き出しを失敗にする）。検出器付きの MLT で、保護ありは報告 0、保護なしは race と
+    誤った画素を再現。Windows の出力は前後で同じ。全 CTest は 1517/1522（monitor が無い間に GUI の 5 件が
+    落ちた）で、取り直しが残っている。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

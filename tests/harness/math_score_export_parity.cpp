@@ -206,9 +206,10 @@ struct Options {
     bool strongDigest = false;
     // P3-5A: この frame (timeline の絶対 frame) の RGBA をそのまま file へ書く。
     std::set<std::int64_t> dumpFrames;
-    int forgeAlphaProof = 0;      // 非 0: V1 の alpha の証明をこの値に差し替える (誤った証明の対照)
-    int candidateRepeats = 1;     // candidate を同じ process の中で続けて書き出す回数
-    int cancelAfterImages = 8;    // --inject cancel: 合成済みの画像がこの数になったら取り消す
+    int v1BackgroundFault = 0; // P3-5A.2: V1 の背景の保護の対照用の故障 (mvm_mlt_v1_background.h)
+    int forgeAlphaProof = 0;   // 非 0: V1 の alpha の証明をこの値に差し替える (誤った証明の対照)
+    int candidateRepeats = 1;  // candidate を同じ process の中で続けて書き出す回数
+    int cancelAfterImages = 8; // --inject cancel: 合成済みの画像がこの数になったら取り消す
     int mathGroupAlphaFloor = -1; // 0〜255 なら合成器の契約の下限の代わりに使う (実験)
     // 準備済みの画像の上限 (事前に固定)。-1 は持ち方ごとの既定: 全画面は 800 MB (P3-3A の実測
     // 783 MB)、中身のある範囲だけは 64 MB (P3-3C)。
@@ -1959,6 +1960,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.ignoreAlphaProof = value == "none";
             if (value.rfind("forge:", 0) == 0)
                 options.forgeAlphaProof = std::atoi(value.c_str() + 6);
+        } else if (key == "--v1-background-fault") {
+            options.v1BackgroundFault = std::atoi(value.c_str());
         } else if (key == "--strong-digest") {
             options.strongDigest = value == "1";
         } else if (key == "--dump-frames") {
@@ -2177,6 +2180,7 @@ int main(int argc, char** argv) {
         target.diagnostic_math_group_rule = options.mathGroupRule;
         target.diagnostic_math_group_ignore_alpha_proof = options.ignoreAlphaProof ? 1 : 0;
         target.diagnostic_math_group_forge_alpha_proof = options.forgeAlphaProof;
+        target.diagnostic_v1_background_fault = options.v1BackgroundFault;
         target.diagnostic_math_group_alpha_override = options.mathGroupAlphaFloor >= 0 ? 1 : 0;
         target.diagnostic_math_group_alpha_floor =
             options.mathGroupAlphaFloor >= 0 ? options.mathGroupAlphaFloor : 0;
@@ -3281,6 +3285,12 @@ int main(int argc, char** argv) {
     report.insert(QStringLiteral("pre_yuv_outside_domain"), outside);
     report.insert(QStringLiteral("pre_yuv_admissible_alpha"), admissibleAlpha);
     report.insert(QStringLiteral("background_alpha"), fixture.backgroundAlpha);
+    report.insert(QStringLiteral("v1_background"),
+                  QJsonObject{{QStringLiteral("fault"), options.v1BackgroundFault},
+                              {QStringLiteral("checked_requests"),
+                               static_cast<qint64>(observer.v1_background_frames)},
+                              {QStringLiteral("violations"),
+                               static_cast<qint64>(observer.v1_background_violations)}});
     report.insert(QStringLiteral("pre_yuv_lowest_alpha"), lowestAlpha);
     report.insert(QStringLiteral("pre_yuv_low_alpha_count"), transparentCount);
     report.insert(QStringLiteral("pre_yuv_low_alpha_first"), transparent);
