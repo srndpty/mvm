@@ -222,6 +222,15 @@ public:
     // 取消した worker の破棄まで終わっている。中止そのものは待たない。
     // 100 ms の poll が動いているか。待機中に常駐しないことの試験用。
     bool audioAdjustmentPollingForTest() const { return audioAdjustmentTimer_.isActive(); }
+    // 書き出しで数式 group の最適化を使うか (P3-6A)。既定は使わない。設定の UI はまだ無く、QML からは
+    // 呼べない (内部の選択)。true にすると、次の書き出しから要求に Auto を入れる
+    // (app/timeline_export.h の MathGroupOptimization)。
+    void setMathGroupExportOptimization(bool enabled) { mathGroupExportOptimization_ = enabled; }
+    bool mathGroupExportOptimization() const { return mathGroupExportOptimization_; }
+    // 最後に終わった書き出しの、数式 group の選択の記録 (成功・失敗・取消のどれでも)。
+    const MathGroupExportReport& lastExportMathGroupReport() const {
+        return lastExportMathGroupReport_;
+    }
 
     bool audioWatchFallbackActiveForTest() const { return audioWatchFallbackTimer_.isActive(); }
 
@@ -1757,6 +1766,8 @@ private:
     double masterVolume_ = 0.35;
     std::thread exportThread_;
     ExportRunner exportRunner_;
+    bool mathGroupExportOptimization_ = false;
+    MathGroupExportReport lastExportMathGroupReport_;
     ExportThreadFactory exportThreadFactory_;
     FileRevealer fileRevealer_;
     std::atomic<bool> exportCancelRequested_{false};

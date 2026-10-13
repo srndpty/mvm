@@ -183,6 +183,11 @@
     1 秒の timeout を 1002〜1046 ms で検出（以前は 1.5〜3.4 秒、進行 callback が遅いと timeout しなかった）。
     値（600000 ms）と監視する区間は変えていない。以前の数え方の記録は、診断用の入力で残してある。
     全 CTest 1523/1523。次は P3-6（製品から数式 group を使う入口）。
+  - P3-6A（[結果](math-group-product-p36a.md)）: 数式 group の書き出しを、製品の入口（`MvmController` の内部の選択 →
+    要求の `mathGroupOptimization`）から選べるようにした。**既定は off** で、UI は無い。on では書き出しの前に判定し、
+    ELIGIBLE のときだけ数式 group の graph、それ以外は従来の graph。実行時の失敗は書き出しの失敗にする
+    （やり直さない）。製品の入口からの 22 + 5 通りが期待どおりで、全 frame が従来の経路と一致。全 CTest 1523/1523
+    （3 回目。1・2 回目は、負荷と利用者の操作で 1 件ずつ落ちた）。次は P3-6B。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

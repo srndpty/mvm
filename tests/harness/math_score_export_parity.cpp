@@ -206,6 +206,13 @@ struct Options {
     bool strongDigest = false;
     // P3-5A: この frame (timeline の絶対 frame) の RGBA をそのまま file へ書く。
     std::set<std::int64_t> dumpFrames;
+    // P3-6A: 製品の選択 (MvmController の内部の選択 → 要求の mathGroupOptimization) で書き出す。
+    // harness は observer の診断用の mode を設定しない (書き出しが、要求を見て自分で決める)。
+    int productMain = 0;    // --product-math-group: 0 指定なし、1 off、2 on (主の書き出し)
+    int compareProduct = 0; // --compare product-off / product-math-group: 1 off、2 on (candidate)
+    // candidate に observer を付けるか。既定は付けない (製品の要求と同じ)。diagnostic なら付ける
+    // (故障の注入・下地の観測を、製品の選択と組み合わせるため)。
+    bool productObserver = false;
     int v1BackgroundFault = 0; // P3-5A.2: V1 の背景の保護の対照用の故障 (mvm_mlt_v1_background.h)
     int forgeAlphaProof = 0;   // 非 0: V1 の alpha の証明をこの値に差し替える (誤った証明の対照)
     int candidateRepeats = 1;  // candidate を同じ process の中で続けて書き出す回数
@@ -1960,6 +1967,14 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.ignoreAlphaProof = value == "none";
             if (value.rfind("forge:", 0) == 0)
                 options.forgeAlphaProof = std::atoi(value.c_str() + 6);
+        } else if (key == "--product-math-group") {
+            if (value != "on" && value != "off")
+                return false;
+            options.productMain = value == "on" ? 2 : 1;
+        } else if (key == "--product-observer") {
+            if (value != "diagnostic" && value != "none")
+                return false;
+            options.productObserver = value == "diagnostic";
         } else if (key == "--v1-background-fault") {
             options.v1BackgroundFault = std::atoi(value.c_str());
         } else if (key == "--strong-digest") {
@@ -2003,6 +2018,11 @@ bool parseOptions(int argc, char** argv, Options& options) {
             } else if (value == "math-group-auto") {
                 options.compareMathGroup = true;
                 options.compareMathGroupMode = 3;
+            } else if (value == "product-math-group" || value == "product-off") {
+                // candidate を製品の選択で書き出す (判定つき = mode 3 と同じ検査を通す)。
+                options.compareMathGroup = true;
+                options.compareMathGroupMode = 3;
+                options.compareProduct = value == "product-off" ? 1 : 2;
             } else if (value == "bounding-box")
                 options.compare = mvm::app::MathLayerStaging::BoundingBox;
             else if (value == "anchored-box")
@@ -2176,7 +2196,8 @@ int main(int argc, char** argv) {
         target.diagnostic_split_static_run = options.splitStaticRun;
         target.diagnostic_split_static_chunk = options.splitStaticChunk;
         target.diagnostic_math_group = options.mathGroupMain ? options.mathGroupMainMode : 0;
-        target.diagnostic_math_group_fault = options.mathGroupMain ? options.mathGroupFault : 0;
+        target.diagnostic_math_group_fault =
+            options.mathGroupMain || options.productMain == 2 ? options.mathGroupFault : 0;
         target.diagnostic_math_group_rule = options.mathGroupRule;
         target.diagnostic_math_group_ignore_alpha_proof = options.ignoreAlphaProof ? 1 : 0;
         target.diagnostic_math_group_forge_alpha_proof = options.forgeAlphaProof;
@@ -2201,7 +2222,7 @@ int main(int argc, char** argv) {
         target.diagnostic_math_group_assignment_capacity = GroupProbe::kAssignmentCapacity;
     };
     applyDiagnosticInputs(observer);
-    if (options.mathGroupMain)
+    if (options.mathGroupMain || options.productMain == 2)
         attachProbe(observer, mainProbe);
     long long mainWorkingSetBeforePrepare = 0;
     std::mutex stageMutex;
@@ -2221,6 +2242,13 @@ int main(int argc, char** argv) {
         mvm::app::MathLayerStaging staging = mvm::app::MathLayerStaging::FullFrame;
         bool split = false;
         bool mathGroup = false;
+        bool product = false;     // 製品の選択で書き出す (candidate)
+        int requestModeSeen = -1; // controller が要求へ入れた mathGroupOptimization (0 Off、1 Auto)
+        bool observerAttached = true; // 書き出しへ observer を渡したか
+        // controller が作った要求に、最初から observer が付いていたか (製品の要求は付けない)。
+        bool controllerSuppliedObserver = false;
+        QString outputSha256;                       // 書き出した MP4 (消す前に採る。失敗なら空)
+        mvm::app::MathGroupExportReport report;     // 書き出しの結果に付いた記録 (最後の回)
         long long groupLive = -1, groupActive = -1; // 書き出しの後に残っていた数 (0 が正)
         long long workingSetBeforePrepare = 0;      // staging の後、画像の準備の前
         long long rasterLiveAfter = -1; // 書き出しの後に生きている準備済みの画素 (0 が正)
@@ -2235,6 +2263,9 @@ int main(int argc, char** argv) {
     };
 
     ExtraRun* extra = nullptr;
+    int mainRequestModeSeen = -1;
+    bool mainControllerSuppliedObserver = false;
+    mvm::app::MathGroupExportReport mainReport;
     std::map<std::int64_t, QByteArray> baselineFrames;
     long long mainGroupLive = -1, mainGroupActive = -1;
     long long mainRasterLiveAfter = -1, mainWorkingSetAfter = 0;
@@ -2253,7 +2284,17 @@ int main(int argc, char** argv) {
                     extra->observer.diagnostic_split_transitions = 1;
                     extra->observer.diagnostic_split_fault = options.splitFault;
                 }
-                if (extra->mathGroup) {
+                extra->requestModeSeen = static_cast<int>(input.mathGroupOptimization);
+                extra->controllerSuppliedObserver = request.exportObserver != nullptr;
+                if (extra->product) {
+                    // 製品の選択: mode は書き出しが要求から決める (harness は設定しない)。
+                    extra->observer.diagnostic_math_group = 0;
+                    extra->observerAttached = options.productObserver;
+                    if (options.productObserver) {
+                        extra->observer.diagnostic_math_group_fault = options.mathGroupFault;
+                        attachProbe(extra->observer, candidateProbe);
+                    }
+                } else if (extra->mathGroup) {
                     extra->observer.diagnostic_math_group = options.compareMathGroupMode;
                     extra->observer.diagnostic_math_group_fault = options.mathGroupFault;
                     attachProbe(extra->observer, candidateProbe);
@@ -2262,7 +2303,7 @@ int main(int argc, char** argv) {
                     if (std::string(name) == "staging-end")
                         extra->workingSetBeforePrepare = workingSetBytes(false);
                 };
-                input.exportObserver = &extra->observer;
+                input.exportObserver = extra->observerAttached ? &extra->observer : nullptr;
                 input.mathLayerStaging = extra->staging;
                 input.mathStagingObserver = [&](const std::string&, int, int, int regionWidth,
                                                 int regionHeight) {
@@ -2273,6 +2314,36 @@ int main(int argc, char** argv) {
                 extra->beginNs = mvm_mlt_export_observer_now_ns();
                 extra->result = mvm::app::exportTimeline(exportProject, input);
                 extra->endNs = mvm_mlt_export_observer_now_ns();
+                extra->report = extra->result.mathGroup;
+                if (!extra->observerAttached) {
+                    // observer を渡していないので、結果に付いた記録を集計用の入れ物へ写す
+                    // (回数は、くり返しの分を足す。判定は最後の回)。
+                    const auto& recorded = extra->result.mathGroup;
+                    auto& sink = extra->observer;
+                    sink.math_group_decision =
+                        recorded.decision == "ELIGIBLE"     ? MVM_MATH_GROUP_DECISION_ELIGIBLE
+                        : recorded.decision == "INELIGIBLE" ? MVM_MATH_GROUP_DECISION_INELIGIBLE
+                        : recorded.decision == "UNKNOWN"    ? MVM_MATH_GROUP_DECISION_UNKNOWN
+                                                            : MVM_MATH_GROUP_DECISION_NONE;
+                    std::snprintf(sink.math_group_decision_reason,
+                                  sizeof(sink.math_group_decision_reason), "%s",
+                                  recorded.reason.c_str());
+                    sink.diagnostic_math_group = recorded.evaluated ? 3 : 0;
+                    sink.math_group_graph = recorded.mathGroupGraph ? 1 : 0;
+                    sink.math_group_base_alpha_proven = recorded.baseAlphaProven;
+                    sink.math_group_transitions += recorded.groups;
+                    sink.math_group_clips += recorded.groupedClips;
+                    sink.math_group_retained_clips += recorded.retainedClips;
+                    sink.overlay_transitions += recorded.affineTransitions;
+                    sink.math_group_frames += recorded.composedFrames;
+                    sink.math_group_callbacks += recorded.callbacks;
+                    sink.math_group_errors += recorded.errors;
+                    sink.math_group_raster_count = recorded.rasterCount;
+                    sink.math_group_raster_bytes = recorded.rasterBytes;
+                    if (recorded.errors > 0 && !extra->result.error.empty())
+                        std::snprintf(sink.math_group_error, sizeof(sink.math_group_error), "%s",
+                                      extra->result.error.c_str());
+                }
                 extra->groupLive = mvm_mlt_math_group_live();
                 extra->groupActive = mvm_mlt_math_group_active();
                 extra->rasterLiveAfter = mvm::math::preparedMathRasterLiveBytes();
@@ -2280,6 +2351,8 @@ int main(int argc, char** argv) {
                 return extra->result;
             }
             input.mathLayerStaging = options.mainStaging;
+            mainRequestModeSeen = static_cast<int>(input.mathGroupOptimization);
+            mainControllerSuppliedObserver = request.exportObserver != nullptr;
             // timeout は製品の値のまま。診断の上限は watchdog が別に持つ。
             productTimeoutMs = input.timeoutMs;
             if (options.requestTimeoutMs > 0)
@@ -2350,6 +2423,7 @@ int main(int argc, char** argv) {
             exportBeginNs.store(mvm_mlt_export_observer_now_ns());
             exported = mvm::app::exportTimeline(exportProject, input);
             exportEndNs.store(mvm_mlt_export_observer_now_ns());
+            mainReport = exported.mathGroup;
             mainGroupLive = mvm_mlt_math_group_live();
             mainGroupActive = mvm_mlt_math_group_active();
             mainRasterLiveAfter = mvm::math::preparedMathRasterLiveBytes();
@@ -2427,6 +2501,10 @@ int main(int argc, char** argv) {
     threadCpuSeconds(threadCpuBegin);
     const double cpuBegin = processCpuSeconds();
     const long long startNs = mvm_mlt_export_observer_now_ns();
+    // 製品の選択 (MvmController の内部の選択)。指定が無ければ触らない (既定は off)。
+    const bool controllerDefaultSelection = controller->mathGroupExportOptimization();
+    if (options.productMain != 0)
+        controller->setMathGroupExportOptimization(options.productMain == 2);
     if (!controller->exportTimeline(QUrl::fromLocalFile(toQString(outputPath)))) {
         std::fprintf(stderr, "書き出しを開始できません: %s\n",
                      controller->statusText().toUtf8().constData());
@@ -2572,6 +2650,9 @@ int main(int argc, char** argv) {
         candidateRun.staging = options.compare;
         candidateRun.split = options.compareSplit;
         candidateRun.mathGroup = options.compareMathGroup;
+        candidateRun.product = options.compareProduct != 0;
+        if (candidateRun.product)
+            controller->setMathGroupExportOptimization(false); // 主の書き出し (baseline) は off
         // baseline と同じ渡し方を保つ (比べるのは candidate の 1 点だけ)。
         if (options.compareSplit || options.compareMathGroup)
             candidateRun.staging = repeatRun.staging = options.mainStaging;
@@ -2701,6 +2782,8 @@ int main(int argc, char** argv) {
             std::error_code ignored;
             std::filesystem::remove(path, ignored);
             extra = &run;
+            // candidate だけを製品の選択で書き出す。baseline のくり返しは off (既定) へ戻す。
+            controller->setMathGroupExportOptimization(run.product && options.compareProduct == 2);
             run.probeBegin = mvm::test::MltPropertyProbe::snapshot();
             const double cpuBefore = processCpuSeconds();
             if (controller->exportTimeline(QUrl::fromLocalFile(toQString(path)))) {
@@ -2719,6 +2802,8 @@ int main(int argc, char** argv) {
             run.cpuSeconds = processCpuSeconds() - cpuBefore;
             run.probeEnd = mvm::test::MltPropertyProbe::snapshot();
             extra = nullptr;
+            run.outputSha256 =
+                std::filesystem::exists(path, ignored) ? fileSha256(path) : QString();
             std::filesystem::remove(path, ignored);
         };
         // candidate は、同じ process の中で指定の回数だけ続けて書き出す (どの回も全 frame
@@ -3107,7 +3192,7 @@ int main(int argc, char** argv) {
                     gPreparedStorage == mvm::math::MathRasterStorage::FullFrame
                         ? QStringLiteral("full-frame")
                         : QStringLiteral("roi-only"));
-        if (options.mathGroupMain) {
+        if (options.mathGroupMain || options.productMain == 2) {
             main.insert(QStringLiteral("destination"), mainProbe.toJson());
             main.insert(QStringLiteral("assignment"), assignmentJson(mainProbe, groupPlan));
         }
@@ -3285,6 +3370,58 @@ int main(int argc, char** argv) {
     report.insert(QStringLiteral("pre_yuv_outside_domain"), outside);
     report.insert(QStringLiteral("pre_yuv_admissible_alpha"), admissibleAlpha);
     report.insert(QStringLiteral("background_alpha"), fixture.backgroundAlpha);
+    {
+        const auto reportJson = [](const mvm::app::MathGroupExportReport& recorded) {
+            return QJsonObject{
+                {QStringLiteral("requested"),
+                 recorded.requested == mvm::app::MathGroupOptimization::Auto
+                     ? QStringLiteral("auto")
+                     : QStringLiteral("off")},
+                {QStringLiteral("evaluated"), recorded.evaluated},
+                {QStringLiteral("decision"), QString::fromStdString(recorded.decision)},
+                {QStringLiteral("reason"), QString::fromStdString(recorded.reason)},
+                {QStringLiteral("graph"), recorded.mathGroupGraph ? QStringLiteral("math-group")
+                                                                  : QStringLiteral("conventional")},
+                {QStringLiteral("groups"), static_cast<qint64>(recorded.groups)},
+                {QStringLiteral("grouped_clips"), static_cast<qint64>(recorded.groupedClips)},
+                {QStringLiteral("retained_clips"), static_cast<qint64>(recorded.retainedClips)},
+                {QStringLiteral("affine_transitions"),
+                 static_cast<qint64>(recorded.affineTransitions)},
+                {QStringLiteral("composed_frames"), static_cast<qint64>(recorded.composedFrames)},
+                {QStringLiteral("callbacks"), static_cast<qint64>(recorded.callbacks)},
+                {QStringLiteral("errors"), static_cast<qint64>(recorded.errors)},
+                {QStringLiteral("raster_count"), static_cast<qint64>(recorded.rasterCount)},
+                {QStringLiteral("raster_bytes"), static_cast<qint64>(recorded.rasterBytes)},
+                {QStringLiteral("base_alpha_proven"), recorded.baseAlphaProven},
+                {QStringLiteral("live_transitions_after"),
+                 static_cast<qint64>(recorded.liveTransitionsAfter)},
+                {QStringLiteral("active_callbacks_after"),
+                 static_cast<qint64>(recorded.activeCallbacksAfter)}};
+        };
+        QJsonObject product{
+            {QStringLiteral("controller_default_selection"), controllerDefaultSelection},
+            {QStringLiteral("main_option"), options.productMain},
+            {QStringLiteral("main_request_mode_seen"), mainRequestModeSeen},
+            {QStringLiteral("main_controller_supplied_observer"), mainControllerSuppliedObserver},
+            {QStringLiteral("main_report"), reportJson(mainReport)},
+            {QStringLiteral("controller_last_report"),
+             reportJson(controller->lastExportMathGroupReport())}};
+        const ExtraRun* candidateSummary = comparing ? &candidateRun : nullptr;
+        if (candidateSummary) {
+            product.insert(QStringLiteral("candidate_option"), options.compareProduct);
+            product.insert(QStringLiteral("candidate_request_mode_seen"),
+                           candidateSummary->requestModeSeen);
+            product.insert(QStringLiteral("candidate_observer_attached"),
+                           candidateSummary->observerAttached);
+            product.insert(QStringLiteral("candidate_controller_supplied_observer"),
+                           candidateSummary->controllerSuppliedObserver);
+            product.insert(QStringLiteral("candidate_output_sha256"),
+                           candidateSummary->outputSha256);
+            product.insert(QStringLiteral("candidate_report"),
+                           reportJson(candidateSummary->report));
+        }
+        report.insert(QStringLiteral("product_selection"), product);
+    }
     report.insert(
         QStringLiteral("v1_background"),
         QJsonObject{
@@ -3584,15 +3721,19 @@ int main(int argc, char** argv) {
                    // 従来の graph を選んだ (mode 3 で ELIGIBLE でなかった): group を 1 つも使わず、
                    // affine の数が製品の経路と同じであること。判定が記録されていること。
                    ? options.compareMathGroupMode == 3 &&
-                         candidateRun.observer.math_group_decision !=
-                             MVM_MATH_GROUP_DECISION_ELIGIBLE &&
-                         candidateRun.observer.math_group_decision !=
-                             MVM_MATH_GROUP_DECISION_NONE &&
+                         (options.compareProduct == 1
+                              // 製品の選択 off: 判定そのものをしない (従来の graph のまま)。
+                              ? candidateRun.observer.math_group_decision ==
+                                    MVM_MATH_GROUP_DECISION_NONE
+                              : candidateRun.observer.math_group_decision !=
+                                        MVM_MATH_GROUP_DECISION_ELIGIBLE &&
+                                    candidateRun.observer.math_group_decision !=
+                                        MVM_MATH_GROUP_DECISION_NONE) &&
                          candidateRun.observer.math_group_clips == 0 &&
                          candidateRun.observer.math_group_callbacks == 0 &&
                          candidateRun.observer.overlay_transitions ==
                              observer.overlay_transitions * candidateExports
-                   : candidateRun.observer.math_group_clips > 0 &&
+                   : options.compareProduct != 1 && candidateRun.observer.math_group_clips > 0 &&
                          (options.compareMathGroupMode == 2
                               ? candidateRun.observer.math_group_callbacks > 0
                               : candidateRun.observer.math_group_frames > 0))));

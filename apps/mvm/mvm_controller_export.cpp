@@ -167,6 +167,9 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
     request.burnSubtitles = burnSubtitles_;
     request.renderThreads = 4;
     request.encoderThreads = 0;
+    // 数式 group の最適化は、内部の選択が有効なときだけ要求する (既定は Off)。
+    request.mathGroupOptimization = mathGroupExportOptimization_ ? MathGroupOptimization::Auto
+                                                                 : MathGroupOptimization::Off;
     request.graphEnvironment.cache = mathCacheDirectory().parent_path().parent_path() / L"graph" /
                                      projectPath_.filename();
     request.graphEnvironment.toolchain = graphRasters_ ? graphRasters_->exportToolchain() : "";
@@ -350,6 +353,7 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     exporting_ = false;
     exportCancelling_ = false;
     busy_ = false;
+    lastExportMathGroupReport_ = exported.mathGroup;
     if (!exported.success) {
         if (exported.cancelled)
             setStatus(QStringLiteral("書き出しをキャンセルしました"));

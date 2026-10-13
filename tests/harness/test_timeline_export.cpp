@@ -634,6 +634,40 @@ int main(int argc, char** argv) {
               "V2 playlist blankまたはclip単位transition数が不正です");
         check(exported.opaqueBlackAffineFilterCount == 0,
               "V2がopaque-black affine filterを使用しました");
+        // P3-6A: 数式 group の最適化は既定で使わない (判定もしない)。Auto を要求しても、数式の clip
+        // が 無い Project は書き出しの前に INELIGIBLE になり、従来の graph のまま書き出す (出力の
+        // file は byte 単位で同じ)。
+        check(exported.mathGroup.requested == mvm::app::MathGroupOptimization::Off &&
+                  !exported.mathGroup.evaluated && exported.mathGroup.decision.empty() &&
+                  !exported.mathGroup.mathGroupGraph && exported.mathGroup.groups == 0 &&
+                  exported.mathGroup.composedFrames == 0 &&
+                  exported.mathGroup.affineTransitions == 2,
+              "既定の書き出しが数式 group を判定または使用しました");
+        {
+            auto autoRequest = overlayRequest;
+            autoRequest.outputPath = testDirectory / L"m7b-product-overlay-math-group-auto.mp4";
+            autoRequest.mathGroupOptimization = mvm::app::MathGroupOptimization::Auto;
+            const auto automatic = mvm::app::exportTimeline(overlaid, autoRequest);
+            check(automatic.success, "数式 group を Auto にした書き出しが完了しません");
+            check(automatic.mathGroup.requested == mvm::app::MathGroupOptimization::Auto &&
+                      automatic.mathGroup.evaluated &&
+                      automatic.mathGroup.decision == "INELIGIBLE" &&
+                      automatic.mathGroup.reason == "no-eligible-math-clip" &&
+                      !automatic.mathGroup.mathGroupGraph && automatic.mathGroup.groups == 0 &&
+                      automatic.mathGroup.groupedClips == 0 &&
+                      automatic.mathGroup.composedFrames == 0 &&
+                      automatic.mathGroup.affineTransitions == 2 &&
+                      automatic.mathGroup.liveTransitionsAfter == 0 &&
+                      automatic.mathGroup.activeCallbacksAfter == 0,
+                  "数式の clip が無い Project で、Auto が従来の graph を選びませんでした");
+            const auto bytes = [](const std::filesystem::path& path) {
+                std::ifstream stream(path, std::ios::binary);
+                return std::vector<char>(std::istreambuf_iterator<char>(stream), {});
+            };
+            if (exported.success && automatic.success)
+                check(bytes(overlayRequest.outputPath) == bytes(autoRequest.outputPath),
+                      "Auto が従来の graph を選んだのに、出力が既定の書き出しと違います");
+        }
         if (exported.success) {
             check(blue(pixelAt(overlayRequest.outputPath, 0, 160, 120)),
                   "V2開始前にV1が表示されません");

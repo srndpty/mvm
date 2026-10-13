@@ -35,6 +35,36 @@ struct TimelineMathTransformArtifact {
 // どの指定でも FullFrame で渡す。
 enum class MathLayerStaging { FullFrame, BoundingBox, AnchoredBox };
 
+// 静止の数式 layer を 1 つの transition でまとめて合成する最適化 (数式 group) を使うか (P3-6A)。
+//   Off   使わない (既定)。いつも従来の MLT の graph で書き出す
+//   Auto  書き出しの前に判定し、ELIGIBLE のときだけ数式 group の graph を使う。INELIGIBLE・UNKNOWN
+//   の
+//         ときは、書き出しを始める前に従来の graph を選ぶ。ELIGIBLE で数式 group の合成が実行時に
+//         失敗したら、書き出しを失敗にする (従来の graph でやり直さない)
+// 判定は Project の中身 (V1 の画素の alpha の証明、clip の配置) だけで行う。Project の名前や clip
+// の 数、試験用の fixture かどうかでは決めない。
+enum class MathGroupOptimization { Off, Auto };
+
+// 数式 group の選択の記録 (書き出しの結果に付く。成功・失敗・取消のどれでも)。
+struct MathGroupExportReport {
+    MathGroupOptimization requested = MathGroupOptimization::Off;
+    bool evaluated = false;          // 書き出しの前の判定を行った
+    std::string decision;            // "ELIGIBLE"・"INELIGIBLE"・"UNKNOWN"。判定していなければ空
+    std::string reason;              // 判定の理由 (事前に決めた名前)
+    bool mathGroupGraph = false;     // 実際に作った graph (false = 従来の graph)
+    long long groups = 0;            // 数式 group の transition の数
+    long long groupedClips = 0;      // まとめた clip の数
+    long long retainedClips = 0;     // 対象として申告されたが、従来の経路に残した clip の数
+    long long affineTransitions = 0; // 残った affine の transition の数
+    long long composedFrames = 0;    // 数式 group が実際に合成した回数 (0 なら使われていない)
+    long long callbacks = 0;
+    long long errors = 0;                       // 数式 group の実行時の失敗の数
+    long long rasterCount = 0, rasterBytes = 0; // 準備済みの画像
+    int baseAlphaProven = -1;                   // 判定に使った V1 の alpha の最小値 (-1 は該当なし)
+    // 書き出しの関数の中で、MLT の graph を閉じた後に残っていた数 (0 が正)。
+    long long liveTransitionsAfter = 0, activeCallbacksAfter = 0;
+};
+
 // M4 の書き出し要求。Project の output size を呼び出し側が渡す。
 struct TimelineExportRequest {
     std::filesystem::path outputPath;
@@ -73,7 +103,11 @@ struct TimelineExportRequest {
     MathLayerStaging mathLayerStaging = MathLayerStaging::FullFrame;
     // 試作の検証用: 切り出した数式 clip の ID と範囲 (x, y, 幅, 高さ) を受け取る。
     std::function<void(const std::string&, int, int, int, int)> mathStagingObserver;
+    // 数式 group の最適化。既定は使わない。
+    MathGroupOptimization mathGroupOptimization = MathGroupOptimization::Off;
     // 診断用: MLT 層の各境界の通過回数を記録する。nullptr なら観測しない (製品は nullptr)。
+    // 故障の注入・以前の timeout の数え方などの診断用の入力は、この observer を渡したときだけ使える
+    // (製品の要求は observer を渡さないので、使えない)。
     MvmExportObserver* exportObserver = nullptr;
     // 診断用: 段階の境界で呼ぶ ("plan-begin"・"plan-end"・"staging-end"・"encode-end"・
     // "published")。worker thread から呼ばれる。
@@ -95,6 +129,7 @@ struct TimelineExportResult {
     int playlistBlankCount = 0;
     int transitionCount = 0;
     int opaqueBlackAffineFilterCount = 0;
+    MathGroupExportReport mathGroup;
 };
 
 struct TimelineExportOpacityKey {

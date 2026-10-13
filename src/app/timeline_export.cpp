@@ -695,6 +695,7 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
 TimelineExportResult exportTimeline(const project::Project& project,
                                     const TimelineExportRequest& request) {
     TimelineExportResult result;
+    result.mathGroup.requested = request.mathGroupOptimization;
 
     if (request.outputPath.empty()) {
         result.error = "書き出し先が指定されていません";
@@ -769,8 +770,25 @@ TimelineExportResult exportTimeline(const project::Project& project,
     std::map<std::size_t, MathStagingRegion> mathRegions;
     // 試作 (P3-3A、診断専用。既定は使わない): 静止の数式 clip の合成済みの画素を、数式 group の
     // transition 用の準備済みの画像にする。stage する PNG と同じ画素から作る。
-    const bool mathGroup =
-        request.exportObserver != nullptr && request.exportObserver->diagnostic_math_group != 0;
+    //
+    // P3-6A: 製品の選択 (request.mathGroupOptimization = Auto)。判定つきの mode (3) と、P3-3B
+    // の分け方 (rule 1)、範囲だけを持つ画像 (上限 64 MB) に固定する。observer
+    // が渡されていなければ、ここで 作る (全部 0 で始まるので、故障の注入や以前の timeout
+    // の数え方は入らない)。
+    std::unique_ptr<MvmExportObserver> productObserver;
+    MvmExportObserver* exportObserver = request.exportObserver;
+    if (request.mathGroupOptimization == MathGroupOptimization::Auto) {
+        if (exportObserver == nullptr) {
+            productObserver = std::make_unique<MvmExportObserver>();
+            exportObserver = productObserver.get();
+        }
+        exportObserver->diagnostic_math_group = 3;
+        exportObserver->diagnostic_math_group_rule = 1;
+        exportObserver->diagnostic_math_group_storage = 0;
+        if (exportObserver->diagnostic_math_group_raster_budget_bytes <= 0)
+            exportObserver->diagnostic_math_group_raster_budget_bytes = 64LL * 1024 * 1024;
+    }
+    const bool mathGroup = exportObserver != nullptr && exportObserver->diagnostic_math_group != 0;
     // 準備済みの画像の置き場 (書き出しの関数から戻るまで保持する)。同じ出どころ (成果物・見た目・
     // 前処理) で、かつ画素が完全に同じ画像だけを共有する。出どころが同じでも画素が違えば別に持つ。
     math::PreparedMathRasterPool mathGroupPool;
@@ -815,10 +833,9 @@ TimelineExportResult exportTimeline(const project::Project& project,
                 project.timelineClips[index].kind == project::TimelineClipKind::Math)
                 mathGroupNeeded[index][planned.motionFrames.empty() ? 0 : 1] = true;
         }
-    const auto mathGroupStorage =
-        mathGroup && request.exportObserver->diagnostic_math_group_storage == 1
-            ? math::MathRasterStorage::FullFrame
-            : math::MathRasterStorage::RoiOnly;
+    const auto mathGroupStorage = mathGroup && exportObserver->diagnostic_math_group_storage == 1
+                                      ? math::MathRasterStorage::FullFrame
+                                      : math::MathRasterStorage::RoiOnly;
     if (request.mathLayerStaging != MathLayerStaging::FullFrame) {
         std::set<std::size_t> rejected;
         for (const auto& planned : plan.clips) {
@@ -1119,7 +1136,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
                         ";font=" + std::to_string(clip.math.fontSize) +
                         ";color=" + clip.math.color + ";background=" + clip.math.backgroundColor +
                         (qtcrop ? ";preprocess=qtcrop-rect-full-radius-0" : ";preprocess=none");
-                    auto* observer = request.exportObserver;
+                    auto* observer = exportObserver;
                     const auto begin = mvm_mlt_export_observer_now_ns();
                     std::string prepareError;
                     math::PreparedMathRaster raster;
@@ -1337,9 +1354,9 @@ TimelineExportResult exportTimeline(const project::Project& project,
     }
 
     if (mathGroup) {
-        request.exportObserver->math_group_raster_live_bytes = math::preparedMathRasterLiveBytes();
-        request.exportObserver->diagnostic_math_group_compose = &composeMathGroupForExport;
-        request.exportObserver->diagnostic_math_group_opaque = nullptr;
+        exportObserver->math_group_raster_live_bytes = math::preparedMathRasterLiveBytes();
+        exportObserver->diagnostic_math_group_compose = &composeMathGroupForExport;
+        exportObserver->diagnostic_math_group_opaque = nullptr;
     }
     const MvmExportSpec spec{
         .width = request.width,
@@ -1369,7 +1386,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
               }
             : nullptr,
         .rgba_opaque = const_cast<TimelineExportRequest*>(&request),
-        .observer = request.exportObserver,
+        .observer = exportObserver,
     };
 
     // 一時ファイルへ書き、検証を通ってから正規名へ rename する。
@@ -1389,6 +1406,32 @@ TimelineExportResult exportTimeline(const project::Project& project,
                                        plan.totalDurationFrames, &spec, temporaryUtf8.c_str(),
                                        &exported, error, sizeof(error));
     stage("encode-end");
+    // 数式 group の選択の記録 (成功・失敗・取消のどれでも残す)。
+    if (mathGroup) {
+        auto& report = result.mathGroup;
+        const int decision = exportObserver->math_group_decision;
+        report.evaluated = decision != MVM_MATH_GROUP_DECISION_NONE;
+        report.decision = decision == MVM_MATH_GROUP_DECISION_ELIGIBLE     ? "ELIGIBLE"
+                          : decision == MVM_MATH_GROUP_DECISION_INELIGIBLE ? "INELIGIBLE"
+                          : decision == MVM_MATH_GROUP_DECISION_UNKNOWN    ? "UNKNOWN"
+                                                                           : "";
+        report.reason = exportObserver->math_group_decision_reason;
+        report.mathGroupGraph = exportObserver->math_group_graph == 1;
+        report.groups = exportObserver->math_group_transitions;
+        report.groupedClips = exportObserver->math_group_clips;
+        report.retainedClips = exportObserver->math_group_retained_clips;
+        report.affineTransitions = exportObserver->overlay_transitions;
+        report.composedFrames = exportObserver->math_group_frames;
+        report.callbacks = exportObserver->math_group_callbacks;
+        report.errors = exportObserver->math_group_errors;
+        report.rasterCount = exportObserver->math_group_raster_count;
+        report.rasterBytes = exportObserver->math_group_raster_bytes;
+        report.baseAlphaProven = exportObserver->math_group_base_alpha_proven;
+    } else {
+        result.mathGroup.affineTransitions = exported.transition_count;
+    }
+    result.mathGroup.liveTransitionsAfter = mvm_mlt_math_group_live();
+    result.mathGroup.activeCallbacksAfter = mvm_mlt_math_group_active();
     if (exportStatus != MVM_EXPORT_OK) {
         std::filesystem::remove(temporaryPath, pathError);
         result.error = error[0] ? error : "書き出しに失敗しました";
