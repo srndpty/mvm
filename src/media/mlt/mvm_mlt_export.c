@@ -2254,7 +2254,9 @@ cleanup:
     if (v1_guard) {
         if (spec->observer)
             mvm_mlt_v1_background_stats(v1_guard, &spec->observer->v1_background_frames,
-                                        &spec->observer->v1_background_violations);
+                                        &spec->observer->v1_background_violations,
+                                        &spec->observer->v1_background_rejected,
+                                        &spec->observer->v1_background_requested_formats);
         mvm_mlt_v1_background_close(v1_guard);
     }
     free(cursors);

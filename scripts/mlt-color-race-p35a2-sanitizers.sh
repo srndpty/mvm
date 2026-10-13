@@ -40,8 +40,8 @@ build() { # 名前 検出器の flag
 
 # 期待:
 #   ok    成功して、検出器の報告が 0
-#   gate  成功 (= 背景の検査が違反を見つけた)。cache の作り直しを実際に起こすので、MLT の中の
-#         data race を検出器が報告することがある (報告の有無は合否に使わず、数を記録する)
+#   gate  harness 自身の判定だけを見る (P3-5A.2 の最初の版で、cache の作り直しを実際に起こす
+#         対照に使った。今は、key を変える要求を MLT へ渡す前に断るので、使っていない)
 #   race  検出器が producer_colour.c の中の data race を報告する
 run() { # 検出器の名前 scenario worker 期待 [番号]
     local name="$1" scenario="$2" workers="$3" expect="$4" index="${5:-}"
@@ -77,9 +77,11 @@ for name in tsan asan; do
     done
     run "$name" fault-prewarm 1 ok
     run "$name" fault-rebuild 8 ok
-    run "$name" invalidate-format 8 gate
-    run "$name" invalidate-size 8 gate
-    run "$name" invalidate-resource 8 gate
+    # cache の key を変える要求。MLT へ渡す前に断るので、cache は作り直されず、検出器の報告も無い。
+    run "$name" invalidate-format 8 ok
+    run "$name" invalidate-size 8 ok
+    run "$name" invalidate-rgba64 8 ok
+    run "$name" invalidate-resource 8 ok
 done
 
 # 対照: 保護なし。検出器が MLT の color producer の中の data race を報告しなければ、検証の方法が

@@ -316,6 +316,10 @@ typedef struct MvmExportObserver {
      * 違反が 1 つでもあれば、書き出しは失敗する (observer が無くても同じ)。 */
     long long v1_background_frames;
     long long v1_background_violations;
+    /* MLT へ渡す前に断った要求の数 (違反の内数) と、要求された形式 (mlt_image_format の値を bit の
+     * 位置にした和)。 */
+    long long v1_background_rejected;
+    int v1_background_requested_formats;
     /* 出力 (P3-3D)。 */
     int math_group_decision;                 /* MvmMathGroupDecision */
     char math_group_decision_reason[96];     /* 判定の理由 (事前に決めた名前) */

@@ -16,9 +16,10 @@
 //   cancel           保護あり。途中で consumer を止める
 //   fault-rebuild    対照。prewarm の後で cache を作り直させる → 検査が見つける
 //   fault-prewarm    対照。prewarm の検査の失敗 → 作る時点で失敗する
-//   invalidate-format    対照。形式を固定しない → 検査が見つける
-//   invalidate-size      対照。consumer が別の大きさを要求する → 検査が見つける
-//   invalidate-resource  対照。書き出しの途中で色の文字列を変える → 検査が見つける
+//   invalidate-format    対照。形式を固定しない → MLT へ渡す前に断る
+//   invalidate-size      対照。consumer が別の大きさを要求する → MLT へ渡す前に断る
+//   invalidate-rgba64    対照。consumer が rgba64 を要求する → MLT へ渡す前に断る
+//   invalidate-resource  対照。consumer を始める前に色の文字列を変える → MLT へ渡す前に断る
 //   unprotected      対照。保護なし。順不同・形式が混ざる要求 → 検出器が MLT の中の data race
 //   を報告 unprotected-pixels   対照。保護なし。最初の frame を全 worker
 //   が同時に要求する。黒でない画素を
@@ -190,7 +191,7 @@ struct Outcome {
     bool built = false;
     bool failedGate = false; // 背景の検査が違反を報告した
     std::string gateError;
-    long long checked = 0, violations = 0;
+    long long checked = 0, violations = 0, rejected = 0;
 };
 
 // consumer で全 frame を書き出す。stopAfter >= 0 なら、その数を観測した時点で止める。
@@ -215,6 +216,14 @@ Outcome runConsumer(Graph& graph, Audit& audit, int workers, const char* consume
                     mlt_consumer_start(consumer) == 0;
     bool mutated = false;
     char reason[256] = {};
+    if (mutateAt == 0) {
+        // consumer を始める前に (1 thread で) 変える。worker が動いている間に property を書き換える
+        // のは、MLT 自身の読み方 (lock なしで文字列を読む) と競合するので、対照として使わない。
+        mutated = true;
+        mlt_properties_set(
+            MLT_PRODUCER_PROPERTIES(mvm_mlt_v1_background_producer(graph.background)), "resource",
+            "0x000000ff");
+    }
     while (outcome.built && !mlt_consumer_is_stopped(consumer)) {
         // mvm_mlt_export.c の待ち loop と同じ: 違反を見たら止める。
         if (mvm_mlt_v1_background_failed(graph.background, reason, sizeof(reason))) {
@@ -236,7 +245,8 @@ Outcome runConsumer(Graph& graph, Audit& audit, int workers, const char* consume
     if (mvm_mlt_v1_background_failed(graph.background, reason, sizeof(reason)))
         outcome.failedGate = true;
     outcome.gateError = reason;
-    mvm_mlt_v1_background_stats(graph.background, &outcome.checked, &outcome.violations);
+    mvm_mlt_v1_background_stats(graph.background, &outcome.checked, &outcome.violations,
+                                &outcome.rejected, nullptr);
     return outcome;
 }
 
@@ -324,7 +334,7 @@ void scenarioSeek(int workers) {
     require(!mvm_mlt_v1_background_failed(graph.background, reason, sizeof(reason)),
             "順不同・形式の混ざる要求で背景の違反が無いこと");
     long long checked = 0, violations = 0;
-    mvm_mlt_v1_background_stats(graph.background, &checked, &violations);
+    mvm_mlt_v1_background_stats(graph.background, &checked, &violations, nullptr, nullptr);
     require(checked > 0 && violations == 0, "検査を通り、違反が無いこと");
     requireAllGapFramesBlack(audit, false);
     require(audit.seen[0].load() > 0 && audit.seen[kClipEnd].load() > 0,
@@ -350,7 +360,8 @@ void scenarioCancel(int workers) {
 
 // 検査が違反を見つけること (cache の作り直しの対照)。
 void scenarioDetected(const char* name, int workers, int fault, const char* consumerFormat,
-                      int requestWidth, long long mutateAt, const char* expected) {
+                      int requestWidth, long long mutateAt, const char* expected,
+                      bool rejectedBeforeMlt) {
     Graph graph;
     Audit audit;
     require(buildGraph(graph, fault, audit), "graph を作れること");
@@ -359,6 +370,9 @@ void scenarioDetected(const char* name, int workers, int fault, const char* cons
     std::printf("%s workers=%d 検査=%lld 違反=%lld: %s\n", name, workers, outcome.checked,
                 outcome.violations, outcome.gateError.c_str());
     require(outcome.failedGate && outcome.violations > 0, "背景の検査が違反を見つけること");
+    require(rejectedBeforeMlt ? outcome.rejected == outcome.violations : outcome.rejected == 0,
+            "MLT へ渡す前に断ったかどうかが期待どおりであること");
+    std::printf("  渡す前に断った要求: %lld\n", outcome.rejected);
     require(outcome.gateError.find(expected) != std::string::npos,
             "違反の理由が期待どおりであること");
     closeGraph(graph);
@@ -456,18 +470,21 @@ int main(int argc, char** argv) {
         scenarioCancel(workers);
     else if (scenario == "fault-rebuild")
         scenarioDetected("fault-rebuild", workers, MVM_V1_BACKGROUND_FAULT_REBUILD, nullptr, 0, -1,
-                         "作り直されました");
+                         "作り直されました", false);
     else if (scenario == "fault-prewarm")
         scenarioPrewarmFails();
     else if (scenario == "invalidate-format")
         scenarioDetected("invalidate-format", workers, MVM_V1_BACKGROUND_FAULT_NO_FORMAT, nullptr,
-                         0, -1, "出力と違う形");
+                         0, -1, "形式の固定が外れています", true);
     else if (scenario == "invalidate-size")
         scenarioDetected("invalidate-size", workers, MVM_V1_BACKGROUND_FAULT_NONE, nullptr, 320, -1,
-                         "出力と違う形");
+                         "出力と違う大きさ", true);
+    else if (scenario == "invalidate-rgba64")
+        scenarioDetected("invalidate-rgba64", workers, MVM_V1_BACKGROUND_FAULT_NONE, "rgba64", 0,
+                         -1, "rgba64", true);
     else if (scenario == "invalidate-resource")
         scenarioDetected("invalidate-resource", workers, MVM_V1_BACKGROUND_FAULT_NONE, nullptr, 0,
-                         20, "作り直されました");
+                         0, "色の指定が変わっています", true);
     else if (scenario == "unprotected")
         scenarioUnprotected(workers);
     else if (scenario == "unprotected-pixels")

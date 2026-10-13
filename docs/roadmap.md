@@ -176,6 +176,9 @@
     確かめる（変わっていたら書き出しを失敗にする）。検出器付きの MLT で、保護ありは報告 0、保護なしは race と
     誤った画素を再現。Windows の出力は前後で同じ。全 CTest は 1517/1522（monitor が無い間に GUI の 5 件が
     落ちた）で、取り直しが残っている。
+  - P3-5A.2 の closure（[結果](mlt-color-race-p35a2-closure.md)）: GUI の環境を確かめる script を足し、commit 済みの
+    P3-5A.2 は有効な環境で全 CTest 1522/1522。背景の cache の key を変える要求を MLT へ渡す前に断る検査を足した
+    作業 tree は、実行中に monitor が無くなったため全 CTest の取り直しが残っている（HOLD）。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

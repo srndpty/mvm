@@ -189,6 +189,14 @@ void checkSuccess(const std::string& label, Scenario& scenario, bool useValidato
             label + ": 書き出しが完了すること");
     require(run.outputExists, label + ": 出力ができること");
     require(run.observer.v1_background_violations == 0, label + ": cache の作り直しが無いこと");
+    require(run.observer.v1_background_rejected == 0, label + ": 断った要求が無いこと");
+    // 背景へ届く要求の形式は、rgba (overlay の affine、RGBA の検査) と yuv422 (consumer) だけ。
+    constexpr int kRgba = 1 << 2, kYuv422 = 1 << 3; // mlt_image_rgba = 2、mlt_image_yuv422 = 3
+    const int formats = run.observer.v1_background_requested_formats;
+    require(formats != 0 && (formats & ~(kRgba | kYuv422)) == 0,
+            label + ": 背景への要求の形式が rgba・yuv422 だけであること");
+    if (useValidator)
+        require(formats == kRgba, label + ": RGBA の検査があるときは、要求が rgba だけであること");
     long long gapFrames = 0;
     for (const bool gap : scenario.gapOnly)
         gapFrames += gap;
@@ -208,15 +216,16 @@ void checkSuccess(const std::string& label, Scenario& scenario, bool useValidato
                     run.observed.repeatDiffers == 0,
                 label + ": 大きさ・frame 番号・再要求の画素が正しいこと");
     }
-    std::printf("%s: 背景の検査 %lld 回、違反 %lld\n", label.c_str(),
+    std::printf("%s: 背景の検査 %lld 回、違反 %lld、要求の形式%s%s\n", label.c_str(),
                 static_cast<long long>(run.observer.v1_background_frames),
-                static_cast<long long>(run.observer.v1_background_violations));
+                static_cast<long long>(run.observer.v1_background_violations),
+                (formats & kRgba) ? " rgba" : "", (formats & kYuv422) ? " yuv422" : "");
     std::filesystem::remove(output);
 }
 
 // 故障を入れた書き出しは失敗し、理由に expected を含むこと。
 void checkFault(const std::string& label, Scenario& scenario, bool useValidator, int fault,
-                const char* expected, bool beforeConsumer) {
+                const char* expected, bool beforeConsumer, bool rejectedBeforeMlt = false) {
     Run run;
     const auto output = scratch(label);
     runExport(scenario, useValidator, 8, fault, output, run);
@@ -229,6 +238,8 @@ void checkFault(const std::string& label, Scenario& scenario, bool useValidator,
         require(!run.outputExists, label + ": 出力を作らないこと");
     } else {
         require(run.observer.v1_background_violations > 0, label + ": 違反を数えること");
+        require((run.observer.v1_background_rejected > 0) == rejectedBeforeMlt,
+                label + ": 要求を MLT へ渡す前に断ったかどうかが期待どおりであること");
     }
     std::filesystem::remove(output);
 }
@@ -296,13 +307,14 @@ int main(int argc, char** argv) {
     // 対照: cache の作り直しが起きると、書き出しは失敗する。
     {
         // 形式を固定しない。overlay の無い frame は consumer の形式 (yuv) で要求されるので、
-        // rgba で作った cache が作り直される (修正の前の製品の動き)。
+        // そのまま渡せば rgba で作った cache が作り直される (修正の前の製品の動き)。
+        // 要求は MLT へ渡す前に断られる。
         Scenario scenario = makeScenario("mixed");
-        checkFault("fault-no-format", scenario, false, 1, "V1 の背景", false);
+        checkFault("fault-no-format", scenario, false, 1, "形式の固定が外れています", false, true);
     }
     {
-        // prewarm の後で、同じ色の別の書き方へ変えて作り直させる (形も画素も同じ。buffer
-        // だけが違う)。
+        // 渡す前の検査が見ない所で cache が作り直された状態 (形も画素も同じ。buffer だけが違う)。
+        // 渡した後の検査が見つける。
         Scenario scenario = makeScenario("gap");
         checkFault("fault-rebuild", scenario, false, 2, "作り直されました", false);
     }

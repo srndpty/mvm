@@ -12,6 +12,7 @@ typedef long LONG;
 #define InterlockedExchangeAdd64(target, value)                                                    \
     __atomic_fetch_add((target), (value), __ATOMIC_SEQ_CST)
 #define InterlockedExchange(target, value) __atomic_exchange_n((target), (value), __ATOMIC_SEQ_CST)
+#define InterlockedOr(target, value) __atomic_fetch_or((target), (value), __ATOMIC_SEQ_CST)
 /* 比較して交換し、元の値を返す。この source は (target, 0, 0) の形 (= 読むだけ) でしか使わない。 */
 #define InterlockedCompareExchange64(target, exchange, comparand)                                  \
     __atomic_load_n((target), __ATOMIC_SEQ_CST)

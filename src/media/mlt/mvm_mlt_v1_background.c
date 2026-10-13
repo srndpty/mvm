@@ -6,6 +6,7 @@
 #include <string.h>
 
 #define MVM_V1_BACKGROUND_PROPERTY "_mvm_v1_background"
+#define MVM_V1_BACKGROUND_COLOUR "#000000"
 
 struct MvmV1Background {
     mlt_producer producer;
@@ -14,8 +15,12 @@ struct MvmV1Background {
     int guarded;          /* 0 なら検査しない (保護なしの対照) */
     const uint8_t* cache; /* prewarm のときの cache の buffer (比べるだけで、読まない) */
     int cache_size;
+    const char* expected_resource; /* 色の文字列 (cache の key の一部) */
     volatile LONG64 frames;
     volatile LONG64 violations;
+    volatile LONG64 rejected; /* MLT へ渡す前に断った要求の数 */
+    volatile LONG
+        requested_formats; /* 要求された形式 (mlt_image_format の値を bit の位置にした和) */
     volatile LONG first_ready;
     char first[240]; /* 最初の違反 (first_ready が非 0 になってから読む) */
 };
@@ -60,10 +65,41 @@ static int guarded_get_image(mlt_frame frame, uint8_t** image, mlt_image_format*
     MvmV1Background* background =
         (MvmV1Background*)mlt_properties_get_data(properties, MVM_V1_BACKGROUND_PROPERTY, NULL);
     const long long position = (long long)mlt_frame_get_position(frame);
-    const int error = mlt_frame_get_image(frame, image, format, width, height, writable);
     if (!background)
-        return error;
+        return mlt_frame_get_image(frame, image, format, width, height, writable);
     InterlockedIncrement64(&background->frames);
+    /* --- 要求を MLT へ渡す前の検査 ---
+     * 下の「渡した後の検査」は、MLT が要求を処理した後にしか働かない。cache を作り直す要求は、
+     * 見つけた時点で、もう別の worker に埋まる前の画素を渡しているかもしれない (同期の壁ではない)。
+     * そこで、cache の key を変える要求は、MLT の producer へ渡さずに断る。key は
+     * 色の文字列・幅・高さ・形式で、形式は producer に固定してある (要求が yuv でも rgba で作る)。
+     * 断った要求は違反として数え、呼び出し側が書き出しを失敗にする。 */
+    const mlt_image_format requested_format = *format;
+    const int requested_width = *width, requested_height = *height;
+    if ((int)requested_format >= 0 && (int)requested_format < 31)
+        InterlockedOr(&background->requested_formats, 1L << (int)requested_format);
+    {
+        const char* fixed = mlt_properties_get(properties, "mlt_image_format");
+        const char* resource = mlt_properties_get(properties, "resource");
+        const char* refused = NULL;
+        if (!fixed || strcmp(fixed, "rgba") != 0)
+            refused = "形式の固定が外れています (要求を断りました)";
+        else if (requested_format == mlt_image_rgba64)
+            refused = "rgba64 の要求は cache を作り直すので断りました";
+        else if ((requested_width > 0 && requested_width != background->width) ||
+                 (requested_height > 0 && requested_height != background->height))
+            refused = "出力と違う大きさの要求は cache を作り直すので断りました";
+        else if (!resource || strcmp(resource, background->expected_resource) != 0)
+            refused = "色の指定が変わっています (要求を断りました)";
+        if (refused) {
+            InterlockedIncrement64(&background->rejected);
+            record_violation(background, position, refused, (int)requested_format, requested_width,
+                             requested_height);
+            return 1; /* producer へは渡さない。frame には MLT が試験用の画像を入れる */
+        }
+    }
+    /* --- 渡した後の検査 --- */
+    const int error = mlt_frame_get_image(frame, image, format, width, height, writable);
     int cache_size = 0;
     const uint8_t* cache =
         (const uint8_t*)mlt_properties_get_data(properties, "image", &cache_size);
@@ -140,6 +176,11 @@ static int prewarm(MvmV1Background* background, mlt_image_format request, int ve
         } else if (!all_opaque_black(image, pixels) || !all_opaque_black(cache, pixels)) {
             background_error(err, err_size, "V1 の背景の画素が黒 (alpha 255) ではありません");
             failed = 1;
+        } else if (!mlt_properties_get(properties, "resource") ||
+                   strcmp(mlt_properties_get(properties, "resource"),
+                          background->expected_resource) != 0) {
+            background_error(err, err_size, "V1 の背景の色の指定が期待と違います");
+            failed = 1;
         } else {
             background->cache = cache;
             background->cache_size = cache_size;
@@ -164,7 +205,8 @@ MvmV1Background* mvm_mlt_v1_background_new(mlt_profile profile, long long length
     }
     background->width = width;
     background->height = height;
-    background->producer = mlt_factory_producer(profile, "color", "#000000");
+    background->expected_resource = MVM_V1_BACKGROUND_COLOUR;
+    background->producer = mlt_factory_producer(profile, "color", MVM_V1_BACKGROUND_COLOUR);
     if (!background->producer) {
         free(background);
         background_error(err, err_size, "V1 の背景 (color producer) を作れません");
@@ -200,11 +242,14 @@ MvmV1Background* mvm_mlt_v1_background_new(mlt_profile profile, long long length
     producer->get_frame = guarded_get_frame;
     background->guarded = 1;
     if (fault == MVM_V1_BACKGROUND_FAULT_REBUILD) {
-        /* 対照: prewarm の後で cache を作り直させる。色の文字列を、同じ色の別の書き方へ変える
-         * (MLT は文字列が違えば作り直す)。作り直した画像は、形式も大きさも画素も prewarm のときと
-         * 同じなので、検出できるのは「cache の buffer が変わった」ことだけである。
-         * 要求は検査つきの道を通す (実際の書き出しでは、どの要求も検査を通る)。 */
-        mlt_properties_set(properties, "resource", "0x000000ff");
+        /* 対照: 「渡す前の検査」が見ていない所で cache が作り直された状態を作る。
+         * 色の文字列を同じ色の別の書き方へ変え (MLT は文字列が違えば作り直す)、渡す前の検査が
+         * 期待する文字列もそれに合わせる。作り直した画像は、形式も大きさも画素も prewarm のときと
+         * 同じなので、「渡した後の検査」が見つけられるのは cache の buffer
+         * が変わったことだけである。 */
+        static const char* const kSameColour = "0x000000ff";
+        mlt_properties_set(properties, "resource", kSameColour);
+        background->expected_resource = kSameColour;
         mlt_frame frame = NULL;
         if (mlt_service_get_frame(MLT_PRODUCER_SERVICE(producer), &frame, 0) == 0 && frame) {
             uint8_t* image = NULL;
@@ -233,13 +278,20 @@ int mvm_mlt_v1_background_failed(MvmV1Background* background, char* err, size_t 
 }
 
 void mvm_mlt_v1_background_stats(MvmV1Background* background, long long* frames,
-                                 long long* violations) {
+                                 long long* violations, long long* rejected,
+                                 int* requested_formats) {
     if (frames)
         *frames =
             background ? (long long)InterlockedCompareExchange64(&background->frames, 0, 0) : 0;
     if (violations)
         *violations =
             background ? (long long)InterlockedCompareExchange64(&background->violations, 0, 0) : 0;
+    if (rejected)
+        *rejected =
+            background ? (long long)InterlockedCompareExchange64(&background->rejected, 0, 0) : 0;
+    if (requested_formats)
+        *requested_formats =
+            background ? (int)InterlockedCompareExchange(&background->requested_formats, 0, 0) : 0;
 }
 
 void mvm_mlt_v1_background_close(MvmV1Background* background) {

@@ -3285,12 +3285,16 @@ int main(int argc, char** argv) {
     report.insert(QStringLiteral("pre_yuv_outside_domain"), outside);
     report.insert(QStringLiteral("pre_yuv_admissible_alpha"), admissibleAlpha);
     report.insert(QStringLiteral("background_alpha"), fixture.backgroundAlpha);
-    report.insert(QStringLiteral("v1_background"),
-                  QJsonObject{{QStringLiteral("fault"), options.v1BackgroundFault},
-                              {QStringLiteral("checked_requests"),
-                               static_cast<qint64>(observer.v1_background_frames)},
-                              {QStringLiteral("violations"),
-                               static_cast<qint64>(observer.v1_background_violations)}});
+    report.insert(
+        QStringLiteral("v1_background"),
+        QJsonObject{
+            {QStringLiteral("fault"), options.v1BackgroundFault},
+            {QStringLiteral("checked_requests"),
+             static_cast<qint64>(observer.v1_background_frames)},
+            {QStringLiteral("violations"), static_cast<qint64>(observer.v1_background_violations)},
+            {QStringLiteral("rejected_before_mlt"),
+             static_cast<qint64>(observer.v1_background_rejected)},
+            {QStringLiteral("requested_formats_mask"), observer.v1_background_requested_formats}});
     report.insert(QStringLiteral("pre_yuv_lowest_alpha"), lowestAlpha);
     report.insert(QStringLiteral("pre_yuv_low_alpha_count"), transparentCount);
     report.insert(QStringLiteral("pre_yuv_low_alpha_first"), transparent);
