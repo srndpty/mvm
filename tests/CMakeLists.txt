@@ -182,9 +182,24 @@ set_tests_properties(math_group_preflight_decisions PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
 set_tests_properties(math_group_compose_oracle PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
-# timeout_ms の数え方の監査。現状は Sleep(20) の回数で数えるので、実時間では timeout_ms より遅く
-# timeout する (終了コード 3)。実時間で数えるよう直したら、期待を 0 に変える。
-# 合否の基準ではなく現状の記録なので、通常の実行から外す (stability)。
+# P3-5B: timeout を実時間で数えること。実物の待ち loop を、遅い consumer と遅い進行 callback で
+# 動かす。時間を測る試験なので、ほかの試験と並べない (負荷で thread が遅れると許容を超える)。
+add_executable(mvm_test_mlt_export_timeout harness/test_mlt_export_timeout.cpp)
+target_link_libraries(mvm_test_mlt_export_timeout PRIVATE mvm::mlt mvm::warnings)
+target_compile_definitions(mvm_test_mlt_export_timeout PRIVATE ${MVM_MLT_PATH_DEFS}
+    MVM_TIMEOUT_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
+add_test(NAME mlt_export_timeout_real_time COMMAND mvm_test_mlt_export_timeout)
+set_tests_properties(mlt_export_timeout_real_time PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
+    RUN_SERIAL TRUE
+    TIMEOUT 300)
+# timeout_ms の数え方の監査 (P3-5B より前の数え方の記録)。以前は Sleep(20) の回数で数えていたので、
+# 実時間では timeout_ms より遅く timeout した (終了コード 3)。P3-5B で実時間で数えるようにした
+# (上の mlt_export_timeout_real_time)。この試験は、以前の数え方を observer の診断用の入力で指定して
+# 同じ測定を行い、当時の結果 (終了コード 3) が今も再現することを記録する。期待は 0 に変えていない:
+# 測っているのは今の製品の数え方ではなく、以前の数え方である。
+# 合否の基準ではなく記録なので、通常の実行から外す (stability)。
 add_test(NAME mlt_export_timeout_accounting_deviation
     COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
             -ExpectExit 3 -Exe "$<TARGET_FILE:mvm_test_mlt_export_capacity>"

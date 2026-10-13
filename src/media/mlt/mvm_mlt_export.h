@@ -312,6 +312,10 @@ typedef struct MvmExportObserver {
     /* 入力 (P3-5A.2): V1 の背景 (黒の color producer) の保護の対照用の故障。0 = なし (既定)。
      * 値は mvm_mlt_v1_background.h の MVM_V1_BACKGROUND_FAULT_*。 */
     int diagnostic_v1_background_fault;
+    /* 入力 (P3-5B): 非 0 なら、timeout を P3-5B より前の数え方 (待ち loop の回数 × 20 ms)
+     * で数える。 古い数え方が実時間より遅く timeout
+     * することの記録と、新しい検査の対照のためだけに使う。 */
+    int diagnostic_legacy_timeout_accounting;
     /* 出力 (P3-5A.2): V1 の背景の画像の要求を検査した数と、違反 (cache の作り直しなど) の数。
      * 違反が 1 つでもあれば、書き出しは失敗する (observer が無くても同じ)。 */
     long long v1_background_frames;
@@ -379,6 +383,11 @@ typedef struct {
     int fps_den;
     /* libx264 CRF。0..51 の範囲を明示し、consumer側で既定値へ落とさない。 */
     int video_crf;
+    /* consumer を開始してから止まるまでの待ちの上限 (ms、実時間。単調な時計で数える)。1 以上。
+     * 準備・graph の構築・consumer の close (encoder の flush)・出力の検証の時間は含まない。
+     * 待ち loop は 1 回 (最大 20 ms + 進行 callback の時間) ごとに、完了 → 取消 → 失敗 → timeout の
+     * 順に見る。期限を過ぎていても、確認した時点で consumer が止まっていれば完了として扱う。
+     * 進行 callback が長くかかると、timeout を見つけるのはその分だけ遅れる。 */
     int timeout_ms;
     /* 負の real_time として設定する非drop render worker数。 */
     int render_threads;

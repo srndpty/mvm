@@ -179,6 +179,10 @@
   - P3-5A.2 の closure（[結果](mlt-color-race-p35a2-closure.md)）: **PASS / CLOSED。** GUI の環境を確かめる script を
     足し、背景の cache の key を変える要求を MLT へ渡す前に断る検査を足した。最終の内容（`c3b683f`）で、
     環境が有効なまま終わる全 CTest が 1522/1522。次は P3-5B（書き出しの timeout を実時間で数える）。
+  - P3-5B（[結果](mlt-export-timeout-p35b.md)）: 書き出しの timeout を実時間（単調な時計）で数えるように直した。
+    1 秒の timeout を 1002〜1046 ms で検出（以前は 1.5〜3.4 秒、進行 callback が遅いと timeout しなかった）。
+    値（600000 ms）と監視する区間は変えていない。以前の数え方の記録は、診断用の入力で残してある。
+    全 CTest 1523/1523。次は P3-6（製品から数式 group を使う入口）。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

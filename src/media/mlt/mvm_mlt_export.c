@@ -226,6 +226,48 @@ static int export_cancel_requested(const MvmExportSpec* spec, mlt_consumer consu
     return cancel;
 }
 
+/* --- 完了待ちの timeout (P3-5B) -------------------------------------------------
+ * MvmExportSpec::timeout_ms は、consumer を開始してから止まるまでの待ちの上限 (実時間) である。
+ * 以前は待ち loop の回数 × 20 ms で数えていた。loop の 1 回には Sleep(20) (Windows の既定の粒度では
+ * 約 31 ms) と進行 callback の時間が入るので、実時間では timeout_ms よりずっと遅く timeout していた
+ * (timeout_ms = 1000 で 3418 ms。進行 callback が 400 ms かかると timeout しなかった)。
+ * 今は単調な時計 (QueryPerformanceCounter) で、待ちを始めた時刻からの経過を測る。
+ * 待ち loop の回数は数えない。 */
+typedef struct {
+    long long start_ns;
+    long long legacy_waited_ms; /* 古い数え方 (診断用の入力のときだけ使う) */
+    int legacy;
+} ExportWait;
+
+static void export_wait_begin(ExportWait* wait, const MvmExportSpec* spec) {
+    wait->start_ns = mvm_mlt_export_observer_now_ns();
+    wait->legacy_waited_ms = 0;
+    wait->legacy = spec->observer && spec->observer->diagnostic_legacy_timeout_accounting;
+}
+
+/* 待ちを始めてからの経過 (ms)。64 bit の ns の差なので、桁あふれしない。 */
+static long long export_wait_elapsed_ms(const ExportWait* wait) {
+    return (mvm_mlt_export_observer_now_ns() - wait->start_ns) / 1000000LL;
+}
+
+/* 期限 (timeout_ms) を過ぎていれば非 0。 */
+static int export_wait_expired(const ExportWait* wait, const MvmExportSpec* spec) {
+    if (wait->legacy)
+        return wait->legacy_waited_ms >= (long long)spec->timeout_ms;
+    return export_wait_elapsed_ms(wait) >= (long long)spec->timeout_ms;
+}
+
+/* 次の確認まで眠る (最大 20 ms)。期限までの残りより長くは眠らない。空回りはしない (最低 1 ms)。 */
+static void export_wait_sleep(ExportWait* wait, const MvmExportSpec* spec) {
+    if (wait->legacy) {
+        Sleep(20);
+        wait->legacy_waited_ms += 20;
+        return;
+    }
+    const long long remaining = (long long)spec->timeout_ms - export_wait_elapsed_ms(wait);
+    Sleep((DWORD)(remaining >= 20 ? 20 : remaining > 1 ? remaining : 1));
+}
+
 static int export_prepare_cancel_requested(const MvmExportSpec* spec, int* status, long long total,
                                            char* err, size_t err_size) {
     if (!export_cancel_requested(spec, NULL, total))
@@ -1312,8 +1354,10 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     /* 完了待ち。timeout を成功扱いにしない。 */
     observe_stage(spec, MVM_EXPORT_STAGE_RENDER);
     {
-        int waited = 0;
-        const int step = 20;
+        /* 1 回ごとに見る順: consumer が止まっていれば完了 → 取消 → timeout。同じ回で重なったら
+         * 先のものが勝つ (止まった時刻は MLT から分からないので、止まっていれば完了として扱う)。 */
+        ExportWait wait;
+        export_wait_begin(&wait, spec);
         while (!mlt_consumer_is_stopped(consumer)) {
             observe_poll(spec, consumer);
             if (export_cancel_requested(spec, consumer, total)) {
@@ -1322,14 +1366,16 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
                 set_err(err, err_size, "書き出しをキャンセルしました");
                 goto fail;
             }
-            Sleep(step);
-            waited += step;
-            if (waited >= spec->timeout_ms) {
+            if (export_wait_expired(&wait, spec)) {
+                /* 進行 callback の間に終わっていれば、完了として扱う (timeout とは言わない)。 */
+                if (mlt_consumer_is_stopped(consumer))
+                    break;
                 mlt_consumer_stop(consumer);
                 set_err(err, err_size, "consumer が %d ms 以内に終了しませんでした (timeout)",
                         spec->timeout_ms);
                 goto fail;
             }
+            export_wait_sleep(&wait, spec);
         }
         if (spec->progress_callback &&
             spec->progress_callback(total, total, spec->progress_opaque) != 0) {
@@ -2160,7 +2206,11 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     }
     observe_stage(spec, MVM_EXPORT_STAGE_RENDER);
     {
-        int waited = 0;
+        /* 1 回ごとに見る順: consumer が止まっていれば完了 → 取消 → 合成・背景の失敗 → timeout。
+         * 同じ回で重なったら先のものが勝つ (止まった時刻は MLT から分からないので、止まっていれば
+         * 完了として扱い、timeout とは言わない)。 */
+        ExportWait wait;
+        export_wait_begin(&wait, spec);
         while (!mlt_consumer_is_stopped(consumer)) {
             observe_poll(spec, consumer);
             if (export_cancel_requested(spec, consumer, total_duration)) {
@@ -2178,12 +2228,14 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                 mlt_consumer_stop(consumer);
                 goto cleanup;
             }
-            Sleep(20);
-            waited += 20;
-            if (waited >= spec->timeout_ms) {
+            if (export_wait_expired(&wait, spec)) {
+                /* 進行 callback の間に終わっていれば、完了として扱う (timeout とは言わない)。 */
+                if (mlt_consumer_is_stopped(consumer))
+                    break;
                 set_err(err, err_size, "tractor consumerがtimeoutしました");
                 goto cleanup;
             }
+            export_wait_sleep(&wait, spec);
         }
         /* 最後の frame での失敗を取りこぼさない。 */
         if (math_group_failed(spec, err, err_size))

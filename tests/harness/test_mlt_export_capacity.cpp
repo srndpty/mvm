@@ -67,7 +67,12 @@ void requireRejected(const MvmExportClip* clips, int count, long long totalDurat
 
 } // namespace
 
-// timeout_ms の数え方の監査 (修正ではなく、現状の測定)。
+// timeout_ms の数え方の監査 (P3-5B より前の数え方の記録)。
+//
+// P3-5B で、書き出しは timeout を実時間で数えるようになった (検査は test_mlt_export_timeout.cpp)。
+// ここは、以前の数え方が実時間より遅く timeout していたことの記録として残してある。observer の
+// 診断用の入力 (diagnostic_legacy_timeout_accounting) で、以前の数え方を指定して測る。
+// 以下は、当時の説明である。
 //
 // 書き出しの待ち loop は Sleep(20) の回数に 20 を足して経過時間としている (mvm_mlt_export.c)。
 // loop の 1 回には Sleep(20) の他に進行 callback の時間が入るので、数えた時間は実時間より遅く進む。
@@ -86,6 +91,9 @@ int timeoutAccounting() {
     const MvmExportClip clip = videoClip(MVM_CAPACITY_TEST_VIDEO, 0, 300, 0);
     MvmExportSpec spec{320, 240,     60,      1, 23,      kTimeoutMs, 4,
                        0,   nullptr, nullptr, 0, nullptr, nullptr,    nullptr};
+    MvmExportObserver observer{};
+    observer.diagnostic_legacy_timeout_accounting = 1; // P3-5B より前の数え方
+    spec.observer = &observer;
     spec.progress_callback = [](long long, long long, void*) {
         Sleep(30);
         return 0;
