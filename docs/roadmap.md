@@ -188,6 +188,11 @@
     ELIGIBLE のときだけ数式 group の graph、それ以外は従来の graph。実行時の失敗は書き出しの失敗にする
     （やり直さない）。製品の入口からの 22 + 5 通りが期待どおりで、全 frame が従来の経路と一致。全 CTest 1523/1523
     （3 回目。1・2 回目は、負荷と利用者の操作で 1 件ずつ落ちた）。次は P3-6B。
+  - P3-6B（[結果](math-group-product-p36b.md)）: 製品の入口から `Auto` で v4 全体（6840 frame）を
+    書き出す検収。PASS（291.0 秒、ELIGIBLE、出力の MP4 は P3-4・P3-5A の全長の出力と同じ SHA-256）。
+    監査で見つけた欠陥（`Auto` が画像の上限の超過で、UNKNOWN・INELIGIBLE の Project まで失敗にする）を
+    P3-6A.1 として直した（準備を取りやめて従来の graph で書き出す。上限 64 MB は変えない）。
+    既定は off のまま。実行時の失敗のときのやり直しは P3-6C。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。

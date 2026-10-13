@@ -213,6 +213,9 @@ struct Options {
     // candidate に observer を付けるか。既定は付けない (製品の要求と同じ)。diagnostic なら付ける
     // (故障の注入・下地の観測を、製品の選択と組み合わせるため)。
     bool productObserver = false;
+    // P3-6B: 製品の要求を 1 つも書き換えずに書き出す (observer・pre-YUV の計測・MLT の計時 hook・
+    // FFmpeg の記録の tap を付けない)。--product-math-group と組で使う。
+    bool productPure = false;
     int v1BackgroundFault = 0; // P3-5A.2: V1 の背景の保護の対照用の故障 (mvm_mlt_v1_background.h)
     int forgeAlphaProof = 0;   // 非 0: V1 の alpha の証明をこの値に差し替える (誤った証明の対照)
     int candidateRepeats = 1;  // candidate を同じ process の中で続けて書き出す回数
@@ -221,6 +224,7 @@ struct Options {
     // 準備済みの画像の上限 (事前に固定)。-1 は持ち方ごとの既定: 全画面は 800 MB (P3-3A の実測
     // 783 MB)、中身のある範囲だけは 64 MB (P3-3C)。
     long long mathGroupBudgetMb = -1;
+    long long mathGroupBudgetBytes = -1; // P3-6A.1: byte 単位の上限 (小さい上限の対照用)
     // 分け方 (0 は既定値): 変わる区間の上限 / 変わらない区間の下限 / 変わらない区間の上限。
     int splitAnimatedRun = 0, splitStaticRun = 0, splitStaticChunk = 0;
     int capSeconds = 240;  // 書き出し全体の診断上限
@@ -1971,6 +1975,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             if (value != "on" && value != "off")
                 return false;
             options.productMain = value == "on" ? 2 : 1;
+        } else if (key == "--product-pure") {
+            options.productPure = value == "1";
         } else if (key == "--product-observer") {
             if (value != "diagnostic" && value != "none")
                 return false;
@@ -2005,6 +2011,10 @@ bool parseOptions(int argc, char** argv, Options& options) {
                                                : mvm::math::MathRasterStorage::RoiOnly;
         } else if (key == "--math-group-budget-mb") {
             options.mathGroupBudgetMb = std::atoll(value.c_str());
+        } else if (key == "--math-group-budget-bytes") {
+            options.mathGroupBudgetBytes = std::atoll(value.c_str());
+            if (options.mathGroupBudgetBytes <= 0)
+                return false;
         } else if (key == "--math-group-fault") {
             options.mathGroupFault = std::atoi(value.c_str());
         } else if (key == "--compare") {
@@ -2059,6 +2069,36 @@ bool parseOptions(int argc, char** argv, Options& options) {
     return argc % 2 == 1 && options.fixture && !options.project.empty() && !options.manim.empty() &&
            !options.output.empty() && !options.ffprobe.empty() && options.capSeconds > 0 &&
            options.stallSeconds > 0 && options.stackSamples >= 0 && options.stackSamples <= 4;
+}
+
+// 書き出しの結果に付いた数式 group の選択の記録。
+QJsonObject mathGroupReportJson(const mvm::app::MathGroupExportReport& recorded) {
+    return QJsonObject{
+        {QStringLiteral("requested"), recorded.requested == mvm::app::MathGroupOptimization::Auto
+                                          ? QStringLiteral("auto")
+                                          : QStringLiteral("off")},
+        {QStringLiteral("evaluated"), recorded.evaluated},
+        {QStringLiteral("decision"), QString::fromStdString(recorded.decision)},
+        {QStringLiteral("reason"), QString::fromStdString(recorded.reason)},
+        {QStringLiteral("graph"),
+         recorded.mathGroupGraph ? QStringLiteral("math-group") : QStringLiteral("conventional")},
+        {QStringLiteral("groups"), static_cast<qint64>(recorded.groups)},
+        {QStringLiteral("grouped_clips"), static_cast<qint64>(recorded.groupedClips)},
+        {QStringLiteral("retained_clips"), static_cast<qint64>(recorded.retainedClips)},
+        {QStringLiteral("affine_transitions"), static_cast<qint64>(recorded.affineTransitions)},
+        {QStringLiteral("composed_frames"), static_cast<qint64>(recorded.composedFrames)},
+        {QStringLiteral("callbacks"), static_cast<qint64>(recorded.callbacks)},
+        {QStringLiteral("errors"), static_cast<qint64>(recorded.errors)},
+        {QStringLiteral("raster_count"), static_cast<qint64>(recorded.rasterCount)},
+        {QStringLiteral("raster_bytes"), static_cast<qint64>(recorded.rasterBytes)},
+        {QStringLiteral("raster_budget_bytes"), static_cast<qint64>(recorded.rasterBudgetBytes)},
+        {QStringLiteral("preparation_rejected"), recorded.preparationRejected},
+        {QStringLiteral("preparation_reason"), QString::fromStdString(recorded.preparationReason)},
+        {QStringLiteral("base_alpha_proven"), recorded.baseAlphaProven},
+        {QStringLiteral("live_transitions_after"),
+         static_cast<qint64>(recorded.liveTransitionsAfter)},
+        {QStringLiteral("active_callbacks_after"),
+         static_cast<qint64>(recorded.activeCallbacksAfter)}};
 }
 
 } // namespace
@@ -2210,7 +2250,9 @@ int main(int argc, char** argv) {
         const long long budgetMb = options.mathGroupBudgetMb >= 0 ? options.mathGroupBudgetMb
                                    : fullStorage                  ? 800
                                                                   : 64;
-        target.diagnostic_math_group_raster_budget_bytes = budgetMb * 1024 * 1024;
+        target.diagnostic_math_group_raster_budget_bytes = options.mathGroupBudgetBytes > 0
+                                                               ? options.mathGroupBudgetBytes
+                                                               : budgetMb * 1024 * 1024;
     };
     // 数式 group の下地の観測と clip ごとの結果 (group を使う書き出しごとに 1 組)。
     GroupProbe mainProbe, candidateProbe;
@@ -2269,9 +2311,53 @@ int main(int argc, char** argv) {
     std::map<std::int64_t, QByteArray> baselineFrames;
     long long mainGroupLive = -1, mainGroupActive = -1;
     long long mainRasterLiveAfter = -1, mainWorkingSetAfter = 0;
+    QJsonObject pureRequest; // --product-pure: controller が作った要求の写し (記録用)
 
     mvm::app::MvmController::ExportRunner runner =
         [&](const Project& exportProject, const mvm::app::TimelineExportRequest& request) {
+            if (options.productPure) {
+                // controller が作った要求を、そのまま製品の書き出しの関数へ渡す (複製もしない)。
+                pureRequest = QJsonObject{
+                    {QStringLiteral("math_group_optimization"),
+                     request.mathGroupOptimization == mvm::app::MathGroupOptimization::Auto
+                         ? QStringLiteral("auto")
+                         : QStringLiteral("off")},
+                    {QStringLiteral("export_observer_supplied"), request.exportObserver != nullptr},
+                    {QStringLiteral("encoder_frame_validator_supplied"),
+                     static_cast<bool>(request.encoderFrameValidator)},
+                    {QStringLiteral("stage_observer_supplied"),
+                     static_cast<bool>(request.stageObserver)},
+                    {QStringLiteral("math_staging_observer_supplied"),
+                     static_cast<bool>(request.mathStagingObserver)},
+                    {QStringLiteral("progress_supplied"), static_cast<bool>(request.progress)},
+                    {QStringLiteral("timeout_ms"), request.timeoutMs},
+                    {QStringLiteral("render_threads"), request.renderThreads},
+                    {QStringLiteral("encoder_threads"), request.encoderThreads},
+                    {QStringLiteral("video_crf"), request.videoCrf},
+                    {QStringLiteral("width"), request.width},
+                    {QStringLiteral("height"), request.height},
+                    {QStringLiteral("fps_num"), request.fpsNum},
+                    {QStringLiteral("fps_den"), request.fpsDen},
+                    {QStringLiteral("burn_subtitles"), request.burnSubtitles},
+                    {QStringLiteral("lossless_audio"), request.losslessAudio},
+                    {QStringLiteral("math_layer_staging"),
+                     static_cast<int>(request.mathLayerStaging)},
+                    {QStringLiteral("math_artifact_count"),
+                     static_cast<qint64>(request.mathArtifacts.size())},
+                    {QStringLiteral("output_path"), toQString(request.outputPath)}};
+                artifacts = request.mathArtifacts;
+                mainRequestModeSeen = static_cast<int>(request.mathGroupOptimization);
+                mainControllerSuppliedObserver = request.exportObserver != nullptr;
+                exportBeginNs.store(mvm_mlt_export_observer_now_ns());
+                exported = mvm::app::exportTimeline(exportProject, request);
+                exportEndNs.store(mvm_mlt_export_observer_now_ns());
+                mainReport = exported.mathGroup;
+                mainGroupLive = mvm_mlt_math_group_live();
+                mainGroupActive = mvm_mlt_math_group_active();
+                mainRasterLiveAfter = mvm::math::preparedMathRasterLiveBytes();
+                mainWorkingSetAfter = workingSetBytes(false);
+                return exported;
+            }
             auto input = request;
             if (options.renderThreads > 0)
                 input.renderThreads = options.renderThreads; // 製品の値 (4) ではない
@@ -2479,16 +2565,20 @@ int main(int argc, char** argv) {
 
     // affine・qtcrop が libmlt から呼ぶ property 取得関数を計時する (file
     // は変えない。終了時に戻す)。
-    const int probeHooks = mvm::test::MltPropertyProbe::install(L"libmltplus.dll") +
-                           mvm::test::MltPropertyProbe::install(L"libmltqt6.dll");
+    const int probeHooks = options.productPure
+                               ? 0
+                               : mvm::test::MltPropertyProbe::install(L"libmltplus.dll") +
+                                     mvm::test::MltPropertyProbe::install(L"libmltqt6.dll");
 
     struct ProbeGuard {
         ~ProbeGuard() { mvm::test::MltPropertyProbe::remove(); }
     } probeGuard;
 
     const auto probeMainBegin = mvm::test::MltPropertyProbe::snapshot();
-    gTapObserver.store(&observer);
-    av_log_set_callback(logTap);
+    if (!options.productPure) {
+        gTapObserver.store(&observer);
+        av_log_set_callback(logTap);
+    }
 
     struct TapGuard {
         ~TapGuard() {
@@ -2503,12 +2593,124 @@ int main(int argc, char** argv) {
     const long long startNs = mvm_mlt_export_observer_now_ns();
     // 製品の選択 (MvmController の内部の選択)。指定が無ければ触らない (既定は off)。
     const bool controllerDefaultSelection = controller->mathGroupExportOptimization();
+    if (options.productPure &&
+        (options.productMain == 0 || options.rangeCount > 0 || options.inject != Inject::None ||
+         options.requestTimeoutMs > 0 || options.renderThreads > 0)) {
+        std::fprintf(stderr, "--product-pure は --product-math-group だけと組み合わせます\n");
+        return kExitProtocol;
+    }
     if (options.productMain != 0)
         controller->setMathGroupExportOptimization(options.productMain == 2);
     if (!controller->exportTimeline(QUrl::fromLocalFile(toQString(outputPath)))) {
         std::fprintf(stderr, "書き出しを開始できません: %s\n",
                      controller->statusText().toUtf8().constData());
         return kExitProtocol;
+    }
+
+    if (options.productPure) {
+        // 製品の書き出しを、外から待つだけにする。上限 (--cap-seconds) は製品の timeout とは別の
+        // 有限の watchdog で、超えたら取消を送る (判定の基準は変えない)。進み具合は controller が
+        // UI へ出す値を 1 秒ごとに読むだけにする。
+        QJsonArray progress;
+        bool capped = false;
+        double cancelWall = 0.0;
+        QElapsedTimer tick;
+        tick.start();
+        qint64 nextSample = 0;
+        const auto wallNow = [&] {
+            return static_cast<double>(mvm_mlt_export_observer_now_ns() - startNs) / 1e9;
+        };
+        while (controller->exporting()) {
+            QGuiApplication::processEvents();
+            QThread::msleep(20);
+            if (tick.elapsed() < nextSample)
+                continue;
+            nextSample = tick.elapsed() + 1000;
+            const double wall = wallNow();
+            if (progress.size() < 2000)
+                progress.append(QJsonArray{wall, controller->exportProgress()});
+            if (!capped && wall >= options.capSeconds) {
+                capped = true;
+                cancelWall = wall;
+                controller->cancelTimelineExport();
+            } else if (capped && wall - cancelWall > 600.0) {
+                std::fprintf(stderr, "取消から 10 分経っても書き出しが戻りません\n");
+                std::fflush(stderr);
+                std::_Exit(kExitStalled);
+            }
+        }
+        const long long finishNs = mvm_mlt_export_observer_now_ns();
+        std::error_code ignored;
+        const bool finalExists = std::filesystem::exists(outputPath, ignored);
+        const bool temporaryExists = std::filesystem::exists(temporaryPath, ignored);
+        QJsonArray artifactList;
+        for (const auto& [id, path] : artifacts) {
+            auto provenance = path;
+            provenance.replace_extension(".provenance.json");
+            artifactList.append(
+                QJsonObject{{QStringLiteral("clip"), QString::fromStdString(id)},
+                            {QStringLiteral("png"), toQString(path)},
+                            {QStringLiteral("png_sha256"), fileSha256(path)},
+                            {QStringLiteral("provenance_sha256"), fileSha256(provenance)}});
+        }
+        const QJsonObject pure{
+            {QStringLiteral("fixture"), QString::fromUtf8(fixture.name)},
+            {QStringLiteral("expected_frames"), static_cast<qint64>(fixture.frames)},
+            {QStringLiteral("controller_default_selection"), controllerDefaultSelection},
+            {QStringLiteral("controller_selection"), controller->mathGroupExportOptimization()},
+            {QStringLiteral("request"), pureRequest},
+            {QStringLiteral("request_mode_seen"), mainRequestModeSeen},
+            {QStringLiteral("controller_supplied_observer"), mainControllerSuppliedObserver},
+            {QStringLiteral("harness_property_probe_hooks"), probeHooks},
+            {QStringLiteral("export_success"), exported.success},
+            {QStringLiteral("export_cancelled"), exported.cancelled},
+            {QStringLiteral("export_error"), QString::fromStdString(exported.error)},
+            {QStringLiteral("export_frame_count"), static_cast<qint64>(exported.frameCount)},
+            {QStringLiteral("transition_count"), exported.transitionCount},
+            {QStringLiteral("report"), mathGroupReportJson(mainReport)},
+            {QStringLiteral("controller_last_report"),
+             mathGroupReportJson(controller->lastExportMathGroupReport())},
+            {QStringLiteral("controller_status"), controller->statusText()},
+            // controller の exportTimeline を呼ぶ直前から、controller が書き出し中でなくなるまで。
+            {QStringLiteral("end_to_end_wall_seconds"),
+             static_cast<double>(finishNs - startNs) / 1e9},
+            // 製品の書き出しの関数 (mvm::app::exportTimeline) の中にいた時間。
+            {QStringLiteral("export_function_wall_seconds"),
+             static_cast<double>(exportEndNs.load() - exportBeginNs.load()) / 1e9},
+            {QStringLiteral("process_cpu_seconds"), processCpuSeconds() - cpuBegin},
+            {QStringLiteral("watchdog_cap_seconds"), options.capSeconds},
+            {QStringLiteral("watchdog_fired"), capped},
+            {QStringLiteral("final_file_exists"), finalExists},
+            {QStringLiteral("temporary_file_exists"), temporaryExists},
+            {QStringLiteral("output_path"), toQString(outputPath)},
+            {QStringLiteral("output_bytes"),
+             finalExists ? static_cast<qint64>(std::filesystem::file_size(outputPath, ignored))
+                         : qint64{0}},
+            {QStringLiteral("output_sha256"), finalExists ? fileSha256(outputPath) : QString()},
+            {QStringLiteral("live_transitions_after"), static_cast<qint64>(mainGroupLive)},
+            {QStringLiteral("active_callbacks_after"), static_cast<qint64>(mainGroupActive)},
+            {QStringLiteral("raster_live_bytes_after"), static_cast<qint64>(mainRasterLiveAfter)},
+            {QStringLiteral("working_set_after_bytes"), static_cast<qint64>(mainWorkingSetAfter)},
+            {QStringLiteral("working_set_peak_bytes"), static_cast<qint64>(workingSetBytes(true))},
+            {QStringLiteral("progress"), progress},
+            {QStringLiteral("math_artifacts"), artifactList}};
+        QFile out(toQString(options.output / (std::string(fixture.name) + "-product-pure.json")));
+        if (!out.open(QIODevice::WriteOnly)) {
+            std::fprintf(stderr, "記録を書けません\n");
+            return kExitProtocol;
+        }
+        out.write(QJsonDocument(pure).toJson());
+        out.close();
+        std::fprintf(stderr, "product-pure: success=%d wall=%.1f s error='%s'\n",
+                     exported.success ? 1 : 0, static_cast<double>(finishNs - startNs) / 1e9,
+                     exported.error.c_str());
+        if (capped)
+            return kExitCapped;
+        if (exported.cancelled)
+            return kExitCancelled;
+        if (!exported.success)
+            return finalExists || temporaryExists ? kExitLeak : kExitExportFailed;
+        return temporaryExists ? kExitLeak : kExitPass;
     }
 
     // --- watchdog ----------------------------------------------------------------
@@ -3371,33 +3573,7 @@ int main(int argc, char** argv) {
     report.insert(QStringLiteral("pre_yuv_admissible_alpha"), admissibleAlpha);
     report.insert(QStringLiteral("background_alpha"), fixture.backgroundAlpha);
     {
-        const auto reportJson = [](const mvm::app::MathGroupExportReport& recorded) {
-            return QJsonObject{
-                {QStringLiteral("requested"),
-                 recorded.requested == mvm::app::MathGroupOptimization::Auto
-                     ? QStringLiteral("auto")
-                     : QStringLiteral("off")},
-                {QStringLiteral("evaluated"), recorded.evaluated},
-                {QStringLiteral("decision"), QString::fromStdString(recorded.decision)},
-                {QStringLiteral("reason"), QString::fromStdString(recorded.reason)},
-                {QStringLiteral("graph"), recorded.mathGroupGraph ? QStringLiteral("math-group")
-                                                                  : QStringLiteral("conventional")},
-                {QStringLiteral("groups"), static_cast<qint64>(recorded.groups)},
-                {QStringLiteral("grouped_clips"), static_cast<qint64>(recorded.groupedClips)},
-                {QStringLiteral("retained_clips"), static_cast<qint64>(recorded.retainedClips)},
-                {QStringLiteral("affine_transitions"),
-                 static_cast<qint64>(recorded.affineTransitions)},
-                {QStringLiteral("composed_frames"), static_cast<qint64>(recorded.composedFrames)},
-                {QStringLiteral("callbacks"), static_cast<qint64>(recorded.callbacks)},
-                {QStringLiteral("errors"), static_cast<qint64>(recorded.errors)},
-                {QStringLiteral("raster_count"), static_cast<qint64>(recorded.rasterCount)},
-                {QStringLiteral("raster_bytes"), static_cast<qint64>(recorded.rasterBytes)},
-                {QStringLiteral("base_alpha_proven"), recorded.baseAlphaProven},
-                {QStringLiteral("live_transitions_after"),
-                 static_cast<qint64>(recorded.liveTransitionsAfter)},
-                {QStringLiteral("active_callbacks_after"),
-                 static_cast<qint64>(recorded.activeCallbacksAfter)}};
-        };
+        const auto reportJson = &mathGroupReportJson;
         QJsonObject product{
             {QStringLiteral("controller_default_selection"), controllerDefaultSelection},
             {QStringLiteral("main_option"), options.productMain},
@@ -3725,10 +3901,15 @@ int main(int argc, char** argv) {
                               // 製品の選択 off: 判定そのものをしない (従来の graph のまま)。
                               ? candidateRun.observer.math_group_decision ==
                                     MVM_MATH_GROUP_DECISION_NONE
-                              : candidateRun.observer.math_group_decision !=
-                                        MVM_MATH_GROUP_DECISION_ELIGIBLE &&
-                                    candidateRun.observer.math_group_decision !=
-                                        MVM_MATH_GROUP_DECISION_NONE) &&
+                              // P3-6A.1: 画像の準備を取りやめた: 判定をせず、理由を記録している。
+                              : candidateRun.report.preparationRejected
+                                    ? candidateRun.observer.math_group_decision ==
+                                              MVM_MATH_GROUP_DECISION_NONE &&
+                                          !candidateRun.report.preparationReason.empty()
+                                    : candidateRun.observer.math_group_decision !=
+                                              MVM_MATH_GROUP_DECISION_ELIGIBLE &&
+                                          candidateRun.observer.math_group_decision !=
+                                              MVM_MATH_GROUP_DECISION_NONE) &&
                          candidateRun.observer.math_group_clips == 0 &&
                          candidateRun.observer.math_group_callbacks == 0 &&
                          candidateRun.observer.overlay_transitions ==

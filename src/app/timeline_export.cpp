@@ -789,9 +789,21 @@ TimelineExportResult exportTimeline(const project::Project& project,
             exportObserver->diagnostic_math_group_raster_budget_bytes = 64LL * 1024 * 1024;
     }
     const bool mathGroup = exportObserver != nullptr && exportObserver->diagnostic_math_group != 0;
+    // P3-6A.1: 製品の選択 (Auto) では、数式 group 用の画像の準備だけが原因で書き出しを失敗に
+    // しない。準備を取りやめたら、準備済みの画像を全部捨て、判定も数式 group の graph も使わずに
+    // 従来の graph で書き出す (上限は変えない)。画像の準備は MLT の層の判定より前に行うので、
+    // 取りやめなければ、判定が UNKNOWN・INELIGIBLE になる Project まで失敗する。
+    // 診断の指定 (Auto ではなく observer だけで数式 group を指定) は、これまでどおり失敗にする。
+    const bool mathGroupFallbackAllowed =
+        mathGroup && request.mathGroupOptimization == MathGroupOptimization::Auto;
+    bool mathGroupPreparationRejected = false;
+    std::string mathGroupPreparationReason;
+    if (mathGroup)
+        result.mathGroup.rasterBudgetBytes =
+            exportObserver->diagnostic_math_group_raster_budget_bytes;
     // 準備済みの画像の置き場 (書き出しの関数から戻るまで保持する)。同じ出どころ (成果物・見た目・
     // 前処理) で、かつ画素が完全に同じ画像だけを共有する。出どころが同じでも画素が違えば別に持つ。
-    math::PreparedMathRasterPool mathGroupPool;
+    auto mathGroupPoolOwner = std::make_unique<math::PreparedMathRasterPool>();
     std::map<std::pair<std::size_t, bool>, const math::PreparedMathRaster*> mathGroupPrepared;
     // P3-3D: stage した静止画 (project の clip ごと) の alpha の最小値。全画素を走査した値で、
     // V1 の clip の「alpha の証明」として MLT の層へ渡す。走査していない素材は入れない。
@@ -1121,8 +1133,17 @@ TimelineExportResult exportTimeline(const project::Project& project,
             if (!stagePng(image, QString::number(index) + "-math.png", staged))
                 return result;
             clipPaths.emplace(index, std::move(staged));
-            if (const auto needed = mathGroupNeeded.find(index);
-                needed != mathGroupNeeded.end() && !mathRegions.contains(index)) {
+            if (const auto needed = mathGroupNeeded.find(index); needed != mathGroupNeeded.end() &&
+                                                                 !mathRegions.contains(index) &&
+                                                                 !mathGroupPreparationRejected) {
+                auto& mathGroupPool = *mathGroupPoolOwner;
+                // 準備を取りやめる (Auto で、上限を超えたときだけ)。stage した PNG には触れない。
+                const auto rejectPreparation = [&](const char* reason) {
+                    mathGroupPreparationRejected = true;
+                    mathGroupPreparationReason = reason;
+                    mathGroupPrepared.clear();
+                    mathGroupPoolOwner = std::make_unique<math::PreparedMathRasterPool>();
+                };
                 // stage した PNG と同じ画素から、必要な画像だけを準備する。全画面の複製は残さない
                 // (RoiOnly なら、準備済みの画像が持つのは中身のある範囲だけ)。
                 for (const bool qtcrop : {false, true}) {
@@ -1148,6 +1169,8 @@ TimelineExportResult exportTimeline(const project::Project& project,
                             pixels.data(), request.width, request.height,
                             static_cast<std::size_t>(request.width) * 4U, raster, prepareError,
                             mathGroupStorage, provenance)) {
+                        // 上限の超過と違い、画像そのものを作れないのは入力の不正である
+                        // (参照・大きさ)。最適化の取りやめにはせず、失敗のままにする。
                         result.error =
                             "数式 clip '" + clip.name + "' の画像を準備できません: " + prepareError;
                         return result;
@@ -1165,6 +1188,11 @@ TimelineExportResult exportTimeline(const project::Project& project,
                     // 上限を超えたら止める (黙って増やさない)。
                     if (const auto budget = observer->diagnostic_math_group_raster_budget_bytes;
                         budget > 0 && observer->math_group_raster_bytes > budget) {
+                        if (mathGroupFallbackAllowed) {
+                            // 超えた時点の数と byte 数は observer に残す (記録用)。
+                            rejectPreparation("prepared-raster-budget-exceeded");
+                            break;
+                        }
                         result.error = "数式 group の準備済みの画像が上限 " +
                                        std::to_string(budget / (1024 * 1024)) + " MB を超えました";
                         return result;
@@ -1353,7 +1381,11 @@ TimelineExportResult exportTimeline(const project::Project& project,
         clips.push_back(mapped);
     }
 
-    if (mathGroup) {
+    if (mathGroupPreparationRejected) {
+        // 数式 group を使わない書き出しと同じ道を通す (member の割り当ても判定も行わない)。
+        exportObserver->diagnostic_math_group = 0;
+        exportObserver->math_group_raster_live_bytes = math::preparedMathRasterLiveBytes();
+    } else if (mathGroup) {
         exportObserver->math_group_raster_live_bytes = math::preparedMathRasterLiveBytes();
         exportObserver->diagnostic_math_group_compose = &composeMathGroupForExport;
         exportObserver->diagnostic_math_group_opaque = nullptr;
@@ -1407,7 +1439,16 @@ TimelineExportResult exportTimeline(const project::Project& project,
                                        &exported, error, sizeof(error));
     stage("encode-end");
     // 数式 group の選択の記録 (成功・失敗・取消のどれでも残す)。
-    if (mathGroup) {
+    if (mathGroupPreparationRejected) {
+        auto& report = result.mathGroup;
+        report.preparationRejected = true;
+        report.preparationReason = mathGroupPreparationReason;
+        report.reason = mathGroupPreparationReason;
+        report.affineTransitions = exported.transition_count;
+        // 取りやめた時点の値 (上限を超えた 1 枚を含む)。画像そのものは捨ててある。
+        report.rasterCount = exportObserver->math_group_raster_count;
+        report.rasterBytes = exportObserver->math_group_raster_bytes;
+    } else if (mathGroup) {
         auto& report = result.mathGroup;
         const int decision = exportObserver->math_group_decision;
         report.evaluated = decision != MVM_MATH_GROUP_DECISION_NONE;

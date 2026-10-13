@@ -61,6 +61,12 @@ struct MathGroupExportReport {
     long long errors = 0;                       // 数式 group の実行時の失敗の数
     long long rasterCount = 0, rasterBytes = 0; // 準備済みの画像
     int baseAlphaProven = -1;                   // 判定に使った V1 の alpha の最小値 (-1 は該当なし)
+    // P3-6A.1: 数式 group 用の画像の準備を取りやめた (Auto のときだけ起きる)。判定は行わず、
+    // 従来の graph で書き出す。preparationReason は事前に決めた名前
+    // ("prepared-raster-budget-exceeded")。
+    bool preparationRejected = false;
+    std::string preparationReason;
+    long long rasterBudgetBytes = 0; // 準備済みの画像の上限 (0 は上限なし・該当なし)
     // 書き出しの関数の中で、MLT の graph を閉じた後に残っていた数 (0 が正)。
     long long liveTransitionsAfter = 0, activeCallbacksAfter = 0;
 };
