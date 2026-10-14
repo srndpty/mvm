@@ -467,7 +467,8 @@ set_tests_properties(export_eta_unit PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
 
 add_executable(mvm_test_reveal_in_explorer util/test_reveal_in_explorer.cpp)
-target_link_libraries(mvm_test_reveal_in_explorer PRIVATE mvm::util mvm::warnings)
+# P3-7A: 実際の SHParseDisplayName を試験から直接呼ぶ (Explorer は開かない)。
+target_link_libraries(mvm_test_reveal_in_explorer PRIVATE mvm::util mvm::warnings shell32 ole32)
 add_test(NAME reveal_in_explorer_negative
     COMMAND mvm_test_reveal_in_explorer ${CMAKE_BINARY_DIR}/tests/reveal-in-explorer)
 set_tests_properties(reveal_in_explorer_negative PROPERTIES

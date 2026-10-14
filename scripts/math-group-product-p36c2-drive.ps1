@@ -237,6 +237,11 @@ function Wait-ExportEnd([double]$Seconds) {
     } $Seconds 500
 }
 
+# 書き出しの後に、出力の file を Explorer で表示する処理が失敗していないこと (P3-7A)。
+function Test-RevealNotFailed([string]$Name, $End) {
+    Add-Step $Name ($End -and $End.text -and -not $End.text.Contains('Explorerで表示できません')) $(if ($End) { $End.text })
+}
+
 function Close-Settings {
     $cancel = Find-Element 'キャンセル' ([System.Windows.Automation.ControlType]::Button)
     $ok = [bool]$cancel -and (Invoke-Element $cancel)
@@ -262,6 +267,7 @@ try {
             if (Start-Export $true) {
                 $end = Wait-ExportEnd 300
                 Add-Step 'A5: 状態の表示が「従来の方法」の文で始まる' ($end -and $end.kind -eq 'status' -and $end.text.StartsWith($expected)) $(if ($end) { $end.text })
+                Test-RevealNotFailed 'A5: 出力の file を Explorer で表示できた (状態に失敗の文が無い)' $end
             }
         }
         # A6〜A7: 開き直すと off、on にして書き出し、キャンセル。
@@ -308,6 +314,7 @@ try {
                 $end = Wait-ExportEnd 300
                 Add-Step 'B3: 状態の表示が「数式の高速化を使いました（数式 clip 16 本）。書き出しました: 」で始まる' (
                     $end -and $end.kind -eq 'status' -and $end.text.StartsWith('数式の高速化を使いました（数式 clip 16 本）。書き出しました: ')) $(if ($end) { $end.text })
+                Test-RevealNotFailed 'B3: 出力の file を Explorer で表示できた (状態に失敗の文が無い)' $end
             }
         }
     } else {
@@ -324,6 +331,7 @@ try {
                 $expected = '数式の高速化を使いました（数式 clip 97 本）。書き出しました: '
                 Add-Step 'C5: 状態の表示が「数式の高速化を使いました（数式 clip 97 本）」で始まり、6840 frame / 114.00 秒' (
                     $end -and $end.kind -eq 'status' -and $end.text.StartsWith($expected) -and $end.text -match 'c-v4-full\.mp4 \(6840 frame / 114\.00 秒\)') $(if ($end) { $end.text })
+                Test-RevealNotFailed 'C5: 出力の file を Explorer で表示できた (状態に失敗の文が無い)' $end
             }
         }
         if (Open-ExportSettings 'c6-reopen-not-exported.mp4') {

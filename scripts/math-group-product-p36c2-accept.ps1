@@ -96,7 +96,7 @@ function Get-IdentityFiles {
     foreach ($relative in (git -C $repo ls-files -- src apps tests CMakeLists.txt cmake)) { $files.Add((Join-Path $repo $relative)) }
     foreach ($relative in (git -C $repo ls-files --others --exclude-standard -- src apps tests)) { $files.Add((Join-Path $repo $relative)) }
     foreach ($relative in @('scripts/math-group-product-p36c2-accept.ps1', 'scripts/math-group-product-p36c2-selftest.ps1', 'scripts/math-group-product-p36b-verify.ps1',
-            'scripts/math-group-product-p36a-verify.ps1', 'scripts/gui-environment-preflight.ps1', 'scripts/math-group-product-p36c2-drive.ps1',
+            'scripts/math-group-product-p36a-verify.ps1', 'scripts/gui-environment-preflight.ps1', 'scripts/math-group-product-p36c2-drive.ps1', 'scripts/math-group-gui-smoke.ps1',
             'docs/math-group-product-p36c2-procedure.md')) { $files.Add((Join-Path $repo $relative)) }
     # 実行 file: 検収で人が操作する mvm.exe そのものと、参照を作る検証 harness。
     $files.Add($application)

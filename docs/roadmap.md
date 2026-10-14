@@ -108,6 +108,8 @@
   template を導入した。[設計と検証手順](math-semantic-layout.md) を参照。
 - 書き出しは数式 1 層ごとに全画面を合成する。層の数に比例して遅くなり（48 層で
   0.55 秒/frame）、解の公式の Project 全体（114 秒）は製品の 10 分の timeout では終わらない。
+  （この段落は P3 の始めの状況。従来の方法は今も同じだが、P3-6C で入れた opt-in の「数式の書き出しを
+  高速化（試験的）」を on にすると、Project 全体は 180〜291 秒で終わる。下の P3-6C.2 を参照。）
   字形の範囲だけを合成する（疎なラスタ）か、同時に見える部分式を書き出し前に 1 層へまとめる。
   どちらも pre-YUV の画素が変わりうるので、[計測と照合の手順](math-semantic-layout.md#残っている制約)
   で変化を測ってから入れる。timeout を開始からの経過時間ではなく、進行の停止で判定するかは未決定。
@@ -201,10 +203,28 @@
     実際の `mvm.exe` の検収。**PASS（自動の検収）**。利用者の指示で人の操作をやめ、driver が UI
     Automation と Windows の message で操作した（mouse・keyboard は使わない）。v4 全体を高速化 on で
     180.1 秒、6840 frame、出力は過去の全長の出力と同じ SHA-256。表示の修正（結果を行頭へ、理由を
-    人が読める文に）を含む。
-  - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
-    （label `stability`）で記録した。修正案は上の文書にある。
-  - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。
+    人が読める文に）を含む。**PASS / CLOSED。**
+  - **数式 group の書き出しの milestone（P3-3〜P3-6C.2）は閉じた。** 製品の方針:
+    - 利用者が書き出しごとに選ぶ opt-in。**既定は off**（保存しない）。既定を on にする移行はしない。
+    - on のとき、書き出しの前に判定する。ELIGIBLE なら数式 group、UNKNOWN・INELIGIBLE・準備する画像の
+      上限（64 MB）の超過なら従来の方法で書き出し、その旨を状態の表示に出す。
+    - 数式 group の実行時の失敗は、書き出しを止める（fail-closed）。自動ではやり直さない。
+    - 検収の証拠: [P3-6C.2](math-group-product-p36c2.md)（`build/math-group-product-p36c2-20261014/automated/`）。
+      全 CTest 1524/1524。
+    - 限界: 実 GUI の検収は UI Automation による（画面の見た目と、人の mouse・keyboard の操作は確かめて
+      いない）。全長の出力の確認は、符号化した MP4 の byte の一致で、encoder 直前の RGBA の比較は
+      P3-4・P3-5A のもの（全 6840 frame の 64 bit の digest、120 frame の SHA-256、40 frame の全 byte）である。
+    - 時間: 製品の経路の全長は 180.1 秒（P3-6C.2）と 291.0 秒（P3-6B）。差の原因は調べておらず、性能が
+      上がったとは言えない（出力は byte 単位で同じ）。
+  - P3-7A（[結果](explorer-reveal-p37a.md)）: 書き出しの後の「Explorer で表示」が、UI から書き出した全部の場合
+    に失敗していた（0x80070057）。原因は、FileDialog の URL から作った `/` 区切りの path を
+    `SHParseDisplayName` が拒否すること。Shell へ渡す前に Windows の絶対 path にするよう直した。製品 GUI の
+    smoke（`scripts/math-group-gui-smoke.ps1`。短い場面だけなら約 4 分、人の操作なし）を足した。
+  - （解消済み。P3-5B）`timeout_ms` = 1000 が実時間 3418 ms で timeout することを
+    `mlt_export_timeout_accounting_deviation`（label `stability`）で記録していた。
+  - （解消済み。P3-5B）`timeout_ms` を `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならな
+    かった（720 秒以上で未発火）。P3-5B で単調な時計で数えるように直し、1 秒の timeout を 1002〜1046 ms で
+    検出する。以前の数え方は、診断用の入力でだけ残してある。
 - 専用の編集 UI は未実装。現在の JSON と複数の Math clip を、一つの数式コンテナとして
   選択・段階編集できるようにする。意味のある部品 ID、静止の配置、許可する移動を独立して保存し、
   プレビューと書き出しが同じ frame 計画を読む。自動中央揃えを戻さない。

@@ -3,6 +3,7 @@
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "test_mvm_controller_fixture.h"
+#include "util/mvm_reveal_in_explorer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1742,6 +1743,88 @@ std::vector<PlacedClip> placedClips(const mvm::app::MvmController& controller) {
 }
 
 // 素材を内容で判定して timeline へ置く経路 (メニューのダイアログと drop)。
+// P3-7A: 書き出しの後の「Explorer で表示」を、製品の既定の経路 (controller の既定の revealer →
+// mvm_reveal_in_explorer) で確かめる。書き出しは本物 (数式を使わない画像 1 枚の Project)。
+// Explorer は開かない: Shell の境界のうち SHOpenFolderAndSelectItems だけを差し替え、
+// SHParseDisplayName は実際の API を使う。書き出し先の URL は UI と同じ QUrl::fromLocalFile
+// で作る。
+struct RevealRecord {
+    std::wstring observed;
+    int openCalls = 0;
+    long openResult = 0;
+};
+
+void recordRevealPath(const wchar_t* path, void* opaque) {
+    static_cast<RevealRecord*>(opaque)->observed = path;
+}
+
+long fakeRevealOpen(const void* item, void* opaque) {
+    auto* record = static_cast<RevealRecord*>(opaque);
+    ++record->openCalls;
+    return item ? record->openResult : static_cast<long>(0x80004005L);
+}
+
+void testExportRevealsOutput(const std::filesystem::path& path,
+                             const std::filesystem::path& smoke) {
+    const auto jpg = smoke / L"_import" / L"jpg_quadrant.jpg";
+    if (!std::filesystem::exists(jpg)) {
+        check(false,
+              "Explorer 表示の試験の素材がありません (scripts/make-testmedia.ps1 -Mode Smoke)");
+        return;
+    }
+    auto initial = mvm::project::createDefaultProject();
+    initial.outputWidth = 320;
+    initial.outputHeight = 240;
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "Explorer 表示の試験の Project を保存できません");
+    mvm::app::MvmController controller(path, {}, initial); // 既定の runner と既定の revealer
+    QString failure;
+    QObject::connect(&controller, &mvm::app::MvmController::exportFailed,
+                     [&](const QString& message) { failure = message; });
+    controller.addMediaFileToTimeline(QUrl::fromLocalFile(QString::fromStdWString(jpg.wstring())));
+    check(controller.clipCount() == 1, "Explorer 表示の試験: 画像を置けません");
+
+    const auto directory = path.parent_path() / L"書き出し 先 日本語";
+    std::filesystem::create_directories(directory);
+    RevealRecord record;
+    MvmRevealShell shell{&recordRevealPath, nullptr, &fakeRevealOpen, &record};
+    mvm_reveal_set_shell_for_test(&shell);
+    const auto exportTo = [&](const wchar_t* name) {
+        failure.clear();
+        const auto output = directory / name;
+        const QUrl url = QUrl::fromLocalFile(QString::fromStdWString(output.wstring()));
+        const bool started = controller.exportTimelineWithQuality(url, QStringLiteral("standard"));
+        const bool finished = started && pumpUntil([&] { return !controller.exporting(); }, 120000);
+        return std::pair{finished, output};
+    };
+
+    // 1. 成功: 書き出し、Explorer の表示 (差し替え) も成功する。状態に失敗の文が付かない。
+    const auto [finished, output] = exportTo(L"結果 ①.mp4");
+    const std::wstring native = std::filesystem::absolute(output).make_preferred().wstring();
+    checkText(finished && std::filesystem::exists(output) && failure.isEmpty() &&
+                  controller.statusText().startsWith(QStringLiteral("書き出しました: ")) &&
+                  !controller.statusText().contains(QStringLiteral("Explorer")),
+              "Explorer 表示: 数式を使わない書き出しの後、失敗の文が付かない: " +
+                  controller.statusText().toStdString());
+    check(record.openCalls == 1 && record.observed == native &&
+              record.observed.find(L'/') == std::wstring::npos,
+          "Explorer 表示: UI と同じ URL の出力 path を、\\ 区切りの絶対 path で Shell へ渡す");
+
+    // 2. Explorer を開けない: 書き出しは成功のまま、理由と HRESULT を状態に出す
+    // (書き出しの失敗にしない)。
+    record = RevealRecord{};
+    record.openResult = static_cast<long>(0x80070005L);
+    const auto [finishedDenied, outputDenied] = exportTo(L"結果 ②.mp4");
+    checkText(finishedDenied && std::filesystem::exists(outputDenied) && failure.isEmpty() &&
+                  controller.statusText().startsWith(QStringLiteral("書き出しました: ")) &&
+                  controller.statusText().contains(
+                      QStringLiteral("Explorerで表示できません: Explorerでファイルを表示できません "
+                                     "(HRESULT=0x80070005)")),
+              "Explorer 表示: 開けないときは書き出しを成功のまま、理由を出す: " +
+                  controller.statusText().toStdString());
+    mvm_reveal_set_shell_for_test(nullptr);
+}
+
 void testMediaFilePlacement(const std::filesystem::path& path, const std::filesystem::path& smoke) {
     const auto importDir = smoke / L"_import";
     const auto jpg = importDir / L"jpg_quadrant.jpg";
@@ -2347,6 +2430,7 @@ int main(int argc, char** argv) {
         testMediaBinImport(directory / L"media-bin-import.mvm", std::filesystem::path(argv[2]));
         testMediaFilePlacement(directory / L"media-file-placement.mvm",
                                std::filesystem::path(argv[2]));
+        testExportRevealsOutput(directory / L"export-reveal.mvm", std::filesystem::path(argv[2]));
         mvm_mlt_runtime_shutdown();
     }
     return failures == 0 ? 0 : 1;

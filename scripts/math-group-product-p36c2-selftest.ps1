@@ -48,7 +48,7 @@ function Add-Result([string]$Group, [string]$Name, [bool]$Ok, [string]$Detail = 
 }
 
 # --- 1. 構文 ---
-foreach ($name in @('math-group-product-p36c2-accept.ps1', 'math-group-product-p36c2-selftest.ps1', 'math-group-product-p36c2-drive.ps1', 'math-group-product-p36b-verify.ps1',
+foreach ($name in @('math-group-product-p36c2-accept.ps1', 'math-group-product-p36c2-selftest.ps1', 'math-group-product-p36c2-drive.ps1', 'math-group-gui-smoke.ps1', 'math-group-product-p36b-verify.ps1',
         'math-group-product-p36a-verify.ps1', 'gui-environment-preflight.ps1')) {
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $name), [ref]$null, [ref]$errors)
