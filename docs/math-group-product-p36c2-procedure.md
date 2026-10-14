@@ -40,8 +40,24 @@ V1 の画像を拡大してある、2 秒の Project である（高速化の対
 | A5 | 画面の上の状態の表示を読む | **「数式の高速化は使いませんでした（一番下の映像 track の clip に拡大・回転などの変形があるため）。従来の方法で書き出しました: …」** と読める。文の意味が分かる。右で切れていても、理由までは読める |
 | A6 | もう一度「メディアを書き出し」。書き出し先に `a6-cancel.mp4`。設定を見る | checkbox が **off に戻っている** |
 | A7 | checkbox を on にして「書き出す」。進行の dialog で **「キャンセル」** を押す | 「書き出しをキャンセルしました」と出る。`manual-out` に `a6-cancel.mp4` も `a6-cancel.mp4.mvmtmp` も無い |
-| A8 | **別の** PowerShell で、`a1-fallback.mp4` を掴む: `$h = [IO.File]::Open('C:\dev\soft\mvmuild\math-group-product-p36c2-20261014\manual-out1-fallback.mp4', 'Open', 'Read', 'None')`。`mvm` で「メディアを書き出し」、書き出し先に同じ `a1-fallback.mp4` を選ぶ（上書きの確認は「はい」）。checkbox は off のまま「書き出す」 | 約 25 秒後に **「書き出しに失敗しました」** の dialog が出る（最終の名前へ置けない）。`a1-fallback.mp4.mvmtmp` が残っていない。元の `a1-fallback.mp4` は消えていない |
-| A9 | 別の PowerShell で `$h.Dispose()`。失敗の dialog を「OK」で閉じ、`mvm` の window を閉じる（保存を聞かれたら **保存しない**） | — |
+| A8 | **別の** PowerShell 7 を `C:\dev\soft\mvm` で開き、表の下の「A8 の command」を実行して `a1-fallback.mp4` を掴む。`mvm` で「メディアを書き出し」、書き出し先に同じ `a1-fallback.mp4` を選ぶ（上書きの確認は「はい」）。checkbox は off のまま「書き出す」 | 約 25 秒後に **「書き出しに失敗しました」** の dialog が出る（最終の名前へ置けない）。`a1-fallback.mp4.mvmtmp` が残っていない。元の `a1-fallback.mp4` は消えていない |
+| A9 | 別の PowerShell で、表の下の「A9 の command」を実行して file を放す。失敗の dialog を「OK」で閉じ、`mvm` の window を閉じる（保存を聞かれたら **保存しない**） | — |
+
+A8 の command（`C:\dev\soft\mvm` で実行する。file を、他からは読むことも書くこともできない形で開く）:
+
+```powershell
+$locked = Join-Path (Get-Location) 'build' | Join-Path -ChildPath 'math-group-product-p36c2-20261014' | Join-Path -ChildPath 'manual-out' | Join-Path -ChildPath 'a1-fallback.mp4'
+if (-not (Test-Path -LiteralPath $locked)) { throw "A1 の出力がありません: $locked" }
+$h = [System.IO.File]::Open($locked, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+"掴みました: $locked"
+```
+
+A9 の command（A8 と同じ PowerShell で実行する）:
+
+```powershell
+$h.Dispose()
+"放しました: $locked"
+```
 
 ## 2. 短い確認（Session B: 数式だけの Project、起動し直し）
 

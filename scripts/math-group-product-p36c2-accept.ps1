@@ -36,6 +36,7 @@ param(
     [string]$Session = '',
     [string]$OutputDirectory = 'build/math-group-product-p36c2-20261014',
     [string]$V4ProjectPath = 'build/quadratic-semantic-20261011-v4/quadratic.mvm',
+    [string]$FixtureDirectory = 'build/math-group-product-p36c2-20261014/fixtures',
     [string[]]$HistoricalOutputs = @(
         'build/math-export-p34-20261013/20261013-011412-full/candidate/v4-full.mp4',
         'build/math-export-p35a-20261013/20261013-024935-strong/candidate-full/v4-full.mp4',
@@ -60,7 +61,7 @@ $latex = Join-Path $env:LOCALAPPDATA 'Programs\MiKTeX\miktex\bin\x64'
 $ffprobe = Join-Path $ucrt 'ffprobe.exe'
 $ffmpeg = Join-Path $ucrt 'ffmpeg.exe'
 $root = Join-Path $repo $OutputDirectory
-$fixtures = Join-Path $root 'fixtures'
+$fixtures = Join-Path $repo $FixtureDirectory
 $freezePath = Join-Path $root 'freeze.json'
 $referencePath = Join-Path $root 'reference.json'
 $settingsKey = 'HKCU:\Software\mvm\mvm'
@@ -84,7 +85,7 @@ function Get-IdentityFiles {
     $files = [System.Collections.Generic.List[string]]::new()
     foreach ($relative in (git -C $repo ls-files -- src apps tests CMakeLists.txt cmake)) { $files.Add((Join-Path $repo $relative)) }
     foreach ($relative in (git -C $repo ls-files --others --exclude-standard -- src apps tests)) { $files.Add((Join-Path $repo $relative)) }
-    foreach ($relative in @('scripts/math-group-product-p36c2-accept.ps1', 'scripts/math-group-product-p36b-verify.ps1',
+    foreach ($relative in @('scripts/math-group-product-p36c2-accept.ps1', 'scripts/math-group-product-p36c2-selftest.ps1', 'scripts/math-group-product-p36b-verify.ps1',
             'scripts/math-group-product-p36a-verify.ps1', 'scripts/gui-environment-preflight.ps1',
             'docs/math-group-product-p36c2-procedure.md')) { $files.Add((Join-Path $repo $relative)) }
     # 実行 file: 検収で人が操作する mvm.exe そのものと、参照を作る検証 harness。
@@ -373,7 +374,6 @@ public struct Rect { public int Left, Top, Right, Bottom; }
     $exitCode = $process.ExitCode
     $settingsAfter = Get-SettingsSnapshot
     $settingsChanged = @(@($settingsBefore.Keys) + @($settingsAfter.Keys) | Sort-Object -Unique | Where-Object { $settingsBefore[$_] -ne $settingsAfter[$_] })
-    $exportSettings = @($settingsAfter.Keys | Where-Object { $_ -match '(?i)mathgroup|export|accelerat' })
     $allModules = @($moduleSets | ForEach-Object { $_.modules } | Sort-Object path -Unique)
     $unexpected = @($allModules | Where-Object { -not $_.matches_freeze -and -not $_.foreign })
     $foreignModules = @($allModules | Where-Object { $_.foreign })
@@ -388,7 +388,7 @@ public struct Rect { public int Left, Top, Right, Bottom; }
         exports = $exports; unfinished_export = $current; events = $events
         loaded_module_count = $allModules.Count; loaded_modules_not_matching_freeze = $unexpected
         foreign_modules = $foreignModules; loaded_modules = $allModules
-        settings_changed_keys = $settingsChanged; settings_keys_mentioning_export = $exportSettings
+        settings_changed_keys = $settingsChanged; settings_before = $settingsBefore; settings_after = $settingsAfter
         screenshots = $shots; identity_before = $before; identity_after = $after
     } | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $run 'session.json') -Encoding utf8
     Write-Host ("終了: 書き出し {0} 回、読み込まれた DLL {1} (freeze と違うもの {2}、外から差し込まれたもの {5})、設定の変化 {3} 件、画面 {4} 枚" -f $exports.Count,
@@ -403,7 +403,30 @@ $run = Join-Path $root $Session
 $sessionPath = Join-Path $run 'session.json'
 if (-not $Session -or -not (Test-Path -LiteralPath $sessionPath)) { throw "session の記録がありません: $sessionPath" }
 $record = Get-Content -Raw $sessionPath | ConvertFrom-Json
+# script の自己試験が作った記録 (人が操作していない)。検収の結果として扱わない。
+$synthetic = @($record.PSObject.Properties.Name) -contains 'synthetic_selftest' -and [bool]$record.synthetic_selftest
+foreach ($required in @('project', 'exports', 'application_matches_freeze', 'loaded_modules_not_matching_freeze', 'loaded_module_count',
+        'environment_before', 'identity_before', 'identity_after')) {
+    if (@($record.PSObject.Properties.Name) -notcontains $required) { throw "session の記録に項目がありません: $required" }
+}
 $reference = Get-Content -Raw $referencePath | ConvertFrom-Json
+
+function Get-MathGroupSettingFinding($Record) {
+    $names = @($Record.PSObject.Properties.Name)
+    if ($names -notcontains 'settings_before' -or $names -notcontains 'settings_after') {
+        return [pscustomobject]@{ ok = $false; reason = '設定の前後の写しが記録にありません'; math_group_keys = @(); changed_keys = @(); other_export_keys = @() }
+    }
+    $beforeMap = @{}; $afterMap = @{}
+    if ($Record.settings_before) { foreach ($property in $Record.settings_before.PSObject.Properties) { $beforeMap[$property.Name] = "$($property.Value)" } }
+    if ($Record.settings_after) { foreach ($property in $Record.settings_after.PSObject.Properties) { $afterMap[$property.Name] = "$($property.Value)" } }
+    $pattern = '(?i)math[\s_\-]?group|accelerat|高速化'
+    $changed = @(@($beforeMap.Keys) + @($afterMap.Keys) | Sort-Object -Unique | Where-Object { $beforeMap[$_] -ne $afterMap[$_] })
+    $mathGroupKeys = @(@($afterMap.Keys) + $changed | Sort-Object -Unique | Where-Object { $_ -match $pattern })
+    $otherExport = @($afterMap.Keys | Where-Object { $_ -match '(?i)export' -and $_ -notmatch $pattern } | Sort-Object)
+    [pscustomobject]@{ ok = ($mathGroupKeys.Count -eq 0); reason = ''; math_group_keys = $mathGroupKeys; changed_keys = $changed
+        other_export_keys = $otherExport
+    }
+}
 
 function Get-X264([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
@@ -412,6 +435,11 @@ function Get-X264([string]$Path) {
 }
 
 function Test-Output([string]$Mp4, [int]$Frames, [string]$Name) {
+    try { Test-OutputUnchecked $Mp4 $Frames $Name }
+    catch { [ordered]@{ valid = $false; error = "出力を調べられません: $($_.Exception.Message)"; x264_settings = $null } }
+}
+
+function Test-OutputUnchecked([string]$Mp4, [int]$Frames, [string]$Name) {
     $stream = (& $ffprobe -v error -select_streams v:0 -count_frames -show_entries `
             'stream=codec_name,profile,level,pix_fmt,width,height,r_frame_rate,avg_frame_rate,time_base,nb_frames,nb_read_frames,duration,start_time' `
             -of json $Mp4 | Out-String | ConvertFrom-Json).streams[0]
@@ -453,6 +481,8 @@ foreach ($export in @($record.exports)) {
         raster_bytes = [long]$entry.raster_bytes; live_transitions = [long]$entry.live_transitions; active_callbacks = [long]$entry.active_callbacks
         final_file_exists_now = (Test-Path -LiteralPath $export.output); temporary_file_exists_now = (Test-Path -LiteralPath ($export.output + '.mvmtmp'))
         final_file_existed_at_result = $export.final_file_exists; temporary_file_existed_at_result = $export.temporary_file_exists
+        sha256 = $null; bytes = 0; check = $null; sha256_matches_reference = $false; x264_settings_same_as_reference = $false
+        within_budget = $false; frames_match_reference = $false
     }
     if ($entry.result -eq '成功' -and $row.final_file_exists_now) {
         $row.sha256 = Get-Sha $export.output
@@ -460,7 +490,8 @@ foreach ($export in @($record.exports)) {
         if ($record.project -eq 'v4') {
             $row.check = Test-Output $export.output $TotalFrames "export-$index"
             $row.sha256_matches_reference = $row.sha256 -eq $reference.v4.sha256
-            $row.x264_settings_same_as_reference = $row.check.x264_settings -eq (Get-X264 (Join-Path $repo $HistoricalOutputs[0]))
+            $row.x264_settings_same_as_reference = [bool]($row.check.x264_settings -and
+                $row.check.x264_settings -eq (Get-X264 (Join-Path $repo $HistoricalOutputs[0])))
             $row.within_budget = $export.elapsed_seconds -lt $BudgetSeconds
         } else {
             $wanted = $reference.fixtures."$($record.project)/on"
@@ -478,7 +509,11 @@ $verdicts.application_is_frozen_executable = [bool]$record.application_matches_f
 $verdicts.runtime_modules_match_freeze = @($record.loaded_modules_not_matching_freeze).Count -eq 0 -and $record.loaded_module_count -gt 0
 $verdicts.environment_valid = $record.environment_before -eq 'VALID'
 $verdicts.identity_frozen_during_session = [bool]$record.identity_before.match -and [bool]$record.identity_after.match
-$verdicts.no_export_setting_persisted = @($record.settings_keys_mentioning_export).Count -eq 0
+# 数式の高速化の選択が、アプリの設定に保存されていないこと。書き出しに関する他の設定 (既にあるもの、
+# 今後足されるもの) は、この判定の対象にしない。名前で見るもの: 数式 group・高速化を指す key。
+# 加えて、session の間に増えた・変わった key を全部記録し、その中に該当する名前が無いことを見る。
+$settings = Get-MathGroupSettingFinding $record
+$verdicts.math_group_selection_not_persisted = [bool]$settings.ok
 $verdicts.exports_clean = @($rows | Where-Object { -not $_.clean }).Count -eq 0 -and $rows.Count -gt 0
 if ($record.project -eq 'v4') {
     # 検収の対象: 高速化を選んで成功した書き出し (1 回目のもの)。
@@ -489,19 +524,21 @@ if ($record.project -eq 'v4') {
         $target.grouped_clips -gt 0 -and $target.composed -gt 0
         $verdicts.no_runtime_errors = $target.errors -eq 0
         $verdicts.within_budget = [bool]$target.within_budget
-        $verdicts.output_valid = [bool]$target.check.valid
+        $verdicts.output_valid = [bool]($target.check -and $target.check.valid)
         $verdicts.encoder_configuration = [bool]$target.x264_settings_same_as_reference
         $verdicts.sha256_matches_reference = [bool]$target.sha256_matches_reference
         $verdicts.teardown = $target.live_transitions -eq 0 -and $target.active_callbacks -eq 0
     }
 } else {
     $successes = @($rows | Where-Object { $_.result -eq '成功' })
-    $verdicts.short_outputs_match_reference = $successes.Count -gt 0 -and @($successes | Where-Object { -not $_.sha256_matches_reference }).Count -eq 0
+    $verdicts.short_outputs_match_reference = $successes.Count -gt 0 -and
+    @($successes | Where-Object { -not $_.sha256_matches_reference -or -not $_.frames_match_reference }).Count -eq 0
 }
 $after = Test-Frozen '後'
 $verdicts.identity_frozen_at_verify = [bool]$after.match
 $allOk = @($verdicts.Values | Where-Object { -not $_ }).Count -eq 0
-[ordered]@{ stage = 'verify'; session = $Session; project = $record.project; all_ok = $allOk; verdicts = $verdicts; exports = $rows
+[ordered]@{ stage = 'verify'; session = $Session; project = $record.project; synthetic_selftest = $synthetic
+    human_acceptance = (-not $synthetic); all_ok = $allOk; verdicts = $verdicts; settings = $settings; exports = $rows
     reference = $(if ($record.project -eq 'v4') { $reference.v4 } else { $reference.fixtures })
     note = 'この検査は、符号化された MP4 と session の記録を見る。encoder の直前の RGBA は比べていない。人が行った操作と目で見た確認は、operator-checklist.md と screens に残す。'
 } | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $run 'verify.json') -Encoding utf8
@@ -510,5 +547,6 @@ foreach ($row in $rows) {
         $row.result, $row.elapsed_seconds, $row.outcome, $row.graph, $row.grouped_clips, $row.affine, $row.composed, $row.errors, $row.clean)
 }
 foreach ($key in $verdicts.Keys) { Write-Host ("  {0,-36} {1}" -f $key, $verdicts[$key]) }
+if ($synthetic) { Write-Host 'SELFTEST: script の自己試験の記録です。人による検収ではありません。' }
 Write-Host "結果: $(Join-Path $run 'verify.json')"
 if (-not $allOk) { exit 1 }
