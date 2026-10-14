@@ -93,9 +93,14 @@ function Get-IdentityFiles {
 
 function Get-SourceDiffSha {
     # 文書と build の成果物を除いた、HEAD からの差分 (source の状態を 1 つの値で表す)。
-    $diff = (git -C $repo diff HEAD -- src apps tests scripts CMakeLists.txt cmake) -join "`n"
-    $bytes = [Text.Encoding]::UTF8.GetBytes($diff)
-    [BitConverter]::ToString([Security.Cryptography.SHA256]::HashData($bytes)).Replace('-', '')
+    # git に file へ書かせて、その byte 列を hash する。PowerShell に出力を文字列として読ませると、
+    # 起動の仕方 (console の文字 code) で復号の結果が変わり、同じ差分でも値が変わる (P3-6C.1 で観測)。
+    $temporary = [IO.Path]::GetTempFileName()
+    try {
+        git -C $repo diff HEAD "--output=$temporary" -- src apps tests scripts CMakeLists.txt cmake
+        if ($LASTEXITCODE -ne 0) { throw 'git diff に失敗しました' }
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $temporary).Hash
+    } finally { Remove-Item -LiteralPath $temporary -ErrorAction SilentlyContinue }
 }
 
 if ($Stage -eq 'freeze') {

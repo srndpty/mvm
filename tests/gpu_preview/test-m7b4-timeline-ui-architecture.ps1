@@ -417,7 +417,9 @@ $requiredExportSettings = @(
     'key: "standard"',
     'key: "compact"',
     'root.mvmController.exportSettingsSummary()',
-    'root.mvmController.exportTimelineWithQuality(',
+    'root.mvmController.exportTimelineWithOptions(',
+    'objectName: "exportMathGroupCheckBox"',
+    'mathGroupCheckBox.checked = false',
     '品質は圧縮率だけを変更します。出力の解像度とfpsはプロジェクト設定のままです。'
 )
 

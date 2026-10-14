@@ -116,29 +116,99 @@ QVariantMap MvmController::exportSettingsSummary() const {
     if (videoClipCount == 0)
         warnings.push_back(QStringLiteral("映像クリップがないため、映像は黒になります。"));
     summary.insert(QStringLiteral("warningText"), warnings.join(QStringLiteral("\n")));
+    // 出力する数式 clip の数 (UI は、1 本以上あるときだけ数式の高速化の選択を見せる)。
+    int mathClipCount = 0;
+    for (const auto& clip : project_.timelineClips)
+        mathClipCount += clip.kind == project::TimelineClipKind::Math && clip.enabled &&
+                         project::isTrackOutputEnabled(project_, clip.track);
+    summary.insert(QStringLiteral("mathClipCount"), mathClipCount);
     return summary;
 }
 
-bool MvmController::exportTimeline(const QUrl& outputUrl) {
-    return startTimelineExport(outputUrl, 23);
+namespace {
+
+// 書き出しの結果の記録から、数式の高速化がどうなったかを 1 つに分ける。従来の方法での書き出しを
+// 「高速化を使った」と報告しない。
+QVariantMap describeMathGroupOutcome(const TimelineExportResult& exported) {
+    const auto& report = exported.mathGroup;
+    const bool requested = report.requested == MathGroupOptimization::Auto;
+    QString outcome;
+    QString message;
+    if (!requested) {
+        outcome = QStringLiteral("off");
+    } else if (!exported.success && report.mathGroupGraph && report.errors > 0) {
+        outcome = QStringLiteral("failed");
+        message = QStringLiteral(
+            "数式の高速化（試験的）の描画で失敗したため、書き出しを止めました。書き出し設定で"
+            "「数式の書き出しを高速化（試験的）」を外すと、従来の方法で書き出せます。");
+    } else if (!exported.success) {
+        outcome = QStringLiteral("incomplete"); // 取消・timeout・その他の失敗 (高速化の失敗ではない)
+    } else if (report.preparationRejected) {
+        outcome = QStringLiteral("budget");
+        message = QStringLiteral("数式の高速化は使わず、従来の方法で書き出しました"
+                                 "（準備する画像が上限を超えたため）");
+    } else if (report.mathGroupGraph) {
+        outcome = QStringLiteral("used");
+        message =
+            QStringLiteral("数式の高速化を使いました（数式 clip %1 本）").arg(report.groupedClips);
+    } else {
+        outcome = QStringLiteral("conventional");
+        message = QStringLiteral("数式の高速化は使わず、従来の方法で書き出しました"
+                                 "（この Project は対象外: %1）")
+                      .arg(QString::fromStdString(report.reason));
+    }
+    return {{QStringLiteral("requested"), requested},
+            {QStringLiteral("outcome"), outcome},
+            {QStringLiteral("message"), message},
+            {QStringLiteral("decision"), QString::fromStdString(report.decision)},
+            {QStringLiteral("reason"), QString::fromStdString(report.reason)},
+            {QStringLiteral("graph"), report.mathGroupGraph ? QStringLiteral("math-group")
+                                                            : QStringLiteral("conventional")},
+            {QStringLiteral("groupedClips"), static_cast<qlonglong>(report.groupedClips)},
+            {QStringLiteral("affineTransitions"),
+             static_cast<qlonglong>(report.affineTransitions)},
+            {QStringLiteral("errors"), static_cast<qlonglong>(report.errors)}};
 }
 
-bool MvmController::exportTimelineWithQuality(const QUrl& outputUrl, const QString& quality) {
-    int videoCrf = 0;
+} // namespace
+
+bool MvmController::exportTimeline(const QUrl& outputUrl) {
+    return startTimelineExport(outputUrl, 23, mathGroupExportOptimization_);
+}
+
+bool MvmController::exportQualityCrf(const QString& quality, int& videoCrf) {
     if (quality == QStringLiteral("high"))
         videoCrf = 18;
     else if (quality == QStringLiteral("standard"))
         videoCrf = 23;
     else if (quality == QStringLiteral("compact"))
         videoCrf = 28;
-    else {
+    else
+        return false;
+    return true;
+}
+
+bool MvmController::exportTimelineWithQuality(const QUrl& outputUrl, const QString& quality) {
+    int videoCrf = 0;
+    if (!exportQualityCrf(quality, videoCrf)) {
         reportExportFailure(QStringLiteral("未知の書き出し品質です: ") + quality);
         return false;
     }
-    return startTimelineExport(outputUrl, videoCrf);
+    return startTimelineExport(outputUrl, videoCrf, mathGroupExportOptimization_);
 }
 
-bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
+bool MvmController::exportTimelineWithOptions(const QUrl& outputUrl, const QString& quality,
+                                              bool accelerateMath) {
+    int videoCrf = 0;
+    if (!exportQualityCrf(quality, videoCrf)) {
+        reportExportFailure(QStringLiteral("未知の書き出し品質です: ") + quality);
+        return false;
+    }
+    return startTimelineExport(outputUrl, videoCrf, accelerateMath);
+}
+
+bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf,
+                                        bool mathGroupOptimization) {
     if (busy_) {
         reportExportFailure(QStringLiteral("別の処理中のため書き出しを開始できません"));
         return false;
@@ -167,9 +237,10 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
     request.burnSubtitles = burnSubtitles_;
     request.renderThreads = 4;
     request.encoderThreads = 0;
-    // 数式 group の最適化は、内部の選択が有効なときだけ要求する (既定は Off)。
-    request.mathGroupOptimization = mathGroupExportOptimization_ ? MathGroupOptimization::Auto
-                                                                 : MathGroupOptimization::Off;
+    // 数式 group の最適化は、この書き出しで選ばれたときだけ要求する (既定は Off)。要求は worker
+    // を始める前にここで確定し、以降は変わらない。
+    request.mathGroupOptimization =
+        mathGroupOptimization ? MathGroupOptimization::Auto : MathGroupOptimization::Off;
     request.graphEnvironment.cache = mathCacheDirectory().parent_path().parent_path() / L"graph" /
                                      projectPath_.filename();
     request.graphEnvironment.toolchain = graphRasters_ ? graphRasters_->exportToolchain() : "";
@@ -274,6 +345,7 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf) {
     exportProgress_ = 0.0;
     exportProgressText_ = QStringLiteral("準備しています…");
     exportBaselineFrame_ = -1;
+    exportMathGroupOutcome_.clear();
     busy_ = true;
     statusText_ = QStringLiteral("書き出しています…");
     Q_EMIT stateChanged();
@@ -354,12 +426,20 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     exportCancelling_ = false;
     busy_ = false;
     lastExportMathGroupReport_ = exported.mathGroup;
+    exportMathGroupOutcome_ = describeMathGroupOutcome(exported);
+    const QString mathGroupMessage =
+        exportMathGroupOutcome_.value(QStringLiteral("message")).toString();
     if (!exported.success) {
         if (exported.cancelled)
             setStatus(QStringLiteral("書き出しをキャンセルしました"));
         else
+            // 元の error はそのまま残し、数式の高速化の失敗なら、外して書き出せることを足す
+            // (自動ではやり直さない)。
             reportExportFailure(QStringLiteral("書き出しに失敗しました: ") +
-                                QString::fromStdString(exported.error));
+                                QString::fromStdString(exported.error) +
+                                (mathGroupMessage.isEmpty()
+                                     ? QString()
+                                     : QStringLiteral("\n\n") + mathGroupMessage));
         return;
     }
     exportProgress_ = 1.0;
@@ -372,6 +452,8 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     QString revealError;
     if (!fileRevealer_(exported.outputPath, revealError))
         status += QStringLiteral(" / Explorerで表示できません: ") + revealError;
+    if (!mathGroupMessage.isEmpty())
+        status += QStringLiteral(" / ") + mathGroupMessage;
     setStatus(status);
 }
 

@@ -4238,6 +4238,13 @@ set_tests_properties(math_equation_sequence_product_ui PROPERTIES
 set_tests_properties(math_inspector_product_ui PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)
+# P3-6C.1: 製品の Main.qml の書き出し設定から数式の高速化 (数式 group) を選び、要求・選ばれた
+# graph・結果の報告・出力の byte 列を確かめる (実 controller、製品の書き出し)。
+add_test(NAME math_group_export_product_ui
+    COMMAND mvm_test_text_ui_input --math-group-export-ui)
+set_tests_properties(math_group_export_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 240)
 add_test(NAME math_transform_inspector_product_ui
     COMMAND mvm_test_text_ui_input --math-transform-inspector)
 set_tests_properties(math_transform_inspector_product_ui PROPERTIES

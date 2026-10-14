@@ -222,9 +222,10 @@ public:
     // 取消した worker の破棄まで終わっている。中止そのものは待たない。
     // 100 ms の poll が動いているか。待機中に常駐しないことの試験用。
     bool audioAdjustmentPollingForTest() const { return audioAdjustmentTimer_.isActive(); }
-    // 書き出しで数式 group の最適化を使うか (P3-6A)。既定は使わない。設定の UI はまだ無く、QML からは
-    // 呼べない (内部の選択)。true にすると、次の書き出しから要求に Auto を入れる
-    // (app/timeline_export.h の MathGroupOptimization)。
+    // 書き出しで数式 group の最適化を使うか (P3-6A)。既定は使わない。QML からは呼べない (内部の
+    // 選択で、検証 harness が使う)。true にすると、exportTimeline・exportTimelineWithQuality の
+    // 要求に Auto を入れる (app/timeline_export.h の MathGroupOptimization)。
+    // 製品の UI は、この値を使わず、書き出しごとに exportTimelineWithOptions の引数で選ぶ (P3-6C.1)。
     void setMathGroupExportOptimization(bool enabled) { mathGroupExportOptimization_ = enabled; }
     bool mathGroupExportOptimization() const { return mathGroupExportOptimization_; }
     // 最後に終わった書き出しの、数式 group の選択の記録 (成功・失敗・取消のどれでも)。
@@ -950,6 +951,18 @@ public:
     Q_INVOKABLE QVariantMap exportSettingsSummary() const;
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
     Q_INVOKABLE bool exportTimelineWithQuality(const QUrl& outputUrl, const QString& quality);
+    // 書き出し設定の UI からの開始 (P3-6C.1)。accelerateMath は、その書き出し 1 回だけの選択で、
+    // true なら要求に MathGroupOptimization::Auto、false なら Off を入れる。controller には残さない
+    // (次の書き出し・別の Project・再起動の後は、UI が改めて選ぶ)。
+    Q_INVOKABLE bool exportTimelineWithOptions(const QUrl& outputUrl, const QString& quality,
+                                               bool accelerateMath);
+    // 最後に終わった書き出しで、数式の高速化 (数式 group) がどうなったか。書き出しの結果の記録
+    // (MathGroupExportReport) から作る。書き出しを始めると空になる。
+    //   requested (bool)、outcome ("off"・"used"・"conventional"・"budget"・"failed"・"incomplete")、
+    //   message (利用者へ見せる文。無ければ空)、decision・reason・graph・groupedClips・
+    //   affineTransitions・errors (記録の写し)
+    Q_PROPERTY(QVariantMap exportMathGroupOutcome READ exportMathGroupOutcome NOTIFY stateChanged)
+    QVariantMap exportMathGroupOutcome() const { return exportMathGroupOutcome_; }
     Q_INVOKABLE void cancelTimelineExport();
 
     // エフェクトとキーフレーム (mvm_controller_effects.cpp)。
@@ -1128,7 +1141,8 @@ private:
     // 一度でも監視に載せた path。外れていた path の再登録を判別する。
     QSet<QString> audioWatchedPaths_;
     std::unique_ptr<ShuttleAudioPlayback> audioAdjustmentAudition_;
-    bool startTimelineExport(const QUrl& outputUrl, int videoCrf);
+    bool startTimelineExport(const QUrl& outputUrl, int videoCrf, bool mathGroupOptimization);
+    static bool exportQualityCrf(const QString& quality, int& videoCrf);
 
     struct TrackPreviewSource {
         preview::PreviewSourceId source;
@@ -1768,6 +1782,7 @@ private:
     ExportRunner exportRunner_;
     bool mathGroupExportOptimization_ = false;
     MathGroupExportReport lastExportMathGroupReport_;
+    QVariantMap exportMathGroupOutcome_;
     ExportThreadFactory exportThreadFactory_;
     FileRevealer fileRevealer_;
     std::atomic<bool> exportCancelRequested_{false};
