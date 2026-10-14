@@ -147,6 +147,9 @@ constexpr Fixture kFixtures[] = {
     // 5 = V1 の clip が前半だけ (後半は隙間。clip の境界をまたぐ)。 ---
     {"base-gap", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, -1, 4},
     {"base-half-gap", FixtureKind::Synthetic, 16, 120, 0, {0, 60, 119}, false, -1, 5},
+    // --- P3-6C.2: 開いた Project をそのまま使う (尺は問わない。frames = -1)。--product-pure 専用。
+    // ---
+    {"opened-project", FixtureKind::Full, 0, -1, 0, {0, 0, 0}},
 };
 
 enum class Inject { None, DropFrame, RejectFrame, OracleShift, Cancel, CompareCorrupt };
@@ -216,6 +219,9 @@ struct Options {
     // P3-6B: 製品の要求を 1 つも書き換えずに書き出す (observer・pre-YUV の計測・MLT の計時 hook・
     // FFmpeg の記録の tap を付けない)。--product-math-group と組で使う。
     bool productPure = false;
+    // P3-6C.2: fixture の Project を file へ保存して終わる (書き出さない)。人が mvm.exe で開く
+    // 短い Project を作るために使う。
+    std::filesystem::path saveFixtureProject;
     int v1BackgroundFault = 0; // P3-5A.2: V1 の背景の保護の対照用の故障 (mvm_mlt_v1_background.h)
     int forgeAlphaProof = 0;   // 非 0: V1 の alpha の証明をこの値に差し替える (誤った証明の対照)
     int candidateRepeats = 1;  // candidate を同じ process の中で続けて書き出す回数
@@ -1975,6 +1981,9 @@ bool parseOptions(int argc, char** argv, Options& options) {
             if (value != "on" && value != "off")
                 return false;
             options.productMain = value == "on" ? 2 : 1;
+        } else if (key == "--save-fixture-project") {
+            options.saveFixtureProject =
+                std::filesystem::path(QString::fromLocal8Bit(argv[index + 1]).toStdWString());
         } else if (key == "--product-pure") {
             options.productPure = value == "1";
         } else if (key == "--product-observer") {
@@ -2146,6 +2155,14 @@ int main(int argc, char** argv) {
                        : fixture.kind == FixtureKind::Region
                            ? buildRegion(loaded.project, fixture, project, fixtureError)
                            : (project = loaded.project, true);
+    if (built && !options.saveFixtureProject.empty()) {
+        const auto saved = mvm::project::saveProjectJson(project, options.saveFixtureProject);
+        if (!saved.success) {
+            std::fprintf(stderr, "fixture の Project を保存できません: %s\n", saved.error.c_str());
+            return kExitProtocol;
+        }
+        return kExitPass;
+    }
     if (built && !options.layerSelect.empty()) {
         if (fixture.kind != FixtureKind::Synthetic) {
             std::fprintf(stderr, "--layer-select は Synthetic fixture だけに使えます\n");
@@ -2167,7 +2184,11 @@ int main(int argc, char** argv) {
     }
     const auto valid =
         built ? mvm::project::validateTimeline(project) : mvm::project::TimelineValidationResult{};
-    if (!built || !valid.success || valid.totalFrames != fixture.frames) {
+    if (fixture.frames < 0 && !options.productPure) {
+        std::fprintf(stderr, "fixture '%s' は --product-pure と組み合わせます\n", fixture.name);
+        return kExitProtocol;
+    }
+    if (!built || !valid.success || (fixture.frames >= 0 && valid.totalFrames != fixture.frames)) {
         std::fprintf(stderr, "fixture '%s' を作れません: %s (frame %lld、想定 %lld)\n",
                      fixture.name, (built ? valid.error : fixtureError).c_str(),
                      static_cast<long long>(valid.totalFrames),
@@ -2656,6 +2677,8 @@ int main(int argc, char** argv) {
         const QJsonObject pure{
             {QStringLiteral("fixture"), QString::fromUtf8(fixture.name)},
             {QStringLiteral("expected_frames"), static_cast<qint64>(fixture.frames)},
+            {QStringLiteral("project_total_frames"),
+             static_cast<qint64>(controller->totalTimelineFrames())},
             {QStringLiteral("controller_default_selection"), controllerDefaultSelection},
             {QStringLiteral("controller_selection"), controller->mathGroupExportOptimization()},
             {QStringLiteral("request"), pureRequest},

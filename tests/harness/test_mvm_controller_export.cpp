@@ -244,9 +244,8 @@ void testMathGroupExportSelection(const std::filesystem::path& path) {
     checkText(outcome("outcome") == QStringLiteral("used") && outcome("requested") == true &&
                   outcome("graph") == QStringLiteral("math-group") &&
                   outcome("groupedClips") == 7 && failure.isEmpty() &&
-                  controller.statusText().startsWith(QStringLiteral("書き出しました: ")) &&
-                  controller.statusText().contains(
-                      QStringLiteral("数式の高速化を使いました（数式 clip 7 本）")),
+                  controller.statusText().startsWith(QStringLiteral(
+                      "数式の高速化を使いました（数式 clip 7 本）。書き出しました: ")),
               "数式の高速化: 使ったことを報告する: " + controller.statusText().toStdString());
     // 選択は controller に残らない: 次の書き出しは、引数が false なら Off。
     shape = nullptr;
@@ -263,11 +262,39 @@ void testMathGroupExportSelection(const std::filesystem::path& path) {
     };
     checkText(run(true) && outcome("outcome") == QStringLiteral("conventional") &&
                   outcome("graph") == QStringLiteral("conventional") && failure.isEmpty() &&
-                  controller.statusText().contains(QStringLiteral("従来の方法で書き出しました")) &&
-                  controller.statusText().contains(QStringLiteral("base-clip-transformed")) &&
+                  controller.statusText().startsWith(QStringLiteral(
+                      "数式の高速化は使いませんでした（一番下の映像 track の clip に拡大・回転"
+                      "などの変形があるため）。従来の方法で書き出しました: ")) &&
+                  outcome("reason") == QStringLiteral("base-clip-transformed") &&
+                  !controller.statusText().contains(QStringLiteral("base-clip-transformed")) &&
                   !controller.statusText().contains(QStringLiteral("高速化を使いました")),
               "数式の高速化: 対象外は従来の方法として報告する: " +
                   controller.statusText().toStdString());
+
+    // 判定の理由は、利用者向けの文にして見せる
+    // (記録の値は変えない)。知らない名前は括弧に入れて出す。
+    const std::pair<const char*, const char*> reasons[] = {
+        {"base-alpha-zero", "一番下の映像 track に透明な部分があるため"},
+        {"base-alpha-unproven", "一番下の映像 track の透明度を事前に確かめられないため"},
+        {"no-eligible-math-clip", "まとめて描画できる数式 clip が無いため"},
+        {"future-reason", "対象外（future-reason）"},
+    };
+    for (const auto& [code, text] : reasons) {
+        shape = [code = std::string(code)](auto& result) {
+            result.mathGroup.evaluated = true;
+            result.mathGroup.decision = "INELIGIBLE";
+            result.mathGroup.reason = code;
+        };
+        checkText(run(true) && outcome("outcome") == QStringLiteral("conventional") &&
+                      outcome("reason") == QString::fromLatin1(code) &&
+                      outcome("reasonText") == QString::fromUtf8(text) &&
+                      controller.statusText().startsWith(
+                          QStringLiteral("数式の高速化は使いませんでした（") +
+                          QString::fromUtf8(text) +
+                          QStringLiteral("）。従来の方法で書き出しました: ")),
+                  std::string("数式の高速化: 理由 ") + code +
+                      " を利用者向けの文にする: " + controller.statusText().toStdString());
+    }
 
     // 選択あり、画像の上限の超過 → 従来の graph。理由を分けて報告する。
     shape = [](auto& result) {
@@ -276,7 +303,9 @@ void testMathGroupExportSelection(const std::filesystem::path& path) {
         result.mathGroup.reason = "prepared-raster-budget-exceeded";
     };
     checkText(run(true) && outcome("outcome") == QStringLiteral("budget") && failure.isEmpty() &&
-                  controller.statusText().contains(QStringLiteral("上限を超えた")) &&
+                  controller.statusText().startsWith(
+                      QStringLiteral("数式の高速化は使いませんでした（準備する画像が上限を"
+                                     "超えたため）。従来の方法で書き出しました: ")) &&
                   !controller.statusText().contains(QStringLiteral("高速化を使いました")),
               "数式の高速化: 上限の超過を分けて報告する: " + controller.statusText().toStdString());
 

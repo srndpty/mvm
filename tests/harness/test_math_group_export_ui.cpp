@@ -421,8 +421,8 @@ int runMathGroupExportUi(const std::filesystem::path& directory) {
               "B: 判定 ELIGIBLE、数式 group の graph で実際に合成する: 判定 '" +
                   hooks.report.decision + "' (" + hooks.report.reason + ")");
         check(s.outcome("outcome") == QStringLiteral("used") &&
-                  s.controller->statusText().contains(
-                      QStringLiteral("数式の高速化を使いました（数式 clip 2 本）")),
+                  s.controller->statusText().startsWith(QStringLiteral(
+                      "数式の高速化を使いました（数式 clip 2 本）。書き出しました: ")),
               "B: 使ったことを利用者へ報告する: " + s.controller->statusText().toStdString());
         check(fileBytes(onPath) == eligibleOff, "B: 出力は off と同じ byte 列");
         check(hooks.liveTransitions == 0 && hooks.activeCallbacks == 0 &&
@@ -485,7 +485,9 @@ int runMathGroupExportUi(const std::filesystem::path& directory) {
                   !hooks.report.mathGroupGraph && hooks.report.composedFrames == 0,
               "F: 準備を取りやめ、従来の graph を選ぶ");
         check(s.outcome("outcome") == QStringLiteral("budget") &&
-                  s.controller->statusText().contains(QStringLiteral("上限を超えた")) &&
+                  s.controller->statusText().startsWith(
+                      QStringLiteral("数式の高速化は使いませんでした（準備する画像が上限を"
+                                     "超えたため）。従来の方法で書き出しました: ")) &&
                   !s.controller->statusText().contains(QStringLiteral("高速化を使いました")) &&
                   fileBytes(budgetPath) == eligibleOff && hooks.rasterLiveBytes == 0,
               "F: 高速化を使ったと報告しない。出力は off と同じ: " +
@@ -559,6 +561,9 @@ int runMathGroupExportUi(const std::filesystem::path& directory) {
 
         // --- J. 別の Project を開く: 選択は持ち越さない。対象外は従来の graph ---
         const char* expectedDecision[] = {"", "INELIGIBLE", "UNKNOWN"};
+        const char* expectedText[] = {
+            "", "一番下の映像 track に透明な部分があるため",
+            "一番下の映像 track の clip に拡大・回転などの変形があるため"};
         const char* name[] = {"", "V1 に alpha 0", "V1 を拡大"};
         for (int base = 1; base <= 2; ++base) {
             const std::string label = std::string("J (") + name[base] + "): ";
@@ -573,14 +578,17 @@ int runMathGroupExportUi(const std::filesystem::path& directory) {
             const auto offBytes = fileBytes(off);
             const auto on = directory / (L"switch-" + std::to_wstring(base) + L"-on.mp4");
             check(s.exportOnce(on, true) && hooks.modeSeen == kAuto, label + "on で書き出す");
+            s.shot(base == 1 ? "status-fallback-ineligible" : "status-fallback-unknown");
             check(hooks.report.evaluated && hooks.report.decision == expectedDecision[base] &&
                       !hooks.report.mathGroupGraph && hooks.report.composedFrames == 0 &&
                       hooks.report.groups == 0,
                   label + "判定 " + expectedDecision[base] + " で従来の graph を選ぶ: 判定 '" +
                       hooks.report.decision + "' (" + hooks.report.reason + ")");
             check(s.outcome("outcome") == QStringLiteral("conventional") &&
-                      s.controller->statusText().contains(
-                          QStringLiteral("従来の方法で書き出しました")) &&
+                      s.controller->statusText().startsWith(
+                          QStringLiteral("数式の高速化は使いませんでした（") +
+                          QString::fromUtf8(expectedText[base]) +
+                          QStringLiteral("）。従来の方法で書き出しました: ")) &&
                       !s.controller->statusText().contains(QStringLiteral("高速化を使いました")),
                   label +
                       "高速化を使ったと報告しない: " + s.controller->statusText().toStdString());

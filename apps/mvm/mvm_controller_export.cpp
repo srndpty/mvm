@@ -127,6 +127,22 @@ QVariantMap MvmController::exportSettingsSummary() const {
 
 namespace {
 
+// 書き出しの前の判定の理由 (内部の名前) を、利用者へ見せる文にする。記録の値は変えない。
+// 知らない名前は、そのまま括弧に入れて見せる (黙って別の理由に読み替えない)。
+QString mathGroupReasonText(const std::string& reason) {
+    if (reason == "base-alpha-zero")
+        return QStringLiteral("一番下の映像 track に透明な部分があるため");
+    if (reason == "base-alpha-unproven")
+        return QStringLiteral("一番下の映像 track の透明度を事前に確かめられないため");
+    if (reason == "base-clip-transformed")
+        return QStringLiteral("一番下の映像 track の clip に拡大・回転などの変形があるため");
+    if (reason == "no-eligible-math-clip")
+        return QStringLiteral("まとめて描画できる数式 clip が無いため");
+    if (reason == "prepared-raster-budget-exceeded")
+        return QStringLiteral("準備する画像が上限を超えたため");
+    return QStringLiteral("対象外（") + QString::fromStdString(reason) + QStringLiteral("）");
+}
+
 // 書き出しの結果の記録から、数式の高速化がどうなったかを 1 つに分ける。従来の方法での書き出しを
 // 「高速化を使った」と報告しない。
 QVariantMap describeMathGroupOutcome(const TimelineExportResult& exported) {
@@ -145,23 +161,24 @@ QVariantMap describeMathGroupOutcome(const TimelineExportResult& exported) {
         outcome = QStringLiteral("incomplete"); // 取消・timeout・その他の失敗 (高速化の失敗ではない)
     } else if (report.preparationRejected) {
         outcome = QStringLiteral("budget");
-        message = QStringLiteral("数式の高速化は使わず、従来の方法で書き出しました"
-                                 "（準備する画像が上限を超えたため）");
+        message = QStringLiteral("数式の高速化は使いませんでした（") +
+                  mathGroupReasonText(report.preparationReason) + QStringLiteral("）");
     } else if (report.mathGroupGraph) {
         outcome = QStringLiteral("used");
         message =
             QStringLiteral("数式の高速化を使いました（数式 clip %1 本）").arg(report.groupedClips);
     } else {
         outcome = QStringLiteral("conventional");
-        message = QStringLiteral("数式の高速化は使わず、従来の方法で書き出しました"
-                                 "（この Project は対象外: %1）")
-                      .arg(QString::fromStdString(report.reason));
+        message = QStringLiteral("数式の高速化は使いませんでした（") +
+                  mathGroupReasonText(report.reason) + QStringLiteral("）");
     }
     return {{QStringLiteral("requested"), requested},
             {QStringLiteral("outcome"), outcome},
             {QStringLiteral("message"), message},
             {QStringLiteral("decision"), QString::fromStdString(report.decision)},
             {QStringLiteral("reason"), QString::fromStdString(report.reason)},
+            {QStringLiteral("reasonText"),
+             report.reason.empty() ? QString() : mathGroupReasonText(report.reason)},
             {QStringLiteral("graph"), report.mathGroupGraph ? QStringLiteral("math-group")
                                                             : QStringLiteral("conventional")},
             {QStringLiteral("groupedClips"), static_cast<qlonglong>(report.groupedClips)},
@@ -346,6 +363,11 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf,
     exportProgressText_ = QStringLiteral("準備しています…");
     exportBaselineFrame_ = -1;
     exportMathGroupOutcome_.clear();
+    // 起動した console (stderr) へ、書き出しの開始と結果を 1 行ずつ出す (main.cpp と同じ出し方)。
+    std::fprintf(stderr, "書き出しを始めます: %s (数式の高速化: %s)\n",
+                 outputUrl.toLocalFile().toUtf8().constData(),
+                 mathGroupOptimization ? "選択あり" : "選択なし");
+    std::fflush(stderr);
     busy_ = true;
     statusText_ = QStringLiteral("書き出しています…");
     Q_EMIT stateChanged();
@@ -429,6 +451,25 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     exportMathGroupOutcome_ = describeMathGroupOutcome(exported);
     const QString mathGroupMessage =
         exportMathGroupOutcome_.value(QStringLiteral("message")).toString();
+    {
+        const auto& report = exported.mathGroup;
+        std::fprintf(
+            stderr,
+            "書き出しの結果: %s frame=%lld error='%s' | 数式の高速化: outcome=%s decision=%s "
+            "reason=%s graph=%s groups=%lld grouped_clips=%lld affine=%lld composed=%lld "
+            "callbacks=%lld errors=%lld rasters=%lld raster_bytes=%lld preparation_rejected=%d "
+            "live_transitions=%lld active_callbacks=%lld\n",
+            exported.success ? "成功" : exported.cancelled ? "取消" : "失敗",
+            static_cast<long long>(exported.frameCount), exported.error.c_str(),
+            exportMathGroupOutcome_.value(QStringLiteral("outcome")).toString().toUtf8().constData(),
+            report.decision.c_str(), report.reason.c_str(),
+            report.mathGroupGraph ? "math-group" : "conventional", report.groups,
+            report.groupedClips, report.affineTransitions, report.composedFrames, report.callbacks,
+            report.errors, report.rasterCount, report.rasterBytes,
+            report.preparationRejected ? 1 : 0, report.liveTransitionsAfter,
+            report.activeCallbacksAfter);
+        std::fflush(stderr);
+    }
     if (!exported.success) {
         if (exported.cancelled)
             setStatus(QStringLiteral("書き出しをキャンセルしました"));
@@ -444,7 +485,15 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     }
     exportProgress_ = 1.0;
     exportProgressText_ = QStringLiteral("完了");
-    QString status = QStringLiteral("書き出しました: ") + fromPath(exported.outputPath) +
+    // 状態の表示は 1 行で、右側が省略される。数式の高速化の結果は、長い path の前に出す。
+    const QString outcome = exportMathGroupOutcome_.value(QStringLiteral("outcome")).toString();
+    const QString lead =
+        mathGroupMessage.isEmpty()
+            ? QStringLiteral("書き出しました: ")
+            : mathGroupMessage + (outcome == QStringLiteral("used")
+                                      ? QStringLiteral("。書き出しました: ")
+                                      : QStringLiteral("。従来の方法で書き出しました: "));
+    QString status = lead + fromPath(exported.outputPath) +
                      QStringLiteral(" (") + QString::number(exported.frameCount) +
                      QStringLiteral(" frame / ") + QString::number(exported.durationSec, 'f', 2) +
                      QStringLiteral(" 秒)");
@@ -452,8 +501,6 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     QString revealError;
     if (!fileRevealer_(exported.outputPath, revealError))
         status += QStringLiteral(" / Explorerで表示できません: ") + revealError;
-    if (!mathGroupMessage.isEmpty())
-        status += QStringLiteral(" / ") + mathGroupMessage;
     setStatus(status);
 }
 

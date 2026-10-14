@@ -959,8 +959,8 @@ public:
     // 最後に終わった書き出しで、数式の高速化 (数式 group) がどうなったか。書き出しの結果の記録
     // (MathGroupExportReport) から作る。書き出しを始めると空になる。
     //   requested (bool)、outcome ("off"・"used"・"conventional"・"budget"・"failed"・"incomplete")、
-    //   message (利用者へ見せる文。無ければ空)、decision・reason・graph・groupedClips・
-    //   affineTransitions・errors (記録の写し)
+    //   message (利用者へ見せる文。無ければ空)、reasonText (判定の理由を利用者向けにした文)、
+    //   decision・reason・graph・groupedClips・affineTransitions・errors (記録の写し)
     Q_PROPERTY(QVariantMap exportMathGroupOutcome READ exportMathGroupOutcome NOTIFY stateChanged)
     QVariantMap exportMathGroupOutcome() const { return exportMathGroupOutcome_; }
     Q_INVOKABLE void cancelTimelineExport();

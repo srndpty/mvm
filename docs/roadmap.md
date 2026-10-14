@@ -197,6 +197,10 @@
     足した。既定は off で、書き出しごとに選ぶ（保存しない）。対象外・画像の上限の超過は従来の方法で
     書き出し、その旨を報告する。高速化の描画の失敗は書き出しを止める（自動ではやり直さない）。
     `mvm.exe` を人が操作する検収は P3-6C.2。
+  - P3-6C.2（[状況](math-group-product-p36c2.md)、[手順書](math-group-product-p36c2-procedure.md)）:
+    実際の `mvm.exe` を人が操作する検収。**MANUAL_ACCEPTANCE_PENDING**（人の操作と、今回の binary の
+    全 CTest がまだ）。準備として、高速化の結果を状態の表示の行頭へ出し、対象外の理由を人が読める文に
+    した。起動・記録・事後検査の script と、短い確認用の Project を用意した。
   - `timeout_ms` = 1000 が実時間 3418 ms で timeout することを `mlt_export_timeout_accounting_deviation`
     （label `stability`）で記録した。修正案は上の文書にある。
   - `timeout_ms` は `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならない（720 秒以上で未発火）。
