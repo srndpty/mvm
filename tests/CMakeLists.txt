@@ -4246,6 +4246,14 @@ add_test(NAME math_group_export_product_ui
 set_tests_properties(math_group_export_product_ui PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 240)
+# P3-7B.1: 試験用の「Explorer を開かない」引数は、利用者の画面 (Default desktop) では起動を断る。
+# 以前の環境変数では有効にならない。
+add_test(NAME mvm_reveal_simulation_gate
+    COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/harness/test-mvm-reveal-simulation-gate.ps1
+            -Executable $<TARGET_FILE:mvm> -WorkDirectory ${CMAKE_CURRENT_BINARY_DIR}/reveal-simulation-gate)
+set_tests_properties(mvm_reveal_simulation_gate PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 60)
 # P3-7B: 書き出し設定の入力映像・出力の要約を、製品の Main.qml と実際の素材の probe で確かめる
 # (生成する clip を「仕様を確認できない入力ファイル」に数えない。本当の素材の失敗は出す)。
 add_test(NAME export_settings_summary_product_ui

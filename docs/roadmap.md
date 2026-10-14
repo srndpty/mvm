@@ -229,9 +229,16 @@
   - 製品 GUI の smoke（2026-10-15）: 既定で、新しく作った見えない desktop（CreateDesktop）の上で mvm.exe と
     driver を動かす。window・保存 dialog・上書きの確認が利用者の画面に出ず、前面を奪わない。見えない desktop
     から Explorer を開くと、Explorer が 20 秒〜5 分以上待たせてから E_ABORT で断り、その間 mvm の GUI thread が
-    止まるので、mvm.exe を試験用の環境変数 `MVM_TEST_REVEAL_WITHOUT_EXPLORER` 付きで起動する（path の正規化と
-    実際の `SHParseDisplayName` までは通し、Explorer を開く処理だけを成功として扱う）。画面の保存は見えない
-    desktop では取れない。`-Visible` で以前の動き（利用者の画面、実際の Explorer）に戻せる。
+    止まるので、mvm.exe を試験用の引数付きで起動する（path の正規化と実際の `SHParseDisplayName` までは通し、
+    Explorer を開く処理だけを成功として扱う）。画面の保存は見えない desktop では取れない。`-Visible` で以前の
+    動き（利用者の画面、実際の Explorer）に戻せる。
+  - P3-7B.1（[結果](gui-smoke-hidden-desktop-p37b1.md)）: 試験用の Explorer の動きを、環境変数から明示の引数
+    `--test-reveal-without-explorer` に替え、利用者の画面（Default desktop）では起動を断るようにした。runner は
+    process の木を Job Object（KILL_ON_JOB_CLOSE）で所有し、時間切れ・異常終了でも mvm.exe・driver を残さない。
+    session は driver の終了・上限で mvm.exe を止める。完了を確かめられない失敗の観測（GUI の応答、UI Automation
+    の要素、別の client、controller の状態の記録 `--test-log-status`）と、失敗の注入の試験
+    （`scripts/math-group-gui-smoke-faults.ps1`）を足した。完了を確かめられない失敗について、製品が書き出しの結果の
+    文を「素材を追加してください」で上書きすることを controller の記録で確かめた（`pollPreviewState`。直していない）。
   - （解消済み。P3-5B）`timeout_ms` = 1000 が実時間 3418 ms で timeout することを
     `mlt_export_timeout_accounting_deviation`（label `stability`）で記録していた。
   - （解消済み。P3-5B）`timeout_ms` を `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならな

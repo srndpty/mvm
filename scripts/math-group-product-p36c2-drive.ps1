@@ -26,7 +26,17 @@ param(
     [Parameter(Mandatory)][ValidateSet('A', 'B', 'C')][string]$Scenario,
     [Parameter(Mandatory)][string]$ManualOut,
     [Parameter(Mandatory)][string]$ResultPath,
-    [int]$ExportTimeoutSeconds = 1500
+    [int]$ExportTimeoutSeconds = 1500,
+    # 短い場面 (A・B) で、1 回の書き出しの終わりを待つ秒数。
+    [int]$ExportWaitSeconds = 300,
+    # 失敗の注入 (scripts/math-group-gui-smoke-faults.ps1 だけが使う。場面 B で行う):
+    #   driver-exit              window を見つけた後、記録も後始末もせずに driver が終わる
+    #   product-crash            書き出しの前に、mvm.exe を 0xC0000005 で止める
+    #   exit-during-export       書き出しの最中に、mvm.exe を終了コード 1 で止める
+    #   missing-element          無い部品と、閉じた dialog の古い部品を操作しようとする
+    #   unobservable-completion  書き出しの結果の文を、決して一致しない形で探す (製品の書き出しは終わる)
+    [ValidateSet('none', 'driver-exit', 'product-crash', 'exit-during-export', 'missing-element', 'unobservable-completion')]
+    [string]$InjectFault = 'none'
 )
 
 Set-StrictMode -Version Latest
@@ -64,6 +74,36 @@ public static class Win32 {
     public static string DesktopName() {
         StringBuilder b = new StringBuilder(256); int needed;
         return GetUserObjectInformation(GetThreadDesktop(GetCurrentThreadId()), 2, b, b.Capacity * 2, out needed) ? b.ToString() : "";
+    }
+
+    [DllImport("user32.dll")] private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll")] private static extern bool IsHungAppWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool EnumDesktopWindows(IntPtr desktop, EnumProc proc, IntPtr parameter);
+    [DllImport("kernel32.dll")] private static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
+    [DllImport("kernel32.dll")] private static extern bool TerminateProcess(IntPtr process, uint code);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+
+    // window の thread が message に応えるか (WM_NULL を timeoutMs まで待つ。SMTO_ABORTIFHUNG)。
+    public static bool Responds(IntPtr window, uint timeoutMs) {
+        IntPtr result;
+        return window != IntPtr.Zero && SendMessageTimeout(window, 0, IntPtr.Zero, IntPtr.Zero, 0x0002, timeoutMs, out result) != IntPtr.Zero;
+    }
+    public static bool Hung(IntPtr window) { return window != IntPtr.Zero && IsHungAppWindow(window); }
+    // window が、この thread (driver) と同じ desktop にあるか。
+    public static bool OnThisDesktop(IntPtr window) {
+        bool found = false;
+        EnumDesktopWindows(GetThreadDesktop(GetCurrentThreadId()), delegate (IntPtr candidate, IntPtr parameter) {
+            if (candidate == window) { found = true; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+    public static uint OwnerProcess(IntPtr window) { uint processId; GetWindowThreadProcessId(window, out processId); return processId; }
+    // 失敗の注入 (試験だけ): process を指定の終了コードで止める (PROCESS_TERMINATE)。
+    public static bool Kill(uint processId, uint code) {
+        IntPtr handle = OpenProcess(0x0001, false, processId);
+        if (handle == IntPtr.Zero) return false;
+        try { return TerminateProcess(handle, code); } finally { CloseHandle(handle); }
     }
 
     private static string ClassOf(IntPtr window) { StringBuilder b = new StringBuilder(256); GetClassName(window, b, b.Capacity); return b.ToString(); }
@@ -110,12 +150,17 @@ $Scope = [System.Windows.Automation.TreeScope]
 $steps = [System.Collections.Generic.List[object]]::new()
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $failed = $false
+# 書き出しの終わりを待つ間の観測 (Wait-ExportEnd)。完了を確かめられなかったときの調べに使う。
+$observations = [System.Collections.Generic.List[object]]::new()
+$lastUiaError = $null
+$driverStartedWall = (Get-Date).AddSeconds(-$clock.Elapsed.TotalSeconds)
 
 function Write-Result([string]$Status) {
     [ordered]@{ scenario = $Scenario; status = $Status; process_id = $ProcessId; seconds = $clock.Elapsed.TotalSeconds
-        all_ok = (-not $failed -and $Status -eq 'completed'); steps = $steps
+        started_wall = $driverStartedWall.ToString('o'); desktop = [Mvm.Drive.Win32]::DesktopName(); injected_fault = $InjectFault
+        all_ok = (-not $failed -and $Status -eq 'completed'); steps = $steps; observations = $observations
         note = 'mouse と keyboard は使っていない。QML の部品は UI Automation、保存 dialog は Windows の message で操作した。'
-    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ResultPath -Encoding utf8
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ResultPath -Encoding utf8
 }
 
 function Add-Step([string]$Name, [bool]$Ok, $Observed = $null) {
@@ -136,7 +181,7 @@ function Wait-Until([scriptblock]$Condition, [double]$Seconds, [int]$PollMillise
 
 function Get-MainWindow {
     $condition = [System.Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty, $ProcessId)
-    try { $tops = @($A::RootElement.FindAll($Scope::Children, $condition)) } catch { return $null }
+    try { $tops = @($A::RootElement.FindAll($Scope::Children, $condition)) } catch { $script:lastUiaError = "$($_.Exception.GetType().Name): $($_.Exception.Message)"; return $null }
     @($tops | Where-Object { try { $_.Current.ClassName -like 'Main_QMLTYPE*' } catch { $false } }) | Select-Object -First 1
 }
 
@@ -147,14 +192,14 @@ function Find-Element([string]$Name, [System.Windows.Automation.ControlType]$Typ
     $condition = if ($Type) { [System.Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty, $Type) } else { [System.Windows.Automation.Condition]::TrueCondition }
     # tree が変わっている最中 (dialog が開く・閉じる) は、走査が error を返すことがある。見つからなかった
     # ものとして扱い、呼び出し側の次の poll で探し直す。
-    try { $elements = $window.FindAll($Scope::Descendants, $condition) } catch { return $null }
+    try { $elements = $window.FindAll($Scope::Descendants, $condition) } catch { $script:lastUiaError = "$($_.Exception.GetType().Name): $($_.Exception.Message)"; return $null }
     foreach ($element in $elements) {
         try {
             $current = $element.Current
             if ($current.IsOffscreen) { continue }
             $match = if ($Contains) { $current.Name.Contains($Name) } elseif ($Prefix) { $current.Name.StartsWith($Name) } else { $current.Name -eq $Name }
             if ($match) { return $element }
-        } catch { Write-Verbose "$_" }
+        } catch { $script:lastUiaError = "$($_.Exception.GetType().Name): $($_.Exception.Message)" }
     }
     $null
 }
@@ -234,25 +279,110 @@ function Start-Export([bool]$Accelerate) {
     $ok
 }
 
-function Wait-ExportEnd([double]$Seconds) {
-    # 進行の dialog が消え、状態の表示が結果になるまで待つ。
-    $started = Wait-Until { Find-Element '動画を書き出しています' } 30
-    $null = $started
-    $end = Wait-Until {
-        $failure = Find-Element '書き出しに失敗しました: ' ([System.Windows.Automation.ControlType]::Text) -Prefix
-        if ($failure) { return [pscustomobject]@{ kind = 'failure'; text = $failure.Current.Name } }
-        if (-not (Find-Element '動画を書き出しています')) {
-            $status = Get-Status
-            if ($status -match '書き出しました: |書き出しをキャンセルしました') { return [pscustomobject]@{ kind = 'status'; text = $status } }
-        }
-        $null
-    } $Seconds 500
+# 書き出しの結果の文。失敗の注入 unobservable-completion では、決して一致しない形にする (製品の書き出しは
+# 終わるが、driver は GUI で結果を確かめられない、という状態を作る)。
+$statusPattern = if ($InjectFault -eq 'unobservable-completion') { '(?!)' } else { '書き出しました: |書き出しをキャンセルしました' }
+
+# 観測の 1 回分: mvm の window (UI Automation の要素・その process・desktop)、GUI thread の応答、進行の
+# dialog、状態の文、失敗の文、UI Automation の error。どれも見るだけで、操作はしない。
+function Get-ObservationSample {
+    $script:lastUiaError = $null
+    $window = Get-MainWindow
+    $handle = [IntPtr]::Zero
+    $runtimeId = $null
+    if ($window) {
+        try { $handle = [IntPtr]$window.Current.NativeWindowHandle; $runtimeId = ($window.GetRuntimeId() -join '.') } catch { $script:lastUiaError = "$($_.Exception.GetType().Name): $($_.Exception.Message)" }
+    }
+    $owner = if ($handle -ne [IntPtr]::Zero) { [Mvm.Drive.Win32]::OwnerProcess($handle) } else { 0 }
+    $progress = [bool](Find-Element '動画を書き出しています')
+    $failure = Find-Element '書き出しに失敗しました: ' ([System.Windows.Automation.ControlType]::Text) -Prefix
+    $status = Get-Status
+    [pscustomobject][ordered]@{
+        t = [math]::Round($clock.Elapsed.TotalSeconds, 1); wall = (Get-Date).ToString('o')
+        window_found = [bool]$window; window_runtime_id = $runtimeId; window_handle = ('0x{0:X}' -f $handle.ToInt64())
+        window_process = $owner; window_process_matches = ($owner -eq $ProcessId)
+        window_on_driver_desktop = ($handle -ne [IntPtr]::Zero -and [Mvm.Drive.Win32]::OnThisDesktop($handle))
+        gui_responds = [Mvm.Drive.Win32]::Responds($handle, 2000); gui_hung = [Mvm.Drive.Win32]::Hung($handle)
+        progress_visible = $progress; status = $status; failure = $(if ($failure) { $failure.Current.Name } else { $null })
+        uia_error = $script:lastUiaError
+    }
+}
+
+function Wait-ExportEnd([double]$Seconds, [string]$Label = '') {
+    # 進行の dialog が消え、状態の表示が結果になるまで待つ。待つ間の観測を記録する (状態が変わったときと、
+    # 10 秒ごと)。時間は延ばさない。
+    $record = [ordered]@{ label = $Label; started = [math]::Round($clock.Elapsed.TotalSeconds, 1); wait_seconds = $Seconds
+        status_pattern = $statusPattern; progress_seen = $false; polls = 0; outcome = $null; samples = [System.Collections.Generic.List[object]]::new()
+        last_visible_texts = @()
+    }
+    $record.progress_seen = [bool](Wait-Until { Find-Element '動画を書き出しています' } 30)
+    $deadline = $clock.Elapsed.TotalSeconds + $Seconds
+    $lastKey = $null; $lastSampleAt = -100.0; $end = $null
+    while ($true) {
+        $sample = Get-ObservationSample
+        ++$record.polls
+        $key = "$($sample.window_found)|$($sample.gui_responds)|$($sample.progress_visible)|$($sample.status)|$($sample.failure)|$($sample.uia_error)"
+        if ($key -ne $lastKey -or $sample.t - $lastSampleAt -ge 10) { $record.samples.Add($sample); $lastKey = $key; $lastSampleAt = $sample.t }
+        if ($sample.failure) { $end = [pscustomobject]@{ kind = 'failure'; text = $sample.failure }; break }
+        if (-not $sample.progress_visible -and $sample.status -match $statusPattern) { $end = [pscustomobject]@{ kind = 'status'; text = $sample.status }; break }
+        if ($clock.Elapsed.TotalSeconds -ge $deadline) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    $record.ended = [math]::Round($clock.Elapsed.TotalSeconds, 1)
+    $record.outcome = if ($end) { $end.kind } else { 'not-observed' }
     if (-not $end) {
         # 時間切れ: そのとき見えている文を記録する (原因を後から調べられるように)。
-        $texts = @(Get-VisibleTexts | Select-Object -First 40)
-        Add-Step '書き出しの終わりを確かめられない (見えている文を記録する)' $false ($texts -join ' | ')
+        $record.samples.Add($sample)
+        $record.last_visible_texts = @(Get-VisibleTexts)
+        # 画面の外 (IsOffscreen) のものも含めた、全部の文の部品 (状態の表示の部品が無いのか、見えないのか、
+        # 別の名前なのかを後から区別するため)。
+        $record.text_inventory = @(Get-TextInventory)
+        # 別の新しい UI Automation の client (同じ desktop の別 process) からも、状態らしい文を探す。driver の
+        # client の状態の問題か、製品の側の問題かを分けるための記録で、判定には使わない。
+        $record.fresh_client = Get-FreshClientStatus
+        Add-Step '書き出しの終わりを確かめられない (観測は drive.json の observations)' $false (
+            "見えている文 $($record.last_visible_texts.Count)、文の部品 $($record.text_inventory.Count)")
     }
+    $observations.Add([pscustomobject]$record)
     $end
+}
+
+function Get-FreshClientStatus {
+    $probe = @'
+param([int]$ProcessId)
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$A = [System.Windows.Automation.AutomationElement]
+$Scope = [System.Windows.Automation.TreeScope]
+$top = @($A::RootElement.FindAll($Scope::Children, [System.Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty, $ProcessId))) |
+    Where-Object { $_.Current.ClassName -like 'Main_QMLTYPE*' } | Select-Object -First 1
+if (-not $top) { '(window なし)'; exit 0 }
+$texts = $top.FindAll($Scope::Descendants, [System.Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text))
+foreach ($t in $texts) { $n = "$($t.Current.Name)"; if ($n -match '^(書き出し|数式の高速化)') { "offscreen=$($t.Current.IsOffscreen) $n" } }
+'@
+    $file = Join-Path ([IO.Path]::GetTempPath()) "mvm-fresh-uia-$PID.ps1"
+    try {
+        Set-Content -LiteralPath $file -Value $probe -Encoding utf8
+        $output = & (Get-Process -Id $PID).Path -NoProfile -File $file -ProcessId $ProcessId 2>&1 | ForEach-Object { "$_" }
+        [pscustomobject]@{ exit_code = $LASTEXITCODE; status_like_texts = @($output) }
+    } catch {
+        [pscustomobject]@{ error = "$($_.Exception.GetType().Name): $($_.Exception.Message)" }
+    } finally { Remove-Item -LiteralPath $file -ErrorAction SilentlyContinue }
+}
+
+function Get-TextInventory {
+    $window = Get-MainWindow
+    if (-not $window) { return @() }
+    $condition = [System.Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+    try { $elements = $window.FindAll($Scope::Descendants, $condition) } catch { return @([pscustomobject]@{ error = "$($_.Exception.GetType().Name): $($_.Exception.Message)" }) }
+    foreach ($element in $elements) {
+        try {
+            $current = $element.Current
+            $name = "$($current.Name)"
+            [pscustomobject]@{ name = $(if ($name.Length -gt 120) { $name.Substring(0, 120) + '…' } else { $name }); offscreen = $current.IsOffscreen
+                automation_id = $current.AutomationId; rect = "$($current.BoundingRectangle)"
+            }
+        } catch { [pscustomobject]@{ error = "$($_.Exception.GetType().Name)" } }
+    }
 }
 
 function Get-VisibleTexts {
@@ -292,6 +422,30 @@ try {
     # Project を開いた直後の処理 (数式の成果物の確認) を待つ。
     Start-Sleep -Seconds 5
 
+    # 失敗の注入 (scripts/math-group-gui-smoke-faults.ps1 だけ)。注入の段は、成立にしないよう必ず失敗にする。
+    if ($InjectFault -eq 'driver-exit') {
+        # 記録 (drive.json) も、mvm の window を閉じる後始末もせずに終わる (driver の異常終了の代わり)。
+        Write-Host '注入: driver が記録も後始末もせずに終わります (終了コード 9)'
+        [Environment]::Exit(9)
+    }
+    if ($InjectFault -eq 'product-crash') {
+        Add-Step '注入: 書き出しの前に mvm.exe を 0xC0000005 で止める' $false ([Mvm.Drive.Win32]::Kill([uint32]$ProcessId, [uint32]3221225477))
+        throw '注入: mvm.exe が異常終了した'
+    }
+    if ($InjectFault -eq 'missing-element') {
+        $ghost = Find-Element '存在しない部品（注入）' ([System.Windows.Automation.ControlType]::Button)
+        Add-Step '注入: 無い部品を探す' $false "found=$([bool]$ghost)"
+        # 閉じた dialog の古い部品 (「キャンセル」。操作が通っても害が無いものを選ぶ)。
+        if (Open-ExportSettings 'b-stale-element.mp4') {
+            $stale = Find-Element 'キャンセル' ([System.Windows.Automation.ControlType]::Button)
+            Close-Settings
+            $invoked = $null; $staleError = $null
+            try { $invoked = Invoke-Element $stale } catch { $staleError = $_.Exception.GetType().Name }
+            Add-Step '注入: 閉じた dialog の古い部品を操作する' $false "invoked=$invoked error=$staleError"
+        }
+        throw '注入: 部品を操作できない'
+    }
+
     if ($Scenario -eq 'A') {
         $expected = '数式の高速化は使いませんでした（一番下の映像 track の clip に拡大・回転などの変形があるため）。従来の方法で書き出しました: '
         # A1〜A5: 既定 off、on にして書き出し、従来の方法の文。
@@ -300,7 +454,7 @@ try {
             $hint = Find-Element 'この書き出しだけに使います。' ([System.Windows.Automation.ControlType]::Text) -Prefix
             Add-Step 'A2: 説明の文が出ている' ([bool]$hint -and $hint.Current.Name -match '従来の方法で書き出します' -and $hint.Current.Name -match '自動ではやり直しません')
             if (Start-Export $true) {
-                $end = Wait-ExportEnd 300
+                $end = Wait-ExportEnd $ExportWaitSeconds 'A5'
                 Add-Step 'A5: 状態の表示が「従来の方法」の文で始まる' ($end -and $end.kind -eq 'status' -and $end.text.StartsWith($expected)) $(if ($end) { $end.text })
                 Test-RevealNotFailed 'A5: 出力の file を Explorer で表示できた (状態に失敗の文が無い)' $end
             }
@@ -314,7 +468,7 @@ try {
                 Start-Sleep -Seconds 2
                 $cancel = Find-Element 'キャンセル' ([System.Windows.Automation.ControlType]::Button)
                 Add-Step 'A7: 進行の dialog の「キャンセル」を押す' ([bool]$cancel -and (Invoke-Element $cancel))
-                $end = Wait-ExportEnd 120
+                $end = Wait-ExportEnd 120 'A7'
                 $left = @(Get-ChildItem $ManualOut -File -Filter 'a6-cancel.mp4*' | ForEach-Object { $_.Name })
                 Add-Step 'A7: 取消で終わり、最終 file も一時 file も無い' ($end -and $end.text -eq '書き出しをキャンセルしました' -and $left.Count -eq 0) "status='$(if ($end) { $end.text })' files=$($left -join ',')"
             }
@@ -328,7 +482,7 @@ try {
                 if (Open-ExportSettings 'a1-fallback.mp4' -ExpectOverwrite) {
                     [void](Test-CheckboxOff 'A8: checkbox は off')
                     if (Start-Export $false) {
-                        $end = Wait-ExportEnd 300
+                        $end = Wait-ExportEnd $ExportWaitSeconds 'A8'
                         Add-Step 'A8: 失敗の dialog が出る (最終の名前へ置けない)' ($end -and $end.kind -eq 'failure' -and $end.text -match 'rename') $(if ($end) { $end.text })
                         $ok = Find-Element 'OK' ([System.Windows.Automation.ControlType]::Button)
                         Add-Step 'A9: 失敗の dialog を「OK」で閉じる' ([bool]$ok -and (Invoke-Element $ok))
@@ -351,7 +505,12 @@ try {
             Add-Step 'B1: 入力映像は「なし（数式 …件を出力の仕様で描きます）」で、仕様を確認できない入力の警告が無い' (
                 [bool]$inputSpec -and $inputSpec.Current.Name.Contains('数式') -and -not $unreadable -and -not $failedProbe) $(if ($inputSpec) { $inputSpec.Current.Name })
             if (Start-Export $true) {
-                $end = Wait-ExportEnd 300
+                if ($InjectFault -eq 'exit-during-export') {
+                    $progress = Wait-Until { Find-Element '動画を書き出しています' } 30
+                    Add-Step '注入: 書き出しの最中に mvm.exe を終了コード 1 で止める' $false "progress=$([bool]$progress) killed=$([Mvm.Drive.Win32]::Kill([uint32]$ProcessId, 1))"
+                    throw '注入: 書き出しの最中に mvm.exe が終わった'
+                }
+                $end = Wait-ExportEnd $ExportWaitSeconds 'B3'
                 Add-Step 'B3: 状態の表示が「数式の高速化を使いました（数式 clip 16 本）。書き出しました: 」で始まる' (
                     $end -and $end.kind -eq 'status' -and $end.text.StartsWith('数式の高速化を使いました（数式 clip 16 本）。書き出しました: ')) $(if ($end) { $end.text })
                 Test-RevealNotFailed 'B3: 出力の file を Explorer で表示できた (状態に失敗の文が無い)' $end
@@ -367,7 +526,7 @@ try {
             $quality = Find-Element '標準（CRF 23）' -Prefix
             Add-Step 'C2: 品質は「標準（CRF 23）」' ([bool]$quality)
             if (Start-Export $true) {
-                $end = Wait-ExportEnd $ExportTimeoutSeconds
+                $end = Wait-ExportEnd $ExportTimeoutSeconds 'C5'
                 $expected = '数式の高速化を使いました（数式 clip 97 本）。書き出しました: '
                 Add-Step 'C5: 状態の表示が「数式の高速化を使いました（数式 clip 97 本）」で始まり、6840 frame / 114.00 秒' (
                     $end -and $end.kind -eq 'status' -and $end.text.StartsWith($expected) -and $end.text -match 'c-v4-full\.mp4 \(6840 frame / 114\.00 秒\)') $(if ($end) { $end.text })

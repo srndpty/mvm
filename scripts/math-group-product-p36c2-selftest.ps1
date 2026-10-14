@@ -51,7 +51,7 @@ function Add-Result([string]$Group, [string]$Name, [bool]$Ok, [string]$Detail = 
 
 # --- 1. 構文 ---
 foreach ($name in @('math-group-product-p36c2-accept.ps1', 'math-group-product-p36c2-selftest.ps1', 'math-group-product-p36c2-drive.ps1', 'math-group-gui-smoke.ps1', 'math-group-product-p36b-verify.ps1',
-        'math-group-product-p36a-verify.ps1', 'gui-environment-preflight.ps1')) {
+        'math-group-product-p36a-verify.ps1', 'gui-environment-preflight.ps1', 'math-group-gui-smoke-faults.ps1', 'lib\hidden-desktop-job.ps1')) {
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $name), [ref]$null, [ref]$errors)
     Add-Result 'parse' $name ($errors.Count -eq 0) $(if ($errors.Count) { $errors[0].Message } else { '' })
@@ -111,8 +111,115 @@ if ($verdictFunction) {
         $verdict = Get-ScenarioVerdict $case[1] $case[2] $case[3] $now
         Add-Result 'smoke' $case[0] ($verdict.passed -eq $case[4]) "passed=$($verdict.passed) fresh=$($verdict.fresh)"
     }
+
+    # 失敗の分類 (P3-7B.1)。作りものの session.json を与える。GUI は動かさない。
+    function New-SessionJson([string]$Name, [hashtable]$Change) {
+        $record = [ordered]@{ stage = 'session'; driven = $true; exit_code = 0; ended_by = 'product-exit'; project_locked = $false
+            reveal_simulated = $true; unfinished_export = $null
+            exports = @([ordered]@{ output = 'x.mp4'; record = [ordered]@{ kind = 'result'; result = '成功' } })
+            drive = [ordered]@{ status = 'completed'; steps = @([ordered]@{ step = 's'; ok = $true }) }
+        }
+        foreach ($key in $Change.Keys) { $record[$key] = $Change[$key] }
+        $path = Join-Path $verdictRoot "session-$Name.json"
+        $record | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $path -Encoding utf8
+        $path
+    }
+    $notObserved = [ordered]@{ status = 'completed'; steps = @([ordered]@{ step = '書き出しの終わりを確かめられない (観測は drive.json の observations)'; ok = $false }) }
+    $classCases = @(
+        @('見えない desktop で全部成立なら passed', @{}, 'none', $true, 'passed', $true),
+        @('製品の書き出しは終わったが driver が結果を確かめられない → completion-not-observed', @{ drive = $notObserved }, 'none', $true, 'completion-not-observed', $false),
+        @('driver が終わって mvm を止めた → driver-failure', @{ ended_by = 'driver-exited' }, 'none', $true, 'driver-failure', $false),
+        @('session の上限 → session-timeout', @{ ended_by = 'session-limit' }, 'none', $true, 'session-timeout', $false),
+        @('Project lock を取れない → project-locked', @{ project_locked = $true; exit_code = 6 }, 'none', $true, 'project-locked', $false),
+        @('書き出しの最中に終わった → unexpected-exit-during-export', @{ unfinished_export = [ordered]@{ output = 'x.mp4' }; exit_code = 1 }, 'none', $true, 'unexpected-exit-during-export', $false),
+        @('異常な終了コード → product-crash', @{ exit_code = -1073741819 }, 'none', $true, 'product-crash', $false),
+        @('見えない desktop なのに Explorer を開かない動きが無効 → reveal-mode-mismatch', @{ reveal_simulated = $false }, 'none', $true, 'reveal-mode-mismatch', $false),
+        @('利用者の画面 (-Visible) では Explorer を開かない動きを求めない', @{ reveal_simulated = $false }, 'none', $false, 'passed', $true),
+        @('driver の記録が無い → driver-no-result', @{ drive = [ordered]@{ status = 'no-result' } }, 'none', $true, 'driver-no-result', $false),
+        @('失敗を注入した run は、ほかが全部成立でも不成立', @{}, 'driver-exit', $true, 'passed', $false))
+    $index = 0
+    foreach ($case in $classCases) {
+        $sessionPath = New-SessionJson "class-$index" $case[1]
+        ++$index
+        $verdict = Get-ScenarioVerdict 0 0 $good $now $sessionPath $case[2] $case[3]
+        Add-Result 'smoke' $case[0] ($verdict.classification -eq $case[4] -and $verdict.passed -eq $case[5]) "classification=$($verdict.classification) passed=$($verdict.passed)"
+    }
+    $verdict = Get-ScenarioVerdict 1 0 $null $now (Join-Path $verdictRoot 'session-missing.json') 'none' $true
+    Add-Result 'smoke' 'session.json が無い → session-record-missing' ($verdict.classification -eq 'session-record-missing' -and -not $verdict.passed) "classification=$($verdict.classification)"
 } else {
     Add-Result 'smoke' 'Get-ScenarioVerdict がある' $false
+}
+
+# --- 3b. 見えない desktop の runner の process の所有 (scripts/lib/hidden-desktop-job.ps1。P3-7B.1) ---
+# 見えない desktop の上で pwsh を動かす (利用者の画面に console は出ない)。孫の PID を file に書かせ、
+# 止まったかを作成時刻つきで確かめる。job の外の見張りの process は止まらないこと。
+. (Join-Path $PSScriptRoot 'lib\hidden-desktop-job.ps1')
+$jobRoot = Join-Path $root 'hidden-desktop-job'
+New-Item -ItemType Directory -Force $jobRoot | Out-Null
+$selfPwsh = (Get-Process -Id $PID).Path
+function Get-ProcessStamp([int]$Id) {
+    $found = Get-CimInstance Win32_Process -Filter "ProcessId=$Id"
+    if ($found) { [pscustomobject]@{ id = $Id; created = $found.CreationDate } } else { $null }
+}
+function Test-StampGone($Stamp) { -not ($Stamp -and (Get-CimInstance Win32_Process -Filter "ProcessId=$($Stamp.id)" | Where-Object { $_.CreationDate -eq $Stamp.created })) }
+function Read-GrandchildStamp([string]$File) {
+    foreach ($attempt in 1..100) {
+        if (Test-Path -LiteralPath $File) { $text = (Get-Content -Raw -LiteralPath $File).Trim(); if ($text) { return Get-ProcessStamp ([int]$text) } }
+        Start-Sleep -Milliseconds 100
+    }
+    $null
+}
+$sentinel = Start-Process -FilePath $selfPwsh -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 300') -PassThru -WindowStyle Hidden
+try {
+    # 1. 時間切れ: 根と孫を job ごと止める。
+    $pidFile = Join-Path $jobRoot 'timeout-grandchild.txt'
+    $command = "`$c = Start-Process -FilePath '$selfPwsh' -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 300' -PassThru -WindowStyle Hidden; " +
+        "Set-Content -LiteralPath '$pidFile' -Value `$c.Id; Start-Sleep -Seconds 300"
+    $jobLibrary = Join-Path $PSScriptRoot 'lib\hidden-desktop-job.ps1'
+    $jobArguments = @('-NoProfile', '-Command', $command)
+    $job = Start-Job -ScriptBlock {
+        . $using:jobLibrary
+        Invoke-HiddenDesktopJob -File $using:selfPwsh -Arguments $using:jobArguments -WorkingDirectory $using:repo -TimeoutSeconds 25
+    }
+    $grandchild = Read-GrandchildStamp $pidFile
+    $result = Receive-Job $job -Wait -AutoRemoveJob
+    Add-Result 'runner' '時間切れでは、根と孫を job ごと止める' ($result.timed_out -and $result.exit_code -eq -2 -and $result.all_ended -and $grandchild -and
+        (Test-StampGone $grandchild) -and @($result.at_timeout).Count -ge 2 -and $result.desktop) "at_timeout=[$($result.at_timeout -join ', ')] desktop=$($result.desktop)"
+
+    # 2. 根が終わった後に残った孫は、記録してから止める。終了コードはそのまま返す。
+    $pidFile = Join-Path $jobRoot 'left-grandchild.txt'
+    $command = "`$c = Start-Process -FilePath '$selfPwsh' -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 300' -PassThru -WindowStyle Hidden; " +
+        "Set-Content -LiteralPath '$pidFile' -Value `$c.Id; exit 7"
+    $result = Invoke-HiddenDesktopJob -File $selfPwsh -Arguments @('-NoProfile', '-Command', $command) -WorkingDirectory $repo -TimeoutSeconds 60
+    $grandchild = Read-GrandchildStamp $pidFile
+    Add-Result 'runner' '根の終了の後に残った孫を記録して止め、終了コードを返す' ($result.exit_code -eq 7 -and -not $result.timed_out -and
+        @($result.left_after_exit).Count -ge 1 -and $result.all_ended -and (Test-StampGone $grandchild)) "exit=$($result.exit_code) left=[$($result.left_after_exit -join ', ')]"
+
+    # 3. 何も残さず終われば、そのまま返す。
+    $result = Invoke-HiddenDesktopJob -File $selfPwsh -Arguments @('-NoProfile', '-Command', 'exit 0') -WorkingDirectory $repo -TimeoutSeconds 60
+    Add-Result 'runner' '何も残さず終われば、終了コード 0 で残りなし' ($result.exit_code -eq 0 -and @($result.left_after_exit).Count -eq 0 -and $result.all_ended) "exit=$($result.exit_code)"
+
+    # 4. runner の process が異常終了しても (外から止める)、OS が job を閉じて孫を止める (KILL_ON_JOB_CLOSE)。
+    $pidFile = Join-Path $jobRoot 'killed-grandchild.txt'
+    $command = "`$c = Start-Process -FilePath '$selfPwsh' -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 300' -PassThru -WindowStyle Hidden; " +
+        "Set-Content -LiteralPath '$pidFile' -Value `$c.Id; Start-Sleep -Seconds 300"
+    $runnerScript = Join-Path $jobRoot 'runner.ps1'
+    Set-Content -LiteralPath $runnerScript -Encoding utf8 -Value @"
+. '$(Join-Path $PSScriptRoot 'lib\hidden-desktop-job.ps1')'
+Invoke-HiddenDesktopJob -File '$selfPwsh' -Arguments @('-NoProfile', '-Command', @'
+$command
+'@) -WorkingDirectory '$repo' -TimeoutSeconds 300 | Out-Null
+"@
+    $runnerProcess = Start-Process -FilePath $selfPwsh -ArgumentList @('-NoProfile', '-File', $runnerScript) -PassThru -WindowStyle Hidden
+    $grandchild = Read-GrandchildStamp $pidFile
+    Stop-Process -Id $runnerProcess.Id -Force
+    $gone = $false
+    foreach ($attempt in 1..40) { if (Test-StampGone $grandchild) { $gone = $true; break }; Start-Sleep -Milliseconds 250 }
+    Add-Result 'runner' 'runner が異常終了しても、job の中の孫は止まる' ([bool]$grandchild -and $gone) "grandchild=$(if ($grandchild) { $grandchild.id }) gone=$gone"
+
+    Add-Result 'runner' 'job の外の process (見張り) は止めない' (-not $sentinel.HasExited) "sentinel=$($sentinel.Id)"
+} finally {
+    if (-not $sentinel.HasExited) { $sentinel.Kill() }
 }
 
 # --- 4・5 の準備: 対象の固定 (本物)、作りものの出力と参照 ---

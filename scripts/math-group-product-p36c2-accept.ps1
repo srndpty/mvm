@@ -55,7 +55,18 @@ param(
     # script の自己試験だけが使う: mvm.exe の代わりに起動するもの (引数は | で区切る)。verify は、
     # 固定した mvm.exe ではないとして不成立にする。
     [string]$ApplicationOverride = '',
-    [string]$ApplicationArgumentsOverride = ''
+    [string]$ApplicationArgumentsOverride = '',
+    # 見えない desktop の smoke (scripts/math-group-gui-smoke.ps1) が付ける: mvm.exe を
+    # --test-reveal-without-explorer 付きで起動する (Explorer を開く処理だけを成功として扱う)。
+    [switch]$SimulateExplorerReveal,
+    # driver に渡す: 1 回の書き出しの終わりを待つ秒数と、失敗の注入 (試験だけ)。
+    [int]$DriveExportWaitSeconds = 300,
+    [ValidateSet('none', 'driver-exit', 'product-crash', 'exit-during-export', 'missing-element', 'unobservable-completion')]
+    [string]$DriveFault = 'none',
+    # session の上限 (秒)。0 なら上限なし (人が操作する検収)。超えたら mvm.exe と driver を止めて記録する。
+    [int]$SessionLimitSeconds = 0,
+    # driver が終わった後、mvm.exe が自分で終わるのを待つ秒数。過ぎたら止めて driver の失敗として記録する。
+    [int]$DriverGraceSeconds = 30
 )
 
 Set-StrictMode -Version Latest
@@ -97,6 +108,7 @@ function Get-IdentityFiles {
     foreach ($relative in (git -C $repo ls-files --others --exclude-standard -- src apps tests)) { $files.Add((Join-Path $repo $relative)) }
     foreach ($relative in @('scripts/math-group-product-p36c2-accept.ps1', 'scripts/math-group-product-p36c2-selftest.ps1', 'scripts/math-group-product-p36b-verify.ps1',
             'scripts/math-group-product-p36a-verify.ps1', 'scripts/gui-environment-preflight.ps1', 'scripts/math-group-product-p36c2-drive.ps1', 'scripts/math-group-gui-smoke.ps1',
+            'scripts/math-group-gui-smoke-faults.ps1', 'scripts/lib/hidden-desktop-job.ps1',
             'docs/math-group-product-p36c2-procedure.md')) { $files.Add((Join-Path $repo $relative)) }
     # 実行 file: 検収で人が操作する mvm.exe そのものと、参照を作る検証 harness。
     $files.Add($application)
@@ -217,6 +229,13 @@ if ($Stage -eq 'reference') {
             $report = if (Test-Path -LiteralPath $reportPath) { Get-Content -Raw $reportPath | ConvertFrom-Json } else { $null }
             $ok = $code -eq 0 -and $report -and $report.export_success -eq $true -and $report.request.export_observer_supplied -eq $false
             if (-not $ok) { ++$failures }
+            if (-not $report) {
+                # 報告が無い (harness が Project を開けない・異常終了した)。harness の stderr の最後を残して失敗にする。
+                $tail = @(Get-Content -LiteralPath (Join-Path $out 'harness.log') -ErrorAction SilentlyContinue | Select-Object -Last 3) -join ' / '
+                $rows["$name/$mode"] = [ordered]@{ exit_code = $code; output_sha256 = $null; ok = $false; harness_log_tail = $tail }
+                Write-Host ("{0,-26} {1,-3} exit={2} 報告がありません: {3}" -f $name, $mode, $code, $tail)
+                continue
+            }
             $rows["$name/$mode"] = [ordered]@{ exit_code = $code; output_sha256 = $report.output_sha256; frames = $report.export_frame_count
                 decision = $report.report.decision; reason = $report.report.reason; graph = $report.report.graph
                 grouped_clips = $report.report.grouped_clips; composed_frames = $report.report.composed_frames
@@ -356,7 +375,11 @@ public static class Desktop {
     $processor = (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average
     $launchFile = if ($ApplicationOverride) { $ApplicationOverride } else { $application }
     $launchArguments = if ($ApplicationOverride) { @($ApplicationArgumentsOverride -split '\|' | Where-Object { $_ }) }
-    else { @('--project', $projectFile, '--manim-executable', $manim) }
+    else {
+        @('--project', $projectFile, '--manim-executable', $manim) + $(if ($SimulateExplorerReveal) { @('--test-reveal-without-explorer') } else { @() }) +
+        # driver が操作する session では、状態の表示の変化を stderr に出させて記録する (動きは変えない)。
+        $(if ($Drive) { @('--test-log-status') } else { @() })
+    }
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     $info = [System.Diagnostics.ProcessStartInfo]::new($launchFile)
     foreach ($argument in $launchArguments) { $info.ArgumentList.Add($argument) }
@@ -379,6 +402,9 @@ public static class Desktop {
     $launchedPath = $null
     for ($attempt = 0; $attempt -lt 50 -and -not $launchedPath; ++$attempt) {
         try { $process.Refresh(); $launchedPath = $process.MainModule.FileName } catch { Start-Sleep -Milliseconds 100 }
+        # すぐ終わった (Project lock を取れない・引数を断られた) ときは、起動した file の path を記録して進む
+        # (終わった理由と終了コードを session.json に残すため)。
+        if (-not $launchedPath -and $process.HasExited) { $launchedPath = (Get-Item -LiteralPath $launchFile).FullName }
     }
     if (-not $launchedPath) { throw '起動した process の実行 file を確かめられません' }
     Write-Host "起動しました: $launchedPath (PID $($process.Id))"
@@ -388,7 +414,8 @@ public static class Desktop {
     if ($Drive) {
         $scenario = @{ 'short-fallback-unknown' = 'A'; 'short-math-only-eligible' = 'B'; 'v4' = 'C' }[$Project]
         $driverArguments = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'math-group-product-p36c2-drive.ps1'), '-ProcessId', "$($process.Id)",
-            '-Scenario', $scenario, '-ManualOut', (Join-Path $root 'manual-out'), '-ResultPath', $driveResult)
+            '-Scenario', $scenario, '-ManualOut', (Join-Path $root 'manual-out'), '-ResultPath', $driveResult,
+            '-ExportWaitSeconds', "$DriveExportWaitSeconds", '-InjectFault', $DriveFault)
         $driver = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $driverArguments -PassThru -WindowStyle Hidden `
             -RedirectStandardOutput (Join-Path $run 'drive.log') -RedirectStandardError (Join-Path $run 'drive-error.log')
         Write-Host "操作は driver が行います (場面 $scenario、PID $($driver.Id))。この PC は使ってかまいません (mouse と keyboard は使いません)。"
@@ -416,6 +443,16 @@ public static class Desktop {
 
     $events = @(); $exports = @(); $current = $null; $moduleSets = @(); $watchdogFired = $false
     $nextShot = 0.0; $shots = 0; $modulesAtStart = $false; $lastInputTick = 0
+    $startedWall = (Get-Date).AddSeconds(-$clock.Elapsed.TotalSeconds)
+    $endedBy = $null; $driverExitedAt = $null; $revealSimulated = $false; $projectLocked = $false
+    $statusEvents = [System.Collections.Generic.List[object]]::new()
+    # この session が起動した mvm.exe と driver を、子孫ごと止める (この session の外の process には触れない)。
+    function Stop-SessionProcesses {
+        foreach ($owned in @($process, $driver)) {
+            if ($owned -and -not $owned.HasExited) { try { $owned.Kill($true) } catch { Write-Verbose "$_" } }
+        }
+        foreach ($owned in @($process, $driver)) { if ($owned) { [void]$owned.WaitForExit(10000) } }
+    }
     while ($true) {
         $exited = $process.HasExited
         if ($exited) { $process.WaitForExit() } # 出力の非同期の読み取りが終わるまで待つ
@@ -424,9 +461,16 @@ public static class Desktop {
             # 時刻は、行を pipe から受け取ったときのもの (この loop が処理したときではない)。
             $now = $item.Item1
             $line = $item.Item2
+            if ($line.StartsWith('試験: Explorerを開かずに')) { $revealSimulated = $true }
+            if ($line -match 'このProjectを開いています|Project lockを取得できません') { $projectLocked = $true }
+            if ($line.StartsWith('試験: 状態の表示: ')) {
+                $statusEvents.Add([pscustomobject]@{ received_seconds = $now; received_wall = $startedWall.AddSeconds($now).ToString('o')
+                        status = $line.Substring('試験: 状態の表示: '.Length) })
+            }
             $parsed = ConvertFrom-ExportLine $line
             if ($null -eq $parsed) { continue }
-            $events += [pscustomobject]@{ received_seconds = $now; line = $line }
+            # 壁時計の時刻も残す (driver の記録の時刻と突き合わせるため)。
+            $events += [pscustomobject]@{ received_seconds = $now; received_wall = $startedWall.AddSeconds($now).ToString('o'); line = $line }
             if ($parsed.kind -eq 'start') {
                 $current = [ordered]@{ output = $parsed.output; selected = $parsed.selected; start_seconds = $now; start_wall = (Get-Date -Format 'o')
                     quiet = [ordered]@{ samples = 0; input_changes = 0; foreground_other = 0 }
@@ -451,6 +495,21 @@ public static class Desktop {
         }
         if ($exited) { break }
         $now = $clock.Elapsed.TotalSeconds
+        # driver が終わったのに mvm.exe が終わらない (driver の失敗・window を閉じられなかった) とき、
+        # 猶予の後に止める。session の上限を超えたときも止める。どちらも記録し、成立にしない。
+        if ($driver -and $driver.HasExited -and -not $endedBy) {
+            if ($null -eq $driverExitedAt) { $driverExitedAt = $now }
+            elseif ($now - $driverExitedAt -ge $DriverGraceSeconds) {
+                $endedBy = 'driver-exited'
+                Write-Host ("[{0,7:n1} s] driver が終わって {1} 秒たっても mvm が終わらないので止めます" -f $now, $DriverGraceSeconds)
+                Stop-SessionProcesses
+            }
+        }
+        if ($SessionLimitSeconds -gt 0 -and $now -ge $SessionLimitSeconds -and -not $endedBy) {
+            $endedBy = 'session-limit'
+            Write-Host ("[{0,7:n1} s] session の上限 {1} 秒を超えたので、mvm と driver を止めます" -f $now, $SessionLimitSeconds)
+            Stop-SessionProcesses
+        }
         if ($current) {
             # 書き出しの間の、利用者の入力と前面の window (記録するだけで、操作はしない)。
             ++$current.quiet.samples
@@ -486,9 +545,12 @@ public static class Desktop {
     }
     $errorCapture.Close()
     $outputCapture.Close()
+    if (-not $endedBy) { $endedBy = 'product-exit' }
     $driveRecord = $null
+    $driverExitCode = $null
     if ($driver) {
-        if (-not $driver.WaitForExit(60000)) { try { $driver.Kill() } catch { Write-Verbose "$_" } }
+        if (-not $driver.WaitForExit(60000)) { try { $driver.Kill($true) } catch { Write-Verbose "$_" }; [void]$driver.WaitForExit(10000) }
+        $driverExitCode = if ($driver.HasExited) { $driver.ExitCode } else { $null }
         $driveRecord = if (Test-Path -LiteralPath $driveResult) { Get-Content -Raw $driveResult | ConvertFrom-Json } else { [ordered]@{ status = 'no-result'; all_ok = $false } }
     }
     $exitCode = $process.ExitCode
@@ -501,6 +563,9 @@ public static class Desktop {
     [ordered]@{
         stage = 'session'; project = $Project; project_file = $projectFile; label = $Label; started = (Get-Date).AddSeconds(-$clock.Elapsed.TotalSeconds).ToString('o')
         capture = 'pipe'; application_override = [bool]$ApplicationOverride; driven = [bool]$Drive; drive = $driveRecord
+        ended_by = $endedBy; driver_exit_code = $driverExitCode; injected_fault = $DriveFault; session_limit_seconds = $SessionLimitSeconds
+        reveal_simulation_requested = [bool]$SimulateExplorerReveal; reveal_simulated = $revealSimulated; project_locked = $projectLocked
+        status_events = $statusEvents
         environment_before = $environment; processor_load_percent_at_launch = $processor
         application = $launchedPath; application_sha256 = (Get-Sha $launchedPath)
         application_matches_freeze = ($launchedPath -eq $frozen.application -and (Get-Sha $launchedPath) -eq $frozen.application_sha256)
