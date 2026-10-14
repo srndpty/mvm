@@ -136,6 +136,14 @@ if ($verdictFunction) {
         @('見えない desktop なのに Explorer を開かない動きが無効 → reveal-mode-mismatch', @{ reveal_simulated = $false }, 'none', $true, 'reveal-mode-mismatch', $false),
         @('利用者の画面 (-Visible) では Explorer を開かない動きを求めない', @{ reveal_simulated = $false }, 'none', $false, 'passed', $true),
         @('driver の記録が無い → driver-no-result', @{ drive = [ordered]@{ status = 'no-result' } }, 'none', $true, 'driver-no-result', $false),
+        @('controller の記録で結果の文の直後に「素材を追加してください」→ result-overwritten', @{ status_events = @(
+                    [ordered]@{ received_seconds = 104.79; status = '書き出しに失敗しました: rename できません' },
+                    [ordered]@{ received_seconds = 104.97; status = '素材を追加してください' }) }, 'none', $true, 'result-overwritten', $false),
+        @('結果の文の後の利用者の操作の文は、上書きとして数えない', @{ status_events = @(
+                    [ordered]@{ received_seconds = 20.8; status = '書き出しました: x.mp4 (120 frame / 2.00 秒)' },
+                    [ordered]@{ received_seconds = 30.1; status = '書き出しています…' }) }, 'none', $true, 'passed', $true),
+        @('driver が見た結果の文が残らない → result-not-retained', @{ drive = [ordered]@{ status = 'completed'; steps = @(
+                        [ordered]@{ step = 'B3: 書き出しの結果の文が 5 秒そのまま残る'; ok = $false }) } }, 'none', $true, 'result-not-retained', $false),
         @('失敗を注入した run は、ほかが全部成立でも不成立', @{}, 'driver-exit', $true, 'passed', $false))
     $index = 0
     foreach ($case in $classCases) {

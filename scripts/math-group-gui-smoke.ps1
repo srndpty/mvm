@@ -28,7 +28,9 @@
 
     場面ごとの分類 (classification): passed、session-record-missing、session-timeout、driver-failure、
     project-locked、unexpected-exit-during-export、product-crash、reveal-mode-mismatch、
+    result-overwritten (controller の記録で、書き出しの結果の文の直後に定常の文が来た。P3-7B.2)、
     completion-not-observed (製品の書き出しは終わったが、driver が GUI で結果を確かめられない)、
+    result-not-retained (driver が見た結果の文が、5 秒の間に別の文に変わった。P3-7B.2)、
     driver-no-result、driver-step-failed、verify-missing、verify-failed。
     -Fault は、失敗の注入の試験 (scripts/math-group-gui-smoke-faults.ps1) だけが使う。注入した run は
     分類にかかわらず成立にしない。
@@ -122,6 +124,15 @@ function Get-ScenarioVerdict([int]$SessionExit, [int]$VerifyExit, [string]$Verif
     $session = if ($SessionPath -and (Test-Path -LiteralPath $SessionPath)) { Get-Content -Raw -LiteralPath $SessionPath | ConvertFrom-Json } else { $null }
     $has = { param($object, $name) $object -and @($object.PSObject.Properties.Name) -contains $name }
     $driveSteps = @(if ((& $has $session 'drive') -and $session.drive -and (& $has $session.drive 'steps')) { $session.drive.steps })
+    # controller の状態の記録 (--test-log-status) で、書き出しの結果の文の直後 (10 秒以内) に、利用者の操作に
+    # よらない定常の文 (preview の確認) が来たか (P3-7B.2 で直した上書き)。
+    $statusEvents = @(if (& $has $session 'status_events') { $session.status_events })
+    $overwrites = @(for ($i = 0; $i + 1 -lt $statusEvents.Count; ++$i) {
+            $result = "$($statusEvents[$i].status)"; $next = "$($statusEvents[$i + 1].status)"
+            if ($result -match '^(書き出しました: |数式の高速化を使いました|数式の高速化は使いませんでした|書き出しをキャンセルしました|書き出しに失敗しました: )' -and
+                $next -match '^(素材を追加してください|timeline gapを表示しています|Previewがseek可能になるまで待ってください)$| を表示しています$' -and
+                $statusEvents[$i + 1].received_seconds - $statusEvents[$i].received_seconds -lt 10) { "$result → $next" }
+        })
     $classification =
     if ($SessionPath -and -not $session) { 'session-record-missing' }
     elseif ((& $has $session 'ended_by') -and $session.ended_by -eq 'session-limit') { 'session-timeout' }
@@ -130,8 +141,10 @@ function Get-ScenarioVerdict([int]$SessionExit, [int]$VerifyExit, [string]$Verif
     elseif ((& $has $session 'unfinished_export') -and $session.unfinished_export) { 'unexpected-exit-during-export' }
     elseif ((& $has $session 'exit_code') -and $session.exit_code -ne 0) { 'product-crash' }
     elseif ($HiddenDesktop -and $session -and -not ((& $has $session 'reveal_simulated') -and $session.reveal_simulated)) { 'reveal-mode-mismatch' }
+    elseif ($overwrites.Count -gt 0) { 'result-overwritten' }
     elseif (@($driveSteps | Where-Object { -not $_.ok -and $_.step -like '書き出しの終わりを確かめられない*' }).Count -gt 0 -and
         @($session.exports | Where-Object { $_.record.kind -eq 'result' }).Count -gt 0) { 'completion-not-observed' }
+    elseif (@($driveSteps | Where-Object { -not $_.ok -and $_.step -like '*書き出しの結果の文が * 秒そのまま残る' }).Count -gt 0) { 'result-not-retained' }
     elseif ($session -and (& $has $session 'driven') -and $session.driven -and
         (-not (& $has $session 'drive') -or -not $session.drive -or ((& $has $session.drive 'status') -and $session.drive.status -eq 'no-result'))) { 'driver-no-result' }
     elseif (@($driveSteps | Where-Object { -not $_.ok }).Count -gt 0 -or ($steps.Count -gt 0 -and $stepsOk -ne $steps.Count)) { 'driver-step-failed' }
@@ -142,6 +155,7 @@ function Get-ScenarioVerdict([int]$SessionExit, [int]$VerifyExit, [string]$Verif
         passed = $classification -eq 'passed' -and $Fault -eq 'none' -and $SessionExit -eq 0 -and $VerifyExit -eq 0 -and $fresh -and
             $failed.Count -eq 0 -and $steps.Count -gt 0 -and $stepsOk -eq $steps.Count
         classification = $classification; fresh = $fresh; failed = $failed; steps = $steps.Count; steps_ok = $stepsOk
+        result_overwrites = $overwrites
     }
 }
 

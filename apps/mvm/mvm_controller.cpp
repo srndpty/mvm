@@ -371,17 +371,24 @@ void MvmController::attachPreview(PreviewEngineRhiItem* surface) {
         const QSize size = previewSurface_->effectiveColorBufferSize();
         const bool resized = !previewBufferSize_.isEmpty() && size != previewBufferSize_;
         previewBufferSize_ = size;
-        if (!resized || previewResizeRefreshQueued_)
+        if (resized)
+            queuePreviewResizeRefresh();
+    });
+}
+
+void MvmController::queuePreviewResizeRefresh() {
+    if (previewResizeRefreshQueued_)
+        return;
+    previewResizeRefreshQueued_ = true;
+    QTimer::singleShot(0, this, [this] {
+        previewResizeRefreshQueued_ = false;
+        // 閉じた後 (shutdown) に届いた分は描き直さない。engine は止まっていて必ず失敗し、その
+        // 理由で状態の表示 (書き出しの結果など) を上書きしてしまう (P3-7B.2)。
+        if (playing_ || shutdownStarted_)
             return;
-        previewResizeRefreshQueued_ = true;
-        QTimer::singleShot(0, this, [this] {
-            previewResizeRefreshQueued_ = false;
-            if (playing_)
-                return;
-            QString error;
-            if (!refreshPreviewAtPlayhead(error))
-                setStatus(QStringLiteral("Previewを再描画できません: ") + error);
-        });
+        QString error;
+        if (!refreshPreviewAtPlayhead(error))
+            setStatus(QStringLiteral("Previewを再描画できません: ") + error);
     });
 }
 
@@ -408,6 +415,31 @@ bool MvmController::hasManimTimelineClip() const {
 void MvmController::setStatus(QString status) {
     statusText_ = std::move(status);
     Q_EMIT stateChanged();
+}
+
+bool MvmController::exportOwnsStatus() const {
+    return exporting_ || (!exportResultStatus_.isEmpty() && statusText_ == exportResultStatus_);
+}
+
+void MvmController::setRoutineStatus(QString status) {
+    if (exportOwnsStatus()) {
+        ++suppressedRoutineStatusCount_;
+        lastSuppressedRoutineStatus_ = std::move(status);
+        return;
+    }
+    setStatus(std::move(status));
+}
+
+void MvmController::setExportResultStatus(QString status) {
+    setStatus(std::move(status));
+    exportResultStatus_ = statusText_;
+}
+
+void MvmController::setSeekStatus(QString status) {
+    if (automaticPreviewSeek_)
+        setRoutineStatus(std::move(status));
+    else
+        setStatus(std::move(status));
 }
 
 bool MvmController::initializePreviewEngine(const QString& failurePrefix) {
@@ -1046,12 +1078,15 @@ void MvmController::pollPreviewState() {
                                       !submittedComposition_ && !pendingCapacityRebuildFrame_ &&
                                       totalTimelineFrames_ > 0;
         Q_EMIT stateChanged();
+        // ここからの文は利用者の操作によらない (定常の文)。書き出しの結果の文を上書きしない。
         if (showInitialFrame) {
+            automaticPreviewSeek_ = true;
             seekTimelineFrame(playheadFrame_);
+            automaticPreviewSeek_ = false;
             return;
         }
         if (ready && !busy_ && currentClipPath_.isEmpty() && !hasManimAsset())
-            statusText_ = QStringLiteral("素材を追加してください");
+            setRoutineStatus(QStringLiteral("素材を追加してください"));
         Q_EMIT stateChanged();
     }
     if (ready && pendingSlotRebuildFrame_ && stalePreparations_.empty() &&
@@ -4232,7 +4267,7 @@ bool MvmController::seekTimelineFrame(qint64 frame) {
         return false;
     }
     if (previewStatus.state != preview::PreviewEngineState::ReadyPaused) {
-        setStatus(QStringLiteral("Previewがseek可能になるまで待ってください"));
+        setSeekStatus(QStringLiteral("Previewがseek可能になるまで待ってください"));
         return false;
     }
     QString error;
@@ -4250,12 +4285,12 @@ bool MvmController::seekTimelineFrame(qint64 frame) {
             if (slot.clipIndex == index)
                 currentSource_ = slot.source;
         }
-        setStatus(currentClipName_ + QStringLiteral(" を表示しています"));
+        setSeekStatus(currentClipName_ + QStringLiteral(" を表示しています"));
     } else {
         currentSource_.reset();
         currentClipName_.clear();
         currentClipPath_.clear();
-        setStatus(QStringLiteral("timeline gapを表示しています"));
+        setSeekStatus(QStringLiteral("timeline gapを表示しています"));
     }
     if (scrubPending_ && !scrubbing_) {
         scrubPending_ = false;
@@ -5663,6 +5698,8 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     audioFileCache_.clear();
     audioContentDirty_ = true;
     project_ = std::move(loaded);
+    // 前の Project の書き出しの結果は、開いた Project の状態の表示を持たない。
+    exportResultStatus_.clear();
     if (graphRasters_)
         graphRasters_->resetSession();
     refreshAudioInputAuthority(false);

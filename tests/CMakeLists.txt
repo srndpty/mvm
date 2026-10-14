@@ -4246,6 +4246,13 @@ add_test(NAME math_group_export_product_ui
 set_tests_properties(math_group_export_product_ui PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 240)
+# P3-7B.2: 書き出しの結果の文を、preview の確認 (pollPreviewState) が上書きしない。製品の Main.qml と
+# 実際の書き出し (成功・取消・timeout・最終の名前へ置けない失敗) で、決まった順序で確かめる。
+add_test(NAME export_status_ownership_product_ui
+    COMMAND mvm_test_text_ui_input --status-ownership-ui)
+set_tests_properties(export_status_ownership_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS workstation RESOURCE_LOCK mvm_gpu TIMEOUT 240)
 # P3-7B.1: 試験用の「Explorer を開かない」引数は、利用者の画面 (Default desktop) では起動を断る。
 # 以前の環境変数では有効にならない。
 add_test(NAME mvm_reveal_simulation_gate

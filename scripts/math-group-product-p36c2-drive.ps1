@@ -29,6 +29,8 @@ param(
     [int]$ExportTimeoutSeconds = 1500,
     # 短い場面 (A・B) で、1 回の書き出しの終わりを待つ秒数。
     [int]$ExportWaitSeconds = 300,
+    # 書き出しの結果の文が出た後、そのまま残ることを確かめる秒数 (P3-7B.2)。
+    [int]$ResultHoldSeconds = 5,
     # 失敗の注入 (scripts/math-group-gui-smoke-faults.ps1 だけが使う。場面 B で行う):
     #   driver-exit              window を見つけた後、記録も後始末もせずに driver が終わる
     #   product-crash            書き出しの前に、mvm.exe を 0xC0000005 で止める
@@ -152,6 +154,7 @@ $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $failed = $false
 # 書き出しの終わりを待つ間の観測 (Wait-ExportEnd)。完了を確かめられなかったときの調べに使う。
 $observations = [System.Collections.Generic.List[object]]::new()
+$resultHold = $ResultHoldSeconds # Wait-ExportEnd が使う
 $lastUiaError = $null
 $driverStartedWall = (Get-Date).AddSeconds(-$clock.Elapsed.TotalSeconds)
 
@@ -330,6 +333,26 @@ function Wait-ExportEnd([double]$Seconds, [string]$Label = '') {
     }
     $record.ended = [math]::Round($clock.Elapsed.TotalSeconds, 1)
     $record.outcome = if ($end) { $end.kind } else { 'not-observed' }
+    if ($end) {
+        # 結果の文が、決めた時間 (ResultHoldSeconds) の間そのまま残ることを確かめる (P3-7B.2)。preview の確認
+        # などが、結果の文を別の文で上書きしないか。操作はしない。
+        $holdSamples = [System.Collections.Generic.List[object]]::new()
+        $holdUntil = $clock.Elapsed.TotalSeconds + $resultHold
+        $retained = $true
+        while ($clock.Elapsed.TotalSeconds -lt $holdUntil) {
+            Start-Sleep -Milliseconds 500
+            $shown = Get-Status
+            if ($shown -ne $end.text) {
+                $retained = $false
+                $holdSamples.Add([pscustomobject]@{ t = [math]::Round($clock.Elapsed.TotalSeconds, 1); status = $shown })
+            }
+        }
+        $record.result_hold_seconds = $resultHold
+        $record.result_retained = $retained
+        $record.result_changes = $holdSamples
+        Add-Step "$(if ($Label) { "${Label}: " })書き出しの結果の文が $resultHold 秒そのまま残る" $retained $(
+            if ($retained) { $null } else { "変わった: $(@($holdSamples | ForEach-Object { "$($_.t) s '$($_.status)'" }) -join ' / ')" })
+    }
     if (-not $end) {
         # 時間切れ: そのとき見えている文を記録する (原因を後から調べられるように)。
         $record.samples.Add($sample)

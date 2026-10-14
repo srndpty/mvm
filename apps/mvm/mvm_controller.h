@@ -222,12 +222,16 @@ public:
     // 取消した worker の破棄まで終わっている。中止そのものは待たない。
     // 100 ms の poll が動いているか。待機中に常駐しないことの試験用。
     bool audioAdjustmentPollingForTest() const { return audioAdjustmentTimer_.isActive(); }
+
     // 書き出しで数式 group の最適化を使うか (P3-6A)。既定は使わない。QML からは呼べない (内部の
     // 選択で、検証 harness が使う)。true にすると、exportTimeline・exportTimelineWithQuality の
     // 要求に Auto を入れる (app/timeline_export.h の MathGroupOptimization)。
-    // 製品の UI は、この値を使わず、書き出しごとに exportTimelineWithOptions の引数で選ぶ (P3-6C.1)。
+    // 製品の UI は、この値を使わず、書き出しごとに exportTimelineWithOptions の引数で選ぶ
+    // (P3-6C.1)。
     void setMathGroupExportOptimization(bool enabled) { mathGroupExportOptimization_ = enabled; }
+
     bool mathGroupExportOptimization() const { return mathGroupExportOptimization_; }
+
     // 最後に終わった書き出しの、数式 group の選択の記録 (成功・失敗・取消のどれでも)。
     const MathGroupExportReport& lastExportMathGroupReport() const {
         return lastExportMathGroupReport_;
@@ -411,6 +415,22 @@ public:
     bool busy() const { return busy_; }
 
     bool previewReady() const { return previewReady_; }
+
+    // 試験用 (P3-7B.2): 次の pollPreviewState を、preview が使える状態へ変わった時の処理にする。
+    // 書き出しの後に、preview の確認が状態の表示を書き換えるかを、決まった順序で確かめる。
+    void markPreviewNotReadyForTest() { previewReady_ = false; }
+
+    void pollPreviewStateForTest() { pollPreviewState(); }
+
+    // 描画先の大きさが変わった時と同じ描き直しを積む (閉じた後に届く場合を決まった順序で起こす)。
+    void queuePreviewResizeRefreshForTest() { queuePreviewResizeRefresh(); }
+
+    // 書き出しが状態の表示を持っていたために出さなかった、定常の文の数と最後の文。
+    std::uint64_t suppressedRoutineStatusCountForTest() const {
+        return suppressedRoutineStatusCount_;
+    }
+
+    QString lastSuppressedRoutineStatusForTest() const { return lastSuppressedRoutineStatus_; }
 
     bool hasManimAsset() const { return !project_.manimAssets.empty(); }
 
@@ -958,11 +978,14 @@ public:
                                                bool accelerateMath);
     // 最後に終わった書き出しで、数式の高速化 (数式 group) がどうなったか。書き出しの結果の記録
     // (MathGroupExportReport) から作る。書き出しを始めると空になる。
-    //   requested (bool)、outcome ("off"・"used"・"conventional"・"budget"・"failed"・"incomplete")、
-    //   message (利用者へ見せる文。無ければ空)、reasonText (判定の理由を利用者向けにした文)、
+    //   requested (bool)、outcome
+    //   ("off"・"used"・"conventional"・"budget"・"failed"・"incomplete")、 message
+    //   (利用者へ見せる文。無ければ空)、reasonText (判定の理由を利用者向けにした文)、
     //   decision・reason・graph・groupedClips・affineTransitions・errors (記録の写し)
     Q_PROPERTY(QVariantMap exportMathGroupOutcome READ exportMathGroupOutcome NOTIFY stateChanged)
+
     QVariantMap exportMathGroupOutcome() const { return exportMathGroupOutcome_; }
+
     Q_INVOKABLE void cancelTimelineExport();
 
     // エフェクトとキーフレーム (mvm_controller_effects.cpp)。
@@ -1203,6 +1226,16 @@ private:
     void stopScrubAudio();
     bool changeShuttleRate(int direction);
     void setStatus(QString status);
+    // 利用者の操作によらない定常の文。書き出しが状態の表示を持つ間は出さない
+    // (exportResultStatus_)。
+    void setRoutineStatus(QString status);
+    bool exportOwnsStatus() const;
+    // 書き出しの結果の文を出し、状態の表示を書き出しに持たせる。
+    void setExportResultStatus(QString status);
+    // seekTimelineFrame の案内の文。自動の初期 seek のときは定常の文として扱う。
+    void setSeekStatus(QString status);
+    // preview の描画先の大きさが変わった後の描き直しを、event loop の 1 周後に 1 回だけ行う。
+    void queuePreviewResizeRefresh();
     void reportExportFailure(QString message);
     bool initializePreviewEngine(const QString& failurePrefix);
     bool resetPreviewEngine();
@@ -1460,6 +1493,15 @@ private:
     std::unique_ptr<TrackModel> audioTrackModel_;
     std::unique_ptr<MediaBinModel> mediaBinModel_;
     PreviewEngineRhiItem* previewSurface_ = nullptr;
+    // 状態の表示の持ち主 (P3-7B.2)。書き出しの最中と、書き出しの結果の文 (成功・取消・失敗) が
+    // そのまま出ている間は、書き出しが状態の表示を持つ。その間、利用者の操作によらない定常の文
+    // (setRoutineStatus。preview が使える状態へ変わった時の「素材を追加してください」と、自動の初期
+    // seek の文) は出さない。それ以外の書き手 (利用者の操作・error) はいつでも書け、別の文になった
+    // 時点で書き出しは状態の表示を手放す (時間で待たない。居座らない)。
+    QString exportResultStatus_;
+    bool automaticPreviewSeek_ = false; // pollPreviewState の初期 seek の間だけ true
+    std::uint64_t suppressedRoutineStatusCount_ = 0;
+    QString lastSuppressedRoutineStatus_;
     std::optional<preview::PreviewSourceId> currentSource_;
     // video track index -> preview source。track を増やしても添字を取り違えない。
     std::map<int, TrackPreviewSource> trackSources_;

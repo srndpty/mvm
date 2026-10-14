@@ -417,6 +417,8 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf,
                  mathGroupOptimization ? "選択あり" : "選択なし");
     std::fflush(stderr);
     busy_ = true;
+    // 書き出しの最中は、書き出しが状態の表示を持つ (exportOwnsStatus)。前の結果の文は手放す。
+    exportResultStatus_.clear();
     statusText_ = QStringLiteral("書き出しています…");
     Q_EMIT stateChanged();
 
@@ -525,7 +527,7 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     }
     if (!exported.success) {
         if (exported.cancelled)
-            setStatus(QStringLiteral("書き出しをキャンセルしました"));
+            setExportResultStatus(QStringLiteral("書き出しをキャンセルしました"));
         else
             // 元の error はそのまま残し、数式の高速化の失敗なら、外して書き出せることを足す
             // (自動ではやり直さない)。
@@ -553,11 +555,12 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     QString revealError;
     if (!fileRevealer_(exported.outputPath, revealError))
         status += QStringLiteral(" / Explorerで表示できません: ") + revealError;
-    setStatus(status);
+    setExportResultStatus(status);
 }
 
 void MvmController::reportExportFailure(QString message) {
-    setStatus(message);
+    // 書き出しの失敗 (始める前の失敗を含む) も、書き出しの結果として状態の表示に残す。
+    setExportResultStatus(message);
     Q_EMIT exportFailed(message);
 }
 

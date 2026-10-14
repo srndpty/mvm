@@ -935,6 +935,7 @@ ApplicationWindow {
                 implicitHeight: 22
             }
             Label {
+                objectName: "statusTextLabel"
                 Layout.fillWidth: true
                 text: root.mvmController.statusText
                 color: "#e6e8ec"

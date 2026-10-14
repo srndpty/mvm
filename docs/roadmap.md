@@ -239,6 +239,11 @@
     の要素、別の client、controller の状態の記録 `--test-log-status`）と、失敗の注入の試験
     （`scripts/math-group-gui-smoke-faults.ps1`）を足した。完了を確かめられない失敗について、製品が書き出しの結果の
     文を「素材を追加してください」で上書きすることを controller の記録で確かめた（`pollPreviewState`。直していない）。
+  - P3-7B.2（[結果](status-ownership-p37b2.md)）: 状態の表示の持ち主を決めた。書き出しの最中と、書き出しの結果の文が
+    出ている間は、利用者の操作によらない定常の文（preview の確認の「素材を追加してください」と自動の初期 seek の文）を
+    出さない。利用者の操作と error はいつでも書け、書けば結果の文を手放す（時間で待たない）。閉じた後に届く描き直しは
+    行わない。決まった順序の試験（修正の前 14 件落ち → 69/69）、smoke の「結果の文が 5 秒残る」と
+    `result-overwritten` の分類を足した。全 CTest 1527/1527。
   - （解消済み。P3-5B）`timeout_ms` = 1000 が実時間 3418 ms で timeout することを
     `mlt_export_timeout_accounting_deviation`（label `stability`）で記録していた。
   - （解消済み。P3-5B）`timeout_ms` を `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならな

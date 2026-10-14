@@ -1834,6 +1834,7 @@ int runMathP28Acceptance(const std::filesystem::path& manim, const std::filesyst
 int runEquationSequenceUi(const std::filesystem::path& directory, bool scratch);
 int runMathGroupExportUi(const std::filesystem::path& directory);
 int runExportSummaryUi(const std::filesystem::path& directory, const std::filesystem::path& smoke);
+int runStatusOwnershipUi(const std::filesystem::path& directory);
 int runGraphAuthoringUi(const std::filesystem::path& directory, const std::filesystem::path& manim,
                         bool exportAcceptance);
 
@@ -1934,6 +1935,13 @@ int main(int argc, char** argv) {
         const int result = runExportSummaryUi(
             directory.filePath(QStringLiteral("export-summary-ui")).toStdWString(),
             arguments[2].toStdWString());
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
+
+    if (application.arguments().contains(QStringLiteral("--status-ownership-ui"))) {
+        const int result = runStatusOwnershipUi(
+            directory.filePath(QStringLiteral("status-ownership-ui")).toStdWString());
         mvm_mlt_runtime_shutdown();
         return result;
     }
