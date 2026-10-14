@@ -4246,6 +4246,13 @@ add_test(NAME math_group_export_product_ui
 set_tests_properties(math_group_export_product_ui PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 240)
+# P3-7B: 書き出し設定の入力映像・出力の要約を、製品の Main.qml と実際の素材の probe で確かめる
+# (生成する clip を「仕様を確認できない入力ファイル」に数えない。本当の素材の失敗は出す)。
+add_test(NAME export_settings_summary_product_ui
+    COMMAND mvm_test_text_ui_input --export-summary-ui ${CMAKE_SOURCE_DIR}/tests/assets/smoke)
+set_tests_properties(export_settings_summary_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
 add_test(NAME math_transform_inspector_product_ui
     COMMAND mvm_test_text_ui_input --math-transform-inspector)
 set_tests_properties(math_transform_inspector_product_ui PROPERTIES

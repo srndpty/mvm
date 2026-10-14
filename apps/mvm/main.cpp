@@ -5,6 +5,7 @@
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
+#include "util/mvm_reveal_in_explorer.h"
 #include "util/mvm_win_utf8.h"
 #include "waveform_cache.h"
 #include "waveform_view.h"
@@ -116,6 +117,16 @@ int main(int argc, char** argv) {
     if (mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) != 0) {
         std::fprintf(stderr, "MLTを初期化できません。書き出しが行えないため起動を中止します\n");
         return 5;
+    }
+    // 試験用 (scripts/math-group-gui-smoke.ps1 の見えない desktop)。そこでは Explorer が
+    // SHOpenFolderAndSelectItems を長く待たせてから断り、その間 GUI thread が止まる。path の正規化と
+    // 実際の SHParseDisplayName (P3-7A の原因の箇所) は通し、Explorer を開く処理だけを成功として扱う。
+    if (qEnvironmentVariableIsSet("MVM_TEST_REVEAL_WITHOUT_EXPLORER")) {
+        static const MvmRevealShell withoutExplorer{
+            nullptr, nullptr, [](const void*, void*) -> long { return 0; }, nullptr};
+        mvm_reveal_set_shell_for_test(&withoutExplorer);
+        std::fprintf(stderr, "試験: Explorerを開かずに、ファイルの表示を成功として扱います "
+                             "(MVM_TEST_REVEAL_WITHOUT_EXPLORER)\n");
     }
     mvm::app::MvmController controller(arguments.projectPath, arguments.manimExecutablePath,
                                        std::move(project));

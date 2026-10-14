@@ -220,6 +220,18 @@
     に失敗していた（0x80070057）。原因は、FileDialog の URL から作った `/` 区切りの path を
     `SHParseDisplayName` が拒否すること。Shell へ渡す前に Windows の絶対 path にするよう直した。製品 GUI の
     smoke（`scripts/math-group-gui-smoke.ps1`。短い場面だけなら約 4 分、人の操作なし）を足した。
+  - P3-7B（[結果](export-summary-p37b.md)）: 書き出し設定が、数式・文字・静止画だけの Project で「入力映像:
+    仕様を取得できません」「1件の入力ファイルは仕様を確認できませんでした。」と出していた。要約が音声以外の
+    clip を全部動画の素材として probe していたため。動画の file だけを probe し、静止画は読めるかだけを
+    確かめ、生成する clip は probe しないよう直した（書き出しに出ない clip・track は数えない）。本当の
+    素材の失敗の警告は残る。製品 GUI の smoke は、session と verify の両方の成功と、その run の
+    verify.json を求めるようにした。
+  - 製品 GUI の smoke（2026-10-15）: 既定で、新しく作った見えない desktop（CreateDesktop）の上で mvm.exe と
+    driver を動かす。window・保存 dialog・上書きの確認が利用者の画面に出ず、前面を奪わない。見えない desktop
+    から Explorer を開くと、Explorer が 20 秒〜5 分以上待たせてから E_ABORT で断り、その間 mvm の GUI thread が
+    止まるので、mvm.exe を試験用の環境変数 `MVM_TEST_REVEAL_WITHOUT_EXPLORER` 付きで起動する（path の正規化と
+    実際の `SHParseDisplayName` までは通し、Explorer を開く処理だけを成功として扱う）。画面の保存は見えない
+    desktop では取れない。`-Visible` で以前の動き（利用者の画面、実際の Explorer）に戻せる。
   - （解消済み。P3-5B）`timeout_ms` = 1000 が実時間 3418 ms で timeout することを
     `mlt_export_timeout_accounting_deviation`（label `stability`）で記録していた。
   - （解消済み。P3-5B）`timeout_ms` を `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならな

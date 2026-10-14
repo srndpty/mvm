@@ -12,8 +12,9 @@
       A  対象外の Project (short-fallback-unknown): 既定 off → on にして書き出し → 「従来の方法」の文 →
          開き直すと off → on にして書き出し、進行の dialog の「キャンセル」→ 書き出し先を掴んだまま、off で
          同じ名前へ書き出し → 失敗の dialog → 元の file が残り、一時 file が無い
-      B  数式だけの Project (short-math-only-eligible): 起動し直した後の既定 off、「入力映像: 仕様を取得
-         できません」が出ていても書き出せる → on にして書き出し → 「数式の高速化を使いました（数式 clip 16 本）」
+      B  数式だけの Project (short-math-only-eligible): 起動し直した後の既定 off、入力映像が「なし（数式 …件を
+         出力の仕様で描きます）」で、仕様を確認できない入力の警告が無い (P3-7B) → on にして書き出し →
+         「数式の高速化を使いました（数式 clip 16 本）」
       C  v4 全体: 既定 off、出力 1920×1080 / 60 fps、品質「標準」→ on にして書き出し (6840 frame) →
          「数式の高速化を使いました（数式 clip 97 本）… (6840 frame / 114.00 秒)」→ 開き直すと off → 閉じる
 
@@ -54,6 +55,16 @@ public static class Win32 {
     [DllImport("user32.dll")] private static extern IntPtr GetDlgItem(IntPtr dialog, int id);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, string lParam);
     [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")] private static extern IntPtr GetThreadDesktop(uint threadId);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder information, int length, out int needed);
+
+    // この thread の desktop の名前 (利用者の画面は "Default")。UOI_NAME = 2。
+    public static string DesktopName() {
+        StringBuilder b = new StringBuilder(256); int needed;
+        return GetUserObjectInformation(GetThreadDesktop(GetCurrentThreadId()), 2, b, b.Capacity * 2, out needed) ? b.ToString() : "";
+    }
 
     private static string ClassOf(IntPtr window) { StringBuilder b = new StringBuilder(256); GetClassName(window, b, b.Capacity); return b.ToString(); }
     public static string TextOf(IntPtr window) { StringBuilder b = new StringBuilder(512); GetWindowText(window, b, b.Capacity); return b.ToString(); }
@@ -129,8 +140,8 @@ function Get-MainWindow {
     @($tops | Where-Object { try { $_.Current.ClassName -like 'Main_QMLTYPE*' } catch { $false } }) | Select-Object -First 1
 }
 
-# 見えている (画面の外でない) 部品を名前で探す。prefix なら前方一致。
-function Find-Element([string]$Name, [System.Windows.Automation.ControlType]$Type = $null, [switch]$Prefix) {
+# 見えている (画面の外でない) 部品を名前で探す。prefix なら前方一致、contains なら部分一致。
+function Find-Element([string]$Name, [System.Windows.Automation.ControlType]$Type = $null, [switch]$Prefix, [switch]$Contains) {
     $window = Get-MainWindow
     if (-not $window) { return $null }
     $condition = if ($Type) { [System.Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty, $Type) } else { [System.Windows.Automation.Condition]::TrueCondition }
@@ -141,7 +152,8 @@ function Find-Element([string]$Name, [System.Windows.Automation.ControlType]$Typ
         try {
             $current = $element.Current
             if ($current.IsOffscreen) { continue }
-            if (($Prefix -and $current.Name.StartsWith($Name)) -or (-not $Prefix -and $current.Name -eq $Name)) { return $element }
+            $match = if ($Contains) { $current.Name.Contains($Name) } elseif ($Prefix) { $current.Name.StartsWith($Name) } else { $current.Name -eq $Name }
+            if ($match) { return $element }
         } catch { Write-Verbose "$_" }
     }
     $null
@@ -226,7 +238,7 @@ function Wait-ExportEnd([double]$Seconds) {
     # 進行の dialog が消え、状態の表示が結果になるまで待つ。
     $started = Wait-Until { Find-Element '動画を書き出しています' } 30
     $null = $started
-    Wait-Until {
+    $end = Wait-Until {
         $failure = Find-Element '書き出しに失敗しました: ' ([System.Windows.Automation.ControlType]::Text) -Prefix
         if ($failure) { return [pscustomobject]@{ kind = 'failure'; text = $failure.Current.Name } }
         if (-not (Find-Element '動画を書き出しています')) {
@@ -235,11 +247,34 @@ function Wait-ExportEnd([double]$Seconds) {
         }
         $null
     } $Seconds 500
+    if (-not $end) {
+        # 時間切れ: そのとき見えている文を記録する (原因を後から調べられるように)。
+        $texts = @(Get-VisibleTexts | Select-Object -First 40)
+        Add-Step '書き出しの終わりを確かめられない (見えている文を記録する)' $false ($texts -join ' | ')
+    }
+    $end
+}
+
+function Get-VisibleTexts {
+    $window = Get-MainWindow
+    if (-not $window) { return @('(mvm の window が見つからない)') }
+    $condition = [System.Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+    try { $elements = $window.FindAll($Scope::Descendants, $condition) } catch { return @("(走査の error: $_)") }
+    foreach ($element in $elements) {
+        try { if (-not $element.Current.IsOffscreen -and $element.Current.Name) { $element.Current.Name } } catch { Write-Verbose "$_" }
+    }
 }
 
 # 書き出しの後に、出力の file を Explorer で表示する処理が失敗していないこと (P3-7A)。
+# 見えない desktop (math-group-gui-smoke.ps1 の既定) では、mvm.exe は MVM_TEST_REVEAL_WITHOUT_EXPLORER で
+# 起動され、path の正規化と実際の SHParseDisplayName (P3-7A の原因の箇所) までを通し、Explorer は開かない。
+# どちらの desktop でも、状態の表示に失敗の文が無いことを求める。
+$hiddenDesktop = [Mvm.Drive.Win32]::DesktopName() -ne 'Default'
+Add-Step '操作する desktop を記録する (利用者の画面は Default)' $true ([Mvm.Drive.Win32]::DesktopName())
 function Test-RevealNotFailed([string]$Name, $End) {
-    Add-Step $Name ($End -and $End.text -and -not $End.text.Contains('Explorerで表示できません')) $(if ($End) { $End.text })
+    $text = if ($End -and $End.text) { $End.text } else { '' }
+    $label = if ($hiddenDesktop) { "$Name [見えない desktop: path の解釈まで。Explorer は開かない]" } else { $Name }
+    Add-Step $label ([bool]($text -and -not $text.Contains('Explorerで表示できません'))) $text
 }
 
 function Close-Settings {
@@ -308,8 +343,13 @@ try {
     } elseif ($Scenario -eq 'B') {
         if (Open-ExportSettings 'b1-math-only.mp4') {
             [void](Test-CheckboxOff 'B1: 起動し直した後の checkbox は off')
-            $warning = Find-Element '入力映像: 仕様を取得できません' ([System.Windows.Automation.ControlType]::Text)
-            Add-Step 'B1: 「入力映像: 仕様を取得できません」が出ている (書き出しは止めない)' ([bool]$warning)
+            # P3-7B: 数式の clip は素材の file を持たないので、「仕様を取得できない入力」と数えない。
+            $textType = [System.Windows.Automation.ControlType]::Text
+            $inputSpec = Find-Element '入力映像: なし（' $textType -Prefix
+            $unreadable = Find-Element '入力映像: 仕様を取得できません' $textType
+            $failedProbe = Find-Element '件の入力ファイルは仕様を確認できませんでした' $textType -Contains
+            Add-Step 'B1: 入力映像は「なし（数式 …件を出力の仕様で描きます）」で、仕様を確認できない入力の警告が無い' (
+                [bool]$inputSpec -and $inputSpec.Current.Name.Contains('数式') -and -not $unreadable -and -not $failedProbe) $(if ($inputSpec) { $inputSpec.Current.Name })
             if (Start-Export $true) {
                 $end = Wait-ExportEnd 300
                 Add-Step 'B3: 状態の表示が「数式の高速化を使いました（数式 clip 16 本）。書き出しました: 」で始まる' (

@@ -1,20 +1,20 @@
-#include "mvm_controller.h"
-#include "mvm_controller_detail.h"
-
 #include "app/math_clip_render.h"
 #include "core/export_eta.h"
 #include "media/graph_manim/graph_manim_backend.h"
+#include "mvm_controller.h"
+#include "mvm_controller_detail.h"
 
 #include <algorithm>
 #include <set>
 #include <system_error>
 #include <tuple>
+
 #include <QMetaObject>
 
 namespace mvm::app {
 using detail::fromPath;
-using detail::probeMedia;
 using detail::ProbedMedia;
+using detail::probeMedia;
 
 QVariantMap MvmController::exportSettingsSummary() const {
     struct MediaSpec {
@@ -40,15 +40,47 @@ QVariantMap MvmController::exportSettingsSummary() const {
         return text;
     };
 
+    // 「入力映像」は、書き出しが読む動画 file (動画・Manim の clip) の仕様。静止画は file を読むが
+    // 時間の仕様を持たないので、読めるかだけを確かめる。文字・数式・数式 sequence・グラフは Project
+    // の データから出力の仕様 (下の outputText) で描くので、file を調べない
+    // (調べると必ず失敗する)。 書き出しに出ない clip (無効、非表示の track)
+    // は、書き出しと同じく数えない。
     std::set<std::filesystem::path> probedPaths;
     std::set<std::tuple<int, int, std::int64_t, std::int64_t, int, int>> distinctSpecs;
     std::vector<MediaSpec> specs;
     int failedProbeCount = 0;
-    int videoClipCount = 0;
+    int videoClipCount = 0;     // 映像に出る clip (種類を問わない)
+    int videoFileClipCount = 0; // そのうち、動画 file を読む clip
+    int imageCount = 0, textCount = 0, mathCount = 0, sequenceCount = 0, graphCount = 0;
     for (const auto& clip : project_.timelineClips) {
-        if (clip.kind == project::TimelineClipKind::Audio)
+        if (clip.kind == project::TimelineClipKind::Audio || !clip.enabled ||
+            !project::isTrackOutputEnabled(project_, clip.track))
             continue;
         ++videoClipCount;
+        switch (clip.kind) {
+        case project::TimelineClipKind::Text:
+            ++textCount;
+            continue;
+        case project::TimelineClipKind::Math:
+            ++mathCount;
+            continue;
+        case project::TimelineClipKind::EquationSequence:
+            ++sequenceCount;
+            continue;
+        case project::TimelineClipKind::Graph:
+            ++graphCount;
+            continue;
+        case project::TimelineClipKind::Image:
+            ++imageCount;
+            if (probedPaths.insert(clip.mediaPath).second) {
+                const auto image = probeMediaFile(clip.mediaPath);
+                failedProbeCount += !image.success || image.item.kind != project::MediaKind::Image;
+            }
+            continue;
+        default: // Video・Manim (生成済みの動画 file を読む)
+            break;
+        }
+        ++videoFileClipCount;
         if (!probedPaths.insert(clip.mediaPath).second)
             continue;
         const ProbedMedia media = probeMedia(clip.mediaPath);
@@ -73,6 +105,22 @@ QVariantMap MvmController::exportSettingsSummary() const {
 
     if (videoClipCount == 0) {
         summary.insert(QStringLiteral("inputText"), QStringLiteral("入力映像: なし"));
+    } else if (videoFileClipCount == 0) {
+        // 動画 file を読まない
+        // Project。生成する内容の仕様を作らず、出力の仕様で描くことだけを示す。
+        QStringList kinds;
+        const auto add = [&kinds](int count, const QString& name) {
+            if (count > 0)
+                kinds.push_back(name + QStringLiteral(" %1件").arg(count));
+        };
+        add(imageCount, QStringLiteral("静止画"));
+        add(textCount, QStringLiteral("文字"));
+        add(mathCount, QStringLiteral("数式"));
+        add(sequenceCount, QStringLiteral("数式sequence"));
+        add(graphCount, QStringLiteral("グラフ"));
+        summary.insert(QStringLiteral("inputText"), QStringLiteral("入力映像: なし（") +
+                                                        kinds.join(QStringLiteral("・")) +
+                                                        QStringLiteral("を出力の仕様で描きます）"));
     } else if (specs.empty()) {
         summary.insert(QStringLiteral("inputText"),
                        QStringLiteral("入力映像: 仕様を取得できません"));
@@ -158,7 +206,8 @@ QVariantMap describeMathGroupOutcome(const TimelineExportResult& exported) {
             "数式の高速化（試験的）の描画で失敗したため、書き出しを止めました。書き出し設定で"
             "「数式の書き出しを高速化（試験的）」を外すと、従来の方法で書き出せます。");
     } else if (!exported.success) {
-        outcome = QStringLiteral("incomplete"); // 取消・timeout・その他の失敗 (高速化の失敗ではない)
+        outcome =
+            QStringLiteral("incomplete"); // 取消・timeout・その他の失敗 (高速化の失敗ではない)
     } else if (report.preparationRejected) {
         outcome = QStringLiteral("budget");
         message = QStringLiteral("数式の高速化は使いませんでした（") +
@@ -179,11 +228,10 @@ QVariantMap describeMathGroupOutcome(const TimelineExportResult& exported) {
             {QStringLiteral("reason"), QString::fromStdString(report.reason)},
             {QStringLiteral("reasonText"),
              report.reason.empty() ? QString() : mathGroupReasonText(report.reason)},
-            {QStringLiteral("graph"), report.mathGroupGraph ? QStringLiteral("math-group")
-                                                            : QStringLiteral("conventional")},
+            {QStringLiteral("graph"),
+             report.mathGroupGraph ? QStringLiteral("math-group") : QStringLiteral("conventional")},
             {QStringLiteral("groupedClips"), static_cast<qlonglong>(report.groupedClips)},
-            {QStringLiteral("affineTransitions"),
-             static_cast<qlonglong>(report.affineTransitions)},
+            {QStringLiteral("affineTransitions"), static_cast<qlonglong>(report.affineTransitions)},
             {QStringLiteral("errors"), static_cast<qlonglong>(report.errors)}};
 }
 
@@ -258,8 +306,8 @@ bool MvmController::startTimelineExport(const QUrl& outputUrl, int videoCrf,
     // を始める前にここで確定し、以降は変わらない。
     request.mathGroupOptimization =
         mathGroupOptimization ? MathGroupOptimization::Auto : MathGroupOptimization::Off;
-    request.graphEnvironment.cache = mathCacheDirectory().parent_path().parent_path() / L"graph" /
-                                     projectPath_.filename();
+    request.graphEnvironment.cache =
+        mathCacheDirectory().parent_path().parent_path() / L"graph" / projectPath_.filename();
     request.graphEnvironment.toolchain = graphRasters_ ? graphRasters_->exportToolchain() : "";
     request.graphEnvironment.cancel = &exportCancelRequested_;
     if (projectLockHeld_)
@@ -459,9 +507,14 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
             "reason=%s graph=%s groups=%lld grouped_clips=%lld affine=%lld composed=%lld "
             "callbacks=%lld errors=%lld rasters=%lld raster_bytes=%lld preparation_rejected=%d "
             "live_transitions=%lld active_callbacks=%lld\n",
-            exported.success ? "成功" : exported.cancelled ? "取消" : "失敗",
+            exported.success     ? "成功"
+            : exported.cancelled ? "取消"
+                                 : "失敗",
             static_cast<long long>(exported.frameCount), exported.error.c_str(),
-            exportMathGroupOutcome_.value(QStringLiteral("outcome")).toString().toUtf8().constData(),
+            exportMathGroupOutcome_.value(QStringLiteral("outcome"))
+                .toString()
+                .toUtf8()
+                .constData(),
             report.decision.c_str(), report.reason.c_str(),
             report.mathGroupGraph ? "math-group" : "conventional", report.groups,
             report.groupedClips, report.affineTransitions, report.composedFrames, report.callbacks,
@@ -493,10 +546,9 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
             : mathGroupMessage + (outcome == QStringLiteral("used")
                                       ? QStringLiteral("。書き出しました: ")
                                       : QStringLiteral("。従来の方法で書き出しました: "));
-    QString status = lead + fromPath(exported.outputPath) +
-                     QStringLiteral(" (") + QString::number(exported.frameCount) +
-                     QStringLiteral(" frame / ") + QString::number(exported.durationSec, 'f', 2) +
-                     QStringLiteral(" 秒)");
+    QString status = lead + fromPath(exported.outputPath) + QStringLiteral(" (") +
+                     QString::number(exported.frameCount) + QStringLiteral(" frame / ") +
+                     QString::number(exported.durationSec, 'f', 2) + QStringLiteral(" 秒)");
     // Explorer表示の失敗は書き出しの失敗ではない。成功は保ったまま理由を併記する。
     QString revealError;
     if (!fileRevealer_(exported.outputPath, revealError))

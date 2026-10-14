@@ -9,7 +9,9 @@
 
       1. 構文: 検収に使う script を PowerShell の parser に通す (誤り 0)。
       2. 制御文字: 手順書・script・短い fixture に、tab・改行以外の制御文字が無い。
-      3. (削除) 手順書の人向けの command の試験。手順書は人の操作を求めなくなった (2026-10-14)。
+      3. 製品 GUI の smoke (math-group-gui-smoke.ps1) の場面の判定: session・verify の失敗、古い verify.json、
+         不成立の項目、driver の段の失敗を成立にしない (P3-7B)。以前の 3 (手順書の人向けの command の試験) は、
+         手順書が人の操作を求めなくなったので削除した (2026-10-14)。
          掴んだ file への書き出しの失敗は、driver の場面 A で、実際の mvm.exe に対して確かめる。
       4. 引数と終了コード: 不正な段階、session の指定なし、存在しない session、参照の無い session の起動。
       5. session の記録: 偽の app (pwsh) を起動し、stderr の行を pipe から受け取った時刻で、書き出しの
@@ -71,6 +73,46 @@ foreach ($file in $scanned) {
         }
     }
     Add-Result 'control' (Split-Path -Leaf $file) ($found.Count -eq 0) (($found | Select-Object -First 3) -join ', ')
+}
+
+# --- 3. 製品 GUI の smoke の判定 (math-group-gui-smoke.ps1 の Get-ScenarioVerdict を直接呼ぶ) ---
+# session の失敗・verify の失敗・古い verify.json・driver の段の失敗は、どれも成立にしない。
+$smokeAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'math-group-gui-smoke.ps1'), [ref]$null, [ref]$null)
+$verdictFunction = $smokeAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-ScenarioVerdict' }, $true)
+if ($verdictFunction) {
+    . ([scriptblock]::Create($verdictFunction.Extent.Text))
+    $verdictRoot = Join-Path $root 'smoke-verdict'
+    New-Item -ItemType Directory -Force $verdictRoot | Out-Null
+    function New-VerifyJson([string]$Name, [bool]$Verdict, [bool[]]$Steps, [datetime]$Written) {
+        $path = Join-Path $verdictRoot "$Name.json"
+        [ordered]@{ verdicts = [ordered]@{ output_identical = $Verdict; reveal = $true }
+            drive_steps = @($Steps | ForEach-Object { [ordered]@{ step = 's'; ok = $_ } })
+        } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $path -Encoding utf8
+        (Get-Item -LiteralPath $path).LastWriteTime = $Written
+        $path
+    }
+    $now = Get-Date
+    $good = New-VerifyJson 'good' $true @($true, $true) $now.AddSeconds(1)
+    $stale = New-VerifyJson 'stale' $true @($true, $true) $now.AddMinutes(-10)
+    $bad = New-VerifyJson 'verdict-false' $false @($true) $now.AddSeconds(1)
+    $badStep = New-VerifyJson 'step-false' $true @($true, $false) $now.AddSeconds(1)
+    $noStep = New-VerifyJson 'no-step' $true @() $now.AddSeconds(1)
+    $cases = @(
+        @('session も verify も成功し、この run の verify.json が全部成立なら成立', 0, 0, $good, $true),
+        @('session が失敗したら、verify.json が全部成立でも不成立', 1, 0, $good, $false),
+        @('session が失敗し、前の run の verify.json だけがあるなら不成立', 1, 0, $stale, $false),
+        @('session も verify も 0 でも、verify.json が verify の開始より古ければ不成立', 0, 0, $stale, $false),
+        @('verify が失敗したら不成立', 0, 1, $good, $false),
+        @('verify.json が無ければ不成立', 0, 0, (Join-Path $verdictRoot 'missing.json'), $false),
+        @('verify の項目に不成立があれば不成立', 0, 0, $bad, $false),
+        @('driver の段に失敗があれば不成立', 0, 0, $badStep, $false),
+        @('driver の段が 1 つも無ければ不成立', 0, 0, $noStep, $false))
+    foreach ($case in $cases) {
+        $verdict = Get-ScenarioVerdict $case[1] $case[2] $case[3] $now
+        Add-Result 'smoke' $case[0] ($verdict.passed -eq $case[4]) "passed=$($verdict.passed) fresh=$($verdict.fresh)"
+    }
+} else {
+    Add-Result 'smoke' 'Get-ScenarioVerdict がある' $false
 }
 
 # --- 4・5 の準備: 対象の固定 (本物)、作りものの出力と参照 ---

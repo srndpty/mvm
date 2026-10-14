@@ -4400,11 +4400,13 @@ ApplicationWindow {
             spacing: 12
 
             Label {
+                objectName: "exportInputSpecLabel"
                 Layout.fillWidth: true
                 text: exportSettingsDialog.inputSpecText
                 wrapMode: Text.Wrap
             }
             Label {
+                objectName: "exportOutputSpecLabel"
                 Layout.fillWidth: true
                 text: exportSettingsDialog.outputSpecText
                 wrapMode: Text.Wrap
@@ -4419,6 +4421,7 @@ ApplicationWindow {
 
                 Label {
                     id: comparisonWarningLabel
+                    objectName: "exportComparisonWarningLabel"
                     anchors.fill: parent
                     anchors.margins: 10
                     text: exportSettingsDialog.comparisonWarningText

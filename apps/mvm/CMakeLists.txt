@@ -115,6 +115,7 @@ qt_add_executable(mvm_test_text_ui_input
     ${CMAKE_SOURCE_DIR}/tests/harness/test_text_ui_input.cpp
     ${CMAKE_SOURCE_DIR}/tests/harness/test_equation_sequence_ui.cpp
     ${CMAKE_SOURCE_DIR}/tests/harness/test_math_group_export_ui.cpp
+    ${CMAKE_SOURCE_DIR}/tests/harness/test_export_summary_ui.cpp
     ${CMAKE_SOURCE_DIR}/tests/harness/math_p28_acceptance.cpp
     press_focus.cpp
     trim_cursor.cpp
