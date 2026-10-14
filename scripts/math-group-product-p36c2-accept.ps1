@@ -34,7 +34,9 @@ param(
     [ValidateSet('v4', 'short-math-only-eligible', 'short-fallback-unknown')][string]$Project = 'v4',
     [string]$Label = '',
     [string]$Session = '',
-    [string]$OutputDirectory = 'build/math-group-product-p36c2-20261014',
+    # 自動の検収 (2026-10-14。人の操作をやめ、-Drive で driver が操作する)。1 回目の人の操作の記録は
+    # build/math-group-product-p36c2-20261014 の直下、2 回目の準備は attempt-2/ にある (使っていない)。
+    [string]$OutputDirectory = 'build/math-group-product-p36c2-20261014/automated',
     [string]$V4ProjectPath = 'build/quadratic-semantic-20261011-v4/quadratic.mvm',
     [string]$FixtureDirectory = 'build/math-group-product-p36c2-20261014/fixtures',
     [string[]]$HistoricalOutputs = @(
@@ -45,7 +47,15 @@ param(
     [double]$BudgetSeconds = 600,
     [int]$WatchdogSeconds = 1500,
     [int]$ScreenshotSeconds = 2,
-    [switch]$SkipEnvironmentPreflight
+    [switch]$SkipEnvironmentPreflight,
+    # 人の代わりに、scripts/math-group-product-p36c2-drive.ps1 が mvm.exe を操作する (mouse・keyboard は
+    # 使わない)。Project ごとの場面: short-fallback-unknown = A、short-math-only-eligible = B、v4 = C。
+    # 環境の検査は記録するだけで、起動を止めない (書き出しと UI Automation は画面の表示を要しない)。
+    [switch]$Drive,
+    # script の自己試験だけが使う: mvm.exe の代わりに起動するもの (引数は | で区切る)。verify は、
+    # 固定した mvm.exe ではないとして不成立にする。
+    [string]$ApplicationOverride = '',
+    [string]$ApplicationArgumentsOverride = ''
 )
 
 Set-StrictMode -Version Latest
@@ -86,7 +96,7 @@ function Get-IdentityFiles {
     foreach ($relative in (git -C $repo ls-files -- src apps tests CMakeLists.txt cmake)) { $files.Add((Join-Path $repo $relative)) }
     foreach ($relative in (git -C $repo ls-files --others --exclude-standard -- src apps tests)) { $files.Add((Join-Path $repo $relative)) }
     foreach ($relative in @('scripts/math-group-product-p36c2-accept.ps1', 'scripts/math-group-product-p36c2-selftest.ps1', 'scripts/math-group-product-p36b-verify.ps1',
-            'scripts/math-group-product-p36a-verify.ps1', 'scripts/gui-environment-preflight.ps1',
+            'scripts/math-group-product-p36a-verify.ps1', 'scripts/gui-environment-preflight.ps1', 'scripts/math-group-product-p36c2-drive.ps1',
             'docs/math-group-product-p36c2-procedure.md')) { $files.Add((Join-Path $repo $relative)) }
     # 実行 file: 検収で人が操作する mvm.exe そのものと、参照を作る検証 harness。
     $files.Add($application)
@@ -245,32 +255,127 @@ if ($Stage -eq 'session') {
     if (-not $SkipEnvironmentPreflight) {
         pwsh (Join-Path $PSScriptRoot 'gui-environment-preflight.ps1') -OutputFile (Join-Path $run 'gui-environment-before.json') *> (Join-Path $run 'preflight-before.log')
         $environment = if ($LASTEXITCODE -eq 0) { 'VALID' } else { 'ENVIRONMENT_INVALID' }
-        if ($environment -ne 'VALID') {
+        if ($environment -ne 'VALID' -and -not $Drive) {
             [ordered]@{ stage = 'session'; project = $Project; environment_before = $environment } | ConvertTo-Json |
                 Set-Content -LiteralPath (Join-Path $run 'session.json') -Encoding utf8
             Write-Host 'ENVIRONMENT_INVALID: monitor・session を確かめてください。起動しません。'
             exit 2
         }
     }
-    Add-Type -AssemblyName System.Drawing
-    if (-not ('Mvm.Accept.Native' -as [type])) {
-        Add-Type -Namespace Mvm.Accept -Name Native -MemberDefinition @'
-[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-public struct Rect { public int Left, Top, Right, Bottom; }
-[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool GetWindowRect(System.IntPtr window, out Rect rect);
-[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool IsIconic(System.IntPtr window);
-[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    if (-not ('Mvm.Accept.LineCapture' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace Mvm.Accept {
+// 子 process の出力を pipe から 1 行ずつ受け取り、受け取った時刻 (この script の単調な時計) を付ける。
+// file には、受け取ったそのときに書く (後から読む file を経由しない)。
+public sealed class LineCapture {
+    private readonly Stopwatch clock;
+    private readonly StreamWriter log;
+    private readonly object gate = new object();
+    public readonly ConcurrentQueue<Tuple<double, string>> Lines = new ConcurrentQueue<Tuple<double, string>>();
+    public LineCapture(Stopwatch clock, string path) {
+        this.clock = clock;
+        log = new StreamWriter(path, false, new UTF8Encoding(false));
+        log.AutoFlush = true;
+    }
+    public void AttachError(Process process) { process.ErrorDataReceived += OnData; }
+    public void AttachOutput(Process process) { process.OutputDataReceived += OnData; }
+    private void OnData(object sender, DataReceivedEventArgs e) {
+        if (e.Data == null) return;
+        double seconds = clock.Elapsed.TotalSeconds;
+        lock (gate) { log.WriteLine(e.Data); }
+        Lines.Enqueue(Tuple.Create(seconds, e.Data));
+    }
+    public void Close() { lock (gate) { log.Dispose(); } }
+}
+
+public static class Desktop {
+    [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] private struct LastInput { public uint Size; public uint Time; }
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("user32.dll")] private static extern bool GetLastInputInfo(ref LastInput info);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    public static uint ForegroundProcess() {
+        uint processId;
+        GetWindowThreadProcessId(GetForegroundWindow(), out processId);
+        return processId;
+    }
+    // 最後の keyboard・mouse の入力の時刻 (tick)。値が変われば、その間に入力があった。
+    public static uint LastInputTick() {
+        LastInput info = new LastInput();
+        info.Size = 8;
+        GetLastInputInfo(ref info);
+        return info.Time;
+    }
+    [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr window);
+    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr window, IntPtr dc);
+    [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int width, int height);
+    [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr dc, IntPtr item);
+    [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr item);
+    // window の内容を bitmap (HBITMAP) に描かせる。上に他の window が重なっていても、その window の内容を
+    // 描く (PW_RENDERFULLCONTENT)。最小化されていれば、または描けなければ IntPtr.Zero。
+    // 呼び出し側が PNG に保存し、DeleteObject で捨てる。
+    public static IntPtr Capture(IntPtr window) {
+        if (window == IntPtr.Zero || IsIconic(window)) return IntPtr.Zero;
+        Rect rect;
+        if (!GetWindowRect(window, out rect)) return IntPtr.Zero;
+        int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+        if (width < 100 || height < 100) return IntPtr.Zero;
+        IntPtr screen = GetDC(IntPtr.Zero);
+        IntPtr memory = CreateCompatibleDC(screen);
+        IntPtr bitmap = CreateCompatibleBitmap(screen, width, height);
+        IntPtr previous = SelectObject(memory, bitmap);
+        bool printed = PrintWindow(window, memory, 2);
+        SelectObject(memory, previous);
+        DeleteDC(memory);
+        ReleaseDC(IntPtr.Zero, screen);
+        if (!printed) { DeleteObject(bitmap); return IntPtr.Zero; }
+        return bitmap;
+    }
+}
+}
 '@
     }
-    [Mvm.Accept.Native]::SetProcessDPIAware() | Out-Null
+    Add-Type -AssemblyName System.Drawing
+    [Mvm.Accept.Desktop]::SetProcessDPIAware() | Out-Null
     $settingsBefore = Get-SettingsSnapshot
     $projectFile = $projects[$Project]
     $log = Join-Path $run 'mvm-stderr.log'
     $processor = (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average
+    $launchFile = if ($ApplicationOverride) { $ApplicationOverride } else { $application }
+    $launchArguments = if ($ApplicationOverride) { @($ApplicationArgumentsOverride -split '\|' | Where-Object { $_ }) }
+    else { @('--project', $projectFile, '--manim-executable', $manim) }
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
-    $process = Start-Process -FilePath $application -ArgumentList @('--project', "`"$projectFile`"", '--manim-executable', "`"$manim`"") `
-        -PassThru -RedirectStandardError $log -RedirectStandardOutput (Join-Path $run 'mvm-stdout.log')
-    $null = $process.Handle
+    $info = [System.Diagnostics.ProcessStartInfo]::new($launchFile)
+    foreach ($argument in $launchArguments) { $info.ArgumentList.Add($argument) }
+    $info.UseShellExecute = $false
+    $info.RedirectStandardError = $true
+    $info.RedirectStandardOutput = $true
+    $info.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+    $info.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    $info.CreateNoWindow = $true
+    $info.WorkingDirectory = $repo
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $info
+    $errorCapture = [Mvm.Accept.LineCapture]::new($clock, $log)
+    $outputCapture = [Mvm.Accept.LineCapture]::new($clock, (Join-Path $run 'mvm-stdout.log'))
+    $errorCapture.AttachError($process)
+    $outputCapture.AttachOutput($process)
+    [void]$process.Start()
+    $process.BeginErrorReadLine()
+    $process.BeginOutputReadLine()
     $launchedPath = $null
     for ($attempt = 0; $attempt -lt 50 -and -not $launchedPath; ++$attempt) {
         try { $process.Refresh(); $launchedPath = $process.MainModule.FileName } catch { Start-Sleep -Milliseconds 100 }
@@ -278,7 +383,19 @@ public struct Rect { public int Left, Top, Right, Bottom; }
     if (-not $launchedPath) { throw '起動した process の実行 file を確かめられません' }
     Write-Host "起動しました: $launchedPath (PID $($process.Id))"
     Write-Host "Project: $projectFile"
-    Write-Host 'この window は閉じないでください。mvm の window を閉じると、記録を書いて終わります。'
+    $driver = $null
+    $driveResult = Join-Path $run 'drive.json'
+    if ($Drive) {
+        $scenario = @{ 'short-fallback-unknown' = 'A'; 'short-math-only-eligible' = 'B'; 'v4' = 'C' }[$Project]
+        $driverArguments = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'math-group-product-p36c2-drive.ps1'), '-ProcessId', "$($process.Id)",
+            '-Scenario', $scenario, '-ManualOut', (Join-Path $root 'manual-out'), '-ResultPath', $driveResult)
+        $driver = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $driverArguments -PassThru -WindowStyle Hidden `
+            -RedirectStandardOutput (Join-Path $run 'drive.log') -RedirectStandardError (Join-Path $run 'drive-error.log')
+        Write-Host "操作は driver が行います (場面 $scenario、PID $($driver.Id))。この PC は使ってかまいません (mouse と keyboard は使いません)。"
+    } else {
+        Write-Host 'この window は閉じないでください。mvm の window を閉じると、記録を書いて終わります。'
+        Write-Host '書き出しの間は、keyboard と mouse に触らないでください (触ると記録に残り、全長の書き出しの検収は不成立になります)。'
+    }
 
     function Get-LoadedModules {
         $rows = @()
@@ -298,30 +415,23 @@ public struct Rect { public int Left, Top, Right, Bottom; }
     }
 
     $events = @(); $exports = @(); $current = $null; $moduleSets = @(); $watchdogFired = $false
-    $position = 0L; $pending = ''; $nextShot = 0.0; $shots = 0; $modulesAtStart = $false
+    $nextShot = 0.0; $shots = 0; $modulesAtStart = $false; $lastInputTick = 0
     while ($true) {
         $exited = $process.HasExited
-        # 新しく書かれた行を読む (file は mvm.exe が書き続けている)。
-        if (Test-Path -LiteralPath $log) {
-            $stream = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite')
-            try {
-                if ($stream.Length -gt $position) {
-                    $stream.Position = $position
-                    $buffer = [byte[]]::new($stream.Length - $position)
-                    $read = $stream.Read($buffer, 0, $buffer.Length)
-                    $position += $read
-                    $pending += [Text.Encoding]::UTF8.GetString($buffer, 0, $read)
-                }
-            } finally { $stream.Dispose() }
-        }
-        while (($newline = $pending.IndexOf("`n")) -ge 0) {
-            $line = $pending.Substring(0, $newline).TrimEnd("`r"); $pending = $pending.Substring($newline + 1)
-            $now = $clock.Elapsed.TotalSeconds
+        if ($exited) { $process.WaitForExit() } # 出力の非同期の読み取りが終わるまで待つ
+        $item = $null
+        while ($errorCapture.Lines.TryDequeue([ref]$item)) {
+            # 時刻は、行を pipe から受け取ったときのもの (この loop が処理したときではない)。
+            $now = $item.Item1
+            $line = $item.Item2
             $parsed = ConvertFrom-ExportLine $line
             if ($null -eq $parsed) { continue }
-            $events += [pscustomobject]@{ observed_seconds = $now; line = $line }
+            $events += [pscustomobject]@{ received_seconds = $now; line = $line }
             if ($parsed.kind -eq 'start') {
-                $current = [ordered]@{ output = $parsed.output; selected = $parsed.selected; start_seconds = $now; start_wall = (Get-Date -Format 'o') }
+                $current = [ordered]@{ output = $parsed.output; selected = $parsed.selected; start_seconds = $now; start_wall = (Get-Date -Format 'o')
+                    quiet = [ordered]@{ samples = 0; input_changes = 0; foreground_other = 0 }
+                }
+                $lastInputTick = [Mvm.Accept.Desktop]::LastInputTick()
                 Write-Host ("[{0,7:n1} s] 書き出しの開始: {1} (選択 {2})" -f $now, $parsed.output, $parsed.selected)
             } elseif ($current) {
                 $current.finish_seconds = $now
@@ -332,14 +442,22 @@ public struct Rect { public int Left, Top, Right, Bottom; }
                 $current.temporary_file_exists = Test-Path -LiteralPath ($current.output + '.mvmtmp')
                 $current.media_left = @(Get-MediaLeft $directory)
                 $exports += [pscustomobject]$current
-                Write-Host ("[{0,7:n1} s] 書き出しの結果: {1}、{2:n1} 秒、outcome={3} graph={4} 合成={5} 失敗={6}" -f $now, $parsed.result,
-                    $current.elapsed_seconds, $parsed.outcome, $parsed.graph, $parsed.composed, $parsed.errors)
+                Write-Host ("[{0,7:n1} s] 書き出しの結果: {1}、{2:n1} 秒、outcome={3} graph={4} 合成={5} 失敗={6}、書き出し中の入力 {7} 回・他の window が前面 {8}/{9}" -f $now,
+                    $parsed.result, $current.elapsed_seconds, $parsed.outcome, $parsed.graph, $parsed.composed, $parsed.errors,
+                    $current.quiet.input_changes, $current.quiet.foreground_other, $current.quiet.samples)
                 $moduleSets += [pscustomobject]@{ when = "export-$($exports.Count)"; modules = @(Get-LoadedModules) }
                 $current = $null
             }
         }
         if ($exited) { break }
         $now = $clock.Elapsed.TotalSeconds
+        if ($current) {
+            # 書き出しの間の、利用者の入力と前面の window (記録するだけで、操作はしない)。
+            ++$current.quiet.samples
+            $tick = [Mvm.Accept.Desktop]::LastInputTick()
+            if ($tick -ne $lastInputTick) { ++$current.quiet.input_changes; $lastInputTick = $tick }
+            if ([Mvm.Accept.Desktop]::ForegroundProcess() -ne $process.Id) { ++$current.quiet.foreground_other }
+        }
         if (-not $modulesAtStart -and $now -ge 8) {
             $modulesAtStart = $true
             $moduleSets += [pscustomobject]@{ when = 'startup'; modules = @(Get-LoadedModules) }
@@ -348,28 +466,30 @@ public struct Rect { public int Left, Top, Right, Bottom; }
             $watchdogFired = $true
             Write-Host ("[{0,7:n1} s] watchdog: 書き出しが {1} 秒を超えました (記録するだけで、止めません)" -f $now, $WatchdogSeconds)
         }
-        # mvm の window の画面を保存する (操作はしない)。書き出しの間は間隔を空ける。
+        # mvm の window の内容を保存する (操作はしない)。書き出しの間は間隔を空ける。
         if ($ScreenshotSeconds -gt 0 -and $now -ge $nextShot) {
             $nextShot = $now + $(if ($current -and $now - $current.start_seconds -gt 20) { 10 * $ScreenshotSeconds } else { $ScreenshotSeconds })
             try {
                 $process.Refresh()
-                $window = $process.MainWindowHandle
-                $rect = New-Object Mvm.Accept.Native+Rect
-                if ($window -ne [IntPtr]::Zero -and -not [Mvm.Accept.Native]::IsIconic($window) -and [Mvm.Accept.Native]::GetWindowRect($window, [ref]$rect)) {
-                    $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
-                    if ($width -gt 100 -and $height -gt 100) {
-                        $bitmap = New-Object System.Drawing.Bitmap $width, $height
-                        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-                        $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
-                        $graphics.Dispose()
-                        $bitmap.Save((Join-Path $run ('screens\{0:d5}-{1:d6}.png' -f $shots, [int]($now * 10))), [System.Drawing.Imaging.ImageFormat]::Png)
-                        $bitmap.Dispose()
+                $bitmap = [Mvm.Accept.Desktop]::Capture($process.MainWindowHandle)
+                if ($bitmap -ne [IntPtr]::Zero) {
+                    try {
+                        $image = [System.Drawing.Image]::FromHbitmap($bitmap)
+                        $image.Save((Join-Path $run ('screens\{0:d5}-{1:d6}.png' -f $shots, [int]($now * 10))), [System.Drawing.Imaging.ImageFormat]::Png)
+                        $image.Dispose()
                         ++$shots
-                    }
+                    } finally { [void][Mvm.Accept.Desktop]::DeleteObject($bitmap) }
                 }
             } catch { Write-Verbose "$_" }
         }
         Start-Sleep -Milliseconds 40
+    }
+    $errorCapture.Close()
+    $outputCapture.Close()
+    $driveRecord = $null
+    if ($driver) {
+        if (-not $driver.WaitForExit(60000)) { try { $driver.Kill() } catch { Write-Verbose "$_" } }
+        $driveRecord = if (Test-Path -LiteralPath $driveResult) { Get-Content -Raw $driveResult | ConvertFrom-Json } else { [ordered]@{ status = 'no-result'; all_ok = $false } }
     }
     $exitCode = $process.ExitCode
     $settingsAfter = Get-SettingsSnapshot
@@ -380,6 +500,7 @@ public struct Rect { public int Left, Top, Right, Bottom; }
     $after = Test-Frozen '後'
     [ordered]@{
         stage = 'session'; project = $Project; project_file = $projectFile; label = $Label; started = (Get-Date).AddSeconds(-$clock.Elapsed.TotalSeconds).ToString('o')
+        capture = 'pipe'; application_override = [bool]$ApplicationOverride; driven = [bool]$Drive; drive = $driveRecord
         environment_before = $environment; processor_load_percent_at_launch = $processor
         application = $launchedPath; application_sha256 = (Get-Sha $launchedPath)
         application_matches_freeze = ($launchedPath -eq $frozen.application -and (Get-Sha $launchedPath) -eq $frozen.application_sha256)
@@ -394,7 +515,7 @@ public struct Rect { public int Left, Top, Right, Bottom; }
     Write-Host ("終了: 書き出し {0} 回、読み込まれた DLL {1} (freeze と違うもの {2}、外から差し込まれたもの {5})、設定の変化 {3} 件、画面 {4} 枚" -f $exports.Count,
         $allModules.Count, $unexpected.Count, $settingsChanged.Count, $shots, $foreignModules.Count)
     Write-Host "記録: $run"
-    Write-Host "次: pwsh scripts/math-group-product-p36c2-accept.ps1 -Stage verify -Session `"$(Split-Path -Leaf $run)`""
+    Write-Host "次 (この行をそのまま実行する): pwsh scripts/math-group-product-p36c2-accept.ps1 -Stage verify -OutputDirectory $OutputDirectory -Session `"$(Split-Path -Leaf $run)`""
     exit 0
 }
 
@@ -483,6 +604,13 @@ foreach ($export in @($record.exports)) {
         final_file_existed_at_result = $export.final_file_exists; temporary_file_existed_at_result = $export.temporary_file_exists
         sha256 = $null; bytes = 0; check = $null; sha256_matches_reference = $false; x264_settings_same_as_reference = $false
         within_budget = $false; frames_match_reference = $false
+        quiet_recorded = $false; quiet_samples = 0; input_changes = -1; foreground_other = -1
+    }
+    if (@($export.PSObject.Properties.Name) -contains 'quiet' -and $export.quiet) {
+        $row.quiet_recorded = $true
+        $row.quiet_samples = [long]$export.quiet.samples
+        $row.input_changes = [long]$export.quiet.input_changes
+        $row.foreground_other = [long]$export.quiet.foreground_other
     }
     if ($entry.result -eq '成功' -and $row.final_file_exists_now) {
         $row.sha256 = Get-Sha $export.output
@@ -528,6 +656,9 @@ if ($record.project -eq 'v4') {
         $verdicts.encoder_configuration = [bool]$target.x264_settings_same_as_reference
         $verdicts.sha256_matches_reference = [bool]$target.sha256_matches_reference
         $verdicts.teardown = $target.live_transitions -eq 0 -and $target.active_callbacks -eq 0
+        # 書き出しの間に、keyboard・mouse の入力が無く、mvm の window が前面のままだったこと。
+        $verdicts.quiet_during_export = [bool]$target.quiet_recorded -and $target.input_changes -eq 0 -and
+        $target.foreground_other -eq 0 -and $target.quiet_samples -gt 0
     }
 } else {
     $successes = @($rows | Where-Object { $_.result -eq '成功' })
@@ -536,9 +667,21 @@ if ($record.project -eq 'v4') {
 }
 $after = Test-Frozen '後'
 $verdicts.identity_frozen_at_verify = [bool]$after.match
+# driver が操作した session: 操作の各段 (人の checklist の代わり) が全部成立したこと。
+# 環境の検査と、書き出しの間の利用者の操作は、判定ではなく参考として残す (driver は画面の表示も mouse・
+# keyboard も使わない。利用者が PC を使っていれば書き出しは遅くなる方向で、時間の基準は別に判定する)。
+$driven = @($record.PSObject.Properties.Name) -contains 'driven' -and [bool]$record.driven
+$information = [ordered]@{}
+if ($driven) {
+    $verdicts.automated_gui_operations = [bool]($record.drive -and $record.drive.all_ok)
+    foreach ($key in @('environment_valid', 'quiet_during_export')) {
+        if ($verdicts.Contains($key)) { $information[$key] = $verdicts[$key]; $verdicts.Remove($key) }
+    }
+}
 $allOk = @($verdicts.Values | Where-Object { -not $_ }).Count -eq 0
 [ordered]@{ stage = 'verify'; session = $Session; project = $record.project; synthetic_selftest = $synthetic
-    human_acceptance = (-not $synthetic); all_ok = $allOk; verdicts = $verdicts; settings = $settings; exports = $rows
+    human_acceptance = (-not $synthetic -and -not $driven); driven = $driven; all_ok = $allOk; verdicts = $verdicts
+    information = $information; drive_steps = $(if ($driven -and $record.drive) { $record.drive.steps } else { @() }); settings = $settings; exports = $rows
     reference = $(if ($record.project -eq 'v4') { $reference.v4 } else { $reference.fixtures })
     note = 'この検査は、符号化された MP4 と session の記録を見る。encoder の直前の RGBA は比べていない。人が行った操作と目で見た確認は、operator-checklist.md と screens に残す。'
 } | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $run 'verify.json') -Encoding utf8

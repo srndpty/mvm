@@ -9,10 +9,12 @@
 
       1. 構文: 検収に使う script を PowerShell の parser に通す (誤り 0)。
       2. 制御文字: 手順書・script・短い fixture に、tab・改行以外の制御文字が無い。
-      3. 手順書の command: A8・A9 の command を手順書から取り出して実行し、掴んだ file を置き換えられない
-         こと、放した後は置き換えられることを確かめる (一時 directory の中で)。
+      3. (削除) 手順書の人向けの command の試験。手順書は人の操作を求めなくなった (2026-10-14)。
+         掴んだ file への書き出しの失敗は、driver の場面 A で、実際の mvm.exe に対して確かめる。
       4. 引数と終了コード: 不正な段階、session の指定なし、存在しない session、参照の無い session の起動。
-      5. 事後の検査 (verify): 作りものの session の記録 (synthetic_selftest = true) を与える。
+      5. session の記録: 偽の app (pwsh) を起動し、stderr の行を pipe から受け取った時刻で、書き出しの
+         開始と結果を記録できること。-LaunchRealApplication なら、固定した mvm.exe も起動して強制終了する。
+      6. 事後の検査 (verify): 作りものの session の記録 (synthetic_selftest = true) を与える。
          正しい記録は通り、1 か所ずつ壊した記録は、決めておいた判定だけが false になること。
          出力の MP4 は、ffmpeg で作った 30 frame の H.264 (1920x1080、60 fps) である。
 
@@ -22,7 +24,10 @@
     終了コード: 0 = 全部が期待どおり、1 = 期待と違うものがある。
 #>
 param(
-    [string]$OutputDirectory = 'build/math-group-product-p36c2-20261014/selftest'
+    [string]$OutputDirectory = 'build/math-group-product-p36c2-20261014/selftest',
+    # 固定した mvm.exe を、書き出しをせずに起動し、15 秒後に強制終了して、起動の行と画面の保存を確かめる。
+    # GUI は操作しない (window を閉じる操作もしない)。人の検収ではない。
+    [switch]$LaunchRealApplication
 )
 
 Set-StrictMode -Version Latest
@@ -43,7 +48,7 @@ function Add-Result([string]$Group, [string]$Name, [bool]$Ok, [string]$Detail = 
 }
 
 # --- 1. 構文 ---
-foreach ($name in @('math-group-product-p36c2-accept.ps1', 'math-group-product-p36c2-selftest.ps1', 'math-group-product-p36b-verify.ps1',
+foreach ($name in @('math-group-product-p36c2-accept.ps1', 'math-group-product-p36c2-selftest.ps1', 'math-group-product-p36c2-drive.ps1', 'math-group-product-p36b-verify.ps1',
         'math-group-product-p36a-verify.ps1', 'gui-environment-preflight.ps1')) {
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $name), [ref]$null, [ref]$errors)
@@ -51,7 +56,7 @@ foreach ($name in @('math-group-product-p36c2-accept.ps1', 'math-group-product-p
 }
 
 # --- 2. 制御文字 ---
-$scanned = @($accept, $PSCommandPath, $procedure, (Join-Path $repo 'docs\math-group-product-p36c2.md')) +
+$scanned = @($accept, $PSCommandPath, (Join-Path $PSScriptRoot 'math-group-product-p36c2-drive.ps1'), $procedure, (Join-Path $repo 'docs\math-group-product-p36c2.md')) +
 @(Get-ChildItem (Join-Path $repo 'build\math-group-product-p36c2-20261014\fixtures') -Filter *.mvm -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
 foreach ($file in $scanned) {
     $text = [IO.File]::ReadAllText($file, [Text.UTF8Encoding]::new($false, $true))
@@ -66,43 +71,6 @@ foreach ($file in $scanned) {
         }
     }
     Add-Result 'control' (Split-Path -Leaf $file) ($found.Count -eq 0) (($found | Select-Object -First 3) -join ', ')
-}
-
-# --- 3. 手順書の A8・A9 の command ---
-$document = Get-Content -Raw $procedure
-$fence = '`' * 3
-$blocks = @([regex]::Matches($document, "(?s)${fence}powershell\r?\n(.*?)${fence}") | ForEach-Object { $_.Groups[1].Value })
-$lockBlock = @($blocks | Where-Object { $_ -match 'FileShare' })
-$releaseBlock = @($blocks | Where-Object { $_ -match '\$h\.Dispose\(\)' })
-Add-Result 'procedure' 'A8・A9 の command が 1 つずつある' ($lockBlock.Count -eq 1 -and $releaseBlock.Count -eq 1)
-if ($lockBlock.Count -eq 1 -and $releaseBlock.Count -eq 1) {
-    Add-Result 'procedure' 'A8 は Join-Path と明示の enum で書いてある' ($lockBlock[0] -match 'Join-Path' -and
-        $lockBlock[0] -match '\[System\.IO\.FileMode\]::Open' -and $lockBlock[0] -match '\[System\.IO\.FileAccess\]::Read' -and
-        $lockBlock[0] -match '\[System\.IO\.FileShare\]::None' -and $lockBlock[0] -notmatch "'[A-Za-z]:\\")
-    $work = Join-Path $root 'procedure-a8'
-    $manual = Join-Path $work 'build\math-group-product-p36c2-20261014\manual-out'
-    New-Item -ItemType Directory -Force $manual | Out-Null
-    $final = Join-Path $manual 'a1-fallback.mp4'
-    $temporary = "$final.mvmtmp"
-    Set-Content -LiteralPath $final -Value 'original'
-    Set-Content -LiteralPath $temporary -Value 'new'
-    # 手順書の command を、手順書と同じく「repository の directory にいる」形で、別の pwsh で実行する。
-    $driver = Join-Path $work 'driver.ps1'
-    @(
-        '$ErrorActionPreference = "Stop"'
-        $lockBlock[0]
-        '$replaced = $true'
-        "try { [IO.File]::Move('$temporary', '$final', `$true) } catch { `$replaced = `$false }"
-        '"REPLACED_WHILE_LOCKED=$replaced"'
-        $releaseBlock[0]
-        "[IO.File]::Move('$temporary', '$final', `$true)"
-        "`"REPLACED_AFTER_RELEASE=`$((Get-Content -LiteralPath '$final') -eq 'new')`""
-    ) | Set-Content -LiteralPath $driver -Encoding utf8
-    $output = @(pwsh -NoProfile -WorkingDirectory $work -File $driver 2>&1 | ForEach-Object { "$_" })
-    $code = $LASTEXITCODE
-    Add-Result 'procedure' 'A8・A9 の command を実行できる' ($code -eq 0) (($output | Select-Object -Last 1))
-    Add-Result 'procedure' '掴んでいる間は最終の名前へ置けない' ($output -contains 'REPLACED_WHILE_LOCKED=False')
-    Add-Result 'procedure' '放した後は置ける' ($output -contains 'REPLACED_AFTER_RELEASE=True')
 }
 
 # --- 4・5 の準備: 対象の固定 (本物)、作りものの出力と参照 ---
@@ -152,7 +120,64 @@ Add-Result 'arguments' 'session の指定が無ければ verify は失敗する'
 $code = Invoke-Accept @('-Stage', 'verify', '-Session', 'no-such-session', '-OutputDirectory', $relativeRoot) (Join-Path $root 'args-verify-missing.log')
 Add-Result 'arguments' '存在しない session の verify は失敗する' ($code -ne 0) "exit=$code"
 
-# --- 5. 事後の検査 ---
+# --- 5. session の記録 (pipe から受け取った時刻) ---
+$fake = Join-Path $root 'fake-mvm.ps1'
+@'
+param([string]$Output)
+$stream = [Console]::OpenStandardError()
+function Send([string]$Text) { $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text + "`n"); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush() }
+Send 'Projectを開きます: fake'
+Start-Sleep -Milliseconds 800
+Send "書き出しを始めます: $Output (数式の高速化: 選択あり)"
+Send '[libx264 @ 0000] noise'
+Start-Sleep -Seconds 3
+Set-Content -LiteralPath $Output -Value 'x'
+Send "書き出しの結果: 成功 frame=30 error='' | 数式の高速化: outcome=used decision=ELIGIBLE reason=base-alpha-proven graph=math-group groups=1 grouped_clips=2 affine=0 composed=30 callbacks=30 errors=0 rasters=2 raster_bytes=10 preparation_rejected=0 live_transitions=0 active_callbacks=0"
+Start-Sleep -Milliseconds 600
+'@ | Set-Content -LiteralPath $fake -Encoding utf8
+$fakeOutput = Join-Path $root 'fake-output.mp4'
+$pwshPath = (Get-Process -Id $PID).Path
+# 引数の先頭の | は、値が - で始まって option と解釈されないようにするため (空の要素は捨てられる)。
+$code = Invoke-Accept @('-Stage', 'session', '-Project', 'v4', '-Label', 'pipe-capture', '-OutputDirectory', $relativeRoot, '-SkipEnvironmentPreflight',
+    '-ScreenshotSeconds', '0', '-ApplicationOverride', $pwshPath, '-ApplicationArgumentsOverride', "|-NoProfile|-File|$fake|$fakeOutput") (Join-Path $root 'session-pipe-capture.log')
+$sessionDirectory = Get-ChildItem $root -Directory -Filter '*-session-v4-pipe-capture' | Select-Object -First 1
+$record = if ($sessionDirectory -and (Test-Path -LiteralPath (Join-Path $sessionDirectory.FullName 'session.json'))) { Get-Content -Raw (Join-Path $sessionDirectory.FullName 'session.json') | ConvertFrom-Json } else { $null }
+$captured = $record -and @($record.exports).Count -eq 1
+Add-Result 'session' '偽の app の書き出しの開始と結果を、両方記録する' ($code -eq 0 -and $captured) "exit=$code"
+if ($captured) {
+    $export = @($record.exports)[0]
+    Add-Result 'session' '経過は、行を受け取った時刻の差 (約 3 秒)' ($export.elapsed_seconds -ge 2.7 -and $export.elapsed_seconds -le 4.5) ('{0:n2} 秒' -f $export.elapsed_seconds)
+    Add-Result 'session' '結果の行の値を読む' ($export.record.outcome -eq 'used' -and $export.record.graph -eq 'math-group' -and $export.record.composed -eq '30' -and
+        $export.final_file_exists -eq $true)
+    Add-Result 'session' '書き出しの間の操作を記録する' ($export.quiet.samples -gt 0 -and $null -ne $export.quiet.input_changes) "samples=$($export.quiet.samples)"
+    Add-Result 'session' '解析しない行も log に残す' ((Get-Content -Raw (Join-Path $sessionDirectory.FullName 'mvm-stderr.log')) -match 'libx264 @ 0000')
+    Add-Result 'session' '固定した mvm.exe ではないと記録する' ($record.application_matches_freeze -eq $false -and $record.application_override -eq $true -and $record.capture -eq 'pipe')
+}
+
+if ($LaunchRealApplication) {
+    $realLog = Join-Path $root 'session-real-launch.log'
+    $launcher = Start-Job -ScriptBlock {
+        pwsh -NoProfile -File $using:accept -Stage session -Project short-math-only-eligible -Label real-launch-killed `
+            -OutputDirectory $using:relativeRoot -SkipEnvironmentPreflight *> $using:realLog
+        $LASTEXITCODE
+    }
+    $application = $null
+    for ($wait = 0; $wait -lt 100 -and -not $application; ++$wait) { Start-Sleep -Milliseconds 200; $application = Get-Process mvm -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    Start-Sleep -Seconds 15
+    if ($application) { Stop-Process -Id $application.Id -Force }
+    $launchCode = Receive-Job -Job $launcher -Wait -AutoRemoveJob
+    $realDirectory = Get-ChildItem $root -Directory -Filter '*-session-short-math-only-eligible-real-launch-killed' | Select-Object -First 1
+    $real = if ($realDirectory -and (Test-Path -LiteralPath (Join-Path $realDirectory.FullName 'session.json'))) { Get-Content -Raw (Join-Path $realDirectory.FullName 'session.json') | ConvertFrom-Json } else { $null }
+    Add-Result 'session' '固定した mvm.exe を起動して記録できる' ([bool]$application -and $real -and $real.application_matches_freeze -eq $true) "exit=$launchCode"
+    if ($real) {
+        $firstLine = Get-Content -LiteralPath (Join-Path $realDirectory.FullName 'mvm-stderr.log') -TotalCount 1
+        Add-Result 'session' 'mvm.exe の起動の行を pipe から受け取る' ("$firstLine" -like 'Projectを開きます: *')
+        Add-Result 'session' '読み込まれた DLL が freeze と一致する' (@($real.loaded_modules_not_matching_freeze).Count -eq 0 -and $real.loaded_module_count -gt 0) "DLL $($real.loaded_module_count)"
+        Add-Result 'session' 'window の内容を保存する (PrintWindow)' ($real.screenshots -gt 0) "画面 $($real.screenshots) 枚"
+    }
+}
+
+# --- 6. 事後の検査 ---
 $settingsBase = [ordered]@{ 'HKEY_CURRENT_USER\Software\mvm\mvm\workspace\leftPanelWidth' = '560'
     'HKEY_CURRENT_USER\Software\mvm\mvm\transcribe\language' = 'ja'
 }
@@ -169,6 +194,7 @@ function New-Session([string]$Name, [string]$Project, [scriptblock]$Change) {
     Copy-Item -LiteralPath $good -Destination $output
     $export = [ordered]@{ output = $output; selected = $true; start_seconds = 10.0; finish_seconds = 110.0; elapsed_seconds = 100.0
         final_file_exists = $true; temporary_file_exists = $false; media_left = @()
+        quiet = [ordered]@{ samples = 2500; input_changes = 0; foreground_other = 0 }
         record = [ordered]@{ kind = 'result'; result = '成功'; frames = 30; error = ''; outcome = 'used'; decision = 'ELIGIBLE'
             reason = 'base-alpha-proven'; graph = 'math-group'; groups = '2'; grouped_clips = '97'; affine = '23'; composed = '60'; callbacks = '61'
             errors = '0'; rasters = '81'; raster_bytes = '2947112'; preparation_rejected = '0'; live_transitions = '0'; active_callbacks = '0'
@@ -209,6 +235,20 @@ $cases = @(
     @{ name = 'settings-snapshot-missing'; project = 'v4'; fails = @('math_group_selection_not_persisted'); change = {
             param($c) $c.r.Remove('settings_before'); $c.r.Remove('settings_after') }
     },
+    # driver が操作した session: driver の各段が判定に入る。環境と書き出しの間の操作は参考 (判定にしない)。
+    @{ name = 'driven-all-steps-ok'; project = 'v4'; fails = @(); change = {
+            param($c) $c.r.driven = $true; $c.r.drive = [ordered]@{ all_ok = $true; status = 'completed'; steps = @([ordered]@{ step = 'C5'; ok = $true }) }
+            $c.r.environment_before = 'ENVIRONMENT_INVALID'; $c.e.quiet.input_changes = 5; $c.e.quiet.foreground_other = 9 }
+    },
+    @{ name = 'driven-step-failed'; project = 'v4'; fails = @('automated_gui_operations'); change = {
+            param($c) $c.r.driven = $true; $c.r.drive = [ordered]@{ all_ok = $false; status = 'completed'; steps = @([ordered]@{ step = 'C6'; ok = $false }) } }
+    },
+    @{ name = 'driven-without-result'; project = 'short-math-only-eligible'; fails = @('automated_gui_operations'); change = {
+            param($c) $c.r.driven = $true; $c.r.drive = $null }
+    },
+    @{ name = 'user-input-during-export'; project = 'v4'; fails = @('quiet_during_export'); change = { param($c) $c.e.quiet.input_changes = 3 } },
+    @{ name = 'other-window-in-front-during-export'; project = 'v4'; fails = @('quiet_during_export'); change = { param($c) $c.e.quiet.foreground_other = 40 } },
+    @{ name = 'quiet-not-recorded'; project = 'v4'; fails = @('quiet_during_export'); change = { param($c) $c.e.Remove('quiet') } },
     @{ name = 'over-budget'; project = 'v4'; fails = @('within_budget'); change = { param($c) $c.e.elapsed_seconds = 600.5; $c.e.finish_seconds = 610.5 } },
     @{ name = 'wrong-content'; project = 'v4'; fails = @('sha256_matches_reference', 'encoder_configuration'); change = {
             param($c) Copy-Item -LiteralPath $other -Destination $c.e.output -Force }
@@ -263,6 +303,10 @@ foreach ($case in $cases) {
     $expected = @($case.fails | Sort-Object)
     $ok = (($failed -join ',') -eq ($expected -join ',')) -and ($code -eq $(if ($expected.Count) { 1 } else { 0 })) -and
     $verify.all_ok -eq ($expected.Count -eq 0) -and $verify.synthetic_selftest -eq $true -and $verify.human_acceptance -eq $false
+    if ($case.name -eq 'driven-all-steps-ok') {
+        # 参考の項目として残り、判定には入らない。
+        $ok = $ok -and $verify.driven -eq $true -and $verify.information.environment_valid -eq $false -and $verify.information.quiet_during_export -eq $false
+    }
     Add-Result 'verify' $case.name $ok ("exit={0} false になった判定=[{1}] 期待=[{2}]" -f $code, ($failed -join ','), ($expected -join ','))
 }
 # 記録の項目が欠けていれば、判定を作らずに失敗する。
