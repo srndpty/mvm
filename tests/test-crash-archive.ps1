@@ -46,6 +46,11 @@ try {
     Write-Dump (Join-Path $src2 'copy-of-a.dmp') 'dump-A'
     $a = Open-MvmCrashArchive -Root $root
     try {
+        $config = Get-Content -Raw -LiteralPath (Join-Path $root 'config.json') | ConvertFrom-Json
+        Check ([long]$config.max_bytes -eq 64GB -and [long]$config.min_free_bytes -eq 32GB -and
+            $a.MaxBytes -eq 64GB -and $a.MinFreeBytes -eq 32GB) '初回は既定の上限・下限を config.json に書く'
+        # 既定の下限 (32 GiB) は開発機向け。この機械の空きに結果を左右させない (下限は 3 で値を決めて試す)。
+        $a.MinFreeBytes = 0
         $r = Save-MvmCrashDumps -Archive $a -Directory @($src1, $src2) -Context 'contract'
         $byStatus = $r | Group-Object status -AsHashTable
         Check ($r.Count -eq 3) '3 件を数える'

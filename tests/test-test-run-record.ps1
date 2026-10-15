@@ -35,6 +35,10 @@ $temp = Join-Path ([IO.Path]::GetTempPath()) "mvm-run-record-test-$PID-$([Enviro
 $archiveRoot = Join-Path $temp 'archive'
 $fakeDumps = Join-Path $temp 'CrashDumps'
 New-Item -ItemType Directory -Force -Path $fakeDumps | Out-Null
+# 試験用の archive は既定の空きの下限 (32 GiB、開発機向け) を使わない。結果をこの機械の空きに左右させない。
+New-Item -ItemType Directory -Force -Path $archiveRoot | Out-Null
+[ordered]@{ max_bytes = 1GB; min_free_bytes = 0 } | ConvertTo-Json |
+    Set-Content -LiteralPath (Join-Path $archiveRoot 'config.json') -Encoding utf8NoBOM
 [IO.File]::WriteAllText((Join-Path $fakeDumps 'old.exe.1.dmp'), 'old-dump')
 $realDumps = Join-Path $env:LOCALAPPDATA 'CrashDumps'
 $probeName = [IO.Path]::GetFileName($Probe)
