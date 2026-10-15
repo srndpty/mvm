@@ -57,6 +57,11 @@
     'k/n' 形式。BuildIndependent の対象を n 分割した k 番目だけを実行する。
     CI で複数 job に分けて並列に走らせるために使う。
 
+.PARAMETER NoCrashRecord
+    実行の記録 (docs/crash-evidence.md) を残さない。既定では、開始の前に既存の crash の dump を
+    archive へ保全し (失敗したら試験を始めない)、ctest の全出力・LastTest.log・試験ごとの分類・identity・
+    GUI の preflight・落ちた試験の dump を、build/ の外の archive (%LOCALAPPDATA%\mvm\crash-archive) に残す。
+
 .PARAMETER WhisperRoot
     固定リビジョンの Whisper の導入先。省略時は build.ps1 の既定 (C:\msys64\ucrt64) を使う。
     CI は lock の版の whisper.cpp を入れた UCRT64 (-Ucrt64 と同じ場所) を渡す。
@@ -90,6 +95,8 @@ param(
 
     [string]$Ucrt64 = 'C:\msys64\ucrt64',
 
+    [switch]$NoCrashRecord,
+
     # 固定リビジョンの Whisper の導入先 (scripts/build-whisper.ps1 の出力)。
     # 省略時は build.ps1 の既定 (UCRT64 の package) を使う。
     [string]$WhisperRoot
@@ -99,6 +106,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'lib\ctest-selection.ps1')
 . (Join-Path $PSScriptRoot 'lib\test-display-lease.ps1')
+. (Join-Path $PSScriptRoot 'lib\test-run-record.ps1')
 
 $shardIndex = 0
 $shardCount = 1
@@ -140,6 +148,11 @@ $normalKind = if ($Fast) { '通常(短縮)' } elseif ($Portable) { '通常(porta
 # $Required は「この種別は必ず 1 件以上あるはず」を表す。
 function Invoke-CTestGroup {
     param([string]$Preset, [string]$Kind, [string[]]$CTestArgs, [switch]$Required)
+    $recordLabel = $null
+    if ($script:runRecord) {
+        $script:recordGroup++
+        $recordLabel = '{0:D2}-{1}' -f $script:recordGroup, $Preset
+    }
 
     # 対象件数は -N (dry run) で先に数える。
     $listed = & $script:CTest -N @CTestArgs 2>&1
@@ -187,12 +200,17 @@ function Invoke-CTestGroup {
     # Tee-Object -Variable は 2 回目以降の呼び出しで空になることがあった。
     # 各行を表示しながら要約照合用にも保持する。長い検査でも進捗が見える。
     $outLines = [System.Collections.Generic.List[string]]::new()
-    & $script:CTest --output-on-failure --timeout 120 -j $script:CTestJobs @CTestArgs 2>&1 | ForEach-Object {
+    $recordArgs = if ($recordLabel) { @(Get-MvmRecordedCTestArguments -Record $script:runRecord -Label $recordLabel) } else { @() }
+    & $script:CTest --output-on-failure --timeout 120 -j $script:CTestJobs @CTestArgs @recordArgs 2>&1 | ForEach-Object {
         $line = "$_"
         Write-Host $line
         [void]$outLines.Add($line)
     }
     $code = $LASTEXITCODE
+    if ($recordLabel) {
+        Complete-MvmRecordedCTestGroup -Record $script:runRecord -Label $recordLabel -OutputLines $outLines `
+            -ExitCode $code -BuildDirectory (Get-Location).Path -Description $Kind
+    }
 
     # 実際に何件走ったかを ctest の要約行から取る。
     # 失敗が 0 件のときは "100% tests passed out of 88" となり
@@ -241,7 +259,16 @@ function Get-BuildIndependentTestNames {
 $independentDone = $false
 
 $displayLease = $null
+$runRecord = $null
+$recordGroup = 0
 try {
+if ($NoCrashRecord) {
+    Write-Host '-NoCrashRecord: 実行の記録と crash の dump の保全を行いません' -ForegroundColor Yellow
+} else {
+    # 既存の dump を保全してから始める。失敗したら試験を始めない (例外)。
+    $recordName = ('test-{0}-{1}' -f $Preset, $Group) -replace '[^A-Za-z0-9._-]', '-'
+    $runRecord = Start-MvmTestRunRecord -Name $recordName -RepoRoot $RepoRoot
+}
 # 画面を使う workstation 試験を除く -Portable (CI など表示の無い環境) と、ビルドしない
 # BuildIndependent では取得しない。取得には描画先の電源状態の通知が要る。
 if ($Group -ne 'BuildIndependent' -and -not $Portable) {
@@ -259,6 +286,12 @@ foreach ($p in $presets) {
 
     $buildDir = Join-Path $RepoRoot "build\$p"
     $env:PATH = "$Ucrt64\bin;$env:PATH"
+    $binDir = Join-Path $buildDir 'bin'
+    if ($runRecord -and (Test-Path -LiteralPath $binDir)) { Add-MvmTestRunBinaryManifest -Record $runRecord -BinDirectory $binDir }
+    $preflight = Join-Path $PSScriptRoot 'gui-environment-preflight.ps1'
+    if ($runRecord -and $displayLease) {
+        Invoke-MvmTestRunPreflight -Record $runRecord -Label "$p-before" -Script $preflight -Arguments @('-BinDirectory', $binDir) | Out-Null
+    }
 
     Push-Location $buildDir
     try {
@@ -341,6 +374,9 @@ foreach ($p in $presets) {
         }
     } finally {
         Pop-Location
+        if ($runRecord -and $displayLease) {
+            Invoke-MvmTestRunPreflight -Record $runRecord -Label "$p-after" -Script $preflight -Arguments @('-BinDirectory', $binDir) | Out-Null
+        }
     }
 }
 
@@ -352,6 +388,7 @@ if ($anyFailed) {
     exit 1
 }
 } finally {
+    if ($runRecord) { Complete-MvmTestRunRecord -Record $runRecord | Out-Null }
     if ($displayLease) {
         try {
             $displayLease.AssertValid()

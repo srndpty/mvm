@@ -65,6 +65,10 @@ foreach ($source in @($qml, $projectPanel)) {
         throw '標準スタイルのメニューが残っています'
     }
 }
+# ダイアログのチェックボックスは共通部品 (暗色の indicator・フォーカス表示) を使う。
+if ($qml -match '(?<![\w.])CheckBox\s*\{') {
+    throw '標準スタイルの CheckBox が残っています。ModernDialogCheckBox を使ってください'
+}
 
 # メニューの表示、ショートカット、実行先を同じ項目内で検査する。
 function Test-ProjectMenuContract([string]$source) {
@@ -417,7 +421,9 @@ $requiredExportSettings = @(
     'key: "standard"',
     'key: "compact"',
     'root.mvmController.exportSettingsSummary()',
-    'root.mvmController.exportTimelineWithQuality(',
+    'root.mvmController.exportTimelineWithOptions(',
+    'objectName: "exportMathGroupCheckBox"',
+    'mathGroupCheckBox.checked = false',
     '品質は圧縮率だけを変更します。出力の解像度とfpsはプロジェクト設定のままです。'
 )
 

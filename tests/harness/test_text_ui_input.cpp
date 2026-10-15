@@ -1832,6 +1832,9 @@ int checkMathTransformAuthoring(const std::filesystem::path& projectPath) {
 // tests/harness/math_p28_acceptance.cpp
 int runMathP28Acceptance(const std::filesystem::path& manim, const std::filesystem::path& work);
 int runEquationSequenceUi(const std::filesystem::path& directory, bool scratch);
+int runMathGroupExportUi(const std::filesystem::path& directory);
+int runExportSummaryUi(const std::filesystem::path& directory, const std::filesystem::path& smoke);
+int runStatusOwnershipUi(const std::filesystem::path& directory);
 int runGraphAuthoringUi(const std::filesystem::path& directory, const std::filesystem::path& manim,
                         bool exportAcceptance);
 
@@ -1909,6 +1912,36 @@ int main(int argc, char** argv) {
     if (application.arguments().contains(QStringLiteral("--math-transform-authoring"))) {
         const int result = checkMathTransformAuthoring(
             directory.filePath(QStringLiteral("math-transform-authoring.mvm")).toStdWString());
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
+
+    if (application.arguments().contains(QStringLiteral("--math-group-export-ui"))) {
+        const int result = runMathGroupExportUi(
+            directory.filePath(QStringLiteral("math-group-export-ui")).toStdWString());
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
+
+    if (const auto at = application.arguments().indexOf(QStringLiteral("--export-summary-ui"));
+        at >= 0) {
+        const auto arguments = application.arguments();
+        if (at != 1 || arguments.size() != 3) {
+            std::fprintf(stderr, "使い方: mvm_test_text_ui_input --export-summary-ui <smoke の素材 "
+                                 "directory>\n");
+            mvm_mlt_runtime_shutdown();
+            return 2;
+        }
+        const int result = runExportSummaryUi(
+            directory.filePath(QStringLiteral("export-summary-ui")).toStdWString(),
+            arguments[2].toStdWString());
+        mvm_mlt_runtime_shutdown();
+        return result;
+    }
+
+    if (application.arguments().contains(QStringLiteral("--status-ownership-ui"))) {
+        const int result = runStatusOwnershipUi(
+            directory.filePath(QStringLiteral("status-ownership-ui")).toStdWString());
         mvm_mlt_runtime_shutdown();
         return result;
     }

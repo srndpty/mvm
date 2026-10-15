@@ -1,13 +1,13 @@
 // preview の product capability を上限ちょうどで実際に使う検証アプリ。
 //
-// capability (映像 8 本・合成 16 枚・音声 16 本) は性能を qualify した値ではないが、
+// capability (映像 8 本・合成 128 枚・音声 16 本) は性能を qualify した値ではないが、
 // 「受理して描画できる上限」として公開している。この app はその契約を実体で固定する。
 // fps や VRAM の余裕は見ない (docs/premiere-like-editing.md §17 で未検証として扱う)。
 //
-//   - 映像 source 8 本 + 静止画 8 枚 = 16 layer の composition を受理し、再生して
-//     16 layer の frame が実際に提示されること
+//   - 映像 source 8 本 + 静止画 120 枚 = 128 layer の composition を受理し、再生して
+//     128 layer の frame が実際に提示されること
 //   - 音声 source 16 本を登録して一緒に再生し、17 本目の登録は拒否すること
-//   - 映像 9 本 (source 上限超過)、8 + 静止画 9 = 17 layer (layer 上限超過) の
+//   - 映像 9 本 (source 上限超過)、8 + 静止画 121 = 129 layer (layer 上限超過) の
 //     composition は拒否すること
 //
 // 期待値の数値は capability の定数を参照せずに直書きする (実装の値をテストが追認しない)。
@@ -30,9 +30,9 @@
 namespace {
 
 constexpr int kMaxVideoSources = 8;
-constexpr int kMaxCompositionLayers = 16;
+constexpr int kMaxCompositionLayers = 128;
 constexpr int kMaxAudioSources = 16;
-// 16 layer の frame をこの枚数提示できたら合格とする。60fps で約 0.5 秒。
+// 128 layer の frame をこの枚数提示できたら合格とする。60fps で約 0.5 秒。
 constexpr int kRequiredFullFrames = 30;
 
 class QtDispatcher final : public mvm::preview::PreviewEventDispatcher {
@@ -50,13 +50,17 @@ private:
 class CapacitySink final : public mvm::preview::PreviewEventSink {
 public:
     void stateChanged(mvm::preview::PreviewEngineState state) override { states.push_back(state); }
+
     void positionChanged(mvm::preview::PreviewPosition) override {}
+
     void framePresented(mvm::preview::PresentedFrameInfo frame) override {
         frames.push_back(frame);
     }
+
     void errorOccurred(mvm::preview::PreviewError error) override {
         errors.push_back(std::move(error));
     }
+
     void deviceChanged(mvm::preview::PreviewDeviceInfo) override {}
 
     std::vector<mvm::preview::PresentedFrameInfo> frames;
@@ -66,10 +70,10 @@ public:
 
 enum class Stage { WaitDevice, WaitFrames, WaitShutdown };
 
-// 4 x 4 の格子の index 番目の区画。映像と静止画が重ならないよう並べる。
+// 16 x 8 の格子の index 番目の区画。映像と静止画が重ならないよう並べる。
 mvm::preview::PreviewNormalizedRect gridCell(int index) {
-    return {static_cast<float>(index % 4) * 0.25F, static_cast<float>(index / 4) * 0.25F, 0.25F,
-            0.25F};
+    return {static_cast<float>(index % 16) / 16.0F, static_cast<float>(index / 16) / 8.0F,
+            1.0F / 16.0F, 1.0F / 8.0F};
 }
 
 std::shared_ptr<mvm::preview::PreviewStillImage> makeStill(unsigned char shade) {
@@ -112,7 +116,7 @@ int main(int argc, char** argv) {
     if (capabilities.configuredMaxActiveVideoSources != kMaxVideoSources ||
         capabilities.configuredMaxCompositionLayers != kMaxCompositionLayers ||
         capabilities.configuredMaxActiveAudioSources != kMaxAudioSources) {
-        std::fprintf(stderr, "公開 capability が 8 / 16 / 16 ではありません\n");
+        std::fprintf(stderr, "公開 capability が 8 / 128 / 16 ではありません\n");
         return 3;
     }
 
@@ -194,8 +198,10 @@ int main(int argc, char** argv) {
             const auto build = [&](int videoCount, int stillCount) {
                 auto snapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
                 for (int index = 0; index < videoCount; ++index)
-                    snapshot->layers.push_back(
-                        {video[static_cast<std::size_t>(index)], gridCell(index), {0, 0, 1, 1}, 1.0F});
+                    snapshot->layers.push_back({video[static_cast<std::size_t>(index)],
+                                                gridCell(index),
+                                                {0, 0, 1, 1},
+                                                1.0F});
                 for (int index = 0; index < stillCount; ++index) {
                     mvm::preview::PreviewCompositionLayer layer;
                     layer.destination = gridCell(videoCount + index);
@@ -211,21 +217,21 @@ int main(int argc, char** argv) {
                 return failWith(23, "映像 9 本の composition を拒否しませんでした");
             if (!rejectedAsUnsupported(engine->submitComposition(
                     build(kMaxVideoSources, kMaxCompositionLayers - kMaxVideoSources + 1))))
-                return failWith(24, "17 layer の composition を拒否しませんでした");
+                return failWith(24, "129 layer の composition を拒否しませんでした");
             if (!engine->removeSource(video.back()))
                 return failWith(25, "9 本目の映像 source を解放できません");
             video.pop_back();
 
-            // 上限ちょうど: 映像 8 本 + 静止画 8 枚 = 16 layer。
-            const auto full =
-                engine->submitComposition(build(kMaxVideoSources, kMaxCompositionLayers - kMaxVideoSources));
+            // 上限ちょうど: 映像 8 本 + 静止画 120 枚 = 128 layer。
+            const auto full = engine->submitComposition(
+                build(kMaxVideoSources, kMaxCompositionLayers - kMaxVideoSources));
             if (!full) {
-                std::fprintf(stderr, "16 layer の composition: %s\n", full.error().detail.c_str());
-                return failWith(26, "上限ちょうどの 16 layer composition を拒否しました");
+                std::fprintf(stderr, "128 layer の composition: %s\n", full.error().detail.c_str());
+                return failWith(26, "上限ちょうどの 128 layer composition を拒否しました");
             }
             accepted = full.value();
             if (!engine->play())
-                return failWith(27, "16 layer + 音声 16 本で再生を開始できません");
+                return failWith(27, "128 layer + 音声 16 本で再生を開始できません");
             stage = Stage::WaitFrames;
             return;
         }
@@ -239,7 +245,7 @@ int main(int argc, char** argv) {
             }
             if (fullFrames < kRequiredFullFrames)
                 return;
-            std::printf("16 layer の frame を %d 枚提示しました (全提示 %zu 枚)\n", fullFrames,
+            std::printf("128 layer の frame を %d 枚提示しました (全提示 %zu 枚)\n", fullFrames,
                         sink->frames.size());
             if (!engine->requestShutdown())
                 return failWith(28, "shutdown を開始できません");
@@ -249,7 +255,7 @@ int main(int argc, char** argv) {
 
         if (stage == Stage::WaitShutdown &&
             status.state == mvm::preview::PreviewEngineState::Shutdown) {
-            std::puts("preview capability 上限ちょうど (映像 8 / 合成 16 / 音声 16) を受理して"
+            std::puts("preview capability 上限ちょうど (映像 8 / 合成 128 / 音声 16) を受理して"
                       "描画し、超過を拒否しました");
             app.quit();
         }

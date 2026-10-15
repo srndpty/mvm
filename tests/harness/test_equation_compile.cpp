@@ -231,7 +231,9 @@ void partitionTests() {
                                                         {"\\unknown{x}", 9, 10},
                                                         {"x^2", 2, 3},
                                                         {"x^ {2}", 1, 2},
-                                                        {"\\frac{x}{y}", 0, 5}}) {
+                                                        {"\\frac{x}{y}", 0, 5},
+                                                        {"\\cancel{x}", 0, 7},
+                                                        {"\\cancelto{1}", 0, 12}}) {
         s = state(text);
         part(s, "bad", begin, end);
         check(validateEquationSequence({{s}, {}, {}}, 1080, error),
@@ -247,6 +249,16 @@ void partitionTests() {
     part(s, "discriminant", 17, 24);
     check(s.parts[0].binding.expectedText == "b^2-4ac", "判別式の offset は手計算");
     check(compileEquationPartition(s).value.has_value(), "P3-0 判別式の分数内部範囲を支持");
+    for (const auto& text : {"\\cancel{a}", "\\bcancel{a}", "\\xcancel{a}", "\\cancelto{1}{a}"}) {
+        s = state(text);
+        part(s, "cancelled", 0, static_cast<std::int64_t>(s.equation.source.size()));
+        check(compileEquationPartition(s).value.has_value(),
+              std::string("正式な約分の部分式を分離できる: ") + text);
+    }
+    s = state("\\frac{\\cancel{a}x^2}{\\cancel{a}}");
+    part(s, "numerator-a", 14, 15);
+    check(s.parts[0].binding.expectedText == "a" && compileEquationPartition(s).value.has_value(),
+          "分数内の約分するaを、命令から独立した意味上の部分式にできる");
     s = state("x+{}+y");
     part(s, "empty", 2, 4);
     check(compileEquationPartition(s).failure == EquationCompileFailure::UnsupportedEmptyTarget,

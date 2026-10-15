@@ -40,22 +40,28 @@ def fail(kind, message):
 
 
 try:
-    from manim import ORIGIN, WHITE, MathTex, Scene, config
+    from manim import ORIGIN, WHITE, MathTex, Scene, TexTemplate, config
 except Exception as error:
     fail("other", "manim を import できません: " + repr(error))
 
 REQUEST = json.loads((HERE / "request.json").read_text(encoding="utf-8"))
 PX_PER_UNIT = 1080.0 / 8.0
+
+# 静止・Write・変形・Equation Sequence が同じ TeX 環境を使う。
+# 約分を文字の重ね合わせで代用せず、文字の大きさに合った線を描く。
+MVM_TEX_TEMPLATE = TexTemplate()
+MVM_TEX_TEMPLATE.add_to_preamble(r"\usepackage[thicklines]{cancel}")
 )PY";
 
 // module level で MathTex を作り、その大きさに frame を合わせる。CLI の --resolution より
 // module level の config が優先される (docs/math-clips.md P0-0)。
 // 静止 (kStaticScene) と Write (kWriteScene) は kScriptPrelude + これの後に scene を足す。
-// 3 つを連結した script は P1 までの script と同じ byte 列 (template の版を変えない)。
+// すべての描画が共通の TeX template を明示する。
 constexpr char kSingleTexSetup[] = R"PY(PAD_PX = 8
 
 try:
-    TEX = MathTex(REQUEST["source"], font_size=REQUEST["manim_font_size"])
+    TEX = MathTex(REQUEST["source"], font_size=REQUEST["manim_font_size"],
+                  tex_template=MVM_TEX_TEMPLATE)
 except ValueError as error:
     # Manim は latex の失敗を ValueError ("latex error converting to dvi") で知らせる。
     fail("latex" if "latex error" in str(error).lower() else "other", str(error))
@@ -133,7 +139,8 @@ logger.addHandler(FALLBACK_LOG)
 def build(side):
     part = REQUEST[side]
     try:
-        return MathTex(*part["segments"], font_size=part["manim_font_size"])
+        return MathTex(*part["segments"], font_size=part["manim_font_size"],
+                       tex_template=MVM_TEX_TEMPLATE)
     except ValueError as error:
         fail("latex" if "latex error" in str(error).lower() else "other", str(error))
     except Exception as error:

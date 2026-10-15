@@ -2416,7 +2416,7 @@ PreviewEngine::Impl::publishSourceWorkLocked(SourceWork& work, std::unique_lock<
 
             newAudioClock = std::make_shared<audio::AudioMasterClock>();
             newAudioSink =
-                std::make_shared<audio::WasapiAudioSink>(work.audioWorker->queue(), *newAudioClock);
+                std::make_shared<audio::WasapiAudioSink>(work.audioWorker->queue(), newAudioClock);
             const auto injectedFailure =
                 addingWhilePlaying ? std::exchange(failNextPlayingEndpointOpenForTest, std::nullopt)
                                    : std::nullopt;
@@ -2866,8 +2866,18 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
             if (removingAudio) {
                 // authoritative audio sourceを安全に削除したのでaudio authorityを
                 // 空へ戻す (preview-engine-contract.md §6)。宣言の逆順で解放する。
-                if (!removingWhilePlaying)
+                //
+                // sinkはdestructorから`stop()` -> `clock_.stop()`を呼ぶ。phase 1で取り出した
+                // 局所の`audioSink`が残っていると、下の`impl_->audioSink.reset()`ではsinkが
+                // 壊れず、clockを手放した後 (この関数の終わり) に壊れる。以前はsinkがclockを
+                // 参照で持っていたので、解放済みのclockを触っていた (2026-10-13、debug heapで
+                // 再現したuse-after-free)。今はsinkがclockを共有して持つので解放後の参照には
+                // ならないが、破棄の順 (sink -> worker -> clock。contract §12) を保つために、
+                // 局所の参照を先に手放す。sinkはphase 2で停止・join済み。
+                if (!removingWhilePlaying) {
+                    audioSink.reset();
                     impl_->audioSink.reset();
+                }
                 impl_->audioWorker.reset();
                 if (!removingWhilePlaying)
                     impl_->audioClock.reset();

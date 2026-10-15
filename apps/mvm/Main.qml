@@ -935,6 +935,7 @@ ApplicationWindow {
                 implicitHeight: 22
             }
             Label {
+                objectName: "statusTextLabel"
                 Layout.fillWidth: true
                 text: root.mvmController.statusText
                 color: "#e6e8ec"
@@ -4085,13 +4086,13 @@ ApplicationWindow {
                 placeholderText: "00:00:05:00"
                 onTextEdited: speedDurationDialog.updatePair("duration")
             }
-            CheckBox {
+            ModernDialogCheckBox {
                 id: preservePitchBox
                 text: "オーディオのピッチを維持"
                 // 等速では伸縮しないので保存時に落とされる。押せても効かない状態にしない。
                 enabled: !speedDurationDialog.still && Math.abs(speedField.value - 100) > 1e-9
             }
-            CheckBox {
+            ModernDialogCheckBox {
                 id: rippleBox
                 text: "リップル編集 (後続クリップをシフト)"
             }
@@ -4341,6 +4342,7 @@ ApplicationWindow {
         }
         footer: ModernDialogFooter {
             ModernDialogButton {
+                objectName: "exportCancelButton"
                 text: root.mvmController.exportCancelling
                       ? "キャンセル中…" : "キャンセル"
                 enabled: !root.mvmController.exportCancelling
@@ -4351,6 +4353,7 @@ ApplicationWindow {
 
     ModernDialog {
         id: exportFailureDialog
+        objectName: "exportFailureDialog"
         property string message: ""
         anchors.centerIn: parent
         width: Math.min(root.width - 40, 560)
@@ -4377,6 +4380,8 @@ ApplicationWindow {
         property string inputSpecText: ""
         property string outputSpecText: ""
         property string comparisonWarningText: ""
+        // 出力する数式 clip の数。0 なら数式の高速化の選択を見せない。
+        property int mathClipCount: 0
         readonly property var qualityOptions: [
             { key: "high", label: "高品質", detail: "CRF 18・容量大" },
             { key: "standard", label: "標準", detail: "CRF 23" },
@@ -4386,17 +4391,23 @@ ApplicationWindow {
         width: Math.min(root.width - 40, 640)
         modal: true
         title: "書き出し設定"
-        onOpened: qualityCombo.currentIndex = 1
+        // 品質と数式の高速化は、書き出しごとに選ぶ (開くたびに既定へ戻す。保存しない)。
+        onOpened: {
+            qualityCombo.currentIndex = 1;
+            mathGroupCheckBox.checked = false;
+        }
 
         contentItem: ColumnLayout {
             spacing: 12
 
             Label {
+                objectName: "exportInputSpecLabel"
                 Layout.fillWidth: true
                 text: exportSettingsDialog.inputSpecText
                 wrapMode: Text.Wrap
             }
             Label {
+                objectName: "exportOutputSpecLabel"
                 Layout.fillWidth: true
                 text: exportSettingsDialog.outputSpecText
                 wrapMode: Text.Wrap
@@ -4411,6 +4422,7 @@ ApplicationWindow {
 
                 Label {
                     id: comparisonWarningLabel
+                    objectName: "exportComparisonWarningLabel"
                     anchors.fill: parent
                     anchors.margins: 10
                     text: exportSettingsDialog.comparisonWarningText
@@ -4422,7 +4434,7 @@ ApplicationWindow {
                 text: "エンコード品質"
                 font.bold: true
             }
-            CheckBox {
+            ModernDialogCheckBox {
                 text: "字幕を焼き込む"
                 checked: root.mvmController.burnSubtitles
                 onClicked: root.mvmController.burnSubtitles = checked
@@ -4456,6 +4468,20 @@ ApplicationWindow {
                 color: "#aeb4bf"
                 wrapMode: Text.Wrap
             }
+            ModernDialogCheckBox {
+                id: mathGroupCheckBox
+                objectName: "exportMathGroupCheckBox"
+                visible: exportSettingsDialog.mathClipCount > 0
+                text: "数式の書き出しを高速化（試験的）"
+            }
+            Label {
+                objectName: "exportMathGroupHint"
+                Layout.fillWidth: true
+                visible: mathGroupCheckBox.visible
+                text: "この書き出しだけに使います。対象外のプロジェクトは従来の方法で書き出します（速くなりません）。高速化した描画で予期しない失敗が起きたときは、書き出しを止めます（自動ではやり直しません）。"
+                color: "#aeb4bf"
+                wrapMode: Text.Wrap
+            }
         }
 
         footer: ModernDialogFooter {
@@ -4469,8 +4495,9 @@ ApplicationWindow {
                 prominent: true
                 onClicked: {
                     const option = exportSettingsDialog.qualityOptions[qualityCombo.currentIndex];
-                    if (option && root.mvmController.exportTimelineWithQuality(
-                                root.pendingExportFile, option.key))
+                    if (option && root.mvmController.exportTimelineWithOptions(
+                                root.pendingExportFile, option.key,
+                                mathGroupCheckBox.visible && mathGroupCheckBox.checked))
                         exportSettingsDialog.close();
                 }
             }
@@ -4515,6 +4542,7 @@ ApplicationWindow {
             exportSettingsDialog.inputSpecText = summary.inputText;
             exportSettingsDialog.outputSpecText = summary.outputText;
             exportSettingsDialog.comparisonWarningText = summary.warningText;
+            exportSettingsDialog.mathClipCount = summary.mathClipCount;
             exportSettingsDialog.open();
         }
     }

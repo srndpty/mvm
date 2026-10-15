@@ -2601,6 +2601,10 @@ int main(int argc, char** argv) {
                          mvm::app::MathRasterCache::BackendState::Available;
               }),
               "偽の backend が使える");
+        check(controller->visualRasterBoundsForTest(-1).isEmpty() &&
+                  controller->visualRasterBoundsForTest(0).isEmpty() &&
+                  controller->visualRasterBoundsForTest(99).isEmpty(),
+              "clipが無いときと範囲外の番号では描画範囲を空にする");
 
         const auto undoBefore = controller->undoDepthForTest();
         check(controller->createMathClip(QStringLiteral("  x^2  ")), "数式 clip を作る");
@@ -2617,6 +2621,36 @@ int main(int argc, char** argv) {
         check(pump([&] { return state(*controller, clipId) == QStringLiteral("ready"); }),
               "描画が終わると ready");
         check(*backend.renders == 1, "1 回描く");
+        const auto mathGeometry = controller->clipVisualGeometry(clipId);
+        int mathIndex = -1;
+        const auto& placed = controller->projectForTest().timelineClips;
+        for (int index = 0; index < static_cast<int>(placed.size()); ++index) {
+            if (QString::fromStdString(placed[static_cast<std::size_t>(index)].id) == clipId)
+                mathIndex = index;
+        }
+        check(mathIndex == 0 &&
+                  controller->visualRasterBoundsForTest(mathIndex) == QRect(kX, kY, 3, 2),
+              "描けた数式の範囲は、中央へ置いたmaskそのもの");
+        check(controller->visualRasterBoundsForTest(-1).isEmpty() &&
+                  controller->visualRasterBoundsForTest(mathIndex + 1).isEmpty(),
+              "範囲外の番号では描画範囲を空にする");
+        check(!mathGeometry.isEmpty() && mathGeometry.value("x").toDouble() == 958.0 &&
+                  mathGeometry.value("y").toDouble() == 539.0 &&
+                  mathGeometry.value("width").toDouble() == 3.0 &&
+                  mathGeometry.value("height").toDouble() == 2.0,
+              "数式の選択枠は全画面ではなく、実際に描いた3×2の範囲に一致する");
+        check(controller->clipVisualGeometry(QStringLiteral("存在しない数式")).isEmpty(),
+              "描画を持たない対象に選択枠を代用しない");
+        check(controller->visualClipAt(959.0, 540.0) == clipId &&
+                  controller->visualClipAt(900.0, 500.0).isEmpty(),
+              "数式の範囲だけで当たり判定し、周囲の透明な画面を掴まない");
+        const auto movedMath = controller->effectsForVisualRect(clipId, 1054.0, 593.0, 3.0, 2.0);
+        check(!movedMath.isEmpty() &&
+                  std::abs(movedMath.value("positionX").toDouble() - 5.0) < 1e-9 &&
+                  std::abs(movedMath.value("positionY").toDouble() - 5.0) < 1e-9 &&
+                  movedMath.value("scaleX").toDouble() == 100.0 &&
+                  movedMath.value("scaleY").toDouble() == 100.0,
+              "数式の枠の移動を、同じ大きさの画素の移動へ逆変換する");
         check(controller->selectedMathClip()
                       .value(QStringLiteral("unavailableReason"))
                       .toString()
@@ -2669,6 +2703,8 @@ int main(int argc, char** argv) {
               "error の log を返す");
         check(failed.value(QStringLiteral("showingPrevious")).toBool(),
               "前に描けた画素を出していることを示す");
+        check(controller->clipVisualGeometry(clipId) == mathGeometry,
+              "描画に失敗して前の式を見せている間も、選択枠をその式に一致させる");
         check(mathPixel(*controller, frame, kX, kY) == std::vector<std::uint8_t>{255, 0, 0, 255},
               "失敗中の preview は last-good を出す");
 
@@ -2928,6 +2964,18 @@ int main(int argc, char** argv) {
                   "2 つ目の instance は権限不足を返し、依存導入・再試行の対象にしない");
             check(!blocked.value(QStringLiteral("message")).toString().isEmpty(),
                   "権限不足でも理由の表示文を残す");
+            int blockedIndex = -1;
+            const auto& blockedClips = intruder->projectForTest().timelineClips;
+            for (int index = 0; index < static_cast<int>(blockedClips.size()); ++index) {
+                if (QString::fromStdString(blockedClips[static_cast<std::size_t>(index)].id) ==
+                    blockedId)
+                    blockedIndex = index;
+            }
+            check(blockedIndex >= 0 && intruder->visualRasterBoundsForTest(blockedIndex).isEmpty(),
+                  "権限が無く描画も無い数式の範囲は空");
+            check(intruder->visualRasterBoundsForTest(-1).isEmpty() &&
+                      intruder->visualRasterBoundsForTest(blockedIndex + 5).isEmpty(),
+                  "権限不足でも範囲外の番号は空");
             intruder->retryMathRendering();
             settle(100);
             check(*preflights == 0 && ownerJobsAlive(),

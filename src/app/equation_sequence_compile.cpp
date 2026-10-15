@@ -47,15 +47,17 @@ bool safeRange(const std::string& s, std::size_t begin, std::size_t end) {
                     token == "\\right")
                     return false;
                 constexpr std::string_view known[] = {
-                    "\\frac",  "\\sqrt",   "\\alpha", "\\beta", "\\gamma", "\\delta",
-                    "\\Delta", "\\pi",     "\\theta", "\\pm",   "\\mp",    "\\cdot",
-                    "\\times", "\\le",     "\\ge",    "\\leq",  "\\geq",   "\\ne",
-                    "\\neq",   "\\approx", "\\equiv", "\\infty"};
+                    "\\frac",    "\\sqrt",    "\\alpha", "\\beta",  "\\gamma",  "\\delta",
+                    "\\Delta",   "\\pi",      "\\theta", "\\pm",    "\\mp",     "\\cdot",
+                    "\\times",   "\\le",      "\\ge",    "\\leq",   "\\geq",    "\\ne",
+                    "\\neq",     "\\approx",  "\\equiv", "\\infty", "\\cancel", "\\bcancel",
+                    "\\xcancel", "\\cancelto"};
                 if (std::find(std::begin(known), std::end(known), token) == std::end(known))
                     return false;
-                if (token == "\\frac" || token == "\\sqrt") {
+                if (token == "\\frac" || token == "\\sqrt" || token == "\\cancel" ||
+                    token == "\\bcancel" || token == "\\xcancel" || token == "\\cancelto") {
                     auto arg = next;
-                    const int count = token == "\\frac" ? 2 : 1;
+                    const int count = token == "\\frac" || token == "\\cancelto" ? 2 : 1;
                     for (int n = 0; n < count; ++n) {
                         while (arg < s.size() && space(s[arg]))
                             ++arg;

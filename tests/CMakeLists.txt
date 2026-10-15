@@ -41,6 +41,41 @@ add_test(NAME ctest_daily_selection_contract
         -Pwsh "${MVM_PWSH}")
 set_tests_properties(ctest_daily_selection_contract PROPERTIES TIMEOUT 60)
 
+# crash の証拠 (docs/crash-evidence.md)。archive は一時 directory で確かめる。
+add_test(NAME crash_archive_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/test-crash-archive.ps1"
+        -Library "${CMAKE_SOURCE_DIR}/scripts/lib/crash-archive.ps1")
+set_tests_properties(crash_archive_contract PROPERTIES TIMEOUT 60)
+
+# 起動器 (TEST_LAUNCHER) が CTest の下でも dump を残し、解析器が既知の連鎖を unwind すること。
+# probe を実際に落とすので、この機械の WER の LocalDumps (既定の CrashDumps) に依存する。
+add_test(NAME crash_capture_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/harness/test-wer-launch.ps1"
+        -Launcher "$<TARGET_FILE:mvm_wer_launch>"
+        -Probe "$<TARGET_FILE:mvm_test_crash_probe>"
+        -Python "${MVM_UCRT64_ROOT}/bin/python.exe"
+        -Addr2line "${MVM_UCRT64_ROOT}/bin/addr2line.exe"
+        -Analyzer "${CMAKE_SOURCE_DIR}/scripts/minidump-stack.py"
+        -ArchiveLibrary "${CMAKE_SOURCE_DIR}/scripts/lib/crash-archive.ps1"
+        -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/crash-capture")
+set_tests_properties(crash_capture_contract PROPERTIES LABELS workstation TIMEOUT 180)
+
+# CTest の実行の記録 (scripts/test.ps1 が使う)。小さな fixture で確かめ、全 CTest は使わない。
+add_test(NAME test_run_record_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/test-test-run-record.ps1"
+        -Library "${CMAKE_SOURCE_DIR}/scripts/lib/test-run-record.ps1"
+        -Fixture "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/test-run-record"
+        -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/test-run-record"
+        -CMake "${MVM_UCRT64_ROOT}/bin/cmake.exe"
+        -CTest "${MVM_UCRT64_ROOT}/bin/ctest.exe"
+        -Ninja "${MVM_UCRT64_ROOT}/bin/ninja.exe"
+        -Launcher "$<TARGET_FILE:mvm_wer_launch>"
+        -Probe "$<TARGET_FILE:mvm_test_crash_probe>")
+set_tests_properties(test_run_record_contract PROPERTIES LABELS workstation TIMEOUT 120)
+
 add_test(NAME test_display_lease_contract
     COMMAND "${MVM_PWSH}" -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/harness/test-display-lease.ps1")
@@ -156,6 +191,58 @@ target_link_libraries(mvm_test_mlt_export_capacity PRIVATE mvm::mlt mvm::warning
 target_compile_definitions(mvm_test_mlt_export_capacity PRIVATE ${MVM_MLT_PATH_DEFS}
     MVM_CAPACITY_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
 add_test(NAME mlt_export_capacity_overflow COMMAND mvm_test_mlt_export_capacity)
+# P3-5A.2: V1 の隙間 (黒の背景) を含む書き出し。背景の cache が作り直されないこと、隙間だけの
+# frame が全画素 (0, 0, 0, 255) であること、作り直しが起きたら書き出しが失敗することを見る。
+add_executable(mvm_test_mlt_export_v1_gap harness/test_mlt_export_v1_gap.cpp)
+target_link_libraries(mvm_test_mlt_export_v1_gap PRIVATE mvm::mlt mvm::warnings)
+target_compile_definitions(mvm_test_mlt_export_v1_gap PRIVATE ${MVM_MLT_PATH_DEFS}
+    MVM_V1_GAP_TEST_IMAGE="${CMAKE_SOURCE_DIR}/tests/assets/smoke/png_alpha.png")
+add_test(NAME mlt_export_v1_gap_background COMMAND mvm_test_mlt_export_v1_gap)
+set_tests_properties(mlt_export_v1_gap_background PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/png_alpha.png"
+    TIMEOUT 300)
+# 数式 layer の CPU 合成 (MLT・Qt に依存しない)。期待値は独立した oracle で作る。
+add_executable(mvm_test_math_group_compose core/test_math_group_compose.cpp)
+target_link_libraries(mvm_test_math_group_compose PRIVATE mvm::math mvm::warnings)
+add_test(NAME math_group_compose_oracle COMMAND mvm_test_math_group_compose)
+# P3-3D: 書き出しの前の判定が使う性質 (alpha が 1 以上の画素は、何を重ねても alpha 0 にならない)。
+# 上の alpha の binary32 の全部の値を確かめるので、十数秒かかる。
+add_test(NAME math_group_alpha_floor_lemma COMMAND mvm_test_math_group_compose alpha-floor)
+# P3-4: 数式 group を使ってよいかの判定 (clip の表だけで確かめる。画素も MLT の実行も使わない)。
+add_executable(mvm_test_math_group_preflight harness/test_math_group_preflight.cpp)
+target_link_libraries(mvm_test_math_group_preflight PRIVATE mvm::mlt mvm::warnings)
+add_test(NAME math_group_preflight_decisions COMMAND mvm_test_math_group_preflight)
+set_tests_properties(math_group_preflight_decisions PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
+set_tests_properties(math_group_compose_oracle PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 60)
+# P3-5B: timeout を実時間で数えること。実物の待ち loop を、遅い consumer と遅い進行 callback で
+# 動かす。時間を測る試験なので、ほかの試験と並べない (負荷で thread が遅れると許容を超える)。
+add_executable(mvm_test_mlt_export_timeout harness/test_mlt_export_timeout.cpp)
+target_link_libraries(mvm_test_mlt_export_timeout PRIVATE mvm::mlt mvm::warnings)
+target_compile_definitions(mvm_test_mlt_export_timeout PRIVATE ${MVM_MLT_PATH_DEFS}
+    MVM_TIMEOUT_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
+add_test(NAME mlt_export_timeout_real_time COMMAND mvm_test_mlt_export_timeout)
+set_tests_properties(mlt_export_timeout_real_time PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
+    RUN_SERIAL TRUE
+    TIMEOUT 300)
+# timeout_ms の数え方の監査 (P3-5B より前の数え方の記録)。以前は Sleep(20) の回数で数えていたので、
+# 実時間では timeout_ms より遅く timeout した (終了コード 3)。P3-5B で実時間で数えるようにした
+# (上の mlt_export_timeout_real_time)。この試験は、以前の数え方を observer の診断用の入力で指定して
+# 同じ測定を行い、当時の結果 (終了コード 3) が今も再現することを記録する。期待は 0 に変えていない:
+# 測っているのは今の製品の数え方ではなく、以前の数え方である。
+# 合否の基準ではなく記録なので、通常の実行から外す (stability)。
+add_test(NAME mlt_export_timeout_accounting_deviation
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 3 -Exe "$<TARGET_FILE:mvm_test_mlt_export_capacity>"
+            -ChildArgs "|timeout-accounting")
+set_tests_properties(mlt_export_timeout_accounting_deviation PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS stability
+    TIMEOUT 120)
 set_tests_properties(mlt_export_capacity_overflow PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)
@@ -255,6 +342,13 @@ add_test(NAME timeline_waveform_cache COMMAND mvm_test_waveform_cache)
 set_tests_properties(timeline_waveform_cache PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)
+
+# 数式配置の変換 (scripts/math_authoring/math_score.py)。製品の検証 CLI は mock するので build を使わない。
+add_test(NAME math_score_authoring
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/run-python-unittest.ps1"
+        -Python "${MVM_UCRT64_ROOT}/bin/python.exe"
+        -TestFile "${CMAKE_CURRENT_SOURCE_DIR}/math_authoring/test_math_score.py")
+set_tests_properties(math_score_authoring PROPERTIES TIMEOUT 60)
 
 add_test(NAME m7b_4_timeline_ui_architecture
     COMMAND pwsh -NoProfile -File
@@ -415,7 +509,8 @@ set_tests_properties(export_eta_unit PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
 
 add_executable(mvm_test_reveal_in_explorer util/test_reveal_in_explorer.cpp)
-target_link_libraries(mvm_test_reveal_in_explorer PRIVATE mvm::util mvm::warnings)
+# P3-7A: 実際の SHParseDisplayName を試験から直接呼ぶ (Explorer は開かない)。
+target_link_libraries(mvm_test_reveal_in_explorer PRIVATE mvm::util mvm::warnings shell32 ole32)
 add_test(NAME reveal_in_explorer_negative
     COMMAND mvm_test_reveal_in_explorer ${CMAKE_BINARY_DIR}/tests/reveal-in-explorer)
 set_tests_properties(reveal_in_explorer_negative PROPERTIES
@@ -823,6 +918,18 @@ mvm_add_test(math_equation_sequence_compile COMMAND mvm_test_equation_compile
     "${CMAKE_CURRENT_BINARY_DIR}/equation-p32" PROPERTIES TIMEOUT 30)
 target_link_libraries(mvm_test_project_math PRIVATE mvm::project mvm::util mvm::warnings)
 mvm_add_test(math_project_json_focused COMMAND mvm_test_project_math PROPERTIES TIMEOUT 30)
+
+# 教材作成ツールから使うProject検証CLI。製品の公開検証関数だけを呼ぶ。
+add_executable(mvm_project_validate harness/mvm_project_validate.cpp)
+target_link_libraries(mvm_project_validate PRIVATE mvm::project mvm::util mvm::warnings)
+mvm_add_test(project_validate_score_good COMMAND mvm_project_validate
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/math-score/good.mvm"
+    --roundtrip "${CMAKE_CURRENT_BINARY_DIR}/math-score-roundtrip.mvm" PROPERTIES TIMEOUT 30)
+mvm_add_test(project_validate_score_bad_font
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+    -ExpectExit 1 -Exe "$<TARGET_FILE:mvm_project_validate>"
+    -ChildArgs "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/math-score/bad-font.mvm"
+    PROPERTIES TIMEOUT 30)
 
 # 数式の変形 (P2-1): Project / timeline の model と編集の不変条件。描画は含まない。
 add_executable(mvm_test_math_transform_timeline harness/test_math_transform_timeline.cpp)
@@ -2597,13 +2704,71 @@ if(MVM_ENABLE_QT)
     mvm_add_p5e_product_test(preview_engine_p5e_remove_fatal_event_order
         ARGS --remove-fatal-event-order)
 
-    list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
-    if(NOT _mvm_p5e_product_registered EQUAL 18)
+    # 主の audio source を外す → 足し直す → 外す を 3 回くり返す (sink・clock の作り直しと解放の
+    # くり返し)。外した ID をもう一度外せないこと (二重の解放をしない) も見る。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_audio_readd
+        ARGS --remove-audio-readd)
+
+    # --- audio の後始末の解放後の参照 (P3-5A.1) --------------------------------
+    # PreviewEngine::removeSource は、局所の sink の参照が clock より長く生きて、sink の destructor が
+    # 解放済みの clock を触っていた (sink は clock を参照で持っていた)。通常の起動では落ちない (解放した memory がまだ読める) ので、
+    # 上の試験は通ってしまう。debugger の下で起動すると debug heap になり、決まった場所で落ちる
+    # (scripts/run-under-debug-heap.ps1)。同じ scenario を debugger の下でも回して、退行を捕まえる。
+    set(_mvm_debug_heap_tests)
+    macro(mvm_add_debug_heap_test name)
+        cmake_parse_arguments(T "SIGNAL_ONLY" "EXE" "ARGS" ${ARGN})
+        list(JOIN T_ARGS "|" _child_args)
+        set(_signal_only)
+        if(T_SIGNAL_ONLY)
+            set(_signal_only -SignalOnly)
+        endif()
+        mvm_add_test(${name}
+            COMMAND "${MVM_PWSH}" -NoProfile -File
+                    "${CMAKE_SOURCE_DIR}/scripts/run-under-debug-heap.ps1"
+                    -Exe "${T_EXE}" -ChildArgs "${_child_args}"
+                    -Gdb "${MVM_UCRT64_ROOT}/bin/gdb.exe" ${_signal_only}
+            PROPERTIES LABELS "workstation" TIMEOUT 180)
+        list(APPEND _mvm_debug_heap_tests ${name})
+    endmacro()
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_remove_paused
+        EXE "$<TARGET_FILE:mvm_p5e_preview_smoke>"
+        ARGS "${_p5c_fixture_a}" "${_p5e_fixture_b}" --remove-audio-source)
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_remove_readd
+        EXE "$<TARGET_FILE:mvm_p5e_preview_smoke>"
+        ARGS "${_p5c_fixture_a}" "${_p5e_fixture_b}" --remove-audio-readd)
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_hot_swap
+        EXE "$<TARGET_FILE:mvm_p5e_preview_smoke>"
+        ARGS "${_p5c_fixture_a}" "${_p5e_fixture_b}" --hot-swap)
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_shutdown_race
+        EXE "$<TARGET_FILE:mvm_p5e_preview_smoke>"
+        ARGS "${_p5c_fixture_a}" "${_p5e_fixture_b}" --remove-shutdown-race)
+    # removal が fatal になり、removeSource の中にいる間に teardown が最後まで進む。
+    # removeSource が持つ局所の sink の参照が、engine の clock より長く生きる
+    # (sink が clock を共有して持たないと、ここで落ちる)。
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_fatal_event_order
+        EXE "$<TARGET_FILE:mvm_p5e_preview_smoke>"
+        ARGS "${_p5c_fixture_a}" "${_p5e_fixture_b}" --remove-fatal-event-order)
+    # controller 経由 (seek のたびに audio source の集合を差し替える)。最初に見つかった形。
+    # この試験は実時間の再生を検査するので、debugger の下では遅くなって自分の検査に落ちることが
+    # ある (12 回中 9 回)。その検査は通常の transition_preview が受け持ち、ここでは signal だけを見る。
+    mvm_add_debug_heap_test(preview_audio_teardown_debug_heap_transition_preview SIGNAL_ONLY
+        EXE "$<TARGET_FILE:mvm_test_transition_preview>"
+        ARGS "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
+             "${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav"
+             "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
+    list(LENGTH _mvm_debug_heap_tests _mvm_debug_heap_registered)
+    if(NOT _mvm_debug_heap_registered EQUAL 6)
         message(FATAL_ERROR
-            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/18")
+            "[mvm] debug heap の試験の登録数が不正です: ${_mvm_debug_heap_registered}/6")
     endif()
 
-    # product capability (映像 8 / 合成 16 / 音声 16) を上限ちょうどで受理・描画し、
+    list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
+    if(NOT _mvm_p5e_product_registered EQUAL 19)
+        message(FATAL_ERROR
+            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/19")
+    endif()
+
+    # product capability (映像 8 / 合成 128 / 音声 16) を上限ちょうどで受理・描画し、
     # 超過を拒否する。性能 (fps / VRAM) は見ない。
     mvm_add_test(preview_engine_p5e_capacity_at_limit
         COMMAND "${MVM_PWSH}" -NoProfile -File "${_p5c_fixture_wrapper}"
@@ -4116,6 +4281,35 @@ set_tests_properties(math_equation_sequence_product_ui PROPERTIES
 set_tests_properties(math_inspector_product_ui PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)
+# P3-6C.1: 製品の Main.qml の書き出し設定から数式の高速化 (数式 group) を選び、要求・選ばれた
+# graph・結果の報告・出力の byte 列を確かめる (実 controller、製品の書き出し)。
+add_test(NAME math_group_export_product_ui
+    COMMAND mvm_test_text_ui_input --math-group-export-ui)
+set_tests_properties(math_group_export_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 240)
+# P3-7B.2: 書き出しの結果の文を、preview の確認 (pollPreviewState) が上書きしない。製品の Main.qml と
+# 実際の書き出し (成功・取消・timeout・最終の名前へ置けない失敗) で、決まった順序で確かめる。
+add_test(NAME export_status_ownership_product_ui
+    COMMAND mvm_test_text_ui_input --status-ownership-ui)
+set_tests_properties(export_status_ownership_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS workstation RESOURCE_LOCK mvm_gpu TIMEOUT 240)
+# P3-7B.1: 試験用の「Explorer を開かない」引数は、利用者の画面 (Default desktop) では起動を断る。
+# 以前の環境変数では有効にならない。
+add_test(NAME mvm_reveal_simulation_gate
+    COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/harness/test-mvm-reveal-simulation-gate.ps1
+            -Executable $<TARGET_FILE:mvm> -WorkDirectory ${CMAKE_CURRENT_BINARY_DIR}/reveal-simulation-gate)
+set_tests_properties(mvm_reveal_simulation_gate PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 60)
+# P3-7B: 書き出し設定の入力映像・出力の要約を、製品の Main.qml と実際の素材の probe で確かめる
+# (生成する clip を「仕様を確認できない入力ファイル」に数えない。本当の素材の失敗は出す)。
+add_test(NAME export_settings_summary_product_ui
+    COMMAND mvm_test_text_ui_input --export-summary-ui ${CMAKE_SOURCE_DIR}/tests/assets/smoke)
+set_tests_properties(export_settings_summary_product_ui PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
 add_test(NAME math_transform_inspector_product_ui
     COMMAND mvm_test_text_ui_input --math-transform-inspector)
 set_tests_properties(math_transform_inspector_product_ui PROPERTIES
@@ -4336,6 +4530,17 @@ target_compile_definitions(mvm_test_math_export PRIVATE ${MVM_MLT_PATH_DEFS})
 mvm_add_test(math_export_focused
     COMMAND mvm_test_math_export "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
     PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
+
+# 解の公式の実 H.264 の診断と照合。実 Project・Manim・数式の cache が要るので通常の CTest には
+# 入れない。fixture の行列は scripts/math-score-export-diagnose.ps1 が回す。
+# encoder・muxer の境界は FFmpeg の記録 (av_log) を数えるので、libavutil を直接参照する。
+qt_add_executable(mvm_math_score_export_parity harness/math_score_export_parity.cpp
+    ${MVM_CONTROLLER_SOURCES})
+target_include_directories(mvm_math_score_export_parity PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_math_score_export_parity PRIVATE ${MVM_CONTROLLER_LIBRARIES}
+    PkgConfig::MVM_FFMPEG)
+target_compile_definitions(mvm_math_score_export_parity PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_math_score_export_parity PROPERTIES WIN32_EXECUTABLE OFF)
 
 add_executable(mvm_test_subtitle_export harness/test_subtitle_export.cpp)
 target_link_libraries(mvm_test_subtitle_export PRIVATE mvm::project mvm::text_raster mvm::timeline_export mvm::mlt mvm::gpu_preview Qt6::Gui mvm::warnings)

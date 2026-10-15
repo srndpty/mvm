@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -60,7 +61,15 @@ inline constexpr float kMeterPeakDecayPerBlock = 0.90F;
 
 class WasapiAudioSink final {
 public:
+    // clock は参照で持つ。呼び出し側が、この sink より長く clock を生かすこと
+    // (同じ scope の局所変数どうしなど、寿命が字面で決まる使い方のため)。
     WasapiAudioSink(AudioFrameQueue& queue, AudioMasterClock& clock);
+    // clock を共有して持つ (null は不可)。sink が生きている間は clock が解放されない。
+    // sink を shared_ptr で複数の場所から持つ使い方 (PreviewEngine) では、こちらを使う。
+    // sink の destructor は stop() から clock を触るので、どれか 1 つの持ち主が clock より後に
+    // sink を手放すと、参照の形では解放後の clock を触る
+    // (2026-10-13、PreviewEngine::removeSource)。
+    WasapiAudioSink(AudioFrameQueue& queue, std::shared_ptr<AudioMasterClock> clock);
     ~WasapiAudioSink();
     WasapiAudioSink(const WasapiAudioSink&) = delete;
     WasapiAudioSink& operator=(const WasapiAudioSink&) = delete;
@@ -122,6 +131,9 @@ private:
     void releaseDeviceLocked();
 
     AudioFrameQueue* queue_ = nullptr;
+    // 共有して持つ場合の持ち主 (参照の constructor では空)。clock_ より先に宣言する
+    // (clock_ の初期化に使い、破棄は clock_ を使う destructor 本体の後になる)。
+    std::shared_ptr<AudioMasterClock> clockOwner_;
     AudioMasterClock& clock_;
     mutable std::mutex mutex_;
     std::mutex clientMutex_;

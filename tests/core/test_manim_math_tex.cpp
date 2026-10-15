@@ -103,7 +103,7 @@ void testPreflight(const std::filesystem::path& fake, const std::filesystem::pat
           "揃っていれば Available: " + ok.message);
     check(ok.backend.fingerprint.backendId == "manim-mathtex", "backend id");
     check(ok.backend.fingerprint.canonical ==
-              "backend=manim-mathtex\ntemplate=1\nmanim=Manim Community v0.0-fake\n"
+              "backend=manim-mathtex\ntemplate=2\nmanim=Manim Community v0.0-fake\n"
               "latex=latex fake 1.2.3\ndvisvgm=dvisvgm fake 3.4.5\n",
           "fingerprint は各 tool の標準出力の最初の行から作る (標準エラーを混ぜない): " +
               ok.backend.fingerprint.canonical);
@@ -172,6 +172,10 @@ void testRender(const std::filesystem::path& fake, const std::filesystem::path& 
           "式は request.json で渡す");
     check(readFile(jobs / L"ok" / L"mvm_math_tex.py").find("x^2") == std::string::npos,
           "式を Python の source へ埋め込まない");
+    const auto script = readFile(jobs / L"ok" / L"mvm_math_tex.py");
+    check(script.find("\\usepackage[thicklines]{cancel}") != std::string::npos &&
+              script.find("tex_template=MVM_TEX_TEMPLATE") != std::string::npos,
+          "静止の式にも正式な約分線を描く共通 TeX template を明示する");
 
     const auto latex = render(manimExe, jobs / L"latex", "\\fracc FAKE_LATEX_ERROR");
     check(latex.status == math::MathRenderStatus::InvalidSource, "TeX の error は InvalidSource");
@@ -529,8 +533,9 @@ void testRenderTransform(const std::filesystem::path& fake, const std::filesyste
               script.find("FadeIn(TARGET[j]") != std::string::npos,
           "対応は mvm の pairs・余りで組み、TransformMatchingTex を使わない");
     check(script.find("MathTex(*part[\"segments\"]") != std::string::npos &&
-              script.find("UP * (shift_up / PX_PER_UNIT)") != std::string::npos,
-          "MathTex(*segments) で作り、縦は Manim の上向きの shift で動かす");
+              script.find("UP * (shift_up / PX_PER_UNIT)") != std::string::npos &&
+              script.find("tex_template=MVM_TEX_TEMPLATE") != std::string::npos,
+          "共通 TeX template で部分を作り、縦は Manim の上向きの shift で動かす");
 
     const auto spread = renderTransform(manimExe, jobs / L"spread", "FAKE_SPREAD + b", "b");
     // (10,12) から source の右下 (230,220) まで。

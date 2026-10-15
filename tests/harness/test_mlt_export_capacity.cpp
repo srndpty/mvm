@@ -11,6 +11,7 @@
 #include "media/mlt/mvm_mlt_export.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 
+#include <windows.h>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -50,8 +51,8 @@ MvmExportClip videoClip(const char* path, int track, long long producerFrames,
 void requireRejected(const MvmExportClip* clips, int count, long long totalDuration,
                      const std::filesystem::path& output, const char* expected,
                      const char* message) {
-    const MvmExportSpec spec{320, 240,     60,      1, 23,      10000,  4,
-                             0,   nullptr, nullptr, 0, nullptr, nullptr};
+    const MvmExportSpec spec{320, 240,     60,      1, 23,      10000,   4,
+                             0,   nullptr, nullptr, 0, nullptr, nullptr, nullptr};
     char error[512] = {};
     const auto outputUtf8 = output.u8string();
     const int status = mvm_mlt_export_two_track(clips, count, totalDuration, &spec,
@@ -66,7 +67,69 @@ void requireRejected(const MvmExportClip* clips, int count, long long totalDurat
 
 } // namespace
 
-int main() {
+// timeout_ms の数え方の監査 (P3-5B より前の数え方の記録)。
+//
+// P3-5B で、書き出しは timeout を実時間で数えるようになった (検査は test_mlt_export_timeout.cpp)。
+// ここは、以前の数え方が実時間より遅く timeout していたことの記録として残してある。observer の
+// 診断用の入力 (diagnostic_legacy_timeout_accounting) で、以前の数え方を指定して測る。
+// 以下は、当時の説明である。
+//
+// 書き出しの待ち loop は Sleep(20) の回数に 20 を足して経過時間としている (mvm_mlt_export.c)。
+// loop の 1 回には Sleep(20) の他に進行 callback の時間が入るので、数えた時間は実時間より遅く進む。
+// ここでは進行 callback を 30 ms 眠らせ、timeout_ms = 1000 の書き出しが実時間の何 ms で timeout に
+// なるかを測る。loop は 1000 / 20 = 50 回まわり、1 回は最低 20 + 30 ms かかるので、数え方が
+// このままなら 2500 ms 以上かかる (Sleep は指定より短く戻らない)。
+// 検査の callback を 1 frame 100 ms 眠らせ、300 frame の書き出しが先に終わらないようにする。
+//
+// 終了コード: 0 = 実時間で timeout_ms の 1.5 倍以内に timeout した (契約どおり)
+//             3 = timeout はしたが 1.5 倍より遅かった (現状。数え方がずれている)
+//             1 = timeout にならなかった・別の理由で失敗した (測定として無効)
+int timeoutAccounting() {
+    require(mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) == 0,
+            "MLT runtime を初期化できません");
+    constexpr int kTimeoutMs = 1000;
+    const MvmExportClip clip = videoClip(MVM_CAPACITY_TEST_VIDEO, 0, 300, 0);
+    MvmExportSpec spec{320, 240,     60,      1, 23,      kTimeoutMs, 4,
+                       0,   nullptr, nullptr, 0, nullptr, nullptr,    nullptr};
+    MvmExportObserver observer{};
+    observer.diagnostic_legacy_timeout_accounting = 1; // P3-5B より前の数え方
+    spec.observer = &observer;
+    spec.progress_callback = [](long long, long long, void*) {
+        Sleep(30);
+        return 0;
+    };
+    spec.rgba_callback = [](long long, const unsigned char*, int, int, void*) {
+        Sleep(100);
+        return 0;
+    };
+    const std::filesystem::path output =
+        std::filesystem::temp_directory_path() / "mvm-export-timeout-accounting.mp4";
+    std::filesystem::remove(output);
+    const auto outputUtf8 = output.u8string();
+    char error[512] = {};
+    LARGE_INTEGER frequency, begin, end;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&begin);
+    const int status = mvm_mlt_export_two_track(&clip, 1, 300, &spec,
+                                                reinterpret_cast<const char*>(outputUtf8.c_str()),
+                                                nullptr, error, sizeof(error));
+    QueryPerformanceCounter(&end);
+    const double elapsedMs = static_cast<double>(end.QuadPart - begin.QuadPart) * 1000.0 /
+                             static_cast<double>(frequency.QuadPart);
+    std::filesystem::remove(output);
+    mvm_mlt_runtime_shutdown();
+    std::fprintf(stderr, "timeout_ms=%d 実時間=%.0f ms (%.2f 倍) status=%d error=%s\n", kTimeoutMs,
+                 elapsedMs, elapsedMs / kTimeoutMs, status, error);
+    if (status == 0 || std::string(error).find("timeout") == std::string::npos) {
+        std::fprintf(stderr, "FAIL: timeout にならなかったので測定できません\n");
+        return 1;
+    }
+    return elapsedMs <= kTimeoutMs * 1.5 ? 0 : 3;
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "timeout-accounting")
+        return timeoutAccounting();
     require(mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) == 0,
             "MLT runtime を初期化できません");
     const std::filesystem::path output =
@@ -104,6 +167,54 @@ int main() {
         clip.timeline_duration_frames = LLONG_MAX;
         requireRejected(&clip, 1, LLONG_MAX, output, "tractor clip 0のmappingが不正です",
                         "producer 尺と末尾補完の和の overflow を拒否しません");
+    }
+
+    // 4. 全 frame 分の不透明度を渡しても、MLT の animation には値の変わる所だけを置く。
+    //    全 frame を keyframe にすると、affine が毎 frame animation 全体を文字列へ直すので、
+    //    尺の長い clip を重ねた書き出しが進まなくなる (docs/math-semantic-layout.md)。
+    //    0〜19 は 1.0、20〜39 は直線で下げ、40〜59 は 0.5。残るのは 0、19〜40、59 の 24 個。
+    {
+        constexpr int kFrames = 60;
+        MvmExportClip clips[2] = {videoClip(MVM_CAPACITY_TEST_VIDEO, 0, kFrames, 0),
+                                  videoClip(MVM_CAPACITY_TEST_VIDEO, 1, kFrames, 0)};
+        MvmExportOpacityKeyframe keys[kFrames];
+        for (int frame = 0; frame < kFrames; ++frame)
+            keys[frame] = {frame, frame < 20   ? 1.0
+                                  : frame < 40 ? 1.0 - 0.5 * (frame - 19) / 21.0
+                                               : 0.5};
+        clips[1].opacity_keyframes = keys;
+        clips[1].opacity_keyframe_count = kFrames;
+        clips[1].rect_width = 320;
+        clips[1].rect_height = 240;
+        MvmExportObserver observer{};
+        MvmExportSpec spec{320, 240,     60,      1, 23,      60000,   4,
+                           0,   nullptr, nullptr, 0, nullptr, nullptr, nullptr};
+        spec.observer = &observer;
+        const std::filesystem::path reduced =
+            std::filesystem::temp_directory_path() / "mvm-export-keyframe-reduction.mp4";
+        std::filesystem::remove(reduced);
+        const auto reducedUtf8 = reduced.u8string();
+        MvmExportResult result{};
+        char error[512] = {};
+        const int status = mvm_mlt_export_two_track(
+            clips, 2, kFrames, &spec, reinterpret_cast<const char*>(reducedUtf8.c_str()), &result,
+            error, sizeof(error));
+        if (status != 0)
+            std::fprintf(stderr, "status=%d error=%s\n", status, error);
+        require(status == 0 && result.frame_count == kFrames,
+                "keyframe を間引いた書き出しが完了しません");
+        std::fprintf(stderr, "animation: %lld 値 -> %lld keyframe\n",
+                     static_cast<long long>(observer.animation_samples),
+                     static_cast<long long>(observer.animation_keyframes));
+        require(observer.animation_samples == kFrames, "animation へ渡した値の数が違います");
+        require(observer.animation_keyframes == 24,
+                "値の変わらない区間の keyframe を両端だけにしていません");
+        // 観測の境界も 1 回以上通っていること (空振りで数えていない)。
+        require(observer.points[MVM_EXPORT_OBSERVE_IMAGE_RETURN].count >= kFrames &&
+                    observer.points[MVM_EXPORT_OBSERVE_ENCODER_SUBMIT].count == kFrames &&
+                    observer.stage == MVM_EXPORT_STAGE_DONE,
+                "書き出しの観測が全 frame を数えていません");
+        std::filesystem::remove(reduced);
     }
 
     mvm_mlt_runtime_shutdown();

@@ -926,7 +926,7 @@ void engineFacadeAndEvents() {
                    "範囲外のmaster volumeを受理しました");
     const PreviewCapabilities productCapabilities = engine.capabilities();
     require(productCapabilities.configuredMaxActiveVideoSources == 8 &&
-                productCapabilities.configuredMaxCompositionLayers == 16 &&
+                productCapabilities.configuredMaxCompositionLayers == 128 &&
                 productCapabilities.configuredMaxActiveAudioSources == 16 &&
                 productCapabilities.configuredAudioSampleRate == 48000 &&
                 productCapabilities.configuredAudioChannelCount == 2,
@@ -1480,11 +1480,11 @@ void p5dAudioDomainAndCapabilities() {
             "device recoveryをsupport済みとして公開しました");
     // P5-E3 capability確定。active source数とlayer数は独立したliteralで固定する。
     // active source数とlayer数は別capabilityとして検査する (contract §21)。
-    // 決め打ちの product 上限 (映像 8 本、映像 + 文字などの静止画で 16 枚)。
+    // 決め打ちの product 上限 (映像 8 本、映像 + 文字などの静止画で 128 枚)。
     require(capabilities.configuredMaxActiveVideoSources == 8,
             "configured active video source数が8として公開されていません");
-    require(capabilities.configuredMaxCompositionLayers == 16,
-            "configured composition layer数が16として公開されていません");
+    require(capabilities.configuredMaxCompositionLayers == 128,
+            "configured composition layer数が128として公開されていません");
     require(!capabilities.duplicateSourceLayersSupported,
             "同一sourceの複数layer配置をsupport済みとして公開しました");
     require(capabilities.configuredOutputFrameRate.numerator == 60 &&

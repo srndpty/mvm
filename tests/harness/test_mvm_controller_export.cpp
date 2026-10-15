@@ -3,6 +3,7 @@
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "test_mvm_controller_fixture.h"
+#include "util/mvm_reveal_in_explorer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -14,12 +15,15 @@
 #include <functional>
 #include <future>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
 
 #include <QCoreApplication>
 #include <QImage>
+#include <QMetaMethod>
+#include <QMetaProperty>
 #include <QUrl>
 
 namespace {
@@ -146,6 +150,213 @@ void testExportQualitySelection(const std::filesystem::path& path) {
           "未知の品質を受理しました");
     check(failure == QStringLiteral("未知の書き出し品質です: unknown"),
           "未知の品質を利用者へ通知しません");
+}
+
+// P3-6C.1: 書き出し設定の UI が使う入口 (exportTimelineWithOptions)。選択は書き出しごとの引数で、
+// controller には残らない。結果の報告は、書き出しの結果の記録 (MathGroupExportReport) から作る。
+void checkText(bool value, const std::string& message) {
+    check(value, message.c_str());
+}
+
+void testMathGroupExportSelection(const std::filesystem::path& path) {
+    using mvm::app::MathGroupOptimization;
+    std::atomic<int> requestedMode{-1};
+    std::atomic<bool> observerSupplied{false};
+    std::function<void(mvm::app::TimelineExportResult&)> shape;
+    RevealRecorder reveals;
+    mvm::app::MvmController controller(
+        path, {}, videoProject(), nullptr,
+        [&](const auto&, const auto& request) {
+            requestedMode.store(static_cast<int>(request.mathGroupOptimization));
+            observerSupplied.store(request.exportObserver != nullptr);
+            auto result = successResult(request);
+            result.mathGroup.requested = request.mathGroupOptimization;
+            if (shape)
+                shape(result);
+            return result;
+        },
+        {}, reveals.revealer());
+    QString failure;
+    QObject::connect(&controller, &mvm::app::MvmController::exportFailed,
+                     [&](const QString& message) { failure = message; });
+    const QUrl output = QUrl::fromLocalFile(
+        QString::fromStdWString((path.parent_path() / L"math-group.mp4").wstring()));
+    const auto outcome = [&](const char* key) {
+        return controller.exportMathGroupOutcome().value(QString::fromLatin1(key));
+    };
+    const auto run = [&](bool accelerate) {
+        failure.clear();
+        requestedMode.store(-1);
+        const bool started =
+            controller.exportTimelineWithOptions(output, QStringLiteral("standard"), accelerate);
+        // 書き出しの間は、前の書き出しの結果を見せない。
+        const bool cleared = controller.exportMathGroupOutcome().isEmpty();
+        return started && cleared && pumpUntil([&] { return !controller.exporting(); });
+    };
+
+    // QML から届くのは、書き出しごとの引数と、読むだけの結果だけである。
+    const auto* meta = controller.metaObject();
+    checkText(meta->indexOfMethod("exportTimelineWithOptions(QUrl,QString,bool)") >= 0 &&
+                  meta->indexOfProperty("exportMathGroupOutcome") >= 0 &&
+                  !meta->property(meta->indexOfProperty("exportMathGroupOutcome")).isWritable(),
+              "数式の高速化: UI の入口と、読むだけの結果がある");
+    bool reachable = false;
+    for (int index = 0; index < meta->methodCount(); ++index) {
+        const QByteArray name = meta->method(index).name().toLower();
+        reachable = reachable || name.contains("observer") || name.contains("diagnostic") ||
+                    name.contains("faultinject") || name.contains("timeoutaccounting") ||
+                    name.contains("legacy") || name == "setmathgroupexportoptimization";
+    }
+    for (int index = 0; index < meta->propertyCount(); ++index) {
+        const QByteArray name = QByteArray(meta->property(index).name()).toLower();
+        reachable = reachable || name.contains("observer") || name.contains("diagnostic") ||
+                    name.contains("faultinject") || name.contains("timeoutaccounting") ||
+                    name.contains("legacy") || name == "mathgroupexportoptimization";
+    }
+    checkText(!reachable, "数式の高速化: 診断用の入力と内部の選択は QML から届かない");
+    checkText(!controller.mathGroupExportOptimization(), "数式の高速化: 内部の選択の既定は off");
+
+    // 選択なし → Off。結果は "off" で、利用者への文は無い。
+    checkText(run(false) && requestedMode.load() == static_cast<int>(MathGroupOptimization::Off) &&
+                  !observerSupplied.load(),
+              "数式の高速化: 選択なしの要求は Off (observer なし)");
+    checkText(outcome("outcome") == QStringLiteral("off") && outcome("requested") == false &&
+                  outcome("message").toString().isEmpty() &&
+                  !controller.statusText().contains(QStringLiteral("高速化")),
+              "数式の高速化: 選択なしの結果は off で、文を足さない");
+    requestedMode.store(-1);
+    checkText(controller.exportTimelineWithQuality(output, QStringLiteral("standard")) &&
+                  pumpUntil([&] { return !controller.exporting(); }) &&
+                  requestedMode.load() == static_cast<int>(MathGroupOptimization::Off),
+              "数式の高速化: 既存の品質だけの入口は Off のまま");
+
+    // 選択あり → Auto。数式 group の graph を使った。
+    shape = [](auto& result) {
+        result.mathGroup.evaluated = true;
+        result.mathGroup.decision = "ELIGIBLE";
+        result.mathGroup.reason = "base-alpha-proven";
+        result.mathGroup.mathGroupGraph = true;
+        result.mathGroup.groupedClips = 7;
+        result.mathGroup.composedFrames = 120;
+    };
+    checkText(run(true) && requestedMode.load() == static_cast<int>(MathGroupOptimization::Auto) &&
+                  !observerSupplied.load(),
+              "数式の高速化: 選択ありの要求は Auto (observer なし)");
+    checkText(outcome("outcome") == QStringLiteral("used") && outcome("requested") == true &&
+                  outcome("graph") == QStringLiteral("math-group") &&
+                  outcome("groupedClips") == 7 && failure.isEmpty() &&
+                  controller.statusText().startsWith(QStringLiteral(
+                      "数式の高速化を使いました（数式 clip 7 本）。書き出しました: ")),
+              "数式の高速化: 使ったことを報告する: " + controller.statusText().toStdString());
+    // 選択は controller に残らない: 次の書き出しは、引数が false なら Off。
+    shape = nullptr;
+    checkText(run(false) && requestedMode.load() == static_cast<int>(MathGroupOptimization::Off) &&
+                  outcome("outcome") == QStringLiteral("off") &&
+                  !controller.mathGroupExportOptimization(),
+              "数式の高速化: 選択は次の書き出しへ残らない");
+
+    // 選択あり、判定が対象外 → 従来の graph。「使った」と報告しない。
+    shape = [](auto& result) {
+        result.mathGroup.evaluated = true;
+        result.mathGroup.decision = "UNKNOWN";
+        result.mathGroup.reason = "base-clip-transformed";
+    };
+    checkText(run(true) && outcome("outcome") == QStringLiteral("conventional") &&
+                  outcome("graph") == QStringLiteral("conventional") && failure.isEmpty() &&
+                  controller.statusText().startsWith(QStringLiteral(
+                      "数式の高速化は使いませんでした（一番下の映像 track の clip に拡大・回転"
+                      "などの変形があるため）。従来の方法で書き出しました: ")) &&
+                  outcome("reason") == QStringLiteral("base-clip-transformed") &&
+                  !controller.statusText().contains(QStringLiteral("base-clip-transformed")) &&
+                  !controller.statusText().contains(QStringLiteral("高速化を使いました")),
+              "数式の高速化: 対象外は従来の方法として報告する: " +
+                  controller.statusText().toStdString());
+
+    // 判定の理由は、利用者向けの文にして見せる
+    // (記録の値は変えない)。知らない名前は括弧に入れて出す。
+    const std::pair<const char*, const char*> reasons[] = {
+        {"base-alpha-zero", "一番下の映像 track に透明な部分があるため"},
+        {"base-alpha-unproven", "一番下の映像 track の透明度を事前に確かめられないため"},
+        {"no-eligible-math-clip", "まとめて描画できる数式 clip が無いため"},
+        {"future-reason", "対象外（future-reason）"},
+    };
+    for (const auto& [code, text] : reasons) {
+        shape = [code = std::string(code)](auto& result) {
+            result.mathGroup.evaluated = true;
+            result.mathGroup.decision = "INELIGIBLE";
+            result.mathGroup.reason = code;
+        };
+        checkText(run(true) && outcome("outcome") == QStringLiteral("conventional") &&
+                      outcome("reason") == QString::fromLatin1(code) &&
+                      outcome("reasonText") == QString::fromUtf8(text) &&
+                      controller.statusText().startsWith(
+                          QStringLiteral("数式の高速化は使いませんでした（") +
+                          QString::fromUtf8(text) +
+                          QStringLiteral("）。従来の方法で書き出しました: ")),
+                  std::string("数式の高速化: 理由 ") + code +
+                      " を利用者向けの文にする: " + controller.statusText().toStdString());
+    }
+
+    // 選択あり、画像の上限の超過 → 従来の graph。理由を分けて報告する。
+    shape = [](auto& result) {
+        result.mathGroup.preparationRejected = true;
+        result.mathGroup.preparationReason = "prepared-raster-budget-exceeded";
+        result.mathGroup.reason = "prepared-raster-budget-exceeded";
+    };
+    checkText(run(true) && outcome("outcome") == QStringLiteral("budget") && failure.isEmpty() &&
+                  controller.statusText().startsWith(
+                      QStringLiteral("数式の高速化は使いませんでした（準備する画像が上限を"
+                                     "超えたため）。従来の方法で書き出しました: ")) &&
+                  !controller.statusText().contains(QStringLiteral("高速化を使いました")),
+              "数式の高速化: 上限の超過を分けて報告する: " + controller.statusText().toStdString());
+
+    // 選択あり、数式 group の実行時の失敗 → 元の error を残し、外して書き出せることを足す。
+    shape = [](auto& result) {
+        result.success = false;
+        result.error = "数式 group: 合成器が拒否しました (frame 3)";
+        result.mathGroup.evaluated = true;
+        result.mathGroup.decision = "ELIGIBLE";
+        result.mathGroup.mathGroupGraph = true;
+        result.mathGroup.errors = 1;
+    };
+    const int runsBefore = reveals.calls;
+    checkText(
+        run(true) && outcome("outcome") == QStringLiteral("failed") &&
+            failure.startsWith(QStringLiteral(
+                "書き出しに失敗しました: 数式 group: 合成器が拒否しました (frame 3)")) &&
+            failure.contains(QStringLiteral("「数式の書き出しを高速化（試験的）」を外すと")) &&
+            reveals.calls == runsBefore && !controller.exporting() && !controller.busy(),
+        "数式の高速化: 実行時の失敗は元の error を残し、やり直さない: " + failure.toStdString());
+
+    // 選択あり、高速化と関係のない失敗・取消 → 高速化の失敗と報告しない。
+    shape = [](auto& result) {
+        result.success = false;
+        result.error = "tractor consumerがtimeoutしました";
+        result.mathGroup.evaluated = true;
+        result.mathGroup.decision = "ELIGIBLE";
+        result.mathGroup.mathGroupGraph = true;
+    };
+    checkText(run(true) && outcome("outcome") == QStringLiteral("incomplete") &&
+                  failure ==
+                      QStringLiteral("書き出しに失敗しました: tractor consumerがtimeoutしました"),
+              "数式の高速化: timeout は高速化の失敗と報告しない: " + failure.toStdString());
+    shape = [](auto& result) {
+        result.success = false;
+        result.cancelled = true;
+        result.mathGroup.mathGroupGraph = true;
+    };
+    checkText(run(true) && outcome("outcome") == QStringLiteral("incomplete") &&
+                  failure.isEmpty() &&
+                  controller.statusText() == QStringLiteral("書き出しをキャンセルしました"),
+              "数式の高速化: 取消は取消として報告する");
+
+    // 未知の品質は、選択に関係なく開始しない。
+    checkText(!controller.exportTimelineWithOptions(output, QStringLiteral("unknown"), true) &&
+                  failure == QStringLiteral("未知の書き出し品質です: unknown"),
+              "数式の高速化: 未知の品質を受理しない");
+    checkText(controller.exportSettingsSummary().value(QStringLiteral("mathClipCount")).toInt() ==
+                  0,
+              "数式の高速化: 数式 clip の無い Project は 0 本と数える");
 }
 
 void testRevealFailureKeepsSuccess(const std::filesystem::path& path) {
@@ -1532,6 +1743,88 @@ std::vector<PlacedClip> placedClips(const mvm::app::MvmController& controller) {
 }
 
 // 素材を内容で判定して timeline へ置く経路 (メニューのダイアログと drop)。
+// P3-7A: 書き出しの後の「Explorer で表示」を、製品の既定の経路 (controller の既定の revealer →
+// mvm_reveal_in_explorer) で確かめる。書き出しは本物 (数式を使わない画像 1 枚の Project)。
+// Explorer は開かない: Shell の境界のうち SHOpenFolderAndSelectItems だけを差し替え、
+// SHParseDisplayName は実際の API を使う。書き出し先の URL は UI と同じ QUrl::fromLocalFile
+// で作る。
+struct RevealRecord {
+    std::wstring observed;
+    int openCalls = 0;
+    long openResult = 0;
+};
+
+void recordRevealPath(const wchar_t* path, void* opaque) {
+    static_cast<RevealRecord*>(opaque)->observed = path;
+}
+
+long fakeRevealOpen(const void* item, void* opaque) {
+    auto* record = static_cast<RevealRecord*>(opaque);
+    ++record->openCalls;
+    return item ? record->openResult : static_cast<long>(0x80004005L);
+}
+
+void testExportRevealsOutput(const std::filesystem::path& path,
+                             const std::filesystem::path& smoke) {
+    const auto jpg = smoke / L"_import" / L"jpg_quadrant.jpg";
+    if (!std::filesystem::exists(jpg)) {
+        check(false,
+              "Explorer 表示の試験の素材がありません (scripts/make-testmedia.ps1 -Mode Smoke)");
+        return;
+    }
+    auto initial = mvm::project::createDefaultProject();
+    initial.outputWidth = 320;
+    initial.outputHeight = 240;
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "Explorer 表示の試験の Project を保存できません");
+    mvm::app::MvmController controller(path, {}, initial); // 既定の runner と既定の revealer
+    QString failure;
+    QObject::connect(&controller, &mvm::app::MvmController::exportFailed,
+                     [&](const QString& message) { failure = message; });
+    controller.addMediaFileToTimeline(QUrl::fromLocalFile(QString::fromStdWString(jpg.wstring())));
+    check(controller.clipCount() == 1, "Explorer 表示の試験: 画像を置けません");
+
+    const auto directory = path.parent_path() / L"書き出し 先 日本語";
+    std::filesystem::create_directories(directory);
+    RevealRecord record;
+    MvmRevealShell shell{&recordRevealPath, nullptr, &fakeRevealOpen, &record};
+    mvm_reveal_set_shell_for_test(&shell);
+    const auto exportTo = [&](const wchar_t* name) {
+        failure.clear();
+        const auto output = directory / name;
+        const QUrl url = QUrl::fromLocalFile(QString::fromStdWString(output.wstring()));
+        const bool started = controller.exportTimelineWithQuality(url, QStringLiteral("standard"));
+        const bool finished = started && pumpUntil([&] { return !controller.exporting(); }, 120000);
+        return std::pair{finished, output};
+    };
+
+    // 1. 成功: 書き出し、Explorer の表示 (差し替え) も成功する。状態に失敗の文が付かない。
+    const auto [finished, output] = exportTo(L"結果 ①.mp4");
+    const std::wstring native = std::filesystem::absolute(output).make_preferred().wstring();
+    checkText(finished && std::filesystem::exists(output) && failure.isEmpty() &&
+                  controller.statusText().startsWith(QStringLiteral("書き出しました: ")) &&
+                  !controller.statusText().contains(QStringLiteral("Explorer")),
+              "Explorer 表示: 数式を使わない書き出しの後、失敗の文が付かない: " +
+                  controller.statusText().toStdString());
+    check(record.openCalls == 1 && record.observed == native &&
+              record.observed.find(L'/') == std::wstring::npos,
+          "Explorer 表示: UI と同じ URL の出力 path を、\\ 区切りの絶対 path で Shell へ渡す");
+
+    // 2. Explorer を開けない: 書き出しは成功のまま、理由と HRESULT を状態に出す
+    // (書き出しの失敗にしない)。
+    record = RevealRecord{};
+    record.openResult = static_cast<long>(0x80070005L);
+    const auto [finishedDenied, outputDenied] = exportTo(L"結果 ②.mp4");
+    checkText(finishedDenied && std::filesystem::exists(outputDenied) && failure.isEmpty() &&
+                  controller.statusText().startsWith(QStringLiteral("書き出しました: ")) &&
+                  controller.statusText().contains(
+                      QStringLiteral("Explorerで表示できません: Explorerでファイルを表示できません "
+                                     "(HRESULT=0x80070005)")),
+              "Explorer 表示: 開けないときは書き出しを成功のまま、理由を出す: " +
+                  controller.statusText().toStdString());
+    mvm_reveal_set_shell_for_test(nullptr);
+}
+
 void testMediaFilePlacement(const std::filesystem::path& path, const std::filesystem::path& smoke) {
     const auto importDir = smoke / L"_import";
     const auto jpg = importDir / L"jpg_quadrant.jpg";
@@ -2090,6 +2383,7 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(directory);
     testCompleteAndRestart(directory / L"complete.mvm");
     testExportQualitySelection(directory / L"quality.mvm");
+    testMathGroupExportSelection(directory / L"math-group-selection.mvm");
     testQueuedProgressAfterCancel(directory / L"cancel.mvm");
     testFailedExportNotification(directory / L"failed.mvm");
     testRevealFailureKeepsSuccess(directory / L"reveal-failure.mvm");
@@ -2136,6 +2430,7 @@ int main(int argc, char** argv) {
         testMediaBinImport(directory / L"media-bin-import.mvm", std::filesystem::path(argv[2]));
         testMediaFilePlacement(directory / L"media-file-placement.mvm",
                                std::filesystem::path(argv[2]));
+        testExportRevealsOutput(directory / L"export-reveal.mvm", std::filesystem::path(argv[2]));
         mvm_mlt_runtime_shutdown();
     }
     return failures == 0 ? 0 : 1;

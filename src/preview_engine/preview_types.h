@@ -273,10 +273,11 @@ struct PreviewError {
 // 個別に qualify したものではない (実測済みの組は MeasuredPreviewEnvelope が持つ)。
 // timeline の frame mapping もこの値で fail-closed にするので、上限の数値はここにだけ書く。
 //   video source: 同時に decode する映像。
-//   composition layer: 映像 + 文字などの静止画 layer。静止画は decode source を増やさない。
+//   composition layer: 映像 + 文字・部分式などの静止画 layer。静止画は decode source を増やさない。
+//   部分式を分けた数式教材の同時表示を受理する。GPU は各 layer を順に描く。
 //   audio source: 同時に mix する音声。
 inline constexpr std::uint32_t kProductMaxActiveVideoSources = 8;
-inline constexpr std::uint32_t kProductMaxCompositionLayers = 16;
+inline constexpr std::uint32_t kProductMaxCompositionLayers = 128;
 inline constexpr std::uint32_t kProductMaxActiveAudioSources = 16;
 
 // canonical workload を実測した「構成の組」。

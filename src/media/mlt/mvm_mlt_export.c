@@ -1,12 +1,15 @@
 #include "mvm_mlt_export.h"
 
 #include "../../util/mvm_win_utf8.h"
+#include "mvm_mlt_math_group.h"
 #include "mvm_mlt_probe.h"
 #include "mvm_mlt_runtime.h"
+#include "mvm_mlt_v1_background.h"
 
 #include <windows.h>
 #include <limits.h>
 #include <math.h>
+#include <psapi.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -24,27 +27,108 @@ static void set_err(char* err, size_t n, const char* fmt, ...) {
     va_end(ap);
 }
 
+long long mvm_mlt_export_observer_now_ns(void) {
+    /* 周波数は起動中に変わらない。複数の thread が同時に初めて呼んでも、同じ値を atomic に
+     * 書くだけにする (半分だけ書かれた値を別の thread が読まない)。 */
+    static volatile LONG64 cached_frequency;
+    LONG64 frequency = InterlockedCompareExchange64(&cached_frequency, 0, 0);
+    LARGE_INTEGER now;
+    if (!frequency) {
+        LARGE_INTEGER queried;
+        QueryPerformanceFrequency(&queried);
+        frequency = queried.QuadPart;
+        InterlockedExchange64(&cached_frequency, frequency);
+    }
+    QueryPerformanceCounter(&now);
+    return (now.QuadPart / frequency) * 1000000000LL +
+           (now.QuadPart % frequency) * 1000000000LL / frequency;
+}
+
+void mvm_mlt_export_observe(MvmExportObserver* observer, int point, long long frame) {
+    if (!observer || point < 0 || point >= MVM_EXPORT_OBSERVE_POINT_COUNT)
+        return;
+    MvmExportObservePointState* state = &observer->points[point];
+    const long long now = mvm_mlt_export_observer_now_ns();
+    const long thread = (long)GetCurrentThreadId();
+    const long long ordinal = InterlockedIncrement64(&state->count);
+    if (ordinal == 1) {
+        InterlockedExchange64(&state->first_ns, now);
+        InterlockedExchange64(&state->first_frame, frame);
+        InterlockedExchange(&state->first_thread, thread);
+    }
+    InterlockedExchange64(&state->last_ns, now);
+    InterlockedExchange64(&state->last_frame, frame);
+    InterlockedExchange(&state->last_thread, thread);
+    /* 抜き取りは最初の 4 回と 2 の冪の回だけ。回数が増えても記録は対数でしか増えない。 */
+    if (ordinal <= 4 || (ordinal & (ordinal - 1)) == 0) {
+        const long slot = InterlockedIncrement(&observer->sample_count) - 1;
+        if (slot >= 0 && slot < MVM_EXPORT_OBSERVE_SAMPLE_CAPACITY) {
+            MvmExportObserveSample* sample = &observer->samples[slot];
+            sample->point = point;
+            sample->stage = (int)observer->stage;
+            sample->cancel_requested = (int)observer->cancel_requested;
+            sample->thread = thread;
+            sample->ordinal = ordinal;
+            sample->frame = frame;
+            sample->ns = now;
+            /* 中身を書き終えてから公開する。sample_count は「予約した数」なので、読む側は
+             * ready の立っていない枠を読まない。 */
+            InterlockedExchange(&sample->ready, 1);
+        }
+    }
+}
+
+static void observe_stage(const MvmExportSpec* spec, int stage) {
+    if (!spec || !spec->observer)
+        return;
+    InterlockedExchange64(&spec->observer->stage_ns[stage], mvm_mlt_export_observer_now_ns());
+    InterlockedExchange(&spec->observer->stage, stage);
+}
+
 typedef struct {
     const MvmExportSpec* spec;
     volatile LONG rejected;
     volatile LONG observed;
+    /* 観測時だけ差し替える、最終 producer の元の get_frame。 */
+    int (*original_get_frame)(mlt_service, mlt_frame_ptr, int);
 } ExportRgbaAudit;
 
 /* 最終 producer に付ける。Graph の staging や preview の画素で合成を追認しない。 */
 static int export_rgba_image(mlt_frame frame, uint8_t** image, mlt_image_format* format, int* width,
                              int* height, int writable) {
     ExportRgbaAudit* audit = mlt_frame_pop_service(frame);
+    MvmExportObserver* observer = audit->spec->observer;
+    const long long position = (long long)mlt_frame_get_position(frame);
+    mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_IMAGE_REQUEST, position);
+    if (!audit->spec->rgba_callback) {
+        /* 観測だけのとき。consumer が要求した形式を変えない。 */
+        const long long began = observer ? mvm_mlt_export_observer_now_ns() : 0;
+        const int passed = mlt_frame_get_image(frame, image, format, width, height, writable);
+        if (observer)
+            InterlockedExchangeAdd64(&observer->image_ns_total,
+                                     mvm_mlt_export_observer_now_ns() - began);
+        mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_IMAGE_RETURN, position);
+        return passed;
+    }
     const mlt_image_format requested = *format;
     *format = mlt_image_rgba;
+    const long long began = observer ? mvm_mlt_export_observer_now_ns() : 0;
     int status = mlt_frame_get_image(frame, image, format, width, height, writable);
+    if (observer)
+        InterlockedExchangeAdd64(&observer->image_ns_total,
+                                 mvm_mlt_export_observer_now_ns() - began);
+    mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_IMAGE_RETURN, position);
     if (status || !*image || *format != mlt_image_rgba || *width != audit->spec->width ||
         *height != audit->spec->height) {
         InterlockedExchange(&audit->rejected, 1);
         return status ? status : 1;
     }
     InterlockedIncrement(&audit->observed);
-    if (audit->spec->rgba_callback(mlt_frame_get_position(frame), *image, *width, *height,
-                                   audit->spec->rgba_opaque)) {
+    mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_VALIDATOR_ENTRY, position);
+    const int invalid =
+        audit->spec->rgba_callback(position, *image, *width, *height, audit->spec->rgba_opaque);
+    mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_VALIDATOR_RETURN, position);
+    if (invalid) {
         InterlockedExchange(&audit->rejected, 1);
         return 1;
     }
@@ -59,8 +143,25 @@ static mlt_frame export_rgba_process(mlt_filter filter, mlt_frame frame) {
     return frame;
 }
 
+#define MVM_EXPORT_AUDIT_PROPERTY "_mvm_export_audit"
+
+/* 観測時だけ、最終 producer の get_frame の前後を数える。処理は元の関数へそのまま渡す。 */
+static int observed_get_frame(mlt_service service, mlt_frame_ptr frame, int index) {
+    ExportRgbaAudit* audit =
+        mlt_properties_get_data(MLT_SERVICE_PROPERTIES(service), MVM_EXPORT_AUDIT_PROPERTY, NULL);
+    MvmExportObserver* observer = audit->spec->observer;
+    mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_FRAME_REQUEST,
+                           (long long)mlt_producer_position((mlt_producer)service));
+    const long long began = mvm_mlt_export_observer_now_ns();
+    const int status = audit->original_get_frame(service, frame, index);
+    InterlockedExchangeAdd64(&observer->frame_ns_total, mvm_mlt_export_observer_now_ns() - began);
+    mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_FRAME_RETURN,
+                           frame && *frame ? (long long)mlt_frame_get_position(*frame) : -1);
+    return status;
+}
+
 static int attach_rgba_audit(mlt_producer output, ExportRgbaAudit* audit) {
-    if (!audit->spec->rgba_callback)
+    if (!audit->spec->rgba_callback && !audit->spec->observer)
         return 0;
     mlt_filter filter = mlt_filter_new();
     if (!filter)
@@ -69,7 +170,45 @@ static int attach_rgba_audit(mlt_producer output, ExportRgbaAudit* audit) {
     filter->process = export_rgba_process;
     const int status = mlt_service_attach(MLT_PRODUCER_SERVICE(output), filter);
     mlt_filter_close(filter);
-    return status;
+    if (status != 0 || !audit->spec->observer)
+        return status;
+    mlt_service service = MLT_PRODUCER_SERVICE(output);
+    if (mlt_properties_set_data(MLT_SERVICE_PROPERTIES(service), MVM_EXPORT_AUDIT_PROPERTY, audit,
+                                0, NULL, NULL) != 0)
+        return 1;
+    audit->original_get_frame = service->get_frame;
+    service->get_frame = observed_get_frame;
+    return 0;
+}
+
+/* audit は呼び出し側の stack にある。producer を閉じる前に、差し替えた get_frame を戻す。 */
+static void detach_frame_observer(mlt_producer output, ExportRgbaAudit* audit) {
+    if (!output || !audit->original_get_frame)
+        return;
+    MLT_PRODUCER_SERVICE(output)->get_frame = audit->original_get_frame;
+    audit->original_get_frame = NULL;
+}
+
+static void on_consumer_frame_show(mlt_properties owner, void* self, mlt_event_data data) {
+    (void)owner;
+    mlt_frame frame = mlt_event_data_to_frame(data);
+    mvm_mlt_export_observe((MvmExportObserver*)self, MVM_EXPORT_OBSERVE_ENCODER_SUBMIT,
+                           frame ? (long long)mlt_frame_get_position(frame) : -1);
+}
+
+static void observe_consumer(mlt_consumer consumer, const MvmExportSpec* spec) {
+    if (spec->observer)
+        mlt_events_listen(MLT_CONSUMER_PROPERTIES(consumer), spec->observer, "consumer-frame-show",
+                          (mlt_listener)on_consumer_frame_show);
+}
+
+static void observe_poll(const MvmExportSpec* spec, mlt_consumer consumer) {
+    if (!spec->observer)
+        return;
+    InterlockedExchange64(&spec->observer->consumer_position,
+                          (long long)mlt_consumer_position(consumer));
+    InterlockedExchange(&spec->observer->consumer_stopped, mlt_consumer_is_stopped(consumer));
+    InterlockedIncrement64(&spec->observer->poll_count);
 }
 
 static int export_cancel_requested(const MvmExportSpec* spec, mlt_consumer consumer,
@@ -81,7 +220,52 @@ static int export_cancel_requested(const MvmExportSpec* spec, mlt_consumer consu
         completed = 0;
     if (completed > total)
         completed = total;
-    return spec->progress_callback(completed, total, spec->progress_opaque) != 0;
+    const int cancel = spec->progress_callback(completed, total, spec->progress_opaque) != 0;
+    if (cancel && spec->observer)
+        InterlockedExchange(&spec->observer->cancel_requested, 1);
+    return cancel;
+}
+
+/* --- 完了待ちの timeout (P3-5B) -------------------------------------------------
+ * MvmExportSpec::timeout_ms は、consumer を開始してから止まるまでの待ちの上限 (実時間) である。
+ * 以前は待ち loop の回数 × 20 ms で数えていた。loop の 1 回には Sleep(20) (Windows の既定の粒度では
+ * 約 31 ms) と進行 callback の時間が入るので、実時間では timeout_ms よりずっと遅く timeout していた
+ * (timeout_ms = 1000 で 3418 ms。進行 callback が 400 ms かかると timeout しなかった)。
+ * 今は単調な時計 (QueryPerformanceCounter) で、待ちを始めた時刻からの経過を測る。
+ * 待ち loop の回数は数えない。 */
+typedef struct {
+    long long start_ns;
+    long long legacy_waited_ms; /* 古い数え方 (診断用の入力のときだけ使う) */
+    int legacy;
+} ExportWait;
+
+static void export_wait_begin(ExportWait* wait, const MvmExportSpec* spec) {
+    wait->start_ns = mvm_mlt_export_observer_now_ns();
+    wait->legacy_waited_ms = 0;
+    wait->legacy = spec->observer && spec->observer->diagnostic_legacy_timeout_accounting;
+}
+
+/* 待ちを始めてからの経過 (ms)。64 bit の ns の差なので、桁あふれしない。 */
+static long long export_wait_elapsed_ms(const ExportWait* wait) {
+    return (mvm_mlt_export_observer_now_ns() - wait->start_ns) / 1000000LL;
+}
+
+/* 期限 (timeout_ms) を過ぎていれば非 0。 */
+static int export_wait_expired(const ExportWait* wait, const MvmExportSpec* spec) {
+    if (wait->legacy)
+        return wait->legacy_waited_ms >= (long long)spec->timeout_ms;
+    return export_wait_elapsed_ms(wait) >= (long long)spec->timeout_ms;
+}
+
+/* 次の確認まで眠る (最大 20 ms)。期限までの残りより長くは眠らない。空回りはしない (最低 1 ms)。 */
+static void export_wait_sleep(ExportWait* wait, const MvmExportSpec* spec) {
+    if (wait->legacy) {
+        Sleep(20);
+        wait->legacy_waited_ms += 20;
+        return;
+    }
+    const long long remaining = (long long)spec->timeout_ms - export_wait_elapsed_ms(wait);
+    Sleep((DWORD)(remaining >= 20 ? 20 : remaining > 1 ? remaining : 1));
 }
 
 static int export_prepare_cancel_requested(const MvmExportSpec* spec, int* status, long long total,
@@ -121,6 +305,9 @@ static void configure_mp4_consumer(mlt_consumer consumer, const char* out_path,
     mlt_properties_set_int(cp, "real_time", -spec->render_threads);
     mlt_properties_set_int(cp, "threads", spec->encoder_threads);
     mlt_properties_set_int(cp, "terminate_on_pause", 1);
+    /* 診断時だけ、muxer に packet ごとの時刻の debug 記録を出させる (FF_FDEBUG_TS)。 */
+    if (spec->observer && spec->observer->mux_trace)
+        mlt_properties_set(cp, "fdebug", "ts");
 }
 
 /* 指定した service が repository に登録されているか。
@@ -298,6 +485,122 @@ static int file_size_utf8(const char* path, unsigned long long* size) {
     return 1;
 }
 
+/* --- animation の keyframe を値の変わる所だけにする ------------------------------------
+ * 呼び出し側は clip の全 frame の値を渡す。そのまま全 frame を keyframe にすると、MLT 7.36.1 の
+ * affine は毎 frame、animation 全体を文字列へ直す (transition_affine.c が "rect" を
+ * mlt_properties_get で読むたびに mlt_animation_serialize が走る。keyframe 数の 2 乗の手間で、
+ * transition の lock の中なので render worker も直列になる)。16 layer・1920 frame の clip で
+ * 1 frame の合成に 2.4 秒かかった (docs/math-semantic-layout.md)。
+ * 前後と同じ値の keyframe は置かない。MLT の線形補間は y1 + (y2 - y1) * t なので、両端が同じ値の
+ * 区間はどの frame でも同じ値を返し、keyframe の位置ではその値をそのまま返す。値が変わる区間は
+ * 全 frame を残すので、どの frame で評価しても間引く前と同じ値になる。 */
+static int same_rect(mlt_rect a, mlt_rect b) {
+    return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h && a.o == b.o;
+}
+
+static mlt_rect crop_rect_at(const MvmExportClip* clip, int index, double width, double height) {
+    const MvmExportMotionFrame* frame = &clip->motion_frames[index];
+    mlt_rect rect = {frame->crop_left, frame->crop_top,
+                     width - frame->crop_left - frame->crop_right,
+                     height - frame->crop_top - frame->crop_bottom, 1};
+    return rect;
+}
+
+/* 配置の矩形と不透明度。モーションがあれば、その frame の矩形を使う。 */
+static mlt_rect placement_rect_at(const MvmExportClip* clip, int index) {
+    const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[index];
+    mlt_rect rect = {clip->rect_x, clip->rect_y, clip->rect_width, clip->rect_height, key->opacity};
+    if (clip->motion_frame_count > 0) {
+        const MvmExportMotionFrame* frame = &clip->motion_frames[key->local_frame];
+        rect.x = frame->rect_x;
+        rect.y = frame->rect_y;
+        rect.w = frame->rect_width;
+        rect.h = frame->rect_height;
+    }
+    /* 切り出した素材 (試作)。等倍だけを受け付けるので、矩形は切り出した範囲そのものになる。 */
+    if (clip->source_width > 0) {
+        rect.x += clip->source_x;
+        rect.y += clip->source_y;
+        rect.w = clip->source_width;
+        rect.h = clip->source_height;
+    }
+    return rect;
+}
+
+/* 切り出した素材を置けるのは、矩形が出力全体と同じ大きさ (等倍) で、回転・shear・crop が無い
+ * 上位 track の静止画だけ。拡縮があると MLT は素材を矩形の大きさへ縮拡してから置くので、
+ * 切り出した画像では結果が変わる。 */
+static int source_region_valid(const MvmExportClip* clip, const MvmExportSpec* spec) {
+    if (clip->source_width == 0 && clip->source_height == 0 && clip->source_x == 0 &&
+        clip->source_y == 0)
+        return 1;
+    if (clip->source_width <= 0 || clip->source_height <= 0 || clip->source_x < 0 ||
+        clip->source_y < 0 || clip->source_x > spec->width - clip->source_width ||
+        clip->source_y > spec->height - clip->source_height || clip->is_audio ||
+        clip->video_track <= 0 || !clip->is_still_image || clip->is_image_sequence ||
+        clip->opaque_backdrop || clip->rect_width != spec->width ||
+        clip->rect_height != spec->height || clip->rotation_degrees != 0.0 ||
+        clip->shear_degrees != 0.0 || clip->crop_left != 0 || clip->crop_top != 0 ||
+        clip->crop_right != 0 || clip->crop_bottom != 0)
+        return 0;
+    for (int index = 0; index < clip->motion_frame_count; ++index) {
+        const MvmExportMotionFrame* frame = &clip->motion_frames[index];
+        if (frame->rect_width != spec->width || frame->rect_height != spec->height ||
+            frame->rotation_degrees != 0.0 || frame->shear_degrees != 0.0 ||
+            frame->crop_left != 0.0 || frame->crop_top != 0.0 || frame->crop_right != 0.0 ||
+            frame->crop_bottom != 0.0)
+            return 0;
+    }
+    return 1;
+}
+
+/* 診断用: 落とせる keyframe の一部をわざと残す (値は変わらない)。製品では常に 0。 */
+static int diagnostic_stride(const MvmExportSpec* spec) {
+    return spec && spec->observer && spec->observer->diagnostic_keyframe_stride > 0
+               ? spec->observer->diagnostic_keyframe_stride
+               : 0;
+}
+
+static int crop_key_redundant(const MvmExportClip* clip, int index, double width, double height,
+                              int stride) {
+    if (index <= 0 || index >= clip->motion_frame_count - 1 || (stride > 0 && index % stride == 0))
+        return 0;
+    const mlt_rect current = crop_rect_at(clip, index, width, height);
+    return same_rect(crop_rect_at(clip, index - 1, width, height), current) &&
+           same_rect(current, crop_rect_at(clip, index + 1, width, height));
+}
+
+static int placement_key_redundant(const MvmExportClip* clip, int index, int stride) {
+    if (index <= 0 || index >= clip->opacity_keyframe_count - 1 ||
+        (stride > 0 && index % stride == 0))
+        return 0;
+    const mlt_rect current = placement_rect_at(clip, index);
+    return same_rect(placement_rect_at(clip, index - 1), current) &&
+           same_rect(current, placement_rect_at(clip, index + 1));
+}
+
+/* 回転と shear。モーションのある clip だけが呼ぶ (opacity key の local_frame は index と同じ)。 */
+static int rotation_key_redundant(const MvmExportClip* clip, int index, int stride) {
+    if (index <= 0 || index >= clip->opacity_keyframe_count - 1 ||
+        (stride > 0 && index % stride == 0))
+        return 0;
+    const MvmExportMotionFrame* frames = clip->motion_frames;
+    const long long at = clip->opacity_keyframes[index].local_frame;
+    const long long before = clip->opacity_keyframes[index - 1].local_frame;
+    const long long after = clip->opacity_keyframes[index + 1].local_frame;
+    return frames[before].rotation_degrees == frames[at].rotation_degrees &&
+           frames[at].rotation_degrees == frames[after].rotation_degrees &&
+           frames[before].shear_degrees == frames[at].shear_degrees &&
+           frames[at].shear_degrees == frames[after].shear_degrees;
+}
+
+static void observe_animation(const MvmExportSpec* spec, long long samples, long long keyframes) {
+    if (!spec || !spec->observer)
+        return;
+    InterlockedExchangeAdd64(&spec->observer->animation_samples, samples);
+    InterlockedExchangeAdd64(&spec->observer->animation_keyframes, keyframes);
+}
+
 /* crop は qtcrop で「範囲の外を透明で塗る」形で掛け、frame の寸法を変えない。
  * 以前の crop filter は frame の寸法そのものを変えていた。その後の affine は正方形でない
  * 座標系で回転するため、crop と回転を組み合わせると平行四辺形 (shear) になっていた
@@ -328,6 +631,7 @@ static int attach_export_crop(mlt_profile profile, mlt_producer cut, const MvmEx
              (height - clip->crop_top - clip->crop_bottom) * 100.0 / height);
     mlt_properties props = MLT_FILTER_PROPERTIES(filter);
     mlt_properties_set(props, "rect", rect);
+    long long crop_keyframes = 0;
     for (int index = 0; index < clip->motion_frame_count; ++index) {
         if (index % 256 == 0 &&
             export_prepare_cancel_requested(spec, cancel_status, clip->timeline_duration_frames,
@@ -335,10 +639,11 @@ static int attach_export_crop(mlt_profile profile, mlt_producer cut, const MvmEx
             mlt_filter_close(filter);
             return 1;
         }
+        if (crop_key_redundant(clip, index, width, height, diagnostic_stride(spec)))
+            continue;
+        ++crop_keyframes;
         const MvmExportMotionFrame* frame = &clip->motion_frames[index];
-        mlt_rect animated = {frame->crop_left, frame->crop_top,
-                             width - frame->crop_left - frame->crop_right,
-                             height - frame->crop_top - frame->crop_bottom, 1};
+        const mlt_rect animated = crop_rect_at(clip, index, width, height);
         if (mlt_properties_anim_set_rect(props, "rect", animated, (mlt_position)frame->local_frame,
                                          (mlt_position)clip->timeline_duration_frames,
                                          mlt_keyframe_linear) != 0) {
@@ -347,6 +652,7 @@ static int attach_export_crop(mlt_profile profile, mlt_producer cut, const MvmEx
             return 1;
         }
     }
+    observe_animation(spec, clip->motion_frame_count, crop_keyframes);
     mlt_properties_set(props, "color", "#00000000");
     mlt_filter_set_in_and_out(filter, (mlt_position)filter_in,
                               (mlt_position)(filter_in + clip->timeline_duration_frames - 1));
@@ -385,6 +691,7 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
     mlt_properties_set_double(props, "transition.fix_shear_x", clip->shear_degrees);
     mlt_filter_set_in_and_out(filter, (mlt_position)producer_in,
                               (mlt_position)(producer_in + duration - 1));
+    long long keyframes = 0;
     for (int i = 0; i < clip->opacity_keyframe_count; ++i) {
         if (i % 256 == 0 &&
             export_prepare_cancel_requested(spec, cancel_status, clip->timeline_duration_frames,
@@ -393,14 +700,10 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
             return 1;
         }
         const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[i];
-        mlt_rect rect = {clip->rect_x, clip->rect_y, clip->rect_width, clip->rect_height,
-                         key->opacity};
-        if (clip->motion_frame_count > 0) {
+        if (clip->motion_frame_count > 0 &&
+            !rotation_key_redundant(clip, i, diagnostic_stride(spec))) {
             const MvmExportMotionFrame* frame = &clip->motion_frames[key->local_frame];
-            rect.x = frame->rect_x;
-            rect.y = frame->rect_y;
-            rect.w = frame->rect_width;
-            rect.h = frame->rect_height;
+            keyframes += 2;
             if (mlt_properties_anim_set_double(
                     props, "transition.fix_rotate_x", frame->rotation_degrees,
                     (mlt_position)key->local_frame, (mlt_position)clip->timeline_duration_frames,
@@ -414,7 +717,10 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
                 return 1;
             }
         }
-        if (mlt_properties_anim_set_rect(props, "transition.rect", rect,
+        if (placement_key_redundant(clip, i, diagnostic_stride(spec)))
+            continue;
+        ++keyframes;
+        if (mlt_properties_anim_set_rect(props, "transition.rect", placement_rect_at(clip, i),
                                          (mlt_position)key->local_frame, (mlt_position)duration,
                                          mlt_keyframe_linear) != 0) {
             mlt_filter_close(filter);
@@ -422,6 +728,9 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
             return 1;
         }
     }
+    observe_animation(
+        spec, (long long)clip->opacity_keyframe_count * (clip->motion_frame_count > 0 ? 3 : 1),
+        keyframes);
     if (mlt_producer_attach(cut, filter) != 0) {
         mlt_filter_close(filter);
         set_err(err, err_size, "affine filterをclipへattachできません");
@@ -490,9 +799,21 @@ static int attach_export_backdrop(mlt_profile profile, mlt_producer cut, const M
     return 0;
 }
 
-static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
-                                       const MvmExportClip* clip, char* err, size_t err_size,
-                                       const MvmExportSpec* spec, int* cancel_status) {
+/* clip の keyframe [first, last] を 1 つの affine transition として植える。通常は clip 全体
+ * (first = 0、last = 末尾)。試作の分割 (下の plant_export_overlay_affine) は区間ごとに呼ぶ。
+ * transition の in は first の frame になり、keyframe の位置は first からの相対になる。 */
+static int plant_export_overlay_segment(mlt_profile profile, mlt_tractor tractor,
+                                        const MvmExportClip* clip, int first, int last, char* err,
+                                        size_t err_size, const MvmExportSpec* spec,
+                                        int* cancel_status) {
+    const long long origin = clip->opacity_keyframes[first].local_frame;
+    const long long span = clip->opacity_keyframes[last].local_frame - origin + 1;
+    /* 分割していないときの animation の長さは従来どおり clip の尺にする。 */
+    const long long length = first == 0 && last == clip->opacity_keyframe_count - 1
+                                 ? clip->timeline_duration_frames
+                                 : span;
+    /* 診断用の故障注入 (比較が効いていることの対照。製品では常に 0)。 */
+    const int fault = spec->observer ? spec->observer->diagnostic_split_fault : 0;
     mlt_transition transition = mlt_factory_transition(profile, "affine", NULL);
     if (!transition) {
         set_err(err, err_size, "必須transition 'affine'を作れません");
@@ -510,10 +831,18 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
     /* M7b-P0実画素結果がauthority。名前からfix_rotate_zへ置換しない。 */
     mlt_properties_set_double(props, "fix_rotate_x", clip->rotation_degrees);
     mlt_properties_set_double(props, "fix_shear_x", clip->shear_degrees);
-    mlt_transition_set_in_and_out(
-        transition, (mlt_position)clip->timeline_start_frame,
-        (mlt_position)(clip->timeline_start_frame + clip->timeline_duration_frames - 1));
-    for (int index = 0; index < clip->opacity_keyframe_count; ++index) {
+    if (first == 0 && last == clip->opacity_keyframe_count - 1) {
+        /* 製品の経路 (分割なし)。区間は timeline の絶対位置で、clip の尺そのもの。 */
+        mlt_transition_set_in_and_out(
+            transition, (mlt_position)clip->timeline_start_frame,
+            (mlt_position)(clip->timeline_start_frame + clip->timeline_duration_frames - 1));
+    } else {
+        mlt_transition_set_in_and_out(
+            transition, (mlt_position)(clip->timeline_start_frame + origin),
+            (mlt_position)(clip->timeline_start_frame + origin + span - 1));
+    }
+    long long keyframes = 0;
+    for (int index = first; index <= last; ++index) {
         if (index % 256 == 0 &&
             export_prepare_cancel_requested(spec, cancel_status, clip->timeline_duration_frames,
                                             err, err_size)) {
@@ -521,33 +850,47 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
             return 1;
         }
         const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[index];
-        mlt_rect rect = {clip->rect_x, clip->rect_y, clip->rect_width, clip->rect_height,
-                         key->opacity};
-        if (clip->motion_frame_count > 0) {
+        /* 区間の両端は必ず置く (隣の区間の keyframe には頼らない)。 */
+        const int edge = index == first || index == last;
+        long long position = key->local_frame - origin;
+        if (fault == 1 && position + 1 < span)
+            ++position; /* 故障: keyframe の位置を 1 frame ずらす */
+        if (fault == 2 && !edge && (index - first) % 2 == 1)
+            continue; /* 故障: 値の変わる区間の keyframe を 1 つおきに落とす */
+        if (clip->motion_frame_count > 0 &&
+            (edge || !rotation_key_redundant(clip, index, diagnostic_stride(spec)))) {
             const MvmExportMotionFrame* frame = &clip->motion_frames[key->local_frame];
-            rect.x = frame->rect_x;
-            rect.y = frame->rect_y;
-            rect.w = frame->rect_width;
-            rect.h = frame->rect_height;
-            if (mlt_properties_anim_set_double(
-                    props, "fix_rotate_x", frame->rotation_degrees, (mlt_position)key->local_frame,
-                    (mlt_position)clip->timeline_duration_frames, mlt_keyframe_linear) != 0 ||
-                mlt_properties_anim_set_double(
-                    props, "fix_shear_x", frame->shear_degrees, (mlt_position)key->local_frame,
-                    (mlt_position)clip->timeline_duration_frames, mlt_keyframe_linear) != 0) {
+            keyframes += 2;
+            if (mlt_properties_anim_set_double(props, "fix_rotate_x", frame->rotation_degrees,
+                                               (mlt_position)position, (mlt_position)length,
+                                               mlt_keyframe_linear) != 0 ||
+                mlt_properties_anim_set_double(props, "fix_shear_x", frame->shear_degrees,
+                                               (mlt_position)position, (mlt_position)length,
+                                               mlt_keyframe_linear) != 0) {
                 mlt_transition_close(transition);
                 set_err(err, err_size, "回転モーションを設定できません");
                 return 1;
             }
         }
-        if (mlt_properties_anim_set_rect(props, "rect", rect, (mlt_position)key->local_frame,
-                                         (mlt_position)clip->timeline_duration_frames,
-                                         mlt_keyframe_linear) != 0) {
+        if (!edge && placement_key_redundant(clip, index, diagnostic_stride(spec)))
+            continue;
+        ++keyframes;
+        mlt_rect rect = placement_rect_at(clip, index);
+        if (fault == 4 && index + 1 < clip->opacity_keyframe_count)
+            rect = placement_rect_at(clip, index + 1); /* 故障: 1 つ後の frame の値を置く */
+        if (fault == 3)
+            rect.o *= 0.5; /* 故障: 不透明度を半分にする */
+        if (mlt_properties_anim_set_rect(props, "rect", rect, (mlt_position)position,
+                                         (mlt_position)length, mlt_keyframe_linear) != 0) {
             mlt_transition_close(transition);
             set_err(err, err_size, "上位track affine opacity keyframeを設定できません");
             return 1;
         }
     }
+    observe_animation(spec, (long long)(last - first + 1) * (clip->motion_frame_count > 0 ? 3 : 1),
+                      keyframes);
+    if (spec->observer)
+        InterlockedIncrement64(&spec->observer->overlay_transitions);
     mlt_transition_set_tracks(transition, 0, clip->video_track);
     if (mlt_field_plant_transition(mlt_tractor_field(tractor), transition, 0, clip->video_track) !=
         0) {
@@ -556,6 +899,81 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
         return 1;
     }
     mlt_transition_close(transition);
+    return 0;
+}
+
+/* 上位 track の clip の配置と不透明度を affine transition として植える。
+ *
+ * 製品は clip ごとに 1 つ。試作 (observer の diagnostic_split_transitions、既定 0)
+ * は、値の変わらない 区間と変わる区間に分けて植える。MLT の affine は毎 frame、その transition の
+ * animation 全体を 文字列へ直すので、1 つの transition が持つ keyframe
+ * を「いま通っている区間」の分だけにする (docs/math-export-p2a.md)。どの frame にもその frame の
+ * keyframe があるか、値の変わらない区間の 中にあるので、評価される値は分けない場合と同じになる。
+ *   - 同じ値が kStaticRun frame 以上続く所を「変わらない区間」にする (keyframe は両端の 2 個)。
+ *   - 残りを「変わる区間」として、kAnimatedRun frame までの長さで区切る。 */
+static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
+                                       const MvmExportClip* clip, char* err, size_t err_size,
+                                       const MvmExportSpec* spec, int* cancel_status) {
+    const int count = clip->opacity_keyframe_count;
+    int split = spec->observer && spec->observer->diagnostic_split_transitions;
+    const int kStaticRun = split && spec->observer->diagnostic_split_static_run > 1
+                               ? spec->observer->diagnostic_split_static_run
+                               : 8;
+    const int kAnimatedRun = split && spec->observer->diagnostic_split_animated_run >= kStaticRun
+                                 ? spec->observer->diagnostic_split_animated_run
+                                 : 64;
+    const int kStaticChunk = split ? spec->observer->diagnostic_split_static_chunk : 0;
+    /* keyframe が全 frame に並んでいる clip だけを分ける (歯抜けなら従来どおり 1 つ)。 */
+    for (int index = 0; split && index < count; ++index)
+        split = clip->opacity_keyframes[index].local_frame == index;
+    if (!split || count < 2)
+        return plant_export_overlay_segment(profile, tractor, clip, 0, count - 1, err, err_size,
+                                            spec, cancel_status);
+    int first = 0;
+    while (first < count) {
+        /* first から同じ値が続く範囲。 */
+        int same = first;
+        while (
+            same + 1 < count &&
+            same_rect(placement_rect_at(clip, same), placement_rect_at(clip, same + 1)) &&
+            (clip->motion_frame_count == 0 || (clip->motion_frames[same].rotation_degrees ==
+                                                   clip->motion_frames[same + 1].rotation_degrees &&
+                                               clip->motion_frames[same].shear_degrees ==
+                                                   clip->motion_frames[same + 1].shear_degrees)))
+            ++same;
+        int last = same;
+        if (same - first + 1 >= kStaticRun && kStaticChunk >= kStaticRun &&
+            same - first + 1 > kStaticChunk)
+            last = first + kStaticChunk - 1; /* 診断用: 変わらない区間をさらに刻む */
+        if (same - first + 1 < kStaticRun) {
+            /* 変わる区間: 長い「変わらない区間」の手前まで、上限の長さで切る。 */
+            last = first;
+            int run = 1;
+            while (last + 1 < count && last - first + 1 < kAnimatedRun) {
+                const int next = last + 1;
+                run = same_rect(placement_rect_at(clip, last), placement_rect_at(clip, next)) &&
+                              (clip->motion_frame_count == 0 ||
+                               (clip->motion_frames[last].rotation_degrees ==
+                                    clip->motion_frames[next].rotation_degrees &&
+                                clip->motion_frames[last].shear_degrees ==
+                                    clip->motion_frames[next].shear_degrees))
+                          ? run + 1
+                          : 1;
+                if (run >= kStaticRun) {
+                    /* 直前の kStaticRun - 1 frame は次の「変わらない区間」へ回す。 */
+                    last = next - kStaticRun;
+                    break;
+                }
+                last = next;
+            }
+            if (last < first)
+                last = first;
+        }
+        if (plant_export_overlay_segment(profile, tractor, clip, first, last, err, err_size, spec,
+                                         cancel_status) != 0)
+            return 1;
+        first = last + 1;
+    }
     return 0;
 }
 
@@ -760,6 +1178,11 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             set_err(err, err_size, "clip %d は audio clip です。sequential 経路は映像専用です", i);
             return 1;
         }
+        if (clips[i].source_width != 0 || clips[i].source_height != 0 || clips[i].source_x != 0 ||
+            clips[i].source_y != 0) {
+            set_err(err, err_size, "clip %d は切り出した素材です。sequential 経路は扱えません", i);
+            return 1;
+        }
         if (clips[i].effects_enabled &&
             (clips[i].opacity_keyframe_count <= 0 || !clips[i].opacity_keyframes ||
              clips[i].rect_width <= 0.0 || clips[i].rect_height <= 0.0)) {
@@ -768,6 +1191,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         }
     }
 
+    observe_stage(spec, MVM_EXPORT_STAGE_GRAPH_BUILD);
     /* clip 数に上限を設けない。producer と cut は clip ごとに高々 1 本ずつ。 */
     producers = (mlt_producer*)calloc((size_t)clip_count, sizeof(*producers));
     cuts = (mlt_producer*)calloc((size_t)clip_count, sizeof(*cuts));
@@ -908,6 +1332,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     }
 
     /* --- consumer ---------------------------------------------------------- */
+    observe_stage(spec, MVM_EXPORT_STAGE_CONSUMER_START);
     consumer = mlt_factory_consumer(profile, "avformat", out_path);
     if (!consumer) {
         set_err(err, err_size, "avformat consumer を作れません: %s", out_path);
@@ -915,6 +1340,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     }
     /* sequential fast path は video clip だけを扱う。音声が必要な timeline は tractor へ送る。 */
     configure_mp4_consumer(consumer, out_path, spec, 0);
+    observe_consumer(consumer, spec);
 
     if (mlt_consumer_connect(consumer, MLT_PRODUCER_SERVICE(pp)) != 0) {
         set_err(err, err_size, "consumer を playlist へ接続できません");
@@ -926,24 +1352,30 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     }
 
     /* 完了待ち。timeout を成功扱いにしない。 */
+    observe_stage(spec, MVM_EXPORT_STAGE_RENDER);
     {
-        int waited = 0;
-        const int step = 20;
+        /* 1 回ごとに見る順: consumer が止まっていれば完了 → 取消 → timeout。同じ回で重なったら
+         * 先のものが勝つ (止まった時刻は MLT から分からないので、止まっていれば完了として扱う)。 */
+        ExportWait wait;
+        export_wait_begin(&wait, spec);
         while (!mlt_consumer_is_stopped(consumer)) {
+            observe_poll(spec, consumer);
             if (export_cancel_requested(spec, consumer, total)) {
                 cancelled = 1;
                 mlt_consumer_stop(consumer);
                 set_err(err, err_size, "書き出しをキャンセルしました");
                 goto fail;
             }
-            Sleep(step);
-            waited += step;
-            if (waited >= spec->timeout_ms) {
+            if (export_wait_expired(&wait, spec)) {
+                /* 進行 callback の間に終わっていれば、完了として扱う (timeout とは言わない)。 */
+                if (mlt_consumer_is_stopped(consumer))
+                    break;
                 mlt_consumer_stop(consumer);
                 set_err(err, err_size, "consumer が %d ms 以内に終了しませんでした (timeout)",
                         spec->timeout_ms);
                 goto fail;
             }
+            export_wait_sleep(&wait, spec);
         }
         if (spec->progress_callback &&
             spec->progress_callback(total, total, spec->progress_opaque) != 0) {
@@ -953,11 +1385,13 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             goto fail;
         }
     }
+    observe_stage(spec, MVM_EXPORT_STAGE_CONSUMER_CLOSE);
     mlt_consumer_stop(consumer);
     mlt_consumer_close(consumer);
     consumer = NULL;
 
     /* --- 出力の検証 -------------------------------------------------------- */
+    observe_stage(spec, MVM_EXPORT_STAGE_OUTPUT_VERIFY);
     if (spec->rgba_callback && (audit.rejected || audit.observed < total)) {
         set_err(err, err_size, "encoder 直前の RGBA 検査が失敗または不足しました");
         goto fail;
@@ -1002,6 +1436,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         }
     }
 
+    detach_frame_observer(pp, &audit);
     for (int i = 0; i < cut_count; i++)
         mlt_producer_close(cuts[i]);
     for (int i = 0; i < producer_count; i++)
@@ -1010,6 +1445,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     free(producers);
     mlt_playlist_close(playlist);
     mlt_profile_close(profile);
+    observe_stage(spec, MVM_EXPORT_STAGE_DONE);
     return 0;
 
 fail:
@@ -1017,6 +1453,8 @@ fail:
         mlt_consumer_stop(consumer);
         mlt_consumer_close(consumer);
     }
+    detach_frame_observer(pp, &audit);
+    observe_stage(spec, MVM_EXPORT_STAGE_FAILED);
     for (int i = 0; i < cut_count; i++)
         mlt_producer_close(cuts[i]);
     for (int i = 0; i < producer_count; i++)
@@ -1032,6 +1470,265 @@ fail:
 
 /* playlist に frames 分の空きを足す。V1 (track 0) は黒の背景で埋め、それ以外は blank にする。
  * V1 を blank にすると、上位 track の affine transition が掛からない (上の定義を参照)。 */
+/* --- 数式 group の transition (試作、P3-3A・P3-3B。observer の diagnostic_math_group が 0 なら
+ * 何もしない) ---
+ *
+ * 合成の順は clips の並び (上位 track の clip ごとに transition を植える順) で決まる。
+ * group は、その最初の member の位置へ 1 つの transition として植え、member を並びの順 (下から) に
+ * 合成する。member にできるのは、配置が対象 (mvm_mlt_math_group_clip_eligible) の clip だけで、
+ * それ以外の clip は従来の経路へ残す。どの clip をどの group に入れるかは rule で決まる。
+ *
+ * rule 0 (P3-3A): group は 1 つ。並びで自分より前にある従来の clip のどれとも時間が重ならない clip
+ *   だけを member にする。member の下にあるのは V1 と同じ group の前の member だけになる
+ *   (下地が不透明だと言える)。
+ * rule 1 (P3-3B): 合成の順だけを守る。group の最初の member より後ろ・自分より前にある従来の clip
+ * と 時間が重なる clip が来たら、そこで新しい group を始める。group の下地は、従来の layer や前の
+ *   group が作った画素を含む (alpha が 255 とは限らない)。
+ *
+ * 順序が保たれる理由 (どちらの rule も): member c は group の位置 (最初の member の位置)
+ * で合成される。 その位置と c の間にある従来の clip が c と同じ frame に見えていなければ、c
+ * を先に合成しても どの frame の結果も変わらない。group の位置より前の clip は先に、c より後ろの
+ * clip は後に合成される。
+ *
+ * groups[index]: 正 = group の番号 (1 始まり)、0 = 従来の経路。group の数を返す (失敗は -1)。 */
+static int assign_math_groups(const MvmExportClip* clips, int clip_count, const MvmExportSpec* spec,
+                              int* groups, char* err, size_t err_size) {
+    MvmExportObserver* observer = spec->observer;
+    if (!observer || !observer->diagnostic_math_group)
+        return 0;
+    if (!observer->diagnostic_math_group_compose) {
+        set_err(err, err_size, "数式 group の合成の callback がありません");
+        return -1;
+    }
+    const int rule = observer->diagnostic_math_group_rule;
+    int* assignment = observer->diagnostic_math_group_assignment;
+    if (assignment && observer->diagnostic_math_group_assignment_capacity < clip_count)
+        assignment = NULL;
+    /* rule 1 で、今の group の最初の member より後ろに現れた従来の clip。 */
+    int* since = (int*)calloc((size_t)(clip_count > 0 ? clip_count : 1), sizeof(int));
+    if (!since) {
+        set_err(err, err_size, "数式 group の作業用の配列を確保できません");
+        return -1;
+    }
+    int since_count = 0, current = 0, next = 0;
+    for (int index = 0; index < clip_count; ++index) {
+        const MvmExportClip* clip = &clips[index];
+        if (assignment)
+            assignment[index] = 0;
+        if (clip->is_audio || clip->video_track <= 0)
+            continue; /* transition を植えない clip。順序にも下地の alpha にも関わらない */
+        const char* reason = NULL;
+        int eligible = mvm_mlt_math_group_clip_eligible(clip, spec->width, spec->height, &reason);
+        const int geometry = eligible;
+        const long long begin = clip->timeline_start_frame;
+        const long long end = begin + clip->timeline_duration_frames;
+        if (eligible && rule == 0) {
+            for (int before = 0; eligible && before < index; ++before) {
+                const MvmExportClip* other = &clips[before];
+                if (groups[before] != 0 || other->is_audio || other->video_track <= 0)
+                    continue;
+                if (other->timeline_start_frame < end &&
+                    other->timeline_start_frame + other->timeline_duration_frames > begin) {
+                    eligible = 0;
+                    reason = "above-retained-layer";
+                }
+            }
+            if (eligible) {
+                groups[index] = next = 1;
+                if (assignment)
+                    assignment[index] = 1;
+                continue;
+            }
+        } else if (eligible) {
+            for (int at = 0; current && at < since_count; ++at) {
+                const MvmExportClip* other = &clips[since[at]];
+                if (other->timeline_start_frame < end &&
+                    other->timeline_start_frame + other->timeline_duration_frames > begin)
+                    current = 0; /* この group には入れられない。新しい group を始める */
+            }
+            if (!current) {
+                current = ++next;
+                since_count = 0;
+            }
+            groups[index] = current;
+            if (assignment)
+                assignment[index] = current;
+            continue;
+        }
+        /* 従来の経路へ残す。 */
+        if (rule != 0 && current)
+            since[since_count++] = index;
+        if (clip->math_group_raster) {
+            /* 申告されたが対象外。黙って合成器へ回さず、従来の経路へ残して数える。 */
+            if (assignment)
+                assignment[index] = geometry ? -2 : -1;
+            InterlockedIncrement64(geometry ? &observer->math_group_retained_above
+                                            : &observer->math_group_retained_geometry);
+            if (InterlockedIncrement64(&observer->math_group_retained_clips) == 1)
+                snprintf(observer->math_group_retained_reason,
+                         sizeof(observer->math_group_retained_reason), "%s",
+                         reason ? reason : "not-overlay-video");
+        }
+    }
+    free(since);
+    return next;
+}
+
+/* 番号 id の group の member (並びの順) を 1 つの transition として、V1 とその group 用の空の track
+ * の間へ植える。transition は上の track の frame を隠すので、group ごとに、他の clip も他の group
+ * も 載らない専用の track を使う (同じ track を 2 つの group が使うと、2 つ目が呼ばれない)。 */
+static int plant_export_math_group(mlt_tractor tractor, const MvmExportClip* clips, int clip_count,
+                                   const int* groups, int id, int group_track,
+                                   const MvmExportSpec* spec, char* err, size_t err_size) {
+    int count = 0;
+    for (int index = 0; index < clip_count; ++index)
+        count += groups[index] == id;
+    const MvmExportClip** members =
+        (const MvmExportClip**)calloc((size_t)(count > 0 ? count : 1), sizeof(*members));
+    if (!members || count <= 0) {
+        free(members);
+        set_err(err, err_size, "数式 group の member 配列を確保できません");
+        return 1;
+    }
+    for (int index = 0, at = 0; index < clip_count; ++index)
+        if (groups[index] == id)
+            members[at++] = &clips[index];
+    char reason[160] = {0};
+    mlt_transition transition = mvm_mlt_math_group_new(
+        members, count, id, spec->width, spec->height, spec->observer, reason, sizeof(reason));
+    free(members);
+    if (!transition) {
+        set_err(err, err_size, "%s", reason);
+        return 1;
+    }
+    mlt_transition_set_tracks(transition, 0, group_track);
+    if (mlt_field_plant_transition(mlt_tractor_field(tractor), transition, 0, group_track) != 0) {
+        mlt_transition_close(transition);
+        set_err(err, err_size, "数式 group の transition を V1 との間へ配置できません");
+        return 1;
+    }
+    mlt_transition_close(transition);
+    MvmExportObserver* observer = spec->observer; /* group は observer がある時だけ作られる */
+    if (observer) {
+        InterlockedIncrement64(&observer->math_group_transitions);
+        InterlockedExchangeAdd64(&observer->math_group_clips, count);
+    }
+    return 0;
+}
+
+/* 書き出しの前の判定 (P3-3D): group を使う graph にしてよいか。
+ *
+ * 合成器は、合成を始める前の下地の alpha が 1 以上であることを要求する。下地は、V1 の画素へ、
+ * group より下の layer (従来の affine と、前の group) を重ねたものである。次の 2 つが言えれば、
+ * 下地の alpha は 1 以上になる。
+ *   (O1) group の member が見えている全 frame で、V1 の画素の alpha が 1 以上。
+ *   (O2) 下の layer を重ねても alpha は下がらない (alpha が 1 以上の画素は 1 以上のまま)。
+ * (O1) は、V1 の clip ごとの証明 (上位の層が stage した画素を全部走査した最小値) で確かめる。
+ * V1 の隙間は黒の color producer で、alpha は 255 である。証明の無い clip
+ * (動画など)、effect・crop・ motion のある V1 の clip (affine filter
+ * が掛かり、出す画素を確かめていない) があれば UNKNOWN。 最小値 0 の clip があれば INELIGIBLE。
+ * (O2) は、MLT の合成の式 (合成後の alpha = 上 + 下 - 上 × 下。interp.h の全部の補間で同じ) と、
+ * この式が alpha を下げないことの検査 (単体試験) による。ここでは layer ごとには確かめない。
+ * 判定は画素を render しない。実行時の下地の検査 (合成器の拒否) は、判定に関わらず残る。
+ *
+ * P3-4: 証明は「stage した静止画 1 枚」についてのものなので、そうでない clip (連番・動画・
+ * frame hold・切り出した素材) に証明が付いていても使わない (呼び出し側の誤りを ELIGIBLE に
+ * しない)。画素も MLT も使わない関数なので、単体試験から直接呼べる形にしてある。 */
+void mvm_mlt_export_math_group_preflight(const MvmExportClip* clips, int clip_count,
+                                         const int* groups, int group_count, int ignore_proof,
+                                         int forge_proof, int* out_decision, char* out_reason,
+                                         size_t reason_size, int* out_lowest,
+                                         long long* out_checked) {
+    const char* reason = "base-alpha-proven";
+    int decision = MVM_MATH_GROUP_DECISION_ELIGIBLE;
+    int lowest = -1;
+    long long checked = 0;
+    if (group_count <= 0) {
+        decision = MVM_MATH_GROUP_DECISION_INELIGIBLE;
+        reason = "no-eligible-math-clip";
+    } else if (!clips || !groups) { /* 入力が欠けている。言えない。 */
+        decision = MVM_MATH_GROUP_DECISION_UNKNOWN;
+        reason = "base-alpha-unproven";
+        clip_count = 0;
+    }
+    for (int base = 0; group_count > 0 && base < clip_count; ++base) {
+        const MvmExportClip* v1 = &clips[base];
+        if (v1->is_audio || v1->video_track != 0)
+            continue;
+        /* この V1 の clip が、どれかの member と同じ frame に見えるか。 */
+        int relevant = 0;
+        for (int index = 0; !relevant && index < clip_count; ++index) {
+            const MvmExportClip* member = &clips[index];
+            relevant = groups[index] > 0 &&
+                       v1->timeline_start_frame <
+                           member->timeline_start_frame + member->timeline_duration_frames &&
+                       v1->timeline_start_frame + v1->timeline_duration_frames >
+                           member->timeline_start_frame;
+        }
+        if (!relevant)
+            continue;
+        ++checked;
+        const int staged_still = v1->is_still_image && !v1->is_image_sequence && !v1->is_frame_hold;
+        const int proof = ignore_proof    ? 0
+                          : forge_proof   ? forge_proof
+                          : !staged_still ? 0
+                                          : v1->math_group_base_alpha_proof;
+        const int transformed = v1->effects_enabled || v1->motion_frame_count > 0 ||
+                                v1->crop_left != 0 || v1->crop_top != 0 || v1->crop_right != 0 ||
+                                v1->crop_bottom != 0 || v1->opaque_backdrop ||
+                                v1->source_width != 0 || v1->source_height != 0 ||
+                                v1->source_x != 0 || v1->source_y != 0;
+        if (proof == 1 && !transformed) {
+            /* alpha 0 の画素が実際にある。これ以上調べなくてよい。 */
+            decision = MVM_MATH_GROUP_DECISION_INELIGIBLE;
+            reason = "base-alpha-zero";
+            lowest = 0;
+            break;
+        }
+        if (proof <= 0 || proof > 256 || transformed) {
+            decision = MVM_MATH_GROUP_DECISION_UNKNOWN;
+            reason = transformed ? "base-clip-transformed" : "base-alpha-unproven";
+            continue; /* 後の clip で alpha 0 が見つかれば INELIGIBLE にする */
+        }
+        if (lowest < 0 || proof - 1 < lowest)
+            lowest = proof - 1;
+    }
+    /* ELIGIBLE でないときは、証明した最小値を返さない (途中まで調べた値を証明として読ませない)。 */
+    if (decision == MVM_MATH_GROUP_DECISION_UNKNOWN)
+        lowest = -1;
+    if (out_decision)
+        *out_decision = decision;
+    if (out_reason && reason_size > 0)
+        snprintf(out_reason, reason_size, "%s", reason);
+    if (out_lowest)
+        *out_lowest = lowest;
+    if (out_checked)
+        *out_checked = checked;
+}
+
+static void math_group_preflight(const MvmExportClip* clips, int clip_count, const int* groups,
+                                 int group_count, MvmExportObserver* observer) {
+    mvm_mlt_export_math_group_preflight(
+        clips, clip_count, groups, group_count, observer->diagnostic_math_group_ignore_alpha_proof,
+        observer->diagnostic_math_group_forge_alpha_proof, &observer->math_group_decision,
+        observer->math_group_decision_reason, sizeof(observer->math_group_decision_reason),
+        &observer->math_group_base_alpha_proven, &observer->math_group_base_clips_checked);
+}
+
+/* group の transition が失敗を記録していれば、書き出しを失敗にする。 */
+static int math_group_failed(const MvmExportSpec* spec, char* err, size_t err_size) {
+    MvmExportObserver* observer = spec->observer;
+    if (!observer || !observer->diagnostic_math_group ||
+        InterlockedCompareExchange64(&observer->math_group_errors, 0, 0) == 0)
+        return 0;
+    if (InterlockedCompareExchange(&observer->math_group_error_ready, 0, 0))
+        set_err(err, err_size, "%s (frame %lld)", observer->math_group_error,
+                observer->math_group_error_frame);
+    else
+        set_err(err, err_size, "数式 group の合成に失敗しました");
+    return 1;
+}
+
 static int append_gap(mlt_playlist playlist, int track, mlt_producer v1_background,
                       long long frames) {
     if (frames <= 0)
@@ -1061,8 +1758,15 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     mlt_consumer consumer = NULL;
     long long* cursors = NULL;
     mlt_producer v1_background = NULL;
+    MvmV1Background* v1_guard = NULL; /* v1_background の持ち主 (cache の保護と検査) */
     int failed = MVM_EXPORT_FAILED;
     ExportRgbaAudit audit = {spec, 0, 0};
+    long long render_frames = total_duration;
+    int* group_members = NULL; /* 試作 (P3-3A)。NULL なら全 clip が従来の経路 */
+    int group_track = -1;      /* group 1 の transition が上の track として使う空の track */
+    int group_count = 0;       /* group の数 (group k は track group_track + k - 1 を使う) */
+    char* group_planted = NULL;
+    int group_probe_only = 0; /* 非 0 なら member は従来の経路のまま (測るだけ) */
 
     if (out)
         memset(out, 0, sizeof(*out));
@@ -1088,6 +1792,50 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             return 1;
         } else if (clip->video_track + 1 > video_playlist_count) {
             video_playlist_count = clip->video_track + 1;
+        }
+    }
+    if (spec->observer && spec->observer->diagnostic_math_group) {
+        /* 試作 (P3-3A): member を決め、member があれば映像 track の一番上に空の track を 1 本足す
+         * (audio の track はその上に続く)。 */
+        group_members = (int*)calloc((size_t)(clip_count > 0 ? clip_count : 1), sizeof(int));
+        if (!group_members) {
+            set_err(err, err_size, "数式 group の配列を確保できません");
+            return 1;
+        }
+        const int assigned =
+            assign_math_groups(clips, clip_count, spec, group_members, err, err_size);
+        if (assigned < 0) {
+            free(group_members);
+            return 1;
+        }
+        /* P3-3D: 書き出しの前の判定。mode 3 では、ELIGIBLE でなければ従来の graph をそのまま使う
+         * (member の配列を捨てるので、以降は group を使わない書き出しと同じ道を通る)。 */
+        math_group_preflight(clips, clip_count, group_members, assigned, spec->observer);
+        const int use_groups = assigned > 0 && (spec->observer->diagnostic_math_group != 3 ||
+                                                spec->observer->math_group_decision ==
+                                                    MVM_MATH_GROUP_DECISION_ELIGIBLE);
+        spec->observer->math_group_graph = use_groups ? 1 : 0;
+        if (use_groups) {
+            /* group ごとに空の track を 1 本ずつ、映像 track の一番上へ足す。 */
+            group_count = assigned;
+            group_track = video_playlist_count;
+            video_playlist_count += assigned;
+            group_probe_only = spec->observer->diagnostic_math_group == 2;
+            group_planted = (char*)calloc((size_t)assigned + 1, 1);
+            if (!group_planted) {
+                free(group_members);
+                set_err(err, err_size, "数式 group の配列を確保できません");
+                return 1;
+            }
+        } else {
+            free(group_members);
+            group_members = NULL;
+        }
+        {
+            PROCESS_MEMORY_COUNTERS counters;
+            if (GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
+                spec->observer->math_group_working_set_at_export =
+                    (long long)counters.WorkingSetSize;
         }
     }
     track_capacity = video_playlist_count + audio_clip_count;
@@ -1131,6 +1879,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         cut_capacity += 2 + clip->tail_padding_frames;
         if (!clip->is_audio && clip->timeline_start_frame < cursors[clip->video_track]) {
             set_err(err, err_size, "tractor clip %dが同一trackで重複または未sortです", index);
+            goto cleanup;
+        }
+        if (!source_region_valid(clip, spec)) {
+            set_err(err, err_size, "clip %dの切り出した素材の配置が不正です", index);
             goto cleanup;
         }
         if (clip->is_audio) {
@@ -1179,6 +1931,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             goto cleanup;
         }
     }
+    observe_stage(spec, MVM_EXPORT_STAGE_GRAPH_BUILD);
     cuts = (mlt_producer*)calloc((size_t)(cut_capacity > 0 ? cut_capacity : 1), sizeof(*cuts));
     if (!cuts) {
         set_err(err, err_size, "cut 配列を確保できません");
@@ -1227,15 +1980,22 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
      * affine transition は下の frame が test card だと上の frame をそのまま返す (実測)。
      * そのため V1 が空の区間では、V2 以上の clip の位置・拡大・回転・crop・不透明度が
      * 書き出されていなかった (docs/premiere-like-editing.md §18.6)。 */
-    v1_background = mlt_factory_producer(profile, "color", "#000000");
-    if (!v1_background) {
-        set_err(err, err_size, "V1 の背景 (color producer) を作れません");
-        goto cleanup;
+    /* MLT の color producer は、cache を作り直す間に来た別の worker へ、埋まる前の画素を返す
+     * ことがある。形式を固定し、consumer を始める前に 1 thread で cache を作り、以後は画像の
+     * 要求ごとに cache が変わっていないことを確かめる (mvm_mlt_v1_background.h)。
+     * 従来の graph でも数式 group の graph でも同じ背景を使う。 */
+    {
+        char reason[256] = {0};
+        v1_guard = mvm_mlt_v1_background_new(
+            profile, total_duration, spec->width, spec->height,
+            spec->observer ? spec->observer->diagnostic_v1_background_fault : 0, reason,
+            sizeof(reason));
+        if (!v1_guard) {
+            set_err(err, err_size, "%s", reason);
+            goto cleanup;
+        }
+        v1_background = mvm_mlt_v1_background_producer(v1_guard);
     }
-    mlt_properties_set_position(MLT_PRODUCER_PROPERTIES(v1_background), "length",
-                                (mlt_position)total_duration + 1);
-    mlt_properties_set_position(MLT_PRODUCER_PROPERTIES(v1_background), "out",
-                                (mlt_position)total_duration);
 
     tractor = mlt_tractor_new();
     for (int track = 0; track < video_playlist_count; ++track) {
@@ -1263,6 +2023,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                 goto cleanup;
             }
         }
+        /* 試作 (P3-3A): 数式 group でまとめる clip は playlist に置かない。その区間は blank の
+         * まま残り (下の gap の処理が埋める)、画像は group の transition が合成する。 */
+        if (group_members && group_members[index] && !group_probe_only)
+            continue;
         if (clip->timeline_start_frame > cursors[track]) {
             if (append_gap(playlists[track], track, v1_background,
                            clip->timeline_start_frame - cursors[track]) != 0) {
@@ -1357,6 +2121,27 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     for (int index = 0; index < clip_count; ++index) {
         if (clips[index].is_audio || clips[index].video_track == 0)
             continue;
+        if (group_members && group_members[index]) {
+            /* 試作 (P3-3A・P3-3B): group の最初の member の位置へ、その group の全 member を 1 つの
+             * transition として植える。残りの member はここでは何も植えない (合成の順が変わらない
+             * 理由は assign_math_groups)。 */
+            const int id = group_members[index];
+            if (id < 1 || id > group_count) {
+                set_err(err, err_size, "数式 group の番号が不正です");
+                goto cleanup;
+            }
+            if (!group_planted[id]) {
+                if (plant_export_math_group(tractor, clips, clip_count, group_members, id,
+                                            group_track + id - 1, spec, err, err_size) != 0)
+                    goto cleanup;
+                group_planted[id] = 1;
+                if (out)
+                    ++out->transition_count;
+            }
+            if (!group_probe_only)
+                continue;
+            /* 測るだけの mode: member は下で従来の affine として植える。 */
+        }
         if (plant_export_overlay_affine(profile, tractor, &clips[index], err, err_size, spec,
                                         &failed) != 0)
             goto cleanup;
@@ -1389,38 +2174,74 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         }
         mlt_producer_set_in_and_out(output, 0, (mlt_position)(total_duration - 1));
         mlt_producer_seek(output, 0);
+        if (spec->observer && spec->observer->diagnostic_frame_count != 0) {
+            /* 診断用: graph はそのまま、途中の区間だけを書き出す。 */
+            const long long first = spec->observer->diagnostic_first_frame;
+            const long long count = spec->observer->diagnostic_frame_count;
+            if (first < 0 || count <= 0 || first > total_duration - count) {
+                set_err(err, err_size, "診断用の書き出し区間がProjectの尺に収まりません");
+                goto cleanup;
+            }
+            mlt_producer_set_in_and_out(output, 0, (mlt_position)(first + count - 1));
+            mlt_producer_seek(output, (mlt_position)first);
+            render_frames = count;
+        }
         if (attach_rgba_audit(output, &audit)) {
             set_err(err, err_size, "encoder 直前の RGBA 検査を接続できません");
             goto cleanup;
         }
+        observe_stage(spec, MVM_EXPORT_STAGE_CONSUMER_START);
         consumer = mlt_factory_consumer(profile, "avformat", out_path);
         if (!consumer) {
             set_err(err, err_size, "avformat consumerを作れません");
             goto cleanup;
         }
         configure_mp4_consumer(consumer, out_path, spec, playlist_count > video_playlist_count);
+        observe_consumer(consumer, spec);
         if (mlt_consumer_connect(consumer, MLT_PRODUCER_SERVICE(output)) != 0 ||
             mlt_consumer_start(consumer) != 0) {
             set_err(err, err_size, "tractor consumerを開始できません");
             goto cleanup;
         }
     }
+    observe_stage(spec, MVM_EXPORT_STAGE_RENDER);
     {
-        int waited = 0;
+        /* 1 回ごとに見る順: consumer が止まっていれば完了 → 取消 → 合成・背景の失敗 → timeout。
+         * 同じ回で重なったら先のものが勝つ (止まった時刻は MLT から分からないので、止まっていれば
+         * 完了として扱い、timeout とは言わない)。 */
+        ExportWait wait;
+        export_wait_begin(&wait, spec);
         while (!mlt_consumer_is_stopped(consumer)) {
+            observe_poll(spec, consumer);
             if (export_cancel_requested(spec, consumer, total_duration)) {
                 failed = MVM_EXPORT_CANCELLED;
                 mlt_consumer_stop(consumer);
                 set_err(err, err_size, "書き出しをキャンセルしました");
                 goto cleanup;
             }
-            Sleep(20);
-            waited += 20;
-            if (waited >= spec->timeout_ms) {
+            if (math_group_failed(spec, err, err_size)) {
+                mlt_consumer_stop(consumer);
+                goto cleanup;
+            }
+            /* 背景の cache が作り直された (埋まる前の画素を出したおそれがある)。続けない。 */
+            if (mvm_mlt_v1_background_failed(v1_guard, err, err_size)) {
+                mlt_consumer_stop(consumer);
+                goto cleanup;
+            }
+            if (export_wait_expired(&wait, spec)) {
+                /* 進行 callback の間に終わっていれば、完了として扱う (timeout とは言わない)。 */
+                if (mlt_consumer_is_stopped(consumer))
+                    break;
                 set_err(err, err_size, "tractor consumerがtimeoutしました");
                 goto cleanup;
             }
+            export_wait_sleep(&wait, spec);
         }
+        /* 最後の frame での失敗を取りこぼさない。 */
+        if (math_group_failed(spec, err, err_size))
+            goto cleanup;
+        if (mvm_mlt_v1_background_failed(v1_guard, err, err_size))
+            goto cleanup;
         if (spec->progress_callback &&
             spec->progress_callback(total_duration, total_duration, spec->progress_opaque) != 0) {
             failed = MVM_EXPORT_CANCELLED;
@@ -1429,10 +2250,12 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             goto cleanup;
         }
     }
+    observe_stage(spec, MVM_EXPORT_STAGE_CONSUMER_CLOSE);
     mlt_consumer_stop(consumer);
     mlt_consumer_close(consumer);
     consumer = NULL;
-    if (spec->rgba_callback && (audit.rejected || audit.observed < total_duration)) {
+    observe_stage(spec, MVM_EXPORT_STAGE_OUTPUT_VERIFY);
+    if (spec->rgba_callback && (audit.rejected || audit.observed < render_frames)) {
         set_err(err, err_size, "encoder 直前の RGBA 検査が失敗または不足しました");
         goto cleanup;
     }
@@ -1465,6 +2288,9 @@ cleanup:
         mlt_consumer_close(consumer);
     }
     if (tractor)
+        detach_frame_observer(MLT_TRACTOR_PRODUCER(tractor), &audit);
+    observe_stage(spec, failed == MVM_EXPORT_OK ? MVM_EXPORT_STAGE_DONE : MVM_EXPORT_STAGE_FAILED);
+    if (tractor)
         mlt_tractor_close(tractor);
     for (int track = playlist_count - 1; track >= 0; --track)
         if (playlists[track])
@@ -1477,12 +2303,29 @@ cleanup:
         if (producers[index])
             mlt_producer_close(producers[index]);
     free(producers);
-    if (v1_background)
-        mlt_producer_close(v1_background);
+    if (v1_guard) {
+        if (spec->observer)
+            mvm_mlt_v1_background_stats(v1_guard, &spec->observer->v1_background_frames,
+                                        &spec->observer->v1_background_violations,
+                                        &spec->observer->v1_background_rejected,
+                                        &spec->observer->v1_background_requested_formats);
+        mvm_mlt_v1_background_close(v1_guard);
+    }
     free(cursors);
     free(audio_tracks);
     free(playlists);
+    free(group_members);
+    free(group_planted);
     if (profile)
         mlt_profile_close(profile);
+    /* 試作 (P3-3A): graph を閉じた後に、group の transition と実行中の callback が残っていない
+     * こと。残っていれば、呼び出し側が持つ画像を解放後に参照しうるので、成功として返さない。 */
+    if (spec && spec->observer && spec->observer->diagnostic_math_group &&
+        (mvm_mlt_math_group_live() != 0 || mvm_mlt_math_group_active() != 0)) {
+        if (failed == MVM_EXPORT_OK) {
+            set_err(err, err_size, "数式 group の transition が解放されていません");
+            failed = MVM_EXPORT_FAILED;
+        }
+    }
     return failed;
 }

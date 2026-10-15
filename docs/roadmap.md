@@ -102,6 +102,166 @@
   BuildIndependent 1080/1080 と lint が通過し、P3-6.1・P3-6・初期 vertical slice を再閉鎖した。
   [依存範囲修正の証拠](math-equation-sequence-p30.md#p3-61-可視範囲の静止依存) を参照。
 
+### 数式の配置編集を製品へ統合する
+
+- 解の公式で、固定する項と移動する部分式を分ける配置 compiler と、正式な cancel
+  template を導入した。[設計と検証手順](math-semantic-layout.md) を参照。
+- 書き出しは数式 1 層ごとに全画面を合成する。層の数に比例して遅くなり（48 層で
+  0.55 秒/frame）、解の公式の Project 全体（114 秒）は製品の 10 分の timeout では終わらない。
+  （この段落は P3 の始めの状況。従来の方法は今も同じだが、P3-6C で入れた opt-in の「数式の書き出しを
+  高速化（試験的）」を on にすると、Project 全体は 180〜291 秒で終わる。下の P3-6C.2 を参照。）
+  字形の範囲だけを合成する（疎なラスタ）か、同時に見える部分式を書き出し前に 1 層へまとめる。
+  どちらも pre-YUV の画素が変わりうるので、[計測と照合の手順](math-semantic-layout.md#残っている制約)
+  で変化を測ってから入れる。timeout を開始からの経過時間ではなく、進行の停止で判定するかは未決定。
+  - P1 の調査（[結果](math-sparse-raster-p1.md)）: 字形の範囲だけを渡す試作は区間の fixture で
+    2〜5 倍になったが、Project 全体では改善が出ず、製品の条件では完了しなかった。完全一致を保てるのは
+    左上の原点を動かさない切り出しだけ。製品の経路は切り替えていない。先に、keyframe の文字列化を
+    Project の長さから切り離す必要がある。
+  - P2-A の調査（[結果](math-export-p2a.md)）: Project 全体が区間より遅い差の 81〜93% は、MLT が毎 frame
+    行う animation の文字列化だった（実測で確認）。transition を区間ごとに分ける試作は 1320 frame で
+    画素が完全一致し、文字列化も消えたが、transition が増えた分のコストが出て改善が一定しない（HOLD）。
+    次は、transition の数と keyframe の数の釣り合いを測る。
+  - P2-B の調査（[結果](math-export-p2b.md)）: 植えた transition 1 つにつき毎 frame 0.29〜0.35 ms の
+    固定費がある（graph の大きさに比例）。分割はこれと文字列化の減少が相殺し、4 つの分け方とも利益が
+    一定しない（画素は 3840 frame で完全一致）。分割は HOLD。次は MLT の affine の実行経路の計測か、
+    数式 layer を MLT の外で合成する設計の検討。
+  - P3-Design（[設計](math-compositor-p3-design.md)）: 数式の group を、字形の範囲だけ合成する CPU 合成器で
+    MLT の合成の位置に置く案を推奨（実装は未着手）。独立した binary32 の計算は代表 7 frame 中 6 frame で
+    MLT と全画素一致し、1 frame で 1 画素が違う。この差を解明するまで製品の挙動は変えない。
+  - P3-1（[結果](math-compositor-p31.md)）: 1 画素の差の原因は、motion のある clip に付く qtcrop の
+    描き直しだった。純粋な合成器（`src/media/math/math_group_compose`）は、独立した oracle と全 byte 一致し、
+    実際の MLT の pre-YUV とも代表 20 frame で完全一致した。全 frame の比較と丸めの対照が残っている（HOLD）。
+  - P3-1.1（[結果](math-compositor-p311.md)）: 全 frame へ広げた比較で、`cmp-layers-48` の 6 frame に
+    1 画素ずつの差が見つかった（HOLD）。丸めと範囲の対照は成立。
+  - P3-1.2（[結果](math-compositor-p312.md)）: 差の原因は、合成器が下の alpha を 255 で割っていたこと
+    （MLT の実 binary は 1/255 を掛ける。下の alpha が 254 の画素で 1 階調ずれる）。1 行の修正で、対象の
+    841 frame が MLT の pre-YUV と全画素一致した。拡縮を含む 119 frame は対象外のまま。layer の画像は
+    範囲を外から渡せない型にし、不透明でない下地は拒否する。MLT への組み込みは未着手。
+  - P3-3A（[結果](math-transition-p33a.md)）: 合成器を MLT の transition として入れる試作（診断専用、既定は
+    無効）。製品の経路の pre-YUV と全 frame 一致し、数式が 16 層以上重なる区間の render は 7.6〜16 倍に
+    なった。ただし合成器は不透明な下地だけが対象なので、拡縮する layer の上の数式は group にできず、
+    v4 の Project 全体の graph では 99 clip 中 25 だけが対象で、利益は 1.17〜1.39 倍にとどまる。
+    下地の条件・画像の memory（全体で 783 MB）・data race の検出が未解決。製品へは入れていない。
+  - P3-3B（[結果](math-transition-p33b.md)）: 合成器の下地の対象を「alpha 1 以上」へ広げた（1〜255 の全値で
+    実際の MLT と全画素一致。alpha 0 は MLT が色を 0 に書き換えるので対象外）。合成の順だけを守る
+    分け方にして、v4 の Project 全体の graph で 99 clip 中 97 が group になり、4 区間とも pre-YUV が一致、
+    render は 9.6〜22.6 倍（別々の process で B, C, C, B）。準備済みの画像の memory（783 MB）、
+    data race の検出、Project 全体の書き出しは未解決。製品へは入れていない。
+  - P3-3C（[結果](math-transition-p33c.md)）: 準備済みの画像を、中身のある範囲の画素だけで持つ形にした。
+    v4 の Project 全体の graph で 783 MB → 2.81 MB、process の peak は製品の経路より約 200 MB 少ない。
+    製品の経路・全画面で持つ形・範囲だけで持つ形の pre-YUV が 1,920 frame で一致。合成の時間は
+    持ち方で変わらない（減ったのは memory と準備の時間）。alpha 0 の下地の扱い、data race の検出、
+    Project 全体の書き出しは未解決。製品へは入れていない。
+  - P3-3D（[結果](math-transition-p33d.md)）: 数式 group を使ってよいかを書き出しの前に判定し
+    （ELIGIBLE / INELIGIBLE / UNKNOWN）、ELIGIBLE のときだけ使う。それ以外は従来の graph で書き出す。
+    根拠は、V1 の stage した静止画の alpha の全画素の走査と、「alpha 1 以上の画素は何を重ねても 0 に
+    ならない」ことの検査。21 通りの判定が期待どおりで、全 frame が製品の経路と一致。合成器・画像の
+    共有は ThreadSanitizer・AddressSanitizer で報告 0（MLT の統合部分は検出器の対象外で、stress で確認）。
+    Project 全体の書き出し、MLT の統合部分の race の検出、製品での有効化は未着手。
+  - P3-4（[結果](math-export-p34.md)）: 判定つきの数式 group（診断用）で、v4 の Project 全体
+    （6840 frame）を 1 回書き出した。実時間 272.4 秒で完走し、H.264 の 6840 frame を復号でき、
+    encoder 直前の RGBA は全 frame が製品の経路と一致した。判定は、静止画でない clip に付いた証明を
+    使わないよう直し、単体試験を足した。製品での有効化はまだ（繰り返しの安定、MLT の統合部分の
+    race の検出、製品からの入口、実行時の拒否のときのやり直しが残る）。
+  - P3-5A（[結果](math-export-p35a.md)）: 全長の書き出しを同じ identity で 2 回追加し（計 3 回、272〜294 秒、
+    出力の MP4 は 3 回とも同じ）、120 frame の SHA-256 と 40 frame の全 byte の比較を足した。数式 group の
+    transition は、MLT 7.36.1 ごと TSan・ASan で build した隔離 harness で報告 0。その過程で、
+    **MLT の color producer の data race**（V1 の隙間。製品の経路にも関わる）と、
+    **preview の audio の後始末の解放後参照**（`transition_preview` の SegFault の原因）が見つかった。
+    どちらも未修正。P3-5B・P3-6 の前に扱う。
+  - P3-5A.1（[結果](preview-audio-teardown-p35a1.md)）: `transition_preview` の SegFault の原因だった、preview の
+    audio の後始末の解放後の参照を直した（sink が clock を共有して持つ。`removeSource` の破棄の順も直した）。
+    debugger の下（debug heap）で動かす回帰の試験を 6 つ足し、修正を外すと落ちることを確かめた。
+    release の全 CTest 1521/1521。MLT の color producer の race は未修正のまま。
+  - P3-5A.2（[結果](mlt-color-race-p35a2.md)）: MLT の color producer の race への対処。V1 の背景の形式を rgba に
+    固定し、consumer を始める前に 1 thread で cache を作り、以後は画像の要求ごとに cache が変わっていないことを
+    確かめる（変わっていたら書き出しを失敗にする）。検出器付きの MLT で、保護ありは報告 0、保護なしは race と
+    誤った画素を再現。Windows の出力は前後で同じ。全 CTest は 1517/1522（monitor が無い間に GUI の 5 件が
+    落ちた）で、取り直しが残っている。
+  - P3-5A.2 の closure（[結果](mlt-color-race-p35a2-closure.md)）: **PASS / CLOSED。** GUI の環境を確かめる script を
+    足し、背景の cache の key を変える要求を MLT へ渡す前に断る検査を足した。最終の内容（`c3b683f`）で、
+    環境が有効なまま終わる全 CTest が 1522/1522。次は P3-5B（書き出しの timeout を実時間で数える）。
+  - P3-5B（[結果](mlt-export-timeout-p35b.md)）: 書き出しの timeout を実時間（単調な時計）で数えるように直した。
+    1 秒の timeout を 1002〜1046 ms で検出（以前は 1.5〜3.4 秒、進行 callback が遅いと timeout しなかった）。
+    値（600000 ms）と監視する区間は変えていない。以前の数え方の記録は、診断用の入力で残してある。
+    全 CTest 1523/1523。次は P3-6（製品から数式 group を使う入口）。
+  - P3-6A（[結果](math-group-product-p36a.md)）: 数式 group の書き出しを、製品の入口（`MvmController` の内部の選択 →
+    要求の `mathGroupOptimization`）から選べるようにした。**既定は off** で、UI は無い。on では書き出しの前に判定し、
+    ELIGIBLE のときだけ数式 group の graph、それ以外は従来の graph。実行時の失敗は書き出しの失敗にする
+    （やり直さない）。製品の入口からの 22 + 5 通りが期待どおりで、全 frame が従来の経路と一致。全 CTest 1523/1523
+    （3 回目。1・2 回目は、負荷と利用者の操作で 1 件ずつ落ちた）。次は P3-6B。
+  - P3-6B（[結果](math-group-product-p36b.md)）: 製品の入口から `Auto` で v4 全体（6840 frame）を
+    書き出す検収。PASS（291.0 秒、ELIGIBLE、出力の MP4 は P3-4・P3-5A の全長の出力と同じ SHA-256）。
+    監査で見つけた欠陥（`Auto` が画像の上限の超過で、UNKNOWN・INELIGIBLE の Project まで失敗にする）を
+    P3-6A.1 として直した（準備を取りやめて従来の graph で書き出す。上限 64 MB は変えない）。
+    既定は off のまま。実行時の失敗のときのやり直しは P3-6C。
+  - P3-6C.1（[結果](math-group-product-p36c1.md)）: 書き出し設定に「数式の書き出しを高速化（試験的）」を
+    足した。既定は off で、書き出しごとに選ぶ（保存しない）。対象外・画像の上限の超過は従来の方法で
+    書き出し、その旨を報告する。高速化の描画の失敗は書き出しを止める（自動ではやり直さない）。
+    `mvm.exe` を人が操作する検収は P3-6C.2。
+  - P3-6C.2（[結果](math-group-product-p36c2.md)、[手順書](math-group-product-p36c2-procedure.md)）:
+    実際の `mvm.exe` の検収。**PASS（自動の検収）**。利用者の指示で人の操作をやめ、driver が UI
+    Automation と Windows の message で操作した（mouse・keyboard は使わない）。v4 全体を高速化 on で
+    180.1 秒、6840 frame、出力は過去の全長の出力と同じ SHA-256。表示の修正（結果を行頭へ、理由を
+    人が読める文に）を含む。**PASS / CLOSED。**
+  - **数式 group の書き出しの milestone（P3-3〜P3-6C.2）は閉じた。** 製品の方針:
+    - 利用者が書き出しごとに選ぶ opt-in。**既定は off**（保存しない）。既定を on にする移行はしない。
+    - on のとき、書き出しの前に判定する。ELIGIBLE なら数式 group、UNKNOWN・INELIGIBLE・準備する画像の
+      上限（64 MB）の超過なら従来の方法で書き出し、その旨を状態の表示に出す。
+    - 数式 group の実行時の失敗は、書き出しを止める（fail-closed）。自動ではやり直さない。
+    - 検収の証拠: [P3-6C.2](math-group-product-p36c2.md)（`build/math-group-product-p36c2-20261014/automated/`）。
+      全 CTest 1524/1524。
+    - 限界: 実 GUI の検収は UI Automation による（画面の見た目と、人の mouse・keyboard の操作は確かめて
+      いない）。全長の出力の確認は、符号化した MP4 の byte の一致で、encoder 直前の RGBA の比較は
+      P3-4・P3-5A のもの（全 6840 frame の 64 bit の digest、120 frame の SHA-256、40 frame の全 byte）である。
+    - 時間: 製品の経路の全長は 180.1 秒（P3-6C.2）と 291.0 秒（P3-6B）。差の原因は調べておらず、性能が
+      上がったとは言えない（出力は byte 単位で同じ）。
+  - P3-7A（[結果](explorer-reveal-p37a.md)）: 書き出しの後の「Explorer で表示」が、UI から書き出した全部の場合
+    に失敗していた（0x80070057）。原因は、FileDialog の URL から作った `/` 区切りの path を
+    `SHParseDisplayName` が拒否すること。Shell へ渡す前に Windows の絶対 path にするよう直した。製品 GUI の
+    smoke（`scripts/math-group-gui-smoke.ps1`。短い場面だけなら約 4 分、人の操作なし）を足した。
+  - P3-7B（[結果](export-summary-p37b.md)）: 書き出し設定が、数式・文字・静止画だけの Project で「入力映像:
+    仕様を取得できません」「1件の入力ファイルは仕様を確認できませんでした。」と出していた。要約が音声以外の
+    clip を全部動画の素材として probe していたため。動画の file だけを probe し、静止画は読めるかだけを
+    確かめ、生成する clip は probe しないよう直した（書き出しに出ない clip・track は数えない）。本当の
+    素材の失敗の警告は残る。製品 GUI の smoke は、session と verify の両方の成功と、その run の
+    verify.json を求めるようにした。
+  - 製品 GUI の smoke（2026-10-15）: 既定で、新しく作った見えない desktop（CreateDesktop）の上で mvm.exe と
+    driver を動かす。window・保存 dialog・上書きの確認が利用者の画面に出ず、前面を奪わない。見えない desktop
+    から Explorer を開くと、Explorer が 20 秒〜5 分以上待たせてから E_ABORT で断り、その間 mvm の GUI thread が
+    止まるので、mvm.exe を試験用の引数付きで起動する（path の正規化と実際の `SHParseDisplayName` までは通し、
+    Explorer を開く処理だけを成功として扱う）。画面の保存は見えない desktop では取れない。`-Visible` で以前の
+    動き（利用者の画面、実際の Explorer）に戻せる。
+  - P3-7B.1（[結果](gui-smoke-hidden-desktop-p37b1.md)）: 試験用の Explorer の動きを、環境変数から明示の引数
+    `--test-reveal-without-explorer` に替え、利用者の画面（Default desktop）では起動を断るようにした。runner は
+    process の木を Job Object（KILL_ON_JOB_CLOSE）で所有し、時間切れ・異常終了でも mvm.exe・driver を残さない。
+    session は driver の終了・上限で mvm.exe を止める。完了を確かめられない失敗の観測（GUI の応答、UI Automation
+    の要素、別の client、controller の状態の記録 `--test-log-status`）と、失敗の注入の試験
+    （`scripts/math-group-gui-smoke-faults.ps1`）を足した。完了を確かめられない失敗について、製品が書き出しの結果の
+    文を「素材を追加してください」で上書きすることを controller の記録で確かめた（`pollPreviewState`。直していない）。
+  - P3-7B.2（[結果](status-ownership-p37b2.md)）: 状態の表示の持ち主を決めた。書き出しの最中と、書き出しの結果の文が
+    出ている間は、利用者の操作によらない定常の文（preview の確認の「素材を追加してください」と自動の初期 seek の文）を
+    出さない。利用者の操作と error はいつでも書け、書けば結果の文を手放す（時間で待たない）。閉じた後に届く描き直しは
+    行わない。決まった順序の試験（修正の前 14 件落ち → 69/69）、smoke の「結果の文が 5 秒残る」と
+    `result-overwritten` の分類を足した。全 CTest 1527/1527。
+  - （解消済み。P3-5B）`timeout_ms` = 1000 が実時間 3418 ms で timeout することを
+    `mlt_export_timeout_accounting_deviation`（label `stability`）で記録していた。
+  - （解消済み。P3-5B）`timeout_ms` を `Sleep(20)` の回数で数えており、実時間の 10 分では失敗にならな
+    かった（720 秒以上で未発火）。P3-5B で単調な時計で数えるように直し、1 秒の timeout を 1002〜1046 ms で
+    検出する。以前の数え方は、診断用の入力でだけ残してある。
+- 専用の編集 UI は未実装。現在の JSON と複数の Math clip を、一つの数式コンテナとして
+  選択・段階編集できるようにする。意味のある部品 ID、静止の配置、許可する移動を独立して保存し、
+  プレビューと書き出しが同じ frame 計画を読む。自動中央揃えを戻さない。
+- 分子・分母・等号などのアンカー制約を backend 中立なデータへ持たせる。
+  部品の内容変更と配置変更を別操作にし、不要な項の再配置を検査で拒否する。
+- 現在は既存の全画面 Math ラスタを部品ごとに使う。多数の部品のメモリ量・描画負荷は未計測。
+  表示範囲だけのラスタ／共有字形と部品の frame 計画へ進める際は、preview・export の一致、
+  キャッシュの識別子、ランダム seek を検証する。
+- 専用 UI から尺と字幕の対応を直接編集する機能、配置 JSON への逆変換、
+  最新の部品方式での書き出し受け入れ試験を追加する。
+- 既存 EquationSequence の全体変形にも固定部品の指定を統合する。
+  旧八状態の動画で観察した文字の重なりは、新しい部品方式とは別に解消を確認する。
+
 ### P4: native Graph Clip
 
 - P4-0 は PASS/CLOSED。設計契約は [math-graph-p40.md](math-graph-p40.md)、

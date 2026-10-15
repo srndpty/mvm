@@ -1,16 +1,19 @@
-#include "app/preview/preview_engine_rhi_item.h"
 #include "alt_repeat_filter.h"
+#include "app/preview/preview_engine_rhi_item.h"
 #include "focus_release_filter.h"
-#include "timeline_wheel_filter.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
+#include "timeline_wheel_filter.h"
+#include "util/mvm_reveal_in_explorer.h"
 #include "util/mvm_win_utf8.h"
 #include "waveform_cache.h"
 #include "waveform_view.h"
 
 #include <cstdio>
+#include <cwchar>
 #include <filesystem>
+#include <string>
 
 #include <QByteArray>
 #include <QFileInfo>
@@ -26,24 +29,46 @@
 #include <QWheelEvent>
 #include <qqml.h>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 namespace {
 
 struct AppArguments {
     std::filesystem::path projectPath;
     std::filesystem::path manimExecutablePath;
+    // 試験だけが使う (下の main を参照)。
+    bool testRevealWithoutExplorer = false;
+    bool testLogStatus = false;
 };
-
 
 void usage() {
     std::fprintf(stderr, "使い方: mvm --project <project.mvm> "
                          "--manim-executable <absolute-manim.exe>\n");
 }
 
+// この thread の desktop の名前。利用者が操作する画面は "Default"。取れなければ空。
+std::wstring threadDesktopName() {
+    wchar_t name[256] = {};
+    DWORD needed = 0;
+    if (!GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, name,
+                                   sizeof(name), &needed))
+        return {};
+    return name;
+}
+
 bool parseArguments(const QStringList& arguments, AppArguments& parsed) {
     for (int index = 1; index < arguments.size(); ++index) {
         const QString key = arguments[index];
-        if ((key == QStringLiteral("--project") || key == QStringLiteral("--manim-executable")) &&
-            index + 1 < arguments.size()) {
+        if (key == QStringLiteral("--test-reveal-without-explorer")) {
+            parsed.testRevealWithoutExplorer = true;
+        } else if (key == QStringLiteral("--test-log-status")) {
+            parsed.testLogStatus = true;
+        } else if ((key == QStringLiteral("--project") ||
+                    key == QStringLiteral("--manim-executable")) &&
+                   index + 1 < arguments.size()) {
             const std::filesystem::path value(arguments[++index].toStdWString());
             if (key == QStringLiteral("--project"))
                 parsed.projectPath = value;
@@ -86,6 +111,30 @@ int main(int argc, char** argv) {
         usage();
         return 2;
     }
+    // --test-reveal-without-explorer: 製品 GUI の smoke (scripts/math-group-gui-smoke.ps1)
+    // が、見えない desktop の上でだけ使う。そこから Explorer を開くと、Explorer が
+    // SHOpenFolderAndSelectItems を長く 待たせてから断り、その間 GUI thread が止まる。path
+    // の正規化と実際の SHParseDisplayName (P3-7A の 原因の箇所) は通し、Explorer
+    // を開く処理だけを成功として扱う (Explorer が開くことは確かめない)。
+    // 明示の引数が要り、利用者の画面 (Default desktop) では起動を断る。環境変数では有効にならない。
+    const std::wstring desktop = threadDesktopName();
+    if (arguments.testRevealWithoutExplorer) {
+        const QByteArray desktopText = QString::fromStdWString(desktop).toUtf8();
+        if (desktop.empty() || _wcsicmp(desktop.c_str(), L"Default") == 0) {
+            std::fprintf(stderr,
+                         "--test-reveal-without-explorer は試験の見えない desktop でだけ使えます "
+                         "(この desktop: '%s')。起動を中止します\n",
+                         desktopText.constData());
+            return 2;
+        }
+        static const MvmRevealShell withoutExplorer{
+            nullptr, nullptr, [](const void*, void*) -> long { return 0; }, nullptr};
+        mvm_reveal_set_shell_for_test(&withoutExplorer);
+        std::fprintf(stderr,
+                     "試験: Explorerを開かずに、ファイルの表示を成功として扱います "
+                     "(--test-reveal-without-explorer、desktop '%s')\n",
+                     desktopText.constData());
+    }
     // Project が無ければ既定構成 (V1/V2 + A1) から始める。track 0 本の Project を
     // 作らせない。
     mvm::project::Project project = mvm::project::createDefaultProject();
@@ -117,12 +166,29 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "MLTを初期化できません。書き出しが行えないため起動を中止します\n");
         return 5;
     }
+    // --test-log-status の直前の値。controller より先に作り、後に壊す (controller
+    // の破棄中の通知でも有効)。
+    QString loggedStatus;
     mvm::app::MvmController controller(arguments.projectPath, arguments.manimExecutablePath,
                                        std::move(project));
     if (!controller.holdsProjectLock()) {
         std::fprintf(stderr, "%s\n", controller.statusText().toUtf8().constData());
         mvm_mlt_runtime_shutdown();
         return 6;
+    }
+    // --test-log-status: 状態の表示 (statusText) が変わるたびに stderr へ出す (試験の記録用。動きは
+    // 変えない)。製品 GUI の smoke が、driver が UI Automation で見た文と、controller
+    // の状態を突き合わせる。
+    if (arguments.testLogStatus) {
+        QObject::connect(&controller, &mvm::app::MvmController::stateChanged, &controller,
+                         [&controller, &loggedStatus] {
+                             const QString status = controller.statusText();
+                             if (status == loggedStatus)
+                                 return;
+                             loggedStatus = status;
+                             std::fprintf(stderr, "試験: 状態の表示: %s\n",
+                                          status.toUtf8().constData());
+                         });
     }
     // engine より先に破棄されないよう、engine より前に宣言する。
     mvm::app::WaveformCache waveformCache;

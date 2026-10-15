@@ -97,6 +97,9 @@ std::int64_t currentQpc() {
 WasapiAudioSink::WasapiAudioSink(AudioFrameQueue& queue, AudioMasterClock& clock)
     : queue_(&queue), clock_(clock) {}
 
+WasapiAudioSink::WasapiAudioSink(AudioFrameQueue& queue, std::shared_ptr<AudioMasterClock> clock)
+    : queue_(&queue), clockOwner_(std::move(clock)), clock_(*clockOwner_) {}
+
 WasapiAudioSink::~WasapiAudioSink() {
     stop();
 }

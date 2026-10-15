@@ -237,6 +237,17 @@ pwsh scripts/make-testmedia.ps1 -Mode Smoke       # 自動検査用
 pwsh scripts/make-testmedia.ps1 -Mode Benchmark   # 性能計測用
 ```
 
+### crash の証拠は build/ の外に残す
+
+`build/` は容量のために丸ごと消すことがある。crash の dump と試験の実行の記録は、build/ の外の archive
+（既定 `%LOCALAPPDATA%\mvm\crash-archive`）に残す。規則は `docs/crash-evidence.md`。
+
+- CTest の下で落ちた試験は、そのままでは dump を残さない（CTest が WER を抑える）。試験の実行ファイルは
+  `mvm_wer_launch`（TEST_LAUNCHER）を通して起動され、落ちたら dump が残る。
+- crash しうる probe を動かす前に、既存の dump を archive へ保全する。WER は既定で 10 件を超えると最古の
+  dump を消す。保全に失敗したら probe を動かさない。
+- archive の dump を消すのは、SHA-256 と理由を明示したときだけ（`scripts/crash-archive.ps1 -Remove … -Apply`）。
+
 ### GUI 試験は利用者の操作を止めずに回す
 
 開発機は同時に他の作業にも使う。通常のテストで「操作を止めて待つ」ことを要求しない。

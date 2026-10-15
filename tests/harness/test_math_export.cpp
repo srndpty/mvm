@@ -12,6 +12,8 @@
 #include "app/timeline_preview_mapping.h"
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/still_image_frame.h"
+#include "media/math/math_group_compose.h"
+#include "media/mlt/mvm_mlt_export.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "media/still_image/static_image.h"
 #include "project/project.h"
@@ -19,11 +21,14 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
+#include <QFile>
 #include <QGuiApplication>
 #include <QImage>
 #include <QProcess>
@@ -437,6 +442,206 @@ void testWriteExport(const QString& ffmpeg, const QTemporaryDir& temporary) {
     }
 }
 
+// --- P3-6A.1: Auto のとき、数式 group 用の画像の準備だけが原因で書き出しを失敗にしない ---
+//
+// V1 の種類: 0 = clip が無い (判定は ELIGIBLE)、1 = 透明な余白のある数式 (alpha 0 がある)、
+// 2 = 1 を拡大したもの (出す画素を確かめていない)。上に layers 本の数式を 1 本ずつ別の track
+// へ置く。mask は 1 本ずつ大きさが違う (準備済みの画像を共有しない)。
+struct LayeredFixture {
+    mvm::project::Project project;
+    std::map<std::string, std::filesystem::path> artifacts;
+};
+
+LayeredFixture layeredFixture(const QTemporaryDir& directory, const QString& tag, int width,
+                              int height, int layers, int base, int maskWidth, int maskHeight) {
+    LayeredFixture out;
+    out.project = mvm::project::createDefaultProject();
+    out.project.outputWidth = width;
+    out.project.outputHeight = height;
+    while (static_cast<int>(out.project.videoTracks.size()) < layers + 1) {
+        auto track = out.project.videoTracks.front();
+        track.name = "V" + std::to_string(out.project.videoTracks.size() + 1);
+        out.project.videoTracks.push_back(track);
+    }
+    const auto add = [&](const std::string& id, int track, int w, int h) {
+        mvm::project::TimelineClip clip;
+        clip.kind = mvm::project::TimelineClipKind::Math;
+        clip.id = id;
+        clip.name = id;
+        clip.sourceFpsNum = 60;
+        clip.sourceFpsDen = 1;
+        clip.sourceFrameCount = clip.sourceOutFrame = kFrames;
+        clip.track = {mvm::project::TrackKind::Video, track};
+        clip.math.source = id;
+        clip.math.fontSize = 96;
+        clip.math.color = "#FFFF0000";
+        out.artifacts[id] =
+            writeMask(directory, tag + "-" + QString::fromStdString(id) + ".png", w, h);
+        return clip;
+    };
+    if (base != 0) {
+        auto clip = add("base", 0, 80, 40);
+        if (base == 2)
+            clip.effects.scaleXPercent = clip.effects.scaleYPercent = 150;
+        out.project.timelineClips.push_back(clip);
+    }
+    for (int layer = 0; layer < layers; ++layer)
+        out.project.timelineClips.push_back(add("m" + std::to_string(layer), layer + 1,
+                                                maskWidth - 2 * layer, maskHeight - 2 * layer));
+    return out;
+}
+
+QByteArray fileBytes(const std::filesystem::path& path) {
+    QFile file(QString::fromStdWString(path.wstring()));
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+bool temporaryRemains(const std::filesystem::path& output) {
+    auto temporary = output;
+    temporary += ".mvmtmp";
+    std::error_code ignored;
+    return std::filesystem::exists(temporary, ignored);
+}
+
+void testAutoPreparationFallback(const QTemporaryDir& temporary) {
+    using mvm::app::MathGroupOptimization;
+    const auto run = [&](const LayeredFixture& fixture, const QString& name, int width, int height,
+                         MathGroupOptimization mode, MvmExportObserver* observer) {
+        mvm::app::TimelineExportRequest request;
+        request.width = width;
+        request.height = height;
+        request.videoCrf = 10;
+        request.mathArtifacts = fixture.artifacts;
+        request.mathGroupOptimization = mode;
+        request.exportObserver = observer;
+        request.outputPath = std::filesystem::path(temporary.filePath(name).toStdWString());
+        auto result = mvm::app::exportTimeline(fixture.project, request);
+        return std::pair{result, request.outputPath};
+    };
+    // 小さい出力 (320x240)。準備済みの画像は 3 枚で 80x40・78x38・76x36 (12800 + 11856 + 10944
+    // byte)。上限を 20000 byte にすると、2 枚目で超える。上限は診断用の observer から渡す
+    // (製品の上限 64 MB そのものは、下の 1920x1080 の場合で確かめる)。
+    constexpr long long kSmallBudget = 20000;
+    const char* baseName[] = {"V1 が隙間", "V1 に alpha 0", "V1 を拡大"};
+    const char* expectedDecision[] = {"ELIGIBLE", "INELIGIBLE", "UNKNOWN"};
+    for (int base = 0; base < 3; ++base) {
+        const std::string label = std::string("P3-6A.1 ") + baseName[base] + ": ";
+        const auto fixture = layeredFixture(temporary, QString("small%1").arg(base), kWidth,
+                                            kHeight, 3, base, 80, 40);
+        const auto [off, offPath] = run(fixture, QString("fallback-%1-off.mp4").arg(base), kWidth,
+                                        kHeight, MathGroupOptimization::Off, nullptr);
+        check(off.success && !off.mathGroup.evaluated && !off.mathGroup.preparationRejected,
+              label + "選択 off は従来の graph で書き出せる: " + off.error);
+        const auto offBytes = fileBytes(offPath);
+        check(!offBytes.isEmpty(), label + "選択 off の出力を読める");
+
+        // 上限に余裕があるとき: この fixture の判定そのもの (fixture が意図した状態かを確かめる)。
+        const auto [ample, amplePath] = run(fixture, QString("fallback-%1-ample.mp4").arg(base),
+                                            kWidth, kHeight, MathGroupOptimization::Auto, nullptr);
+        check(ample.success && ample.mathGroup.evaluated &&
+                  ample.mathGroup.decision == expectedDecision[base] &&
+                  ample.mathGroup.mathGroupGraph == (base == 0) &&
+                  !ample.mathGroup.preparationRejected && ample.mathGroup.rasterCount == 3 &&
+                  ample.mathGroup.rasterBytes == 12800 + 11856 + 10944 &&
+                  ample.mathGroup.rasterBudgetBytes == 64LL * 1024 * 1024,
+              label + "上限の内側では判定 " + expectedDecision[base] + " になる: 判定 '" +
+                  ample.mathGroup.decision + "' (" + ample.mathGroup.reason + ") 画像 " +
+                  std::to_string(ample.mathGroup.rasterCount) + " 枚 " +
+                  std::to_string(ample.mathGroup.rasterBytes) + " byte " + ample.error);
+        if (base == 0)
+            check(ample.mathGroup.composedFrames > 0 && ample.mathGroup.groupedClips == 3,
+                  label + "上限の内側では数式 group が実際に合成する");
+        else
+            check(fileBytes(amplePath) == offBytes,
+                  label + "従来の graph を選んだ出力は選択 off と同じ byte 列");
+
+        // 上限を超えるとき: 準備を取りやめ、従来の graph で最後まで書き出す。
+        MvmExportObserver observer{};
+        observer.diagnostic_math_group_raster_budget_bytes = kSmallBudget;
+        const auto [over, overPath] = run(fixture, QString("fallback-%1-over.mp4").arg(base),
+                                          kWidth, kHeight, MathGroupOptimization::Auto, &observer);
+        check(over.success && over.frameCount == kFrames,
+              label + "Auto は画像の上限を超えても書き出しを失敗にしない: " + over.error);
+        check(over.mathGroup.preparationRejected &&
+                  over.mathGroup.preparationReason == "prepared-raster-budget-exceeded" &&
+                  !over.mathGroup.evaluated && over.mathGroup.decision.empty() &&
+                  !over.mathGroup.mathGroupGraph && over.mathGroup.composedFrames == 0 &&
+                  over.mathGroup.groups == 0 && over.mathGroup.errors == 0 &&
+                  over.mathGroup.rasterBudgetBytes == kSmallBudget &&
+                  over.mathGroup.rasterBytes > kSmallBudget,
+              label + "準備を取りやめたことと理由を記録する: 理由 '" +
+                  over.mathGroup.preparationReason + "' 判定 '" + over.mathGroup.decision + "'");
+        check(over.mathGroup.affineTransitions == off.mathGroup.affineTransitions &&
+                  over.mathGroup.affineTransitions > 0,
+              label + "affine の数は選択 off と同じ");
+        check(fileBytes(overPath) == offBytes,
+              label + "準備を取りやめた出力は選択 off と同じ byte 列");
+        check(!temporaryRemains(overPath), label + "一時 file が残らない");
+        check(mvm::math::preparedMathRasterLiveBytes() == 0 && mvm_mlt_math_group_live() == 0 &&
+                  mvm_mlt_math_group_active() == 0,
+              label + "準備済みの画像・transition・callback が残らない");
+
+        // 対照 1: 製品の選択ではない診断 (observer だけで数式 group を指定) は、これまでどおり
+        // 上限の超過を失敗にする。
+        MvmExportObserver diagnostic{};
+        diagnostic.diagnostic_math_group = 3;
+        diagnostic.diagnostic_math_group_rule = 1;
+        diagnostic.diagnostic_math_group_raster_budget_bytes = kSmallBudget;
+        const auto [strict, strictPath] =
+            run(fixture, QString("fallback-%1-diagnostic.mp4").arg(base), kWidth, kHeight,
+                MathGroupOptimization::Off, &diagnostic);
+        std::error_code ignored;
+        check(!strict.success && strict.error.find("上限") != std::string::npos &&
+                  !std::filesystem::exists(strictPath, ignored) && !temporaryRemains(strictPath),
+              label + "診断の指定は上限の超過を失敗のままにする: " + strict.error);
+
+        // 対照 2: stage そのものの失敗 (描画済みの PNG が無い) は、最適化の取りやめにしない。
+        auto broken = fixture;
+        broken.artifacts.erase("m1");
+        MvmExportObserver brokenObserver{};
+        brokenObserver.diagnostic_math_group_raster_budget_bytes = kSmallBudget;
+        const auto [corrupt, corruptPath] =
+            run(broken, QString("fallback-%1-missing.mp4").arg(base), kWidth, kHeight,
+                MathGroupOptimization::Auto, &brokenObserver);
+        check(!corrupt.success &&
+                  corrupt.error.find("描画が完了していません") != std::string::npos &&
+                  !corrupt.mathGroup.preparationRejected &&
+                  !std::filesystem::exists(corruptPath, ignored) && !temporaryRemains(corruptPath),
+              label + "stage の失敗は書き出しの失敗のままにする: " + corrupt.error);
+        check(mvm::math::preparedMathRasterLiveBytes() == 0,
+              label + "失敗の後に準備済みの画像が残らない");
+    }
+
+    // 製品の上限 (64 MB) そのもの。observer を渡さない。1920x1080 に 1900x1060 前後の数式を
+    // 9 本置くと、準備済みの画像は 9 枚で約 71 MB になる (8 枚目までは上限の内側)。
+    constexpr long long kProductBudget = 64LL * 1024 * 1024;
+    for (const int base : {0, 1}) {
+        const std::string label = std::string("P3-6A.1 製品の上限、") + baseName[base] + ": ";
+        const auto fixture = layeredFixture(temporary, QString("large%1").arg(base), 1920, 1080, 9,
+                                            base, 1900, 1060);
+        const auto [off, offPath] = run(fixture, QString("product-%1-off.mp4").arg(base), 1920,
+                                        1080, MathGroupOptimization::Off, nullptr);
+        check(off.success, label + "選択 off は書き出せる: " + off.error);
+        const auto [over, overPath] = run(fixture, QString("product-%1-auto.mp4").arg(base), 1920,
+                                          1080, MathGroupOptimization::Auto, nullptr);
+        check(over.success && over.frameCount == kFrames,
+              label + "Auto は 64 MB を超えても書き出しを失敗にしない: " + over.error);
+        check(over.mathGroup.preparationRejected &&
+                  over.mathGroup.preparationReason == "prepared-raster-budget-exceeded" &&
+                  !over.mathGroup.mathGroupGraph && over.mathGroup.composedFrames == 0 &&
+                  over.mathGroup.rasterBudgetBytes == kProductBudget &&
+                  over.mathGroup.rasterBytes > kProductBudget &&
+                  over.mathGroup.rasterBytes < kProductBudget + 1900LL * 1060 * 4,
+              label + "上限は 64 MB のままで、超えた 1 枚で準備を止める: " +
+                  std::to_string(over.mathGroup.rasterBytes) + " byte");
+        const auto offBytes = fileBytes(offPath);
+        check(!offBytes.isEmpty() && fileBytes(overPath) == offBytes,
+              label + "出力は選択 off と同じ byte 列");
+        check(mvm::math::preparedMathRasterLiveBytes() == 0 && !temporaryRemains(overPath),
+              label + "準備済みの画像と一時 file が残らない");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -571,6 +776,7 @@ int main(int argc, char** argv) {
         }
     }
     testWriteExport(ffmpeg, temporary);
+    testAutoPreparationFallback(temporary);
     mvm_mlt_runtime_shutdown();
     std::fprintf(stderr, "%d 検査中 %d 件失敗\n", checks, failures);
     return failures == 0 && checks > 0 ? 0 : 1;

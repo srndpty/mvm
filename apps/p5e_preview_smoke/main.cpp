@@ -145,6 +145,7 @@ int main(int argc, char** argv) {
                              "|--fault-seek-partial-generation|--fault-seek-partial-request"
                              "|--fault-stale-composition-epoch|--remove-unreferenced-source"
                              "|--remove-referenced-source|--remove-audio-source"
+                             "|--remove-audio-readd"
                              "|--fault-remove-audio-stop|--remove-shutdown-race"
                              "|--remove-fatal-event-order]\n");
         return 2;
@@ -152,6 +153,8 @@ int main(int argc, char** argv) {
     Fault fault = Fault::None;
     bool adHocFixtureA = false;
     bool adHocTimelineSeek = false;
+    // 主のaudio sourceを外した後、足し直して外すことをくり返す (sink・clockの作り直しと解放)。
+    bool repeatAudioRemoval = false;
     if (arguments.size() == 4) {
         if (arguments[3] == "--single-layer")
             fault = Fault::SingleLayer;
@@ -188,6 +191,10 @@ int main(int argc, char** argv) {
             fault = Fault::RemoveReferencedSource;
         else if (arguments[3] == "--remove-audio-source")
             fault = Fault::RemoveAudioSource;
+        else if (arguments[3] == "--remove-audio-readd") {
+            fault = Fault::RemoveAudioSource;
+            repeatAudioRemoval = true;
+        }
         else if (arguments[3] == "--fault-remove-audio-stop")
             fault = Fault::RemoveAudioStopFailure;
         else if (arguments[3] == "--remove-shutdown-race")
@@ -225,9 +232,9 @@ int main(int argc, char** argv) {
         return 3;
     const auto capabilities = engine->capabilities();
     if (capabilities.configuredMaxActiveVideoSources != 8 ||
-        capabilities.configuredMaxCompositionLayers != 16 ||
+        capabilities.configuredMaxCompositionLayers != 128 ||
         capabilities.duplicateSourceLayersSupported) {
-        std::fprintf(stderr, "P5-E3 capabilityが8/16/duplicate=falseではありません\n");
+        std::fprintf(stderr, "P5-E3 capabilityが8/128/duplicate=falseではありません\n");
         return 3;
     }
 
@@ -453,14 +460,14 @@ int main(int argc, char** argv) {
                 snapshot->layers.push_back({videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
             }
             if (fault == Fault::ExceedLayerCount) {
-                // layer 上限は 16。video source 上限で先に落ちないよう、video 2 本 +
-                // 静止画 15 枚の 17 layer で layer 数だけを超えさせる。
+                // video source の上限を超えずに、静止画で合成 layer の上限だけを超える。
                 auto excessive = std::make_shared<mvm::preview::CompositionSnapshot>(*snapshot);
                 auto still = std::make_shared<mvm::preview::PreviewStillImage>();
                 still->width = 2;
                 still->height = 2;
                 still->rgba.assign(16, 255);
-                for (int index = 0; index < 15; ++index) {
+                for (std::uint32_t index = 0;
+                     index < mvm::preview::kProductMaxCompositionLayers - 1; ++index) {
                     mvm::preview::PreviewCompositionLayer stillLayer;
                     stillLayer.stillImage = still;
                     excessive->layers.push_back(stillLayer);
@@ -750,6 +757,38 @@ int main(int argc, char** argv) {
                         exitCode = 19;
                         app.quit();
                         return;
+                    }
+                    for (int round = 0; repeatAudioRemoval && round < 3; ++round) {
+                        // 外したIDをもう一度外すことはできない (二重の解放をしない)。
+                        const auto again = engine->removeSource(audioSource);
+                        mvm::preview::PreviewSourceDescriptor audioDescriptor;
+                        audioDescriptor.mediaPath = arguments[1].toStdWString();
+                        audioDescriptor.videoEnabled = false;
+                        audioDescriptor.audioEnabled = true;
+                        const auto readded = engine->addSource(audioDescriptor);
+                        if (again ||
+                            again.error().category !=
+                                mvm::preview::PreviewErrorCategory::InvalidSource ||
+                            !readded) {
+                            std::fprintf(stderr, "audio sourceを足し直せません (%d)\n", round);
+                            exitCode = 67;
+                            app.quit();
+                            return;
+                        }
+                        const auto registered =
+                            mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                        const auto removedAgain = engine->removeSource(readded.value());
+                        afterRemoval =
+                            mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                        if (registered.registeredAudioSourceCount != 1 || !removedAgain ||
+                            afterRemoval.registeredAudioSourceCount != 0 ||
+                            afterRemoval.audioMasterActive) {
+                            std::fprintf(stderr, "足し直したaudio sourceを外せません (%d)\n", round);
+                            exitCode = 68;
+                            app.quit();
+                            return;
+                        }
+                        audioSource = readded.value();
                     }
                 }
                 if (fault == Fault::RemoveAudioStopFailure) {
