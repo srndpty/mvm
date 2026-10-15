@@ -89,6 +89,9 @@ crash-archive/
   同じ内容が既にあれば index だけ足す。同じ元の path と内容の組は二度記録しない。
 - **容量**: 複製の前に、追加する byte 数で `max_bytes` と volume の空きの `min_free_bytes` を確かめる。
   超えるなら 1 件も書かずに失敗する。`pwsh scripts/crash-archive.ps1` で使用量を出す。
+  CI（GitHub hosted runner）は空きが既定の下限より小さいので、`.github/workflows/ci.yml` が
+  `MVM_CRASH_ARCHIVE` を `$RUNNER_TEMP\crash-archive` に向け、`config.json` を runner 向けの値
+  （`max_bytes` 8 GiB、`min_free_bytes` 4 GiB）で先に置く。既定値は開発機向けのまま変えない。
 - **失敗したら probe を起動しない**: `Invoke-MvmAfterCrashArchive` は、保全に成功したときだけ処理を実行する。
   WER が書いている途中の dump（開けない）も保全の失敗にする。cohort・試験の記録・契約試験は、crash
   させる前にこれを通る。

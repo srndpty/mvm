@@ -163,6 +163,18 @@ jobs:
           key: ccache-${{ matrix.preset }}-${{ github.sha }}
           restore-keys: ccache-${{ matrix.preset }}-
 
+      # crash の archive の既定 (min_free_bytes 32 GiB) は開発機のディスクを守るための値で、
+      # runner の空き (C: で約 33 GB) では下限を割って試験を始められない。runner の一時領域に置き、
+      # 下限を runner の大きさに合わせる (docs/crash-evidence.md 3)。
+      - name: crash の archive を用意
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'crash-archive'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          [ordered]@{ max_bytes = 8GB; min_free_bytes = 4GB } | ConvertTo-Json |
+            Set-Content -LiteralPath (Join-Path $root 'config.json') -Encoding utf8NoBOM
+          "MVM_CRASH_ARCHIVE=$root" >> $env:GITHUB_ENV
+
       - name: ビルドとテスト
         shell: pwsh
         # GitHub hosted runner には Meiryo と D3D11VA hardware device が無い。
@@ -208,6 +220,8 @@ jobs:
         if: failure() && matrix.group == 'BuildDependent'
         run: |
           # gdb は lock の版で導入済み。pacman -S で最新を足さない。
+          # ビルド前に落ちたときは build が無い。その失敗は前の step に出ている。
+          test -d "build/${{ matrix.preset }}" || exit 0
           cd "build/${{ matrix.preset }}"
           test -x bin/mvm_test_transcribe.exe || exit 0
           gdb -batch -ex run -ex bt -ex "info sharedlibrary" --args bin/mvm_test_transcribe.exe \
