@@ -13,10 +13,16 @@
 証拠は `build/math-equation-sequence-crash-p37c-20261015/`。再現は
 `pwsh scripts/math-equation-sequence-crash-p37c.ps1`。
 
-## 0. 調査の前に起きたこと（証拠の消失）
+**P3-7C.1 での訂正と追記**: `build/` の削除は利用者が意図して行った容量の整理だった（0）。dump の正本は
+`build/` の外の archive に移した（`docs/crash-evidence.md`）。49 件の選定と順序での実行は
+`docs/math-equation-sequence-crash-p37c1.md`。この文書の判定（ROOT_CAUSE_UNKNOWN）と各 run の分類は変えていない。
 
-- [事実] 2026-10-15 19:24〜19:48 に、`build/` の大部分が消えた。この調査の開始（20:1x）より前で、
-  この作業によるものではない。誰が消したかは分かっていない。消えたもの:
+## 0. 調査の前に起きたこと（build/ の削除と証拠の消失）
+
+- [事実] 2026-10-15 19:24〜19:48 に、`build/` の大部分が削除された。**利用者が容量の最適化（100 GB を
+  超えていた）のために意図して行ったもので、事故ではない**（P3-7C.1 で利用者が訂正。調査の時点では
+  原因を知らず、「誰が消したか分かっていない」と書いていた）。この調査の開始（20:1x）より前である。
+  結果として失われたもの（訂正しても変わらない）:
   - `build/ucrt64-release` の binary・`CMakeCache.txt`・`Testing/`（P3-7B.2 で 1527/1527 だった binary）
   - `build/ucrt64-debug` 全体
   - P3-3A〜P3-7B.2 の文書が参照する証拠の directory（`math-transition-p33a-20261012/task-a/` を含む）
@@ -30,6 +36,8 @@
   別の試験の dump である。残りの 9 件は SHA-256 付きで
   `build/math-equation-sequence-crash-p37c-20261015/historical-crashdumps/` に複製した（元は残してある）。
   cohort の script は、実行の前に未保全の dump を同じ場所へ複製する。
+  （P3-7C.1: build/ も消しうるので、正本は build/ の外の archive に移した。同じ 9 件の SHA-256 が一致する。
+  cohort の script も archive へ保全するよう変えた。`docs/crash-evidence.md`）
 
 ## 1. 過去の SegFault の証拠と、その信頼性（Task A）
 
@@ -213,5 +221,6 @@ code を読んで 1 つの仮説を外した: `recoveryFixtureGuard` では `Fak
   実行する（CTest の順序と同じにし、各試験を `wer` mode で起動する）。
 - 冷えた起動（file cache が空）は、管理者の権限なしに作れないので試していない。
 - 起動器は stdout を pipe ではなく file に書く。CTest との違いはこの点と error mode だけである。
-- 証拠の directory の消失（0）の原因は分かっていない。過去の文書の「証拠: `build/…`」は、多くが今は
-  辿れない。
+- 証拠の directory は、利用者が容量のために `build/` を削除したことで失われた（0。P3-7C.1 で訂正）。
+  過去の文書の「証拠: `build/…`」は、多くが今は辿れない。`build/` は今後も消しうるので、crash の証拠は
+  `build/` の外の archive に置く（`docs/crash-evidence.md`）。

@@ -41,6 +41,41 @@ add_test(NAME ctest_daily_selection_contract
         -Pwsh "${MVM_PWSH}")
 set_tests_properties(ctest_daily_selection_contract PROPERTIES TIMEOUT 60)
 
+# crash の証拠 (docs/crash-evidence.md)。archive は一時 directory で確かめる。
+add_test(NAME crash_archive_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/test-crash-archive.ps1"
+        -Library "${CMAKE_SOURCE_DIR}/scripts/lib/crash-archive.ps1")
+set_tests_properties(crash_archive_contract PROPERTIES TIMEOUT 60)
+
+# 起動器 (TEST_LAUNCHER) が CTest の下でも dump を残し、解析器が既知の連鎖を unwind すること。
+# probe を実際に落とすので、この機械の WER の LocalDumps (既定の CrashDumps) に依存する。
+add_test(NAME crash_capture_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/harness/test-wer-launch.ps1"
+        -Launcher "$<TARGET_FILE:mvm_wer_launch>"
+        -Probe "$<TARGET_FILE:mvm_test_crash_probe>"
+        -Python "${MVM_UCRT64_ROOT}/bin/python.exe"
+        -Addr2line "${MVM_UCRT64_ROOT}/bin/addr2line.exe"
+        -Analyzer "${CMAKE_SOURCE_DIR}/scripts/minidump-stack.py"
+        -ArchiveLibrary "${CMAKE_SOURCE_DIR}/scripts/lib/crash-archive.ps1"
+        -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/crash-capture")
+set_tests_properties(crash_capture_contract PROPERTIES LABELS workstation TIMEOUT 180)
+
+# CTest の実行の記録 (scripts/test.ps1 が使う)。小さな fixture で確かめ、全 CTest は使わない。
+add_test(NAME test_run_record_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/test-test-run-record.ps1"
+        -Library "${CMAKE_SOURCE_DIR}/scripts/lib/test-run-record.ps1"
+        -Fixture "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/test-run-record"
+        -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/test-run-record"
+        -CMake "${MVM_UCRT64_ROOT}/bin/cmake.exe"
+        -CTest "${MVM_UCRT64_ROOT}/bin/ctest.exe"
+        -Ninja "${MVM_UCRT64_ROOT}/bin/ninja.exe"
+        -Launcher "$<TARGET_FILE:mvm_wer_launch>"
+        -Probe "$<TARGET_FILE:mvm_test_crash_probe>")
+set_tests_properties(test_run_record_contract PROPERTIES LABELS workstation TIMEOUT 120)
+
 add_test(NAME test_display_lease_contract
     COMMAND "${MVM_PWSH}" -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/harness/test-display-lease.ps1")

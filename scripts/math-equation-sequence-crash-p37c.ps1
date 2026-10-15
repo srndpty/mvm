@@ -7,7 +7,7 @@
     CTest と MSYS の shell は SEM_NOGPFAULTERRORBOX を子へ受け継がせるので、CTest の下で落ちても
     WER は呼ばれず、dump も Application の event log も残らない (2026-10-15 に probe で実測。
     docs/math-equation-sequence-crash-p37c.md)。そこで、CTest が登録している command と環境を
-    `ctest --show-only=json-v1` から取り、scripts/lib/wer-launch.c の起動器で error mode を 0 にして
+    `ctest --show-only=json-v1` から取り、build の mvm_wer_launch (tests/harness/wer_launch.c) の cohort mode で error mode を 0 にして
     直接起動する。debugger は付けない (heap と時間を変えない)。WER の LocalDumps は機械に既にある
     既定の設定 (%LOCALAPPDATA%\CrashDumps) を使い、registry は変えない。
 
@@ -55,7 +55,6 @@ $crashCodes = @{
     '0xC0000602' = 'FAIL_FAST'; '0x40000015' = 'ABORT'
 }
 
-$baseOutput = $OutputDirectory
 if ($Trial -gt 0) {
     foreach ($k in @($plan.Keys)) { $plan[$k] = [math]::Min($plan[$k], $Trial) }
     $OutputDirectory += '-trial'
@@ -65,6 +64,7 @@ if (Test-Path -LiteralPath $out) { throw "出力先が既にあります: $out" 
 New-Item -ItemType Directory -Force $out | Out-Null
 $env:PATH = "$ucrt\bin;$env:PATH"
 . (Join-Path $PSScriptRoot 'lib\test-display-lease.ps1')
+. (Join-Path $PSScriptRoot 'lib\crash-archive.ps1')
 
 if (-not ('Mvm.Tests.P37cIdle' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -84,13 +84,10 @@ function Write-Json($Value, [string]$Name) {
     $Value | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $out $Name) -Encoding utf8
 }
 
-# --- 起動器 (repo の source から、この run の中に build する) ---
-$tools = Join-Path $out 'tools'
-New-Item -ItemType Directory -Force $tools | Out-Null
-$launcherSource = Join-Path $PSScriptRoot 'lib\wer-launch.c'
-$launcher = Join-Path $tools 'wer-launch.exe'
-& "$ucrt\bin\gcc.exe" -O2 -municode -Wall -o $launcher $launcherSource
-if ($LASTEXITCODE -ne 0) { throw '起動器を build できません' }
+# --- 起動器 (build の mvm_wer_launch。P3-7C の時点では scripts/lib/wer-launch.c を run の中で build していた) ---
+$launcherSource = Join-Path $repo 'tests\harness\wer_launch.c'
+$launcher = Join-Path $build 'bin\mvm_wer_launch.exe'
+if (-not (Test-Path -LiteralPath $launcher)) { throw "起動器がありません (build してください): $launcher" }
 
 # --- CTest が登録している command と環境 ---
 $inventory = & "$ucrt\bin\ctest.exe" --test-dir $build --show-only=json-v1 -R "^$testName`$" | Out-String
@@ -231,7 +228,10 @@ function Invoke-Run([string]$Stage, [int]$Index, [bool]$WindowArm) {
         if ($found) {
             $copy = Join-Path $runDir ([IO.Path]::GetFileName($found))
             Copy-Item -LiteralPath $found $copy
-            $dump = [ordered]@{ original = $found; copy = $copy; sha256 = (Get-FileHash -Algorithm SHA256 $copy).Hash }
+            # 正本は build/ の外の archive に置く (build/ は消すことがある)。
+            $archive = Open-MvmCrashArchive
+            try { $saved = Save-MvmCrashDumps -Archive $archive -Directory $runDir -Context "P3-7C cohort $Stage $Index" } finally { Close-MvmCrashArchive $archive }
+            $dump = [ordered]@{ original = $found; copy = $copy; sha256 = $saved[0].sha256; archive = (Get-MvmCrashArchiveRoot) }
         }
         $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $start } -ErrorAction SilentlyContinue |
             Where-Object { $_.Message -match [regex]::Escape([IO.Path]::GetFileName($exe)) } | ForEach-Object { $_.Message })
@@ -268,16 +268,15 @@ function Invoke-Control {
 
 # --- 既存の dump の保全 ---
 # WER の LocalDumps は既定で 10 件を超えると最古の dump を消す (2026-10-15 に probe で 1 件失った)。
-# crash しうる run の前に、まだ保全していない dump を hash 付きで複製する (元は残す)。
-$historical = Join-Path (Join-Path $repo $baseOutput) 'historical-crashdumps'
-New-Item -ItemType Directory -Force $historical | Out-Null
-foreach ($d in @(Get-ChildItem -LiteralPath $crashDumps -Filter *.dmp -ErrorAction SilentlyContinue)) {
-    $copy = Join-Path $historical $d.Name
-    if (-not (Test-Path -LiteralPath $copy)) {
-        Copy-Item -LiteralPath $d.FullName $copy
-        Add-Content -LiteralPath (Join-Path $historical 'added.txt') -Encoding utf8 -Value ("{0} {1} {2}" -f (Get-Date -Format o), $d.Name, (Get-FileHash -Algorithm SHA256 $copy).Hash)
+# crash しうる run の前に、build/ の外の archive (scripts/lib/crash-archive.ps1) へ保全する。
+# 失敗したら例外で止まり、試験を起動しない。
+$archive = Open-MvmCrashArchive
+try {
+    Invoke-MvmAfterCrashArchive -Archive $archive -Directory $crashDumps -Context 'P3-7C cohort の前' -Action {
+        param($saved)
+        Write-Host "既存の dump を保全: $($saved.Count) 件 ($($archive.Root))"
     }
-}
+} finally { Close-MvmCrashArchive $archive }
 
 # --- 実行 ---
 $rows = [Collections.Generic.List[object]]::new()

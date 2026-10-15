@@ -142,6 +142,10 @@ foreach(_mvm_whisper_target whisper ggml::ggml ggml::ggml-base)
     endif()
 endforeach()
 
+# 試験の実行ファイルを WER の dump が残る形で起動する (TEST_LAUNCHER)。apps/ の試験用の実行ファイルにも
+# 掛けるため、それらを作る前に読む。
+include(mvm_test_launcher)
+
 add_subdirectory(src)
 
 # Phase 1 / P1 の検証アプリ。Qt が無ければ作らない。
