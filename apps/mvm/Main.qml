@@ -4086,13 +4086,13 @@ ApplicationWindow {
                 placeholderText: "00:00:05:00"
                 onTextEdited: speedDurationDialog.updatePair("duration")
             }
-            CheckBox {
+            ModernDialogCheckBox {
                 id: preservePitchBox
                 text: "オーディオのピッチを維持"
                 // 等速では伸縮しないので保存時に落とされる。押せても効かない状態にしない。
                 enabled: !speedDurationDialog.still && Math.abs(speedField.value - 100) > 1e-9
             }
-            CheckBox {
+            ModernDialogCheckBox {
                 id: rippleBox
                 text: "リップル編集 (後続クリップをシフト)"
             }
@@ -4434,7 +4434,7 @@ ApplicationWindow {
                 text: "エンコード品質"
                 font.bold: true
             }
-            CheckBox {
+            ModernDialogCheckBox {
                 text: "字幕を焼き込む"
                 checked: root.mvmController.burnSubtitles
                 onClicked: root.mvmController.burnSubtitles = checked
@@ -4468,7 +4468,7 @@ ApplicationWindow {
                 color: "#aeb4bf"
                 wrapMode: Text.Wrap
             }
-            CheckBox {
+            ModernDialogCheckBox {
                 id: mathGroupCheckBox
                 objectName: "exportMathGroupCheckBox"
                 visible: exportSettingsDialog.mathClipCount > 0

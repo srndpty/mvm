@@ -476,6 +476,63 @@ class ScoreTests(unittest.TestCase):
             self.assertFalse(any(path.suffix == '.mvm' and path.name not in {'base.mvm', 'output.mvm'}
                                  for path in folder.iterdir()))
 
+    def test_unwritable_report_preserves_the_published_project(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            score = folder / 'score.json'
+            base = folder / 'base.mvm'
+            output = folder / 'output.mvm'
+            score.write_text(json.dumps(recipe()), encoding='utf-8')
+            base.write_text(json.dumps(project()), encoding='utf-8')
+            output.write_text('既存の保存結果', encoding='utf-8')
+            arguments = ['math_score', '--score', str(score), '--project', str(base), '--output', str(output),
+                         '--report', str(folder / '無い場所' / 'report.json'), '--validator', '検証CLI']
+            with patch.object(sys, 'argv', arguments), \
+                    patch.object(score_module.subprocess, 'run') as validator:
+                with self.assertRaises(SystemExit) as error:
+                    score_module.main()
+            self.assertEqual(error.exception.code, 1)
+            self.assertEqual(output.read_text(encoding='utf-8'), '既存の保存結果')
+            self.assertEqual(validator.call_count, 0)
+            self.assertEqual(sorted(p.name for p in folder.iterdir()), ['base.mvm', 'output.mvm', 'score.json'])
+
+    def test_failed_report_publication_restores_the_project(self):
+        for existing in ('既存の保存結果', None):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as directory:
+                folder = Path(directory)
+                score = folder / 'score.json'
+                base = folder / 'base.mvm'
+                output = folder / 'output.mvm'
+                report = folder / 'report.json'
+                score.write_text(json.dumps(recipe()), encoding='utf-8')
+                base.write_text(json.dumps(project()), encoding='utf-8')
+                report.write_text('既存の検証結果', encoding='utf-8')
+                if existing is not None:
+                    output.write_text(existing, encoding='utf-8')
+                arguments = ['math_score', '--score', str(score), '--project', str(base),
+                             '--output', str(output), '--report', str(report), '--validator', '検証CLI']
+                accepted = type('結果', (), dict(returncode=0, stderr=b''))()
+                replace = Path.replace
+
+                def refuse_report(path, target):
+                    if Path(target) == report:
+                        raise PermissionError('検証結果を開いている')
+                    return replace(path, target)
+
+                with patch.object(sys, 'argv', arguments), \
+                        patch.object(score_module.subprocess, 'run', return_value=accepted), \
+                        patch.object(Path, 'replace', refuse_report):
+                    with self.assertRaises(SystemExit) as error:
+                        score_module.main()
+                self.assertEqual(error.exception.code, 1)
+                if existing is None:
+                    self.assertFalse(output.exists())
+                else:
+                    self.assertEqual(output.read_text(encoding='utf-8'), existing)
+                self.assertEqual(report.read_text(encoding='utf-8'), '既存の検証結果')
+                expected = ['base.mvm', 'report.json', 'score.json'] + (['output.mvm'] if existing else [])
+                self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(expected))
+
     def test_repeated_publication_is_deterministic(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

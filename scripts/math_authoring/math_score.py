@@ -493,6 +493,18 @@ def compile_score(score, project):
     return result, report
 
 
+def stage(destination, content, suffix, staged):
+    """destination と同じ directory の一時ファイルに書く (replace を同じ volume 内の改名にする)。"""
+    with tempfile.NamedTemporaryFile(dir=destination.parent, suffix=suffix, delete=False) as temporary:
+        path = Path(temporary.name)
+    staged.append(path)
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        path.write_text(content, encoding='utf-8')
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser(description='部分式の配置と動きを編集可能な数式clipに変換します')
     parser.add_argument('--score', required=True, help='数式配置JSON')
@@ -518,17 +530,28 @@ def main():
             if media and not Path(media).is_absolute():
                 item['media_path'] = os.path.relpath(origin / media, destination)
         # Projectの検査は製品の公開関数が正。候補を検証してから公開する。
-        with tempfile.NamedTemporaryFile(dir=output_path.parent, suffix='.mvm', delete=False) as temporary:
-            candidate = Path(temporary.name)
+        # 検証結果も先に一時ファイルへ書き切る。書けないまま Project だけを公開しない。
+        staged = []
         try:
-            candidate.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+            candidate = stage(output_path, json.dumps(result, ensure_ascii=False, indent=2), '.mvm', staged)
+            report_candidate = stage(report_path, json.dumps(report, ensure_ascii=False, indent=2), '.json', staged)
             checked = subprocess.run([args.validator, str(candidate)], capture_output=True)
             require(checked.returncode == 0,
                     '製品のProject検証が失敗しました: ' + checked.stderr.decode('utf-8', errors='replace'))
+            previous = output_path.read_bytes() if output_path.exists() else None
             candidate.replace(output_path)
+            try:
+                report_candidate.replace(report_path)
+            except OSError:
+                # 失敗と報告する実行で Project だけを更新しない。元の内容へ戻す。
+                if previous is None:
+                    output_path.unlink(missing_ok=True)
+                else:
+                    stage(output_path, previous, '.mvm', staged).replace(output_path)
+                raise
         finally:
-            candidate.unlink(missing_ok=True)
-        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+            for path in staged:
+                path.unlink(missing_ok=True)
     except (ScoreError, KeyError, TypeError, ValueError, OSError) as error:
         parser.exit(1, f'数式配置を変換できません: {error}\n')
     print(f"部分式を変換しました: {report['native_clips']}clip、{report['frames']}frame")

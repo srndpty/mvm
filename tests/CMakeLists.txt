@@ -343,6 +343,13 @@ set_tests_properties(timeline_waveform_cache PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)
 
+# 数式配置の変換 (scripts/math_authoring/math_score.py)。製品の検証 CLI は mock するので build を使わない。
+add_test(NAME math_score_authoring
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/run-python-unittest.ps1"
+        -Python "${MVM_UCRT64_ROOT}/bin/python.exe"
+        -TestFile "${CMAKE_CURRENT_SOURCE_DIR}/math_authoring/test_math_score.py")
+set_tests_properties(math_score_authoring PROPERTIES TIMEOUT 60)
+
 add_test(NAME m7b_4_timeline_ui_architecture
     COMMAND pwsh -NoProfile -File
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)
