@@ -201,12 +201,21 @@ function Invoke-CTestGroup {
     # 各行を表示しながら要約照合用にも保持する。長い検査でも進捗が見える。
     $outLines = [System.Collections.Generic.List[string]]::new()
     $recordArgs = if ($recordLabel) { @(Get-MvmRecordedCTestArguments -Record $script:runRecord -Label $recordLabel) } else { @() }
-    & $script:CTest --output-on-failure --timeout 120 -j $script:CTestJobs @CTestArgs @recordArgs 2>&1 | ForEach-Object {
-        $line = "$_"
-        Write-Host $line
-        [void]$outLines.Add($line)
+    # TIMEOUT の無い試験の打ち切り。起動器 (mvm_wer_launch) にも同じ値を渡し、打ち切りの前に止まった
+    # 試験の dump を書かせる (TIMEOUT のある試験は CMake が試験ごとに上書きする)。
+    $defaultTimeout = 120
+    $savedTimeout = $env:MVM_TEST_TIMEOUT_SECONDS
+    $env:MVM_TEST_TIMEOUT_SECONDS = "$defaultTimeout"
+    try {
+        & $script:CTest --output-on-failure --timeout $defaultTimeout -j $script:CTestJobs @CTestArgs @recordArgs 2>&1 | ForEach-Object {
+            $line = "$_"
+            Write-Host $line
+            [void]$outLines.Add($line)
+        }
+        $code = $LASTEXITCODE
+    } finally {
+        $env:MVM_TEST_TIMEOUT_SECONDS = $savedTimeout
     }
-    $code = $LASTEXITCODE
     if ($recordLabel) {
         Complete-MvmRecordedCTestGroup -Record $script:runRecord -Label $recordLabel -OutputLines $outLines `
             -ExitCode $code -BuildDirectory (Get-Location).Path -Description $Kind

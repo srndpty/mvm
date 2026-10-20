@@ -40,6 +40,14 @@ P3-7C.1（2026-10-15）で作った。経緯は `docs/math-equation-sequence-cra
 - 子が例外で終わったら、WER が書いた `CrashDumps\<exe>.<pid>.dmp` を、`MVM_CRASH_STAGING` があれば
   そこへ複製する（10 件の回転で消える前に）。結果を標準エラーに 1 行書く
   （`wer_launch: 例外 0xC0000005 で終了。dump: … (複製: …)`）。dump が無い・複製できないときも、その旨を書く。
+- **打ち切りの前の dump**: CTest の TIMEOUT は子を何も残さずに止める（試験が何も出力していなければ、
+  止まった場所は log に残らない。2026-10-15 の CI の `math_inspector_product_ui` がそうだった）。
+  起動器は `MVM_TEST_TIMEOUT_SECONDS` の少し前（5 秒、短い試験は TIMEOUT の 1/5）になっても終わらない子の
+  minidump を `MVM_CRASH_STAGING` へ書き（`<exe>.<pid>.hang.<tick>.dmp`）、標準エラーに 1 行書く
+  （`wer_launch: 55000 ms で終わっていません。打ち切りの前の dump: …`）。子は止めず、打ち切りは CTest に任せる。
+  `MVM_TEST_TIMEOUT_SECONDS` は、TIMEOUT のある試験には CMake（`mvm_pass_test_timeouts_to_launcher`）が試験ごとに、
+  無い試験には `scripts/test.ps1` が ctest の `--timeout` と同じ値を渡す。CI は失敗時に staging の dump を
+  解析器に通し、各 thread の stack を log に出す。
 - 起動器自身の失敗（起動できない、など）は `0xE0C0FF02` で終わる。
 
 範囲:
@@ -150,6 +158,7 @@ C:\msys64\ucrt64\bin\python.exe -I scripts/minidump-stack.py <dump> --addr2line 
 | --- | --- |
 | `crash_archive_contract` | 置き場所の拒否、同じ名前の別の dump、再実行の冪等、容量・空き不足で 1 件も書かない、開けない dump、保全の失敗で probe を起動しない、上書きの拒否、明示の削除と記録、lock |
 | `crash_capture_contract`（workstation） | CTest の下で起動器が dump を残す、終了コードの受け渡し、入出力・作業 directory・環境、起動の失敗、abort、staging が無いとき、起動器の停止で子と孫が止まる、cohort mode の timeout と window、unwind が既知の呼び出しの連鎖を出す（`probe_leaf` → `probe_alloca` → `probe_compare` → UCRT の `qsort` → `probe_big_frame` → `main`）、試験の前の dump を失わない |
+| `hang_capture_contract` | 打ち切りの前に止まった子の dump を書き子は止めない、解析器が `probe_hang` → `main` を出す、すぐ終わる・TIMEOUT を知らない・staging が無い起動、記録が dump（code `hang`）と取れなかった理由を読む、CMake が TIMEOUT を起動器へ渡す。WER を使わないので CI でも動く |
 | `test_run_record_contract`（workstation） | fixture（pass・fail・crash・timeout）の記録: 全出力・LastTest.log・分類・dump の SHA-256 との結び付け・identity・preflight・上書きの拒否・`MVM_CRASH_STAGING` の復元、archive の失敗で始めない |
 
 `crash_capture_contract` と `test_run_record_contract` は probe を実際に落とす。先に実際の archive へ

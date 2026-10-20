@@ -11,225 +11,265 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
+    push:
+        branches: [main]
+    pull_request:
+    workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
 
 jobs:
-  # 通常テストの大半 (約 1070 件) は契約・checker スクリプトの検査で、
-  # release / debug で結果が変わらない (scripts/test.ps1 の -Group を参照)。
-  # 1 job で release と debug を順に回すと約 50 分かかるため、
-  #   - release / debug: ビルドしてビルド種別依存のテストだけを実行
-  #   - scripts k/n    : configure だけ行い、非依存テストを n 分割して実行
-  # に分けて並列に走らせる。
-  # 全体の所要時間は最も遅い job で決まる。ビルドする release が最も長いので、
-  # lint (約 1 分) はビルドしない scripts 1/3 で回す。
-  build-and-test:
-    name: build-and-test (${{ matrix.name }})
-    runs-on: windows-latest
-    strategy:
-      # 1 つの失敗で他を止めると、どこが壊れたかが分からなくなる。
-      fail-fast: false
-      matrix:
-        include:
-          - { name: release,     preset: ucrt64-release, group: BuildDependent }
-          - { name: debug,       preset: ucrt64-debug,   group: BuildDependent }
-          - { name: scripts 1/3, preset: ucrt64-release, group: BuildIndependent, shard: 1/3, lint: true }
-          - { name: scripts 2/3, preset: ucrt64-release, group: BuildIndependent, shard: 2/3 }
-          - { name: scripts 3/3, preset: ucrt64-release, group: BuildIndependent, shard: 3/3 }
-    defaults:
-      run:
-        shell: msys2 {0}
+    # 通常テストの大半 (約 1070 件) は契約・checker スクリプトの検査で、
+    # release / debug で結果が変わらない (scripts/test.ps1 の -Group を参照)。
+    # 1 job で release と debug を順に回すと約 50 分かかるため、
+    #   - release / debug: ビルドしてビルド種別依存のテストだけを実行
+    #   - scripts k/n    : configure だけ行い、非依存テストを n 分割して実行
+    # に分けて並列に走らせる。
+    # 全体の所要時間は最も遅い job で決まる。ビルドする release が最も長いので、
+    # lint (約 1 分) はビルドしない scripts 1/3 で回す。
+    build-and-test:
+        name: build-and-test (${{ matrix.name }})
+        runs-on: windows-latest
+        strategy:
+            # 1 つの失敗で他を止めると、どこが壊れたかが分からなくなる。
+            fail-fast: false
+            matrix:
+                include:
+                    - {
+                          name: release,
+                          preset: ucrt64-release,
+                          group: BuildDependent,
+                      }
+                    - {
+                          name: debug,
+                          preset: ucrt64-debug,
+                          group: BuildDependent,
+                      }
+                    - {
+                          name: scripts 1/3,
+                          preset: ucrt64-release,
+                          group: BuildIndependent,
+                          shard: 1/3,
+                          lint: true,
+                      }
+                    - {
+                          name: scripts 2/3,
+                          preset: ucrt64-release,
+                          group: BuildIndependent,
+                          shard: 2/3,
+                      }
+                    - {
+                          name: scripts 3/3,
+                          preset: ucrt64-release,
+                          group: BuildIndependent,
+                          shard: 3/3,
+                      }
+        defaults:
+            run:
+                shell: msys2 {0}
 
-    steps:
-      - uses: actions/checkout@v7
+        steps:
+            - uses: actions/checkout@v7
 
-      # base だけを用意する。UCRT64 のパッケージは次の step で lock の版を入れる。
-      # update は行わない (最新へ上げると lock とずれる)。
-      - name: MSYS2 UCRT64 を用意
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: false
+            # base だけを用意する。UCRT64 のパッケージは次の step で lock の版を入れる。
+            # update は行わない (最新へ上げると lock とずれる)。
+            - name: MSYS2 UCRT64 を用意
+              id: msys2
+              uses: msys2/setup-msys2@v2
+              with:
+                  msystem: UCRT64
+                  update: false
 
-      # lock の版の実体を job 間で使い回す。鍵は lock の内容だけで決まる。
-      - name: 凍結版の依存を復元
-        id: deps-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: build/msys2-pkgs
-          key: msys2-locked-${{ hashFiles('docs/deps-lock.txt') }}
+            # lock の版の実体を job 間で使い回す。鍵は lock の内容だけで決まる。
+            - name: 凍結版の依存を復元
+              id: deps-cache
+              uses: actions/cache/restore@v6
+              with:
+                  path: build/msys2-pkgs
+                  key: msys2-locked-${{ hashFiles('docs/deps-lock.txt') }}
 
-      - name: 凍結版の依存を導入
-        shell: pwsh
-        run: pwsh scripts/install-locked-deps.ps1 -Msys2Root '${{ steps.msys2.outputs.msys2-location }}'
+            - name: 凍結版の依存を導入
+              shell: pwsh
+              run: pwsh scripts/install-locked-deps.ps1 -Msys2Root '${{ steps.msys2.outputs.msys2-location }}'
 
-      # 同じ鍵で同時に保存すると警告になるので、release だけが保存する。
-      - name: 凍結版の依存を保存
-        if: matrix.name == 'release' && steps.deps-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: build/msys2-pkgs
-          key: ${{ steps.deps-cache.outputs.cache-primary-key }}
+            # 同じ鍵で同時に保存すると警告になるので、release だけが保存する。
+            - name: 凍結版の依存を保存
+              if: matrix.name == 'release' && steps.deps-cache.outputs.cache-hit != 'true'
+              uses: actions/cache/save@v6
+              with:
+                  path: build/msys2-pkgs
+                  key: ${{ steps.deps-cache.outputs.cache-primary-key }}
 
-      - name: MLT ランタイムの健全性を確認
-        run: |
-          # モジュールが dlopen できない状態だと、後段が
-          # 「filter が見つからない」という分かりにくい形で失敗する。
-          # 先にここで落とす。
-          ls -la /ucrt64/lib/mlt/ | head -30
-          pkgconf --modversion mlt-framework-7
+            - name: MLT ランタイムの健全性を確認
+              run: |
+                  # モジュールが dlopen できない状態だと、後段が
+                  # 「filter が見つからない」という分かりにくい形で失敗する。
+                  # 先にここで落とす。
+                  ls -la /ucrt64/lib/mlt/ | head -30
+                  pkgconf --modversion mlt-framework-7
 
-      # Whisper は lock の MSYS2 whisper.cpp (固定リビジョン。CMakeLists.txt で版と commit を
-      # 検査) を開発機と同じく使う。別途の構築は行わない。
+            # Whisper は lock の MSYS2 whisper.cpp (固定リビジョン。CMakeLists.txt で版と commit を
+            # 検査) を開発機と同じく使う。別途の構築は行わない。
 
-      # clang-format と PSScriptAnalyzer は開発機と同じ固定版を使う。
-      - name: 整形とアーキテクチャ検査
-        if: matrix.lint
-        shell: pwsh
-        run: |
-          $analyzerVersion = (Get-Content scripts/PSScriptAnalyzer.version -Raw).Trim()
-          Install-Module PSScriptAnalyzer -RequiredVersion $analyzerVersion -Scope CurrentUser -Force
-          pwsh scripts/install-clang-format.ps1
-          pwsh scripts/lint.ps1
+            # clang-format と PSScriptAnalyzer は開発機と同じ固定版を使う。
+            - name: 整形とアーキテクチャ検査
+              if: matrix.lint
+              shell: pwsh
+              run: |
+                  $analyzerVersion = (Get-Content scripts/PSScriptAnalyzer.version -Raw).Trim()
+                  Install-Module PSScriptAnalyzer -RequiredVersion $analyzerVersion -Scope CurrentUser -Force
+                  pwsh scripts/install-clang-format.ps1
+                  pwsh scripts/lint.ps1
 
-      # 非依存テストは素材を参照しないので、scripts job では生成しない。
-      # 生成には約 1.5 分かかるので、生成 script と FFmpeg の版が同じ間は前回の素材を使う。
-      # make-testmedia.ps1 は既存の素材を作り直さず、全素材を probe して manifest を書き直す。
-      # 欠けた素材だけが生成されるので、復元が部分的でも結果は同じになる。
-      - name: 検証素材のキャッシュ鍵を決める
-        id: testmedia
-        if: matrix.group == 'BuildDependent'
-        shell: pwsh
-        run: |
-          $line = & '${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\ffmpeg.exe' -hide_banner -version |
-            Select-Object -First 1
-          if ("$line" -notmatch '^ffmpeg version (\S+)') { throw "FFmpeg の版を読めません: $line" }
-          "ffmpeg=$($Matches[1])" >> $env:GITHUB_OUTPUT
+            # 非依存テストは素材を参照しないので、scripts job では生成しない。
+            # 生成には約 1.5 分かかるので、生成 script と FFmpeg の版が同じ間は前回の素材を使う。
+            # make-testmedia.ps1 は既存の素材を作り直さず、全素材を probe して manifest を書き直す。
+            # 欠けた素材だけが生成されるので、復元が部分的でも結果は同じになる。
+            - name: 検証素材のキャッシュ鍵を決める
+              id: testmedia
+              if: matrix.group == 'BuildDependent'
+              shell: pwsh
+              run: |
+                  $line = & '${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\ffmpeg.exe' -hide_banner -version |
+                    Select-Object -First 1
+                  if ("$line" -notmatch '^ffmpeg version (\S+)') { throw "FFmpeg の版を読めません: $line" }
+                  "ffmpeg=$($Matches[1])" >> $env:GITHUB_OUTPUT
 
-      - name: 検証素材を復元
-        id: testmedia-cache
-        if: matrix.group == 'BuildDependent'
-        uses: actions/cache/restore@v6
-        with:
-          path: tests/assets/smoke
-          key: testmedia-smoke-${{ steps.testmedia.outputs.ffmpeg }}-${{ hashFiles('scripts/make-testmedia.ps1') }}
+            - name: 検証素材を復元
+              id: testmedia-cache
+              if: matrix.group == 'BuildDependent'
+              uses: actions/cache/restore@v6
+              with:
+                  path: tests/assets/smoke
+                  key: testmedia-smoke-${{ steps.testmedia.outputs.ffmpeg }}-${{ hashFiles('scripts/make-testmedia.ps1') }}
 
-      - name: 検証素材を生成 (Smoke)
-        if: matrix.group == 'BuildDependent'
-        shell: pwsh
-        run: pwsh scripts/make-testmedia.ps1 -Mode Smoke -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
+            - name: 検証素材を生成 (Smoke)
+              if: matrix.group == 'BuildDependent'
+              shell: pwsh
+              run: pwsh scripts/make-testmedia.ps1 -Mode Smoke -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
 
-      # テストの成否と関係なく残すため、テストより前に保存する。
-      # release と debug が同じ鍵で同時に保存すると片方が警告になるので、release だけが保存する。
-      - name: 検証素材を保存
-        if: matrix.name == 'release' && steps.testmedia-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: tests/assets/smoke
-          key: ${{ steps.testmedia-cache.outputs.cache-primary-key }}
+            # テストの成否と関係なく残すため、テストより前に保存する。
+            # release と debug が同じ鍵で同時に保存すると片方が警告になるので、release だけが保存する。
+            - name: 検証素材を保存
+              if: matrix.name == 'release' && steps.testmedia-cache.outputs.cache-hit != 'true'
+              uses: actions/cache/save@v6
+              with:
+                  path: tests/assets/smoke
+                  key: ${{ steps.testmedia-cache.outputs.cache-primary-key }}
 
-      # ccache は CI だけの道具で lock に無い。MSYS2 の最新を入れると lock の依存を
-      # 上書きしうるので、版と SHA256 を固定した公式の Windows binary を使う。
-      - name: ccache を用意
-        if: matrix.group == 'BuildDependent'
-        shell: pwsh
-        run: |
-          $version = '4.14.1'
-          $sha256 = '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4'
-          $zip = Join-Path $env:RUNNER_TEMP "ccache-$version.zip"
-          curl.exe --fail --silent --show-error --location --retry 3 -o $zip `
-            "https://github.com/ccache/ccache/releases/download/v$version/ccache-$version-windows-x86_64.zip"
-          if ($LASTEXITCODE -ne 0) { throw "ccache $version を取得できません" }
-          if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $sha256) { throw 'ccache の SHA256 が固定と違います' }
-          Expand-Archive -LiteralPath $zip -DestinationPath $env:RUNNER_TEMP -Force
-          $exe = Join-Path $env:RUNNER_TEMP "ccache-$version-windows-x86_64\ccache.exe"
-          if (-not (Test-Path -LiteralPath $exe)) { throw "ccache.exe がありません: $exe" }
-          "CCACHE_EXE=$exe" >> $env:GITHUB_ENV
+            # ccache は CI だけの道具で lock に無い。MSYS2 の最新を入れると lock の依存を
+            # 上書きしうるので、版と SHA256 を固定した公式の Windows binary を使う。
+            - name: ccache を用意
+              if: matrix.group == 'BuildDependent'
+              shell: pwsh
+              run: |
+                  $version = '4.14.1'
+                  $sha256 = '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4'
+                  $zip = Join-Path $env:RUNNER_TEMP "ccache-$version.zip"
+                  curl.exe --fail --silent --show-error --location --retry 3 -o $zip `
+                    "https://github.com/ccache/ccache/releases/download/v$version/ccache-$version-windows-x86_64.zip"
+                  if ($LASTEXITCODE -ne 0) { throw "ccache $version を取得できません" }
+                  if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $sha256) { throw 'ccache の SHA256 が固定と違います' }
+                  Expand-Archive -LiteralPath $zip -DestinationPath $env:RUNNER_TEMP -Force
+                  $exe = Join-Path $env:RUNNER_TEMP "ccache-$version-windows-x86_64\ccache.exe"
+                  if (-not (Test-Path -LiteralPath $exe)) { throw "ccache.exe がありません: $exe" }
+                  "CCACHE_EXE=$exe" >> $env:GITHUB_ENV
 
-      # ビルドする job だけ ccache を使う。テストが失敗してもキャッシュは保存したいので、
-      # actions/cache ではなく restore / save を分けて使う。
-      - name: ccache を復元
-        if: matrix.group == 'BuildDependent'
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ runner.temp }}/ccache
-          key: ccache-${{ matrix.preset }}-${{ github.sha }}
-          restore-keys: ccache-${{ matrix.preset }}-
+            # ビルドする job だけ ccache を使う。テストが失敗してもキャッシュは保存したいので、
+            # actions/cache ではなく restore / save を分けて使う。
+            - name: ccache を復元
+              if: matrix.group == 'BuildDependent'
+              uses: actions/cache/restore@v6
+              with:
+                  path: ${{ runner.temp }}/ccache
+                  key: ccache-${{ matrix.preset }}-${{ github.sha }}
+                  restore-keys:
+                      ccache-${{ matrix.preset }}-
 
-      # crash の archive の既定 (min_free_bytes 32 GiB) は開発機のディスクを守るための値で、
-      # runner の空き (C: で約 33 GB) では下限を割って試験を始められない。runner の一時領域に置き、
-      # 下限を runner の大きさに合わせる (docs/crash-evidence.md 3)。
-      - name: crash の archive を用意
-        shell: pwsh
-        run: |
-          $root = Join-Path $env:RUNNER_TEMP 'crash-archive'
-          New-Item -ItemType Directory -Force -Path $root | Out-Null
-          [ordered]@{ max_bytes = 8GB; min_free_bytes = 4GB } | ConvertTo-Json |
-            Set-Content -LiteralPath (Join-Path $root 'config.json') -Encoding utf8NoBOM
-          "MVM_CRASH_ARCHIVE=$root" >> $env:GITHUB_ENV
+                      # runner の空き (C: で約 33 GB) では下限を割って試験を始められない。runner の一時領域に置き、
+                      # crash の archive の既定 (min_free_bytes 32 GiB) は開発機のディスクを守るための値で、
+            # 下限を runner の大きさに合わせる (docs/crash-evidence.md 3)。
+            - name: crash の archive を用意
+              shell: pwsh
+              run: |
+                  $root = Join-Path $env:RUNNER_TEMP 'crash-archive'
+                  New-Item -ItemType Directory -Force -Path $root | Out-Null
+                  [ordered]@{ max_bytes = 8GB; min_free_bytes = 4GB } | ConvertTo-Json |
+                    Set-Content -LiteralPath (Join-Path $root 'config.json') -Encoding utf8NoBOM
+                  "MVM_CRASH_ARCHIVE=$root" >> $env:GITHUB_ENV
 
-      - name: ビルドとテスト
-        shell: pwsh
-        # GitHub hosted runner には Meiryo と D3D11VA hardware device が無い。
-        # portable suite の件数と結果を検査し、workstation test は開発機で実行する。
-        run: |
-          $ucrt64 = '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
-          if ('${{ matrix.group }}' -eq 'BuildDependent') {
-            # CMake は初回 configure 時にこの環境変数を compiler launcher として読む。
-            $env:CMAKE_C_COMPILER_LAUNCHER = $env:CCACHE_EXE
-            $env:CMAKE_CXX_COMPILER_LAUNCHER = $env:CCACHE_EXE
-            $env:CCACHE_DIR = '${{ runner.temp }}\ccache'
-            # job ごとに gcc を入れ直すため、既定の mtime 比較では常に外れる。
-            $env:CCACHE_COMPILERCHECK = 'content'
-            $env:CCACHE_MAXSIZE = '1G'
-            & $env:CCACHE_EXE --zero-stats | Out-Null
-          }
-          $testArgs = @('-Preset', '${{ matrix.preset }}', '-Group', '${{ matrix.group }}')
-          if ('${{ matrix.shard }}') { $testArgs += @('-Shard', '${{ matrix.shard }}') }
-          # runner は 4 vCPU。依存テストは MLT の書き出しが多く CPU を取り合うので、
-          # 既定の 8 並列ではなく vCPU 数に合わせる (試行中。PR #67 の -j 8 は 164.6 秒)。
-          if ('${{ matrix.group }}' -eq 'BuildDependent') { $testArgs += @('-Jobs', '4') }
-          pwsh scripts/test.ps1 -Portable @testArgs -Ucrt64 $ucrt64 `
-            -WhisperRoot $ucrt64
+            - name: ビルドとテスト
+              shell: pwsh
+              # GitHub hosted runner には Meiryo と D3D11VA hardware device が無い。
+              # portable suite の件数と結果を検査し、workstation test は開発機で実行する。
+              run: |
+                  $ucrt64 = '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
+                  if ('${{ matrix.group }}' -eq 'BuildDependent') {
+                    # CMake は初回 configure 時にこの環境変数を compiler launcher として読む。
+                    $env:CMAKE_C_COMPILER_LAUNCHER = $env:CCACHE_EXE
+                    $env:CMAKE_CXX_COMPILER_LAUNCHER = $env:CCACHE_EXE
+                    $env:CCACHE_DIR = '${{ runner.temp }}\ccache'
+                    # job ごとに gcc を入れ直すため、既定の mtime 比較では常に外れる。
+                    $env:CCACHE_COMPILERCHECK = 'content'
+                    $env:CCACHE_MAXSIZE = '1G'
+                    & $env:CCACHE_EXE --zero-stats | Out-Null
+                  }
+                  $testArgs = @('-Preset', '${{ matrix.preset }}', '-Group', '${{ matrix.group }}')
+                  if ('${{ matrix.shard }}') { $testArgs += @('-Shard', '${{ matrix.shard }}') }
+                  # runner は 4 vCPU。依存テストは MLT の書き出しが多く CPU を取り合うので、
+                  # 既定の 8 並列ではなく vCPU 数に合わせる (試行中。PR #67 の -j 8 は 164.6 秒)。
+                  if ('${{ matrix.group }}' -eq 'BuildDependent') { $testArgs += @('-Jobs', '4') }
+                  pwsh scripts/test.ps1 -Portable @testArgs -Ucrt64 $ucrt64 `
+                    -WhisperRoot $ucrt64
 
-      # ヒット率を毎回ログに残す。0% が続くならキャッシュが効いていない。
-      - name: ccache の統計
-        if: always() && matrix.group == 'BuildDependent'
-        shell: pwsh
-        run: |
-          $env:CCACHE_DIR = '${{ runner.temp }}\ccache'
-          & $env:CCACHE_EXE --show-stats
+            # ヒット率を毎回ログに残す。0% が続くならキャッシュが効いていない。
+            - name: ccache の統計
+              if: always() && matrix.group == 'BuildDependent'
+              shell: pwsh
+              run: |
+                  $env:CCACHE_DIR = '${{ runner.temp }}\ccache'
+                  & $env:CCACHE_EXE --show-stats
 
-      - name: ccache を保存
-        if: always() && matrix.group == 'BuildDependent'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ runner.temp }}/ccache
-          key: ccache-${{ matrix.preset }}-${{ github.sha }}
+            - name: ccache を保存
+              if: always() && matrix.group == 'BuildDependent'
+              uses: actions/cache/save@v6
+              with:
+                  path: ${{ runner.temp }}/ccache
+                  key: ccache-${{ matrix.preset }}-${{ github.sha }}
 
-      # Whisper の負の試験が CI でだけ GGML_ASSERT で落ちる (開発機では再現しない)。
-      # 落ちた場所を特定するため、失敗時に gdb で再実行して backtrace を残す。
-      - name: 文字起こし試験の backtrace (失敗時)
-        if: failure() && matrix.group == 'BuildDependent'
-        run: |
-          # gdb は lock の版で導入済み。pacman -S で最新を足さない。
-          # ビルド前に落ちたときは build が無い。その失敗は前の step に出ている。
-          test -d "build/${{ matrix.preset }}" || exit 0
-          cd "build/${{ matrix.preset }}"
-          test -x bin/mvm_test_transcribe.exe || exit 0
-          gdb -batch -ex run -ex bt -ex "info sharedlibrary" --args bin/mvm_test_transcribe.exe \
-            ../../tests/assets/smoke/wav_48k.wav transcribe-negative || true
+            # Whisper の負の試験が CI でだけ GGML_ASSERT で落ちる (開発機では再現しない)。
+            # 落ちた場所を特定するため、失敗時に gdb で再実行して backtrace を残す。
+            - name: 文字起こし試験の backtrace (失敗時)
+              if: failure() && matrix.group == 'BuildDependent'
+              run: |
+                  # gdb は lock の版で導入済み。pacman -S で最新を足さない。
+                  # ビルド前に落ちたときは build が無い。その失敗は前の step に出ている。
+                  test -d "build/${{ matrix.preset }}" || exit 0
+                  cd "build/${{ matrix.preset }}"
+                  test -x bin/mvm_test_transcribe.exe || exit 0
+                  gdb -batch -ex run -ex bt -ex "info sharedlibrary" --args bin/mvm_test_transcribe.exe \
+                    ../../tests/assets/smoke/wav_48k.wav transcribe-negative || true
 
-      - name: 失敗時の診断情報
-        if: failure()
-        shell: pwsh
-        run: |
-          Get-ChildItem build -Recurse -Filter '*.log' -ErrorAction SilentlyContinue |
-            ForEach-Object { Write-Host "--- $($_.FullName) ---"; Get-Content $_.FullName -Tail 50 }
+            - name: 失敗時の診断情報
+              if: failure()
+              shell: pwsh
+              run: |
+                  Get-ChildItem build -Recurse -Filter '*.log' -ErrorAction SilentlyContinue |
+                    ForEach-Object { Write-Host "--- $($_.FullName) ---"; Get-Content $_.FullName -Tail 50 }
+
+            # 打ち切られた試験は出力を残さないことがある。起動器 (mvm_wer_launch) が打ち切りの前に書いた
+            # dump と、落ちた試験の dump を、各 thread の stack にして残す (docs/crash-evidence.md)。
+            - name: 止まった・落ちた試験の stack (失敗時)
+              if: failure()
+              shell: pwsh
+              run: |
+                  $ucrt64 = '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
+                  $dumps = @(Get-ChildItem (Join-Path $env:MVM_CRASH_ARCHIVE 'runs\*\staging') -Filter '*.dmp' -ErrorAction SilentlyContinue)
+                  if (-not $dumps) { Write-Host 'staging に dump はありません'; exit 0 }
+                  foreach ($d in $dumps) {
+                    Write-Host "--- $($d.FullName) ---"
+                    & "$ucrt64\bin\python.exe" -I scripts/minidump-stack.py $d.FullName --addr2line "$ucrt64\bin\addr2line.exe"
+                  }
+                  exit 0

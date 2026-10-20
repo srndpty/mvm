@@ -124,7 +124,10 @@ function Read-MvmCTestJunit {
         $output = if ($outNode) { $outNode.InnerText } else { '' }
         $staged = @([regex]::Matches($output, 'wer_launch: 例外 (0x[0-9A-F]{8}) で終了。dump: (\S+) \(複製: ([^)]+)\)') |
             ForEach-Object { [ordered]@{ code = $_.Groups[1].Value; original = $_.Groups[2].Value; staged = $_.Groups[3].Value } })
-        $missing = @([regex]::Matches($output, 'wer_launch: 例外 (0x[0-9A-F]{8}) で終了。(dump がありません|dump の複製に失敗|LOCALAPPDATA が無く)[^\r\n]*') | ForEach-Object { $_.Value })
+        # 打ち切りの前に止まっていた試験の dump (起動器が書く。code は hang)。
+        $staged += @([regex]::Matches($output, 'wer_launch: \d+ ms で終わっていません。打ち切りの前の dump: ([^\r\n]+)') |
+            ForEach-Object { [ordered]@{ code = 'hang'; original = $null; staged = $_.Groups[1].Value.Trim() } })
+        $missing = @([regex]::Matches($output, 'wer_launch: (例外 0x[0-9A-F]{8} で終了。(dump がありません|dump の複製に失敗|LOCALAPPDATA が無く)|\d+ ms で終わっていません。(MVM_CRASH_STAGING が無い|dump を作れません|dump の書き込みに失敗))[^\r\n]*') | ForEach-Object { $_.Value })
         [ordered]@{
             name = $case.GetAttribute('name'); status = $case.GetAttribute('status'); time = $case.GetAttribute('time')
             failure = $message; classification = (Get-MvmCTestClassification $case.GetAttribute('status') $message)

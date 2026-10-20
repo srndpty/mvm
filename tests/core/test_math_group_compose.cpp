@@ -33,6 +33,18 @@ using MathGroupLayer = mvm::math::detail::UncheckedMathGroupLayer;
 constexpr auto composeUnchecked = mvm::math::detail::composeMathGroupUnchecked;
 using Image = std::vector<std::uint8_t>;
 
+// int の座標・寸法を size_t へ広げてから掛ける (符号の変換を 1 か所にまとめる)。
+std::size_t rgbaBytes(int width, int height) {
+    return static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4;
+}
+
+// 画素 (x, y) の RGBA の先頭 byte の位置。
+std::size_t pixelOffset(int x, int y, int width) {
+    return (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+            static_cast<std::size_t>(x)) *
+           4;
+}
+
 int failures = 0;
 
 void check(bool condition, const char* message) {
@@ -57,10 +69,8 @@ Image expected(Image destination, int width, int height, const std::vector<Place
                 const int sx = column - layer.x, sy = row - layer.y;
                 if (sx < 0 || sx >= width || sy < 0 || sy >= height)
                     continue;
-                auto* to =
-                    destination.data() + (static_cast<std::size_t>(row) * width + column) * 4;
-                const auto* from =
-                    layer.rgba.data() + (static_cast<std::size_t>(sy) * width + sx) * 4;
+                auto* to = destination.data() + pixelOffset(column, row, width);
+                const auto* from = layer.rgba.data() + pixelOffset(sx, sy, width);
                 const auto result =
                     mvm::test::mltSourceOver({to[0], to[1], to[2], to[3]},
                                              {from[0], from[1], from[2], from[3]}, layer.opacity);
@@ -96,12 +106,10 @@ bool compose(Image& destination, int width, int height, const std::vector<Placed
 
 // 準備済みの画像を、元の画像の座標で全部読み出す (保存していない所は 0)。
 Image fullPixels(const mvm::math::PreparedMathRaster& raster) {
-    Image image(static_cast<std::size_t>(raster.width()) * raster.height() * 4);
+    Image image(rgbaBytes(raster.width(), raster.height()));
     for (int row = 0; row < raster.height(); ++row)
         for (int column = 0; column < raster.width(); ++column)
-            raster.texel(column, row,
-                         image.data() +
-                             (static_cast<std::size_t>(row) * raster.width() + column) * 4);
+            raster.texel(column, row, image.data() + pixelOffset(column, row, raster.width()));
     return image;
 }
 
@@ -114,10 +122,10 @@ long long differing(const Image& a, const Image& b) {
 
 // 中央の 1/2 に、透明・半透明・不透明の texel が混ざった画像。外側は完全に透明 (0,0,0,0)。
 Image glyph(std::mt19937& random, int width, int height) {
-    Image image(static_cast<std::size_t>(width) * height * 4, 0);
+    Image image(rgbaBytes(width, height), 0);
     for (int row = height / 4; row < height / 4 + height / 2; ++row)
         for (int column = width / 4; column < width / 4 + width / 2; ++column) {
-            auto* p = image.data() + (static_cast<std::size_t>(row) * width + column) * 4;
+            auto* p = image.data() + pixelOffset(column, row, width);
             const int kind = static_cast<int>(random() % 4);
             p[3] = kind == 0 ? 0 : kind == 1 ? 255 : static_cast<std::uint8_t>(random() % 256);
             for (int c = 0; c < 3; ++c)
@@ -136,10 +144,10 @@ int runConcurrentCompose(int threads, int rounds) {
     mvm::math::PreparedMathRasterPool pool;
     std::vector<const mvm::math::PreparedMathRaster*> rasters;
     for (int index = 0; index < 6; ++index) {
-        Image image(static_cast<std::size_t>(width) * height * 4, 0);
+        Image image(rgbaBytes(width, height), 0);
         for (int row = 8 + index; row < 40 + index; ++row)
             for (int column = 10 + index * 3; column < 70 + index * 2; ++column) {
-                auto* p = image.data() + (static_cast<std::size_t>(row) * width + column) * 4;
+                auto* p = image.data() + pixelOffset(column, row, width);
                 p[3] = static_cast<std::uint8_t>(engine() % 256);
                 p[0] = p[3] ? 204 : 0;
                 p[1] = p[3] ? 34 : 0;
@@ -153,7 +161,7 @@ int runConcurrentCompose(int threads, int rounds) {
             return -1;
         rasters.push_back(pool.intern(std::move(raster)));
     }
-    Image base(static_cast<std::size_t>(width) * height * 4);
+    Image base(rgbaBytes(width, height));
     for (std::size_t i = 0; i < base.size(); ++i)
         base[i] = i % 4 == 3 ? static_cast<std::uint8_t>(1 + engine() % 255)
                              : static_cast<std::uint8_t>(engine() % 256);
@@ -171,11 +179,14 @@ int runConcurrentCompose(int threads, int rounds) {
                                            placements.size(), error);
     };
     // 基準: 1 thread で先に全部を合成する。
-    std::vector<Image> expectedOutputs(static_cast<std::size_t>(threads) * rounds);
+    const auto slot = [rounds](int worker, int round) {
+        return static_cast<std::size_t>(worker) * static_cast<std::size_t>(rounds) +
+               static_cast<std::size_t>(round);
+    };
+    std::vector<Image> expectedOutputs(slot(threads, 0));
     for (int worker = 0; worker < threads; ++worker)
         for (int round = 0; round < rounds; ++round)
-            if (!compose(worker, round,
-                         expectedOutputs[static_cast<std::size_t>(worker) * rounds + round]))
+            if (!compose(worker, round, expectedOutputs[slot(worker, round)]))
                 return -1;
     std::atomic<int> wrong{0};
     std::vector<std::thread> workers;
@@ -183,8 +194,7 @@ int runConcurrentCompose(int threads, int rounds) {
         workers.emplace_back([&, worker] {
             Image out;
             for (int round = 0; round < rounds; ++round)
-                if (!compose(worker, round, out) ||
-                    out != expectedOutputs[static_cast<std::size_t>(worker) * rounds + round])
+                if (!compose(worker, round, out) || out != expectedOutputs[slot(worker, round)])
                     ++wrong;
         });
     for (auto& thread : workers)
@@ -262,7 +272,7 @@ int runTests() {
     long long compared = 0;
     for (int round = 0; round < 40; ++round) {
         // 下地は不透明 (alpha 255)。MLT の書き出しの最下層と同じ条件。
-        Image base(static_cast<std::size_t>(width) * height * 4);
+        Image base(rgbaBytes(width, height));
         for (std::size_t i = 0; i < base.size(); ++i)
             base[i] = i % 4 == 3 ? 255 : static_cast<std::uint8_t>(random() % 256);
         std::vector<Placed> layers;
@@ -291,7 +301,7 @@ int runTests() {
             bottom.opacity = 1.0;
             const int right = width / 4 + width / 2 - 1;
             for (int row = height / 4; row < height / 4 + height / 2; ++row) {
-                auto* p = bottom.rgba.data() + (static_cast<std::size_t>(row) * width + right) * 4;
+                auto* p = bottom.rgba.data() + pixelOffset(right, row, width);
                 p[0] = 200;
                 p[1] = 40;
                 p[2] = 40;
@@ -365,20 +375,22 @@ int runTests() {
     }
     check(compared > 0, "比較した byte がある (空振りでない)");
     // 対応していない入力は拒否する。
-    Image base(static_cast<std::size_t>(width) * height * 4, 255);
+    Image rejectTarget(rgbaBytes(width, height), 255);
     Image small(16 * 16 * 4, 255);
-    MathGroupLayer bad;
-    bad.rgba = small.data();
-    bad.width = 16;
-    bad.height = 16;
+    MathGroupLayer wrongLayer;
+    wrongLayer.rgba = small.data();
+    wrongLayer.width = 16;
+    wrongLayer.height = 16;
     std::string error;
-    check(!composeUnchecked(base.data(), width, height, width * 4U, &bad, 1, error, nullptr),
+    check(!composeUnchecked(rejectTarget.data(), width, height, width * 4U, &wrongLayer, 1, error,
+                            nullptr),
           "出力と大きさの違う layer (拡縮) を拒否する");
-    bad.rgba = base.data();
-    bad.width = width;
-    bad.height = height;
-    bad.opacity = 1.5;
-    check(!composeUnchecked(base.data(), width, height, width * 4U, &bad, 1, error, nullptr),
+    wrongLayer.rgba = rejectTarget.data();
+    wrongLayer.width = width;
+    wrongLayer.height = height;
+    wrongLayer.opacity = 1.5;
+    check(!composeUnchecked(rejectTarget.data(), width, height, width * 4U, &wrongLayer, 1, error,
+                            nullptr),
           "範囲外の不透明度を拒否する");
 
     // --- P3-1.2: 下の alpha が 254 のときの丸め (回帰) -----------------------------------
@@ -436,11 +448,11 @@ int runTests() {
              {std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{64}, std::uint8_t{128},
               std::uint8_t{200}, std::uint8_t{253}, std::uint8_t{254}, std::uint8_t{255}})
             for (const double opacity : sweepOpacities) {
-                Image destination(static_cast<std::size_t>(sweepWidth) * rows * 4);
+                Image destination(rgbaBytes(sweepWidth, rows));
                 Image raster(destination.size());
                 for (int row = 0; row < rows; ++row)
                     for (int column = 0; column < sweepWidth; ++column) {
-                        const auto at = (static_cast<std::size_t>(row) * sweepWidth + column) * 4;
+                        const auto at = pixelOffset(column, row, sweepWidth);
                         destination[at] = static_cast<std::uint8_t>(column);
                         destination[at + 1] = static_cast<std::uint8_t>(255 - column);
                         destination[at + 2] = static_cast<std::uint8_t>((column * 7) % 256);
@@ -498,7 +510,7 @@ int runTests() {
     // --- P3-1.2: 準備済みの画像 (字形の範囲を外から渡せない) と下地の検査 ----------------
     {
         std::mt19937 localRandom(312);
-        Image base(static_cast<std::size_t>(width) * height * 4);
+        Image base(rgbaBytes(width, height));
         for (std::size_t i = 0; i < base.size(); ++i)
             base[i] = i % 4 == 3 ? 255 : static_cast<std::uint8_t>(localRandom() % 256);
         Image source = glyph(localRandom, width, height);
@@ -506,7 +518,7 @@ int runTests() {
         const int left = width / 4, top = height / 4, right = left + width / 2 - 1,
                   bottom = top + height / 2 - 1;
         for (const auto& corner : {std::pair{left, top}, std::pair{right, bottom}})
-            source[(static_cast<std::size_t>(corner.second) * width + corner.first) * 4 + 3] = 255;
+            source[pixelOffset(corner.first, corner.second, width) + 3] = 255;
         mvm::math::PreparedMathRaster raster;
         std::string prepareError;
         check(mvm::math::PreparedMathRaster::prepare(source.data(), width, height, width * 4U,
@@ -575,7 +587,7 @@ int runTests() {
         // 画素の色を 0 に書き換えるが、この合成器は再現しない。
         {
             Image transparent = base;
-            transparent[(static_cast<std::size_t>(height - 1) * width + (width - 1)) * 4 + 3] =
+            transparent[pixelOffset(width - 1, height - 1, width) + 3] =
                 0; // 字形の範囲の外の 1 画素だけ
             check(!mvm::math::mathGroupDestinationEligible(transparent.data(), width, height,
                                                            width * 4U),
@@ -660,7 +672,7 @@ int runTests() {
 
         // 下地: 色は乱数、alpha は指定の値 (1・254・255 と、混ぜたもの)。
         const auto makeBase = [&](std::mt19937& engine, int alphaKind) {
-            Image image(static_cast<std::size_t>(width) * height * 4);
+            Image image(rgbaBytes(width, height));
             for (std::size_t i = 0; i < image.size(); ++i)
                 image[i] = static_cast<std::uint8_t>(engine() % 256);
             for (std::size_t at = 3; at < image.size(); at += 4)
@@ -729,10 +741,10 @@ int runTests() {
             roiCompared += static_cast<long long>(fromRoi.size());
             return fromRoi;
         };
-        const auto blank = [&]() { return Image(static_cast<std::size_t>(width) * height * 4, 0); };
+        const auto blank = [&]() { return Image(rgbaBytes(width, height), 0); };
         const auto put = [&](Image& image, int x, int y, std::uint8_t r, std::uint8_t g,
                              std::uint8_t b, std::uint8_t a) {
-            auto* p = image.data() + (static_cast<std::size_t>(y) * width + x) * 4;
+            auto* p = image.data() + pixelOffset(x, y, width);
             p[0] = r;
             p[1] = g;
             p[2] = b;
@@ -822,7 +834,7 @@ int runTests() {
             bool inside = true;
             for (int row = 0; row < height; ++row)
                 for (int column = 0; column < width; ++column) {
-                    const auto at = (static_cast<std::size_t>(row) * width + column) * 4;
+                    const auto at = pixelOffset(column, row, width);
                     if (std::memcmp(out.data() + at, localBase.data() + at, 4) == 0)
                         continue;
                     ++changed;
@@ -862,10 +874,7 @@ int runTests() {
                     roi.texel(column, row, fromRoi);
                     full.texel(column, row, fromFull);
                     if (column >= 0 && row >= 0 && column < width && row < height)
-                        std::memcpy(want,
-                                    tinted.data() +
-                                        (static_cast<std::size_t>(row) * width + column) * 4,
-                                    4);
+                        std::memcpy(want, tinted.data() + pixelOffset(column, row, width), 4);
                     same = same && std::memcmp(fromRoi, want, 4) == 0 &&
                            std::memcmp(fromFull, want, 4) == 0;
                 }
@@ -936,7 +945,7 @@ int runTests() {
         std::mt19937 engine(3304);
         const Image first = glyph(engine, width, height);
         Image changed = first; // 同じ path の成果物が書き換わった場合: 字形の中の 1 byte だけが違う
-        changed[(static_cast<std::size_t>(height / 2) * width + width / 2) * 4 + 1] ^= 1;
+        changed[pixelOffset(width / 2, height / 2, width) + 1] ^= 1;
         const auto make = [&](const Image& image, const char* provenance) {
             PreparedMathRaster raster;
             std::string localError;
@@ -1004,11 +1013,11 @@ int runBench() {
     };
     std::mt19937 random(1);
     for (const auto& item : cases) {
-        Image raster(static_cast<std::size_t>(width) * height * 4, 0);
+        Image raster(rgbaBytes(width, height), 0);
         const int left = (width - item.roiWidth) / 2, top = (height - item.roiHeight) / 2;
         for (int row = top; row < top + item.roiHeight; ++row)
             for (int column = left; column < left + item.roiWidth; ++column) {
-                auto* p = raster.data() + (static_cast<std::size_t>(row) * width + column) * 4;
+                auto* p = raster.data() + pixelOffset(column, row, width);
                 p[0] = p[1] = p[2] = static_cast<std::uint8_t>(random() % 256);
                 p[3] = static_cast<std::uint8_t>(1 + random() % 255);
             }
@@ -1026,7 +1035,7 @@ int runBench() {
             layer.roiWidth = item.roiWidth == width ? 0 : item.roiWidth;
             layer.roiHeight = item.roiHeight;
         }
-        Image destination(static_cast<std::size_t>(width) * height * 4, 255);
+        Image destination(rgbaBytes(width, height), 255);
         std::string error;
         mvm::math::MathGroupStats stats;
         constexpr int frames = 20;
@@ -1044,7 +1053,7 @@ int runBench() {
     }
     // 下地の検査 (全画素の alpha の走査) と、画像の準備 (複製と字形の範囲の走査) の時間。
     {
-        Image destination(static_cast<std::size_t>(width) * height * 4, 255);
+        Image destination(rgbaBytes(width, height), 255);
         constexpr int rounds = 200;
         bool eligible = true;
         auto begin = std::chrono::steady_clock::now();
@@ -1065,7 +1074,7 @@ int runBench() {
         Image raster(destination.size(), 0);
         for (int row = 530; row < 550; ++row)
             for (int column = 694; column < 1226; ++column)
-                raster[(static_cast<std::size_t>(row) * width + column) * 4 + 3] = 200;
+                raster[pixelOffset(column, row, width) + 3] = 200;
         constexpr int prepares = 20;
         std::string error;
         begin = std::chrono::steady_clock::now();
@@ -1129,7 +1138,7 @@ int main(int argc, char** argv) {
         // race の検出器そのものの対照: 2 つの thread が同じ合成先へ同時に書く (意図した data
         // race)。 検出器を付けて実行すると報告されなければならない。通常の試験では実行しない。
         constexpr int width = 64, height = 48;
-        Image source(static_cast<std::size_t>(width) * height * 4, 200);
+        Image source(rgbaBytes(width, height), 200);
         mvm::math::PreparedMathRaster raster;
         std::string error;
         if (!mvm::math::PreparedMathRaster::prepare(source.data(), width, height, width * 4U,

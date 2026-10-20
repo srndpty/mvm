@@ -23,7 +23,12 @@ param(
     [string]$Ucrt64 = 'C:\msys64\ucrt64',
 
     [string]$ManimExecutable =
-        (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.local\bin\manim.exe')
+        (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.local\bin\manim.exe'),
+
+    # build/ は丸ごと消す運用のため、作業中の Project はその外に置く。
+    # 隣に cache/ (manim の動画など) ができるため、OneDrive 配下になりうるドキュメントは避ける。
+    [string]$Project =
+        (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'mvm\project.mvm')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +55,7 @@ function Show-DevHelp {
 共通オプション:
   -Ucrt64 <path>            MSYS2 UCRT64 のルート
   -ManimExecutable <path>   run / gui で使用する manim.exe
+  -Project <path>           run / gui で開く .mvm (既定: %USERPROFILE%\mvm\project.mvm)
 
 各コマンドは既存の正式スクリプトまたは起動手順へ処理を委譲します。
 '@
@@ -82,8 +88,8 @@ function Start-MvmGui {
 
     $ucrt64Bin = Join-Path $Ucrt64 'bin'
     $executable = Join-Path $BuildDirectory 'bin\mvm.exe'
-    $projectDirectory = Join-Path $BuildDirectory 'm6a-gui'
-    $projectPath = Join-Path $projectDirectory 'project.mvm'
+    $projectPath = [System.IO.Path]::GetFullPath($Project, $repoRoot)
+    $projectDirectory = Split-Path -Parent $projectPath
 
     if (-not (Test-Path -LiteralPath $ucrt64Bin -PathType Container)) {
         throw "UCRT64 の bin ディレクトリが見つかりません: $ucrt64Bin"

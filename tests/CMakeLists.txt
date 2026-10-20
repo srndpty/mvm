@@ -62,6 +62,22 @@ add_test(NAME crash_capture_contract
         -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/crash-capture")
 set_tests_properties(crash_capture_contract PROPERTIES LABELS workstation TIMEOUT 180)
 
+# 起動器が、試験の TIMEOUT の少し前に止まった子の dump を書き、解析器が止まった場所を出すこと。
+# WER を使わないので workstation に限らない (CI の打ち切りの原因を残すための仕組みの検査)。
+add_test(NAME hang_capture_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/harness/test-hang-dump.ps1"
+        -Launcher "$<TARGET_FILE:mvm_wer_launch>"
+        -Probe "$<TARGET_FILE:mvm_test_crash_probe>"
+        -Python "${MVM_UCRT64_ROOT}/bin/python.exe"
+        -Addr2line "${MVM_UCRT64_ROOT}/bin/addr2line.exe"
+        -Analyzer "${CMAKE_SOURCE_DIR}/scripts/minidump-stack.py"
+        -RecordLibrary "${CMAKE_SOURCE_DIR}/scripts/lib/test-run-record.ps1"
+        -CTest "${MVM_UCRT64_ROOT}/bin/ctest.exe"
+        -BuildDir "${CMAKE_BINARY_DIR}"
+        -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/hang-capture")
+set_tests_properties(hang_capture_contract PROPERTIES TIMEOUT 120)
+
 # CTest の実行の記録 (scripts/test.ps1 が使う)。小さな fixture で確かめ、全 CTest は使わない。
 add_test(NAME test_run_record_contract
     COMMAND "${MVM_PWSH}" -NoProfile -File
