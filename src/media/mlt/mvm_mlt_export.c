@@ -152,9 +152,11 @@ static int observed_get_frame(mlt_service service, mlt_frame_ptr frame, int inde
     MvmExportObserver* observer = audit->spec->observer;
     mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_FRAME_REQUEST,
                            (long long)mlt_producer_position((mlt_producer)service));
-    const long long began = mvm_mlt_export_observer_now_ns();
+    const long long began = observer ? mvm_mlt_export_observer_now_ns() : 0;
     const int status = audit->original_get_frame(service, frame, index);
-    InterlockedExchangeAdd64(&observer->frame_ns_total, mvm_mlt_export_observer_now_ns() - began);
+    if (observer)
+        InterlockedExchangeAdd64(&observer->frame_ns_total,
+                                 mvm_mlt_export_observer_now_ns() - began);
     mvm_mlt_export_observe(observer, MVM_EXPORT_OBSERVE_FRAME_RETURN,
                            frame && *frame ? (long long)mlt_frame_get_position(*frame) : -1);
     return status;

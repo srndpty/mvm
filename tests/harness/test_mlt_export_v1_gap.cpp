@@ -109,7 +109,8 @@ int validator(long long frame, const unsigned char* rgba, int width, int height,
     std::uint64_t value = 0xcbf29ce484222325ull;
     bool black = width == kWidth && height == kHeight;
     if (black) {
-        const std::size_t bytes = static_cast<std::size_t>(width) * height * 4;
+        const std::size_t bytes =
+            static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4;
         for (std::size_t index = 0; index < bytes; ++index) {
             value = (value ^ rgba[index]) * 0x100000001b3ull;
             if (rgba[index] != (index % 4 == 3 ? 255 : 0))

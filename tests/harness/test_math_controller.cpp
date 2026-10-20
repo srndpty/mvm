@@ -692,11 +692,19 @@ std::unique_ptr<MvmController> openTransformProject(const QTemporaryDir& temp, c
     return controller;
 }
 
+// 変形の確定は frame ごとに cache へ flush して書く (30 frame なら 30 回)。CI では並行する
+// 試験の I/O で flush が詰まり、偽の backend でも ready まで 10 秒を超えた (2026-10-20、
+// gate を下ろしてから約 20 秒。後続の「変形を 1 回描く」は通っており、遅いだけだった)。
+// 待つのは結果の正しさであって速さではないので、上限は pump の既定より長くする。
+constexpr int kTransformDiskWaitMilliseconds = 45000;
+
 bool waitTransformState(MvmController& controller, const QString& wanted) {
-    return pump([&] {
-        controller.selectTransition(QStringLiteral("t1"));
-        return transitionValue(controller, "transformState") == wanted;
-    });
+    return pump(
+        [&] {
+            controller.selectTransition(QStringLiteral("t1"));
+            return transitionValue(controller, "transformState") == wanted;
+        },
+        kTransformDiskWaitMilliseconds);
 }
 
 // frame の数式の layer に、変形の animation が付くまで合成を作り直す (preview 用の mask は
@@ -1659,7 +1667,7 @@ int nativeTransformPlayback(std::string control = {}) {
           }),
           "native 変形: 偽の backend が使える");
     // 選択は 1 回だけ (選び直すたびに preview を組み直させない)。状態は cache の結果で更新される。
-    preparation->record({"wait-start"});
+    preparation->record({"wait-start", {}});
     const bool selected = controller->selectTransition(QStringLiteral("t1"));
     check(selected, "準備: 変形を選択できる");
     const auto prepared = mvm::test::waitForPreparation(
@@ -2522,7 +2530,7 @@ int main(int argc, char** argv) {
         QCoreApplication app(argc, argv);
         mvm::test::PreparationTrace progressing;
         QTimer timer;
-        QObject::connect(&timer, &QTimer::timeout, [&] { progressing.record({"advancing"}); });
+        QObject::connect(&timer, &QTimer::timeout, [&] { progressing.record({"advancing", {}}); });
         timer.start(1);
         check(mvm::test::waitForPreparation(
                   progressing, [] { return false; }, false, std::chrono::milliseconds(100)) ==
@@ -2530,7 +2538,7 @@ int main(int argc, char** argv) {
               "進捗が続いても全体の安全上限で終了する");
         timer.stop();
         mvm::test::PreparationTrace cancelled;
-        cancelled.record({"worker-cancelled"});
+        cancelled.record({"worker-cancelled", {}});
         check(mvm::test::waitForPreparation(cancelled, [] { return false; }) ==
                   mvm::test::PreparationResult::Cancelled,
               "取消を成功・停止と混同しない");

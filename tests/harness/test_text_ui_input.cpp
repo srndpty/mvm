@@ -2201,13 +2201,14 @@ int main(int argc, char** argv) {
                     check(triggered && triggered->isValid(),
                           "前提: 再生メニュー項目を観測できません");
                     for (const bool holdAlt : {false, true}) {
-                        const int before = triggered ? triggered->count() : 0;
+                        const qsizetype before = triggered ? triggered->count() : 0;
                         const bool chosen = choose(playback, Qt::Key_L, key, holdAlt);
                         if (!chosen || !triggered || triggered->count() != before + 1)
                             std::fprintf(stderr,
-                                         "アクセスキー診断: key=%d Alt保持=%d 選択=%d 発火=%d\n",
+                                         "アクセスキー診断: key=%d Alt保持=%d 選択=%d 発火=%lld\n",
                                          int(key), int(holdAlt), int(chosen),
-                                         triggered ? triggered->count() - before : -1);
+                                         static_cast<long long>(
+                                             triggered ? triggered->count() - before : -1));
                         check(chosen && triggered && triggered->count() == before + 1,
                               "M/I/O のアクセスキーが競合するか、項目を 1 回ちょうど実行しません");
                     }
