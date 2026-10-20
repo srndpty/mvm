@@ -60,6 +60,11 @@ void check(bool value, const char* message) {
     }
 }
 
+// 数式の変形が disk に揃うまでの上限。変形は frame ごとに cache へ flush して書くので、CI では
+// 並行する試験の I/O で 20 秒を超えた (2026-10-20、math_transform_authoring_product_ui。後続の
+// 検査は通っており、遅いだけだった)。待つのは結果の正しさであって速さではない。
+constexpr int kTransformDiskWaitMs = 45000;
+
 bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs = 10000) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (!predicate() && std::chrono::steady_clock::now() < deadline) {
@@ -1185,7 +1190,7 @@ int checkMathTransformInspector(const std::filesystem::path& projectPath) {
         check(
             pumpUntil(
                 [&] { return controller.selectedTransition().value("transformState") == "ready"; },
-                20000),
+                kTransformDiskWaitMs),
             "変形の描画が完了しません");
         check(!guidance->isVisible() &&
                   stateLabel->property("text").toString().startsWith(QStringLiteral("変形: 完了")),
@@ -1627,7 +1632,7 @@ int checkMathTransformAuthoring(const std::filesystem::path& projectPath) {
         check(
             pumpUntil(
                 [&] { return controller.selectedTransition().value("transformState") == "ready"; },
-                20000),
+                kTransformDiskWaitMs),
             "変形の描画が完了しません");
         check(!guidance->isVisible() && textOf(stateLabel).startsWith(QStringLiteral("変形: 完了")),
               "描画の済んだ変形を完了と示しません");
