@@ -10,6 +10,11 @@
  *   コードをそのまま返す。子が例外で終わったら、WER が書いた dump (%LOCALAPPDATA%\CrashDumps の
  *   <exe>.<pid>.dmp) を、MVM_CRASH_STAGING があればそこへ複製する (WER の既定の 10
  * 件の回転で消える前に)。 起動器自身の失敗は 0xE0C0FF02 で終わる。
+ *   環境変数 MVM_TEST_TIMEOUT_SECONDS (CTest の TIMEOUT。CMakeLists.txt と scripts/test.ps1 が渡す)
+ * が あれば、その少し前 (5 秒、短い試験は 1/5) になっても終わらない子の minidump を
+ * MVM_CRASH_STAGING へ 書く (<exe>.<pid>.hang.<tick>.dmp)。CTest
+ * の打ち切りは子を何も残さずに止めるので、止まった場所を その前に残す。子は止めず、打ち切りは CTest
+ * に任せる。
  *
  * --timeout-ms N --window-ms M --error-mode {wer|ctest} --stdout F --stderr F --cwd D -- <exe>
  * [args...] 診断の cohort 用。window-ms > 0 なら、その時間を生き延びた process を job ごと止め、
@@ -18,6 +23,8 @@
  * どちらも子を Job Object (KILL_ON_JOB_CLOSE) で所有する。起動器が止められると子も止まる。
  */
 #include <windows.h>
+#include <dbghelp.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -115,14 +122,19 @@ static int is_exception_exit(DWORD code) {
     return (code & 0xF0000000u) == 0xC0000000u || code == 0x80000003u;
 }
 
-/* WER が書いた子の dump を staging へ複製する。見つからなければ、その旨を書く (成功を装わない)。 */
-static void stage_dump(const wchar_t* exe, DWORD pid, DWORD code) {
-    wchar_t local[MAX_PATH], dump[MAX_PATH * 2], staging[MAX_PATH], target[MAX_PATH * 2];
+/* path の最後の名前 (WER の dump の名前に使う)。 */
+static const wchar_t* exe_base(const wchar_t* exe) {
     const wchar_t* base = wcsrchr(exe, L'\\');
     const wchar_t* slash = wcsrchr(exe, L'/');
     if (slash && (!base || slash > base))
         base = slash;
-    base = base ? base + 1 : exe;
+    return base ? base + 1 : exe;
+}
+
+/* WER が書いた子の dump を staging へ複製する。見つからなければ、その旨を書く (成功を装わない)。 */
+static void stage_dump(const wchar_t* exe, DWORD pid, DWORD code) {
+    wchar_t local[MAX_PATH], dump[MAX_PATH * 2], staging[MAX_PATH], target[MAX_PATH * 2];
+    const wchar_t* base = exe_base(exe);
     if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) {
         fprintf(stderr, "wer_launch: 例外 0x%08lX で終了。LOCALAPPDATA が無く dump を探せません\n",
                 code);
@@ -154,6 +166,63 @@ static void stage_dump(const wchar_t* exe, DWORD pid, DWORD code) {
             U8(target));
 }
 
+/* CTest の打ち切りより前に dump を書く時刻 (ms)。MVM_TEST_TIMEOUT_SECONDS が無ければ INFINITE。 */
+static DWORD hang_dump_after(void) {
+    wchar_t value[32];
+    DWORD n = GetEnvironmentVariableW(L"MVM_TEST_TIMEOUT_SECONDS", value, 32);
+    if (!n || n >= 32)
+        return INFINITE;
+    double seconds = wcstod(value, NULL);
+    if (!(seconds > 0) || seconds > 86400)
+        return INFINITE;
+    DWORD timeout = (DWORD)(seconds * 1000.0);
+    DWORD lead = timeout / 5 < 5000 ? timeout / 5 : 5000;
+    return timeout - lead;
+}
+
+/* 1 行を組み立ててから 1 回で書く。stderr は buffer が無く、fprintf は書式の断片ごとに書くので、
+ * file への出力では 1 行に 1 秒以上かかり、その間に CTest が打ち切ると行が途中で切れる。 */
+static void report(const char* format, ...) {
+    char line[MAX_PATH * 4];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    fputs(line, stderr);
+    fflush(stderr);
+}
+
+/* 終わらない子の minidump (各 thread の stack と module の一覧) を staging へ書く。 */
+static void dump_hang(const wchar_t* exe, const PROCESS_INFORMATION* pi, DWORD after) {
+    wchar_t staging[MAX_PATH], target[MAX_PATH * 2];
+    if (!GetEnvironmentVariableW(L"MVM_CRASH_STAGING", staging, MAX_PATH)) {
+        report("wer_launch: %lu ms で終わっていません。MVM_CRASH_STAGING が無いので dump "
+               "を取りません\n",
+               after);
+        return;
+    }
+    swprintf(target, MAX_PATH * 2, L"%ls\\%ls.%lu.hang.%llu.dmp", staging, exe_base(exe),
+             pi->dwProcessId, (unsigned long long)GetTickCount64());
+    HANDLE file =
+        CreateFileW(target, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        report("wer_launch: %lu ms で終わっていません。dump を作れません (%lu): %s\n", after,
+               GetLastError(), U8(target));
+        return;
+    }
+    BOOL written = MiniDumpWriteDump(pi->hProcess, pi->dwProcessId, file, MiniDumpWithThreadInfo,
+                                     NULL, NULL, NULL);
+    DWORD error = GetLastError();
+    CloseHandle(file);
+    if (!written) {
+        DeleteFileW(target);
+        report("wer_launch: %lu ms で終わっていません。dump の書き込みに失敗 (0x%08lX)\n", after,
+               error);
+        return;
+    }
+    report("wer_launch: %lu ms で終わっていません。打ち切りの前の dump: %s\n", after, U8(target));
+}
+
 static int run_test(int argc, wchar_t** argv) {
     /* SEM_NOGPFAULTERRORBOX を外す。critical error の dialog は出さないままにする。 */
     SetErrorMode(SEM_FAILCRITICALERRORS);
@@ -180,7 +249,11 @@ static int run_test(int argc, wchar_t** argv) {
     PROCESS_INFORMATION pi;
     if (!start_in_job(job, argv[0], line, NULL, &si, 0, &pi))
         return (int)LAUNCHER_FAILURE;
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD after = hang_dump_after();
+    if (WaitForSingleObject(pi.hProcess, after) == WAIT_TIMEOUT) {
+        dump_hang(argv[0], &pi, after);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+    }
     DWORD code = LAUNCHER_FAILURE;
     GetExitCodeProcess(pi.hProcess, &code);
     if (is_exception_exit(code))

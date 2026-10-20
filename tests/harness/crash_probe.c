@@ -8,6 +8,7 @@
  *   sleep <ms>     待ってから 0
  *   spawn-sleep <ms>  自分を sleep で起動 (孫) し、自分も待つ。job の停止の確認用
  *   echo           標準出力・標準エラーに既知の行、作業 directory と MVM_CRASH_PROBE_ENV を書く
+ *   hang           main -> probe_hang で終わらずに待つ (起動器の、打ち切り前の dump の検証用)
  */
 #include <windows.h>
 #include <malloc.h>
@@ -49,7 +50,17 @@ __attribute__((noinline)) static void probe_big_frame(void) {
     sink = page[0] + page[sizeof page - 1] + values[0];
 }
 
+/* 止まった試験の代わり。dump の stack に、この名前が main の上に出ることを確かめる。 */
+__attribute__((noinline)) static void probe_hang(void) {
+    puts("hanging");
+    fflush(stdout);
+    for (;;)
+        Sleep(INFINITE);
+}
+
 int main(int argc, char** argv) {
+    if (argc >= 2 && !strcmp(argv[1], "hang"))
+        probe_hang();
     if (argc >= 2 && !strcmp(argv[1], "crash")) {
         probe_big_frame();
         return 0;
@@ -84,8 +95,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "probe-stderr\n");
         return 0;
     }
-    fprintf(
-        stderr,
-        "使い方: mvm_test_crash_probe crash|abort|exit <hex>|sleep <ms>|spawn-sleep <ms>|echo\n");
+    fprintf(stderr, "使い方: mvm_test_crash_probe crash|abort|exit <hex>|sleep <ms>|spawn-sleep "
+                    "<ms>|echo|hang\n");
     return 2;
 }
